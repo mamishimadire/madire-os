@@ -29,7 +29,7 @@ function Invoke-Remote([string]$cmd) {
 Push-Location $root
 try {
     Invoke-Remote "rm -rf $remote && mkdir -p $remote"
-    $sources = @("Makefile", "boot", "kernel", "linker", "iso", "include", "scripts") | Where-Object { Test-Path $_ }
+    $sources = @("Makefile", "boot", "kernel", "drivers", "linker", "iso", "include", "scripts", "tests") | Where-Object { Test-Path $_ }
     foreach ($s in $sources) {
         gh codespace cp -e -r -c $Codespace $s "remote:$remote/"
         if ($LASTEXITCODE -ne 0) { throw "Copying $s to Codespace failed." }

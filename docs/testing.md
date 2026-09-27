@@ -1,14 +1,22 @@
 # Testing
 
-## 1. Automated test (`make test`)
+## 1. Automated tests (`make test`)
 
-This runs in the Linux build environment and is included in `scripts/build.ps1`.
+These run in the Linux build environment, and `scripts/build.ps1` runs them on every build. The script is [`tests/qemu-tests.sh`](../tests/qemu-tests.sh). It boots the kernel headless in QEMU and checks the serial output, since the kernel copies all its screen text to COM1. Each run writes a log to `build/serial-*.log`.
 
-1. `grub-file --is-x86-multiboot build/madire.kernel` confirms GRUB will accept the kernel.
-2. The ISO boots in QEMU with no display for up to 15 seconds. The kernel copies all of its screen text to serial port COM1, which QEMU writes to `build/serial.log`.
-3. The test passes if `build/serial.log` contains `System ready.`
+| Group | How it boots | What it checks |
+|---|---|---|
+| Multiboot header | (not booted) | `grub-file --is-x86-multiboot` accepts the kernel |
+| Normal boot | the real ISO, through GRUB | logo lit-pixel count = **293** (from `scripts/logo-preview.py`); title and version; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Display` all `OK`; `System ready.`; no `FAILED` or `PANIC` |
+| Crash test `divzero` | `-kernel … -append "test=divzero"` | crash screen; `CPU exception 0: Divide Error`; error code `0x00000000`; register dump with `CS=0x0008`; no `System ready` |
+| Crash test `ud` | `-append "test=ud"` | `CPU exception 6: Invalid Opcode`; error code `0x00000000` |
+| Crash test `gpf` | `-append "test=gpf"` | `CPU exception 13: General Protection Fault`; error code **`0x00000028`** (the bad selector, which proves the error-code path works) |
 
-## 2. VirtualBox test (manual acceptance)
+Every QEMU run uses `-no-reboot`. If the CPU triple-faults (an exception that can't be handled, which resets the CPU), QEMU exits, the expected text never appears, and the test fails. A crash can't pass by accident.
+
+**Logo reference:** `python scripts/logo-preview.py preview.png` runs the same stroke data and whole-number maths as `kernel/logo.c`, independently. It prints the expected pixel grid and count, and can write a PNG preview. If you change the logo, update both files and `LOGO_PIXELS` in the test script.
+
+## 2. VirtualBox tests (manual acceptance)
 
 ### One-time VM configuration: `MadireOS-Test`
 
@@ -31,42 +39,47 @@ VBoxManage modifyvm MadireOS-Test --firmware bios --ostype Other
 ### Procedure
 
 ```powershell
-.\scripts\build.ps1     # produces build\madire-os.iso
-.\scripts\run.ps1       # attaches the ISO, sets boot order DVD -> disk, starts the VM
+.\scripts\build.ps1     # build + automated tests, produces build\madire-os.iso
+.\scripts\run.ps1       # powers off / discards a saved state, attaches the ISO,
+                        # sets boot order DVD -> disk, starts the VM
 ```
 
 To do it by hand instead: VM **Settings > Storage**, select the optical drive, choose `build\madire-os.iso`, then **Start**.
 
-### Expected result
+### Test A: normal boot
 
-1. The GRUB menu shows **Madire OS v0.1** and boots automatically after 3 seconds.
-2. The screen shows:
+The GRUB menu shows **Madire OS v0.2** and **Diagnostics**. After 3 seconds it boots the first entry, and the screen should look like this:
 
-```
--------------------------------------------------------------------------------
-                               M A D I R E   O S
--------------------------------------------------------------------------------
+![Madire OS v0.2 boot screen](images/boot-screen-v0.2.png)
 
-Madire OS v0.1
+- The M logo is drawn in the blue-to-cyan gradient. If it shows purple, brown or magenta, the palette programming didn't take effect.
+- Six status lines: five `OK` and `Memory initialization: PENDING (milestone 0.3)`.
+- `System ready.` in green.
 
-Kernel started successfully.
+### Test B: crash screen
 
-CPU initialization:     OK
-Memory initialization:  OK
-Display initialization: OK
+In the GRUB menu, press **↓** to highlight **Diagnostics**, press **Enter**, then choose **Crash test: divide by zero**. The screen should look like this:
 
-System ready.
-```
+![Madire OS v0.2 crash screen](images/crash-screen-v0.2.png)
 
-The VM then sits idle with the CPU halted. Close it with **Machine > Close > Power off**.
+- White on red, headed `*** MADIRE OS - KERNEL PANIC ***`.
+- `CPU exception 0: Divide Error (#DE)`, `EAX=0x0000000a`, `ECX=0x00000000` (the values the test loads), `CS=0x0008`, `DS=0x0010`.
+- The machine halts.
+
+The other two Diagnostics entries should show `Invalid Opcode (#UD)` and `General Protection Fault (#GP)` with error code `0x00000028`.
+
+Close the VM with **Machine > Close > Power off**. If you choose "Save the machine state" instead, `run.ps1` discards that saved state automatically next time.
 
 ### Troubleshooting by layer
 
 | Symptom | Layer | Check |
 |---|---|---|
 | "No bootable medium found" | ISO / VM config | ISO attached? Boot order has DVD first? |
-| UEFI shell or blank screen before GRUB | VM config | Firmware must be BIOS |
-| GRUB shows `error: no multiboot header found` | Kernel / linker | `make test` step 1; `.multiboot` must come first in `linker.ld` |
+| UEFI shell, or a blank screen before GRUB | VM config | Firmware must be BIOS |
+| GRUB shows `error: no multiboot header found` | Kernel / linker | Multiboot test in `make test`; `.multiboot` must come first in `linker.ld` |
 | GRUB `invalid arch-dependent ELF magic` | Toolchain | Kernel must be 32-bit (`file build/madire.kernel` should show ELF 32-bit) |
-| Screen blank after GRUB | Kernel | Check `build/serial.log` from `make test` |
-| "Error: not loaded by a Multiboot bootloader" | Bootloader | `grub.cfg` must use `multiboot`, not `multiboot2` |
+| Screen blank after GRUB | Kernel | Check `build/serial-boot.log` from `make test` |
+| VM resets straight back to GRUB/BIOS | CPU tables | Triple fault. Run `make test`: whichever status line is missing from `build/serial-boot.log` shows the failing step. |
+| A status line says `FAILED` | That subsystem | The check reads back what the CPU or hardware reports; see `docs/architecture.md` |
+| Logo in wrong colours | VGA palette | `drivers/vga/vga_text.c` `vga_set_palette()` |
+| `run.ps1`: "state is Saved" | VM state | Use the current `run.ps1`, which discards saved states automatically (since commit `f07b517`) |
