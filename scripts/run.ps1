@@ -27,6 +27,8 @@ if ($state -match '"running"|"paused"') {
     VBox controlvm $VM poweroff
     Start-Sleep -Seconds 2
 }
+# A VM closed with "Save the machine state" can't have its drive changed.
+if ($state -match '"saved"') { VBox discardstate $VM }
 
 VBox storageattach $VM --storagectl SATA --port 1 --device 0 --type dvddrive --medium $iso
 VBox modifyvm $VM --boot1 dvd --boot2 disk --boot3 none --boot4 none
