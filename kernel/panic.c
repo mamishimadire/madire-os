@@ -5,6 +5,7 @@
  * fatal start-up error. Everything is also written to the serial port so a
  * crash can be diagnosed from the log without seeing the screen.
  */
+#include <stdarg.h>
 #include <stdint.h>
 #include "drivers/vga/vga_text.h"
 #include "kernel/kprintf.h"
@@ -47,6 +48,18 @@ void panic(const char *message)
 {
     panic_begin();
     kprintf(" %s\n", message);
+    panic_halt();
+}
+
+void panicf(const char *fmt, ...)
+{
+    va_list ap;
+    panic_begin();
+    kputc(' ');
+    va_start(ap, fmt);
+    kvprintf(fmt, ap);
+    va_end(ap);
+    kputc('\n');
     panic_halt();
 }
 

@@ -5,6 +5,7 @@
 
 /* Show the red crash screen (also on serial) and halt the CPU forever. */
 void panic(const char *message) __attribute__((noreturn));
+void panicf(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 void panic_exception(const struct interrupt_frame *frame) __attribute__((noreturn));
 
 #endif

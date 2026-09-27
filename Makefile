@@ -2,8 +2,9 @@
 #
 #   make        build the kernel ELF
 #   make iso    build the bootable ISO (build/madire-os.iso)
-#   make test   run tests/qemu-tests.sh: Multiboot header, normal boot,
-#               logo, and crash-screen tests, all headless in QEMU
+#   make unit   host unit tests for the pure kernel modules (tests/unit/)
+#   make test   unit tests, then tests/qemu-tests.sh: Multiboot header,
+#               normal boot, logo, memory and crash-screen tests in QEMU
 #   make run    boot the ISO in QEMU with a window (on Windows use
 #               scripts/run.ps1 to boot in VirtualBox instead)
 #   make clean  remove build output
@@ -34,7 +35,14 @@ ASM_SRCS := boot/boot.asm $(shell find kernel drivers -name '*.asm')
 C_SRCS   := $(shell find kernel drivers -name '*.c')
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
-.PHONY: all iso run test clean
+# Host unit tests: kernel modules with no hardware access, built as ordinary
+# 32-bit Linux programs so they run with the same integer and pointer sizes.
+UNIT_CC      := gcc -m32
+UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -I.
+UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c)
+UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
+
+.PHONY: all iso run test unit clean
 
 all: $(KERNEL)
 
@@ -59,7 +67,14 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ $(BUILD)/isodir 2>/dev/null
 	@echo "ISO ready: $@"
 
-test: $(ISO)
+$(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
+
+unit: $(UNIT_TESTS)
+	@for t in $(UNIT_TESTS); do $$t || exit 1; done
+
+test: unit $(ISO)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 run: $(ISO)

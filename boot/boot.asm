@@ -20,6 +20,8 @@ align 4
 
 section .bss
 align 16
+global stack_bottom                 ; visible to C so the memory manager can
+global stack_top                    ; verify the stack lies inside .bss
 stack_bottom:
     resb 16384                      ; 16 KiB kernel stack
 stack_top:

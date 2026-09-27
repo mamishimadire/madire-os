@@ -2,15 +2,17 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.2 (Milestone 0.2: CPU foundation and Madire logo)
+**Current version:** 0.3 (Milestone 0.3: Memory foundation)
 
-![Madire OS v0.2 boot screen](docs/images/boot-screen-v0.2.png)
+![Madire OS v0.3 boot screen](docs/images/boot-screen-v0.3.png)
 
 It boots through GRUB into a 32-bit x86 kernel written in C and NASM. So far the kernel:
 
 - installs its own segment table (GDT) and interrupt table (IDT);
 - makes the interrupt controller safe;
 - catches CPU exceptions and shows them on a readable crash screen;
+- reads and validates the firmware's memory map, and protects the kernel and boot data;
+- runs a physical page allocator, which it tests on real RAM at every boot;
 - draws the Madire M logo, built from geometry, in VGA text mode.
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md).
@@ -44,7 +46,9 @@ On Linux (Codespace terminal, WSL, CI):
 bash scripts/install-deps.sh   # once
 make            # kernel ELF: build/madire.kernel
 make iso        # bootable ISO: build/madire-os.iso
-make test       # 26 automated checks: boot, logo, GDT/IDT/PIC, 3 crash tests
+make unit       # host unit tests of the memory modules
+make test       # unit tests + 150 QEMU checks: boot, logo, CPU, memory at
+                # 5 RAM sizes, allocator exhaustion, crash and memory-misuse tests
 make run        # boot in a QEMU window
 make clean
 ```
@@ -56,13 +60,15 @@ make clean
 .\scripts\run.ps1 -Headless -Screenshot # boot without a window, save build\boot-screen.png
 ```
 
-The GRUB menu has a **Diagnostics** submenu that deliberately triggers CPU exceptions, to show the crash screen. See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
+The GRUB menu has a **Diagnostics** submenu that deliberately triggers CPU exceptions and runs memory tests: allocate every page, double free, free a kernel page. See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.2)
+## Limitations (v0.3)
 
 - 32-bit x86 only; the VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
-- No memory management yet (`Memory initialization: PENDING`), and no timer, keyboard input, filesystem or processes.
-- All hardware interrupts are masked; only CPU exceptions are handled.
+- **Only RAM below 4 GiB is used** (no PAE). On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
+- The whole low 1 MiB is reserved on purpose, and ACPI-reclaimable memory isn't reclaimed yet.
+- Physical pages only: no paging, virtual memory or heap (`kmalloc`) yet.
+- No timer, keyboard input, filesystem or processes. All hardware interrupts are masked; only CPU exceptions are handled.
 - The logo is blocky: text mode gives 80×50 pixels, each 9×8 screen pixels in size.
 - The screen does not scroll; output wraps back to the top.
 - Building needs a Linux environment; there is no native Windows toolchain yet.

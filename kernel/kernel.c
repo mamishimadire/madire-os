@@ -15,6 +15,10 @@
 #include "kernel/arch/x86/pic.h"
 #include "kernel/bootscreen.h"
 #include "kernel/kernel.h"
+#include "kernel/kprintf.h"
+#include "kernel/memory/memory.h"
+#include "kernel/memory/memtest.h"
+#include "kernel/multiboot.h"
 #include "kernel/panic.h"
 
 static const char *cmdline = "";
@@ -32,11 +36,22 @@ static int cmdline_has(const char *word)
     return 0;
 }
 
-/* Diagnostics: GRUB's "Diagnostics" menu (or QEMU -append) passes test=<fault>
- * to deliberately trigger a CPU exception and show the crash screen. */
-static void run_crash_test(void)
+/* Diagnostics: GRUB's "Diagnostics" menu (or QEMU -append) passes test=<name>
+ * to deliberately trigger a CPU exception or run a memory test. */
+static void run_diagnostics(void)
 {
-    if (cmdline_has("test=divzero")) {
+    if (cmdline_has("test=memexhaust")) {
+        bootscreen_message("Memory test: allocating every free page...");
+        char line[80];
+        ksnprintf(line, sizeof(line), "Memory exhaustion test: PASS (%u pages)", memtest_exhaust());
+        bootscreen_message(line);
+    } else if (cmdline_has("test=doublefree")) {
+        bootscreen_message("Memory test: double free");
+        memtest_double_free();
+    } else if (cmdline_has("test=freereserved")) {
+        bootscreen_message("Memory test: free a kernel page");
+        memtest_free_reserved();
+    } else if (cmdline_has("test=divzero")) {
         bootscreen_message("Crash test: divide by zero");
         __asm__ volatile ("mov $10, %%eax\n\t"
                           "xor %%edx, %%edx\n\t"
@@ -61,7 +76,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
         panic("Not loaded by a Multiboot bootloader.");
 
+    if (mb_info == 0)
+        panic("No Multiboot information from the bootloader.");
     const struct multiboot_info *mbi = (const struct multiboot_info *)(uintptr_t)mb_info;
+    /* Only the pointer is kept here; memory_init() validates and reserves
+     * the string before anything reads it. */
     if (mbi->flags & MULTIBOOT_INFO_CMDLINE)
         cmdline = (const char *)(uintptr_t)mbi->cmdline;
 
@@ -78,10 +97,23 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
                       interrupts_breakpoint_count() == 1 ? BOOT_OK : BOOT_FAILED,
                       "int3 self-test");
 
-    bootscreen_status("Memory initialization:", BOOT_PENDING, "milestone 0.3");
-    bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
+    /* After the IDT, so a fault while reading boot data shows the crash
+     * screen instead of resetting the machine. */
+    static struct memory_stats mem;
+    memory_init(mbi, &mem);
+    uint32_t mem_checks = memtest_boot();
 
-    run_crash_test();
+    /* Only reached if the map was parsed, usable memory identified, the
+     * kernel and boot data reserved, the allocator set up and the self-test
+     * passed; any failure on the way ends on the crash screen instead. */
+    char note[64];
+    ksnprintf(note, sizeof(note), "%u reserved ranges, self-test PASS, %u checks",
+              mem.reservations, mem_checks);
+    bootscreen_status("Memory initialization:", BOOT_OK, note);
+    bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
+    bootscreen_memory(&mem);
+
+    run_diagnostics();
 
     bootscreen_ready();
 
