@@ -99,6 +99,36 @@ void vga_put_cell(size_t row, size_t col, uint8_t ch, uint8_t fg, uint8_t bg)
         vga[row * VGA_WIDTH + col] = vga_entry(ch, (uint8_t)((fg & 0x0F) | (bg & 0x0F) << 4));
 }
 
+#define VGA_CRTC_CURSOR_START 0x0A
+#define VGA_CRTC_CURSOR_END   0x0B
+#define VGA_CRTC_CURSOR_HIGH  0x0E
+#define VGA_CRTC_CURSOR_LOW   0x0F
+#define VGA_CURSOR_OFF        0x20      /* start register bit 5 */
+
+void vga_cursor_show(bool visible)
+{
+    if (!visible) {
+        vga_disable_cursor();
+        return;
+    }
+    /* Underline cursor on scan lines 13-14 of the 16-line character cell. */
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_START);
+    outb(VGA_CRTC_DATA, (uint8_t)((inb(VGA_CRTC_DATA) & 0xC0) | 13));
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_END);
+    outb(VGA_CRTC_DATA, (uint8_t)((inb(VGA_CRTC_DATA) & 0xE0) | 14));
+}
+
+void vga_cursor_move(size_t row, size_t col)
+{
+    if (row >= VGA_HEIGHT || col >= VGA_WIDTH)
+        return;
+    uint16_t pos = (uint16_t)(row * VGA_WIDTH + col);
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_LOW);
+    outb(VGA_CRTC_DATA, (uint8_t)(pos & 0xFF));
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_HIGH);
+    outb(VGA_CRTC_DATA, (uint8_t)(pos >> 8));
+}
+
 void vga_set_palette(uint8_t slot, uint8_t r, uint8_t g, uint8_t b)
 {
     slot &= 0x0F;

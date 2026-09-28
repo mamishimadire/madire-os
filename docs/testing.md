@@ -11,6 +11,7 @@ The pure modules have no hardware access, printing or panics:
 - memory: `mmap.c`, `pmm.c`, `reserve.c`
 - keyboard decoder and queue: `scancode.c`, `keyqueue.c`
 - PIT divisor maths: `pit_divisor.h`
+- console and shell: `textbuf.c`, `lineedit.c`, `parser.c`, `shell.c`, `cpuinfo.c`
 
 They're compiled with the host GCC as ordinary 32-bit Linux programs (`-m32`, same warnings-as-errors options) and tested with synthetic data: cases real hardware can't produce on demand.
 
@@ -22,19 +23,24 @@ They're compiled with the host GCC as ordinary 32-bit Linux programs (`-m32`, sa
 | `test_pit` (5) | 0.4 | 100 Hz → 11932, 1000 → 1193, 50 → 23864; extremes (1193182 Hz → 1, 19 Hz → 62799); out-of-range rejected (18 Hz, 0, above the base clock) with output untouched; rounding in both directions; every rate from 19 to 10,000 Hz within 0.5 % |
 | `test_scancode` (17) | 0.4 | letter press and release; left, right and both Shifts; Caps Lock toggles once while held (auto-repeat ignored); Caps+Shift; shifted symbols; Ctrl/Alt flags; `E0` extended keys (Up, right Ctrl, keypad Enter, right Alt, Delete, Left), including the same byte without a prefix; fake shifts around Print Screen ignored; full Pause sequence → one event; unknown codes; stray release; Enter/Backspace/Tab/Space/Esc; F1–F12; prefix then release; keyboard replies are not keys; **all 256 bytes after every prefix state** decode safely; every key has a name |
 | `test_keyqueue` (8) | 0.4 | empty pop; FIFO order; fill to 64; overflow drops the newest and counts it (the first 64 kept, in order); space frees after a pop; 1,000 uneven push/pop rounds with wrap-around; counters wrapping past 2^32; re-init |
+| `test_textbuf` (9) | 0.5 | writing and position; newline; wrap at column 80 (an 80-character line plus newline gives no blank line); scrolling at the bottom; 1,000 scrolls; clear; Backspace (never past column 0); tab and non-printable characters; cursor clamping and direct cell writes |
+| `test_lineedit` (12) | 0.5 | insert; Shift/Caps characters passed through; Backspace at start and in the middle; Delete; Left/Right/Home/End at the edges; insert at cursor; **exactly 71 characters accepted, the 72nd refused** (also mid-line); Enter and keypad Enter; releases ignored; Ctrl/Alt ignored; Up/Down/F-keys/Esc/modifiers ignored (no history); Tab inserted |
+| `test_parser` (9) | 0.5 | one word; multiple spaces; leading/trailing spaces; tabs; empty and blank lines; exactly 8 words accepted, a 9th refused; a 71-character word; case preserved; nothing outside the line touched |
+| `test_cpuinfo` (8) | 0.5 | CPUID unavailable; vendor strings; family/model/stepping with extended family and model (families 6, 0xF, 5); no leaf 1; brand string trimmed, absent, or exactly 48 characters; hypervisor vendor with NUL padding; feature list, "none" and safe truncation; non-printable bytes sanitised |
+| `test_shell` (12) | 0.5 | **exact output** of `help`, `version`, `uptime` (0 s up to 2^32 − 1 s; ticks hidden once they no longer fit in 32 bits; timer unavailable), `mem` (MadireOS-Test figures), `cpu` (full, minimal, unavailable, paging on), `echo` (spaces, tabs, empty, 8 words); unknown commands and case-sensitivity; usage errors for all six fixed-argument commands; too many words; empty lines; `clear`; repeated commands give identical output |
 
 ### 1b. QEMU tests (`tests/qemu-tests.sh`)
 
 These boot the kernel headless in QEMU and check the serial output. The kernel copies its screen text to COM1 and logs details there. Each run writes `build/serial-*.log`.
 
-Checks added in 0.4 are tagged `[0.4]`, so the summary line separates them from the 0.3 regression checks:
-`ALL TESTS PASSED (180 checks: 150 0.3 regression + 30 new in 0.4)`.
-The only 0.3 check that changed is the version check (`v0.3` → `v0.4`).
+Checks added in 0.4 and 0.5 are tagged `[0.4]` and `[0.5]`, so the summary line separates them from the 0.3 regression checks:
+`ALL TESTS PASSED (212 checks: 150 0.3 regression + 30 from 0.4 + 32 new in 0.5)`.
+The only existing check that changed in 0.5 is the version check (`v0.4` → `v0.5`).
 
 | Group | How it boots | What it checks |
 |---|---|---|
 | Multiboot header | (not booted) | `grub-file --is-x86-multiboot` accepts the kernel |
-| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293**; title; version `v0.4`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. |
+| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293**; title; version `v0.5`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`). |
 | RAM sizes | `-kernel` at `-m 16M`, `32M`, `1G`, `4G` | boots; self-test passes; memory `OK`; panel shows the expected MB above 4 GiB; memory model check with pinned values |
 | Boot module | `-m 32M -kernel … -initrd module.bin` | module range reserved; model check |
 | Exhaustion | `-append "test=memexhaust"` at 16M and 128M | every free page allocated, verified and freed; `System ready` afterwards; no panic. **[0.4]** ran with IRQ0/IRQ1 live. |
@@ -44,10 +50,16 @@ The only 0.3 check that changed is the version check (`v0.3` → `v0.4`).
 | **[0.4] Keyboard, scripted** | `test=keyboard`, with `tests/qmp_keys.py` typing `a, Shift+B, Caps Lock, a, Caps Lock, Shift+1, Up, right Ctrl, Enter, keypad Enter` | every event decoded exactly, **in order**: scancode, key name, character and flags. For example `'B'` with `flags=0x03`, `'A'` with Caps (`0x11`), `'!'`, `UP` extended (`0x21`), `RCTRL` (`0x25`), `KP_ENTER` (`0x21`), and the extended release. Nothing dropped or unknown. |
 | **[0.4] Queue overflow** | `test=kbdflood`, with QMP typing 50 keys (100 events) quickly | queue full (**64 kept**), overflow dropped and counted, **kept + dropped + late = 100** (no event lost unaccounted), drop count reported from normal context, kept events are the oldest in order, system ready afterwards |
 | **[0.4] Unexpected IRQ** | `test=irqunexpected` | IRQ2 counted and acknowledged, reported from normal context, system ready, no panic |
+| **[0.5] Console session** | `-kernel`, then `tests/qmp_keys.py --text` types a 32-line session: `x` (opens the console), then commands, edits and errors | first key opens the console and isn't typed; all 32 lines submitted; empty and blank lines give no output; `help` (7 lines, in order); exact `version`; `uptime` twice, advancing; `mem` figures; `cpu` lines; Shift and multiple spaces; tabs; Caps Lock (and case-sensitive names); Backspace; Left+Delete; Home/End/insert; Right/insert; Ctrl/Alt ignored; unknown command; usage error; more than 8 words refused; exactly 8 accepted; **71-character limit** (refusal logged, 66 `a`s echoed); 7 identical `version` outputs; scrolling; `clear`; no dropped keys, panic or unexpected IRQs |
+
+**How the console session is checked:** the console copies each submitted line to serial as `madire> <line>`, followed by the command's output lines, so the test reads exactly what was typed and printed. Only the final, edited line is logged, not the individual keystrokes (those still appear as 0.4 `key:` lines). Every key goes QMP → i8042 → IRQ1 → the unchanged 0.4 driver, decoder and queue → idle loop → console: the keyboard driver is never bypassed.
 
 Every QEMU run uses `-no-reboot`. If the CPU triple-faults (an exception that can't be handled, which resets the CPU), QEMU exits, the expected text never appears, and the test fails. A crash can't pass by accident.
 
 **Keyboard injection (`tests/qmp_keys.py`):** connects to QEMU's QMP socket using only the Python standard library. It waits until a "ready" line appears in the serial log, then sends each combination with `send-key` (QEMU sends a make and a break for each key, like a real keyboard).
+
+- **Text mode (0.5):** `--text` types a string, using Shift for capitals and symbols; `{ret}`, `{bs}`, `{del}`, `{left}`, `{home}`, `{caps}`, `{ctrl+c}` and similar stand for special keys, and `{wait:N}` pauses.
+- **Finishing (0.5):** QEMU queues `send-key` requests and delivers them at its own pace (each key is held for 30 ms), so the last keys can reach the guest many seconds after the script has sent them. `--done TEXT` makes the script wait until TEXT (the output of a final `echo end-of-console-test`) is in the log before QEMU is stopped.
 
 **Why the flood test checks conservation, not a fixed drop count:** how many of the 100 events arrive inside the kernel's 3-second window depends on host timing (runs have given dropped = 35 with 1 late, and dropped = 36 with 0 late). The invariants that must always hold: the queue ends full (64), every other event is either counted as dropped or delivered afterwards, and nothing disappears.
 
@@ -99,17 +111,21 @@ To do it by hand instead: VM **Settings > Storage**, select the optical drive, c
 
 **Close the VM (Power off) before running `build.ps1`.** A running VM keeps the ISO open, and copying the new ISO back then fails with `scp: open local "build/madire-os.iso": Broken pipe`. The build and tests still ran in the Codespace.
 
-Keys can be typed into the VM from the host (this is how the tests below were run):
-`VBoxManage controlvm MadireOS-Test keyboardputscancode 1e 9e` (the `a` key).
+Keys can be typed into the VM from the host, through VirtualBox's PS/2 keyboard emulation (this is how the tests below were run):
+
+- `VBoxManage controlvm MadireOS-Test keyboardputscancode 1e 9e` sends the `a` key;
+- `VBoxManage controlvm MadireOS-Test keyboardputstring "help"` types text; Enter is `keyboardputscancode 1c 9c`.
+
+**Wait about 3 seconds after power-on before sending keys.** Keys that arrive while the BIOS is still starting make it stop with `FATAL: Keyboard error:995`, before GRUB even loads.
 
 ### Test A: normal boot
 
-The GRUB menu shows **Madire OS v0.4** and **Diagnostics**. After 3 seconds it boots the first entry:
+The GRUB menu shows **Madire OS v0.5** and **Diagnostics**. After 3 seconds it boots the first entry:
 
-![Madire OS v0.4 boot screen](images/boot-screen-v0.4.png)
+![Madire OS v0.5 boot screen](images/boot-screen-v0.5.png)
 
 - The M logo is drawn in the blue-to-cyan gradient.
-- Left column: **8 status lines, all `OK`**, including `Timer (PIT, 100 Hz)` and `Keyboard (PS/2)`.
+- Left column: **9 status lines, all `OK`**, including `Timer (PIT, 100 Hz)`, `Keyboard (PS/2)` and `Console & shell` (a self-test of the console code, not of hardware).
 - Right column: memory figures, then **Uptime**, which counts up every second, and **Last key**, which shows the last key pressed (`none` until then). For `MadireOS-Test` (4096 MB):
 
   | Line | Value |
@@ -119,10 +135,31 @@ The GRUB menu shows **Madire OS v0.4** and **Diagnostics**. After 3 seconds it b
   | RAM above 4 GiB | **512 MB** |
   | Page size | **4096 bytes** |
   | Usable pages | **917391** |
-  | Free pages | **917152** (usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes) |
+  | Free pages | **917148** (usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes) |
 
-- `System ready.` in green on the bottom row.
-- Pressing a key (or `keyboardputscancode 1e 9e`) shows `Last key: 'a'`.
+- Bottom row: `System ready. Press any key to open the console.`
+
+### Test F: console and shell
+
+Press any key on the boot screen. That key opens the console and **isn't typed**: the prompt is empty.
+
+![Console](images/console-v0.5.png)
+
+| Check | Expected |
+|---|---|
+| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.5` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
+| `help`, `version`, `uptime` | the 7-command list; `Madire OS v0.5 (32-bit x86, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
+| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages; CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode |
+| Editing | `echo hellx`, Backspace, `o` → `hello`; `echo abXc`, Left, Left, Delete → `abc`; `cho world`, Home, `e`, End, `!` → `world!`; Right and insert → `hello` |
+| Shift, Caps Lock, Tab | `echo   Hello   World!` → `Hello World!`; Caps Lock, `echo abc` → `ECHO ABC` (unknown: names are lowercase); `echo`, Tab, `a`, Tab, Tab, `b` → `a b` |
+| Errors (red) | `foo` → `Unknown command: foo. …`; `version x` → `Usage: version`; `echo 1 2 3 4 5 6 7 8` → `Too many arguments (max 8).` |
+| Limits | `echo` + 100 × `a`: the line stops at 71 characters (66 `a`s echoed) |
+| Empty lines | Enter alone, or spaces then Enter: just a new prompt |
+| Scrolling, clear | several `help`s scroll the screen, with the prompt on the bottom row; `clear` leaves only the prompt on row 0 |
+
+![mem and cpu](images/console-mem-cpu-v0.5.png)
+
+![Editing, errors and the 71-character limit](images/console-editing-v0.5.png)
 
 ### Test B: crash screen
 
@@ -140,7 +177,7 @@ The other two crash entries should show `Invalid Opcode (#UD)` and `General Prot
 
 | Entry | Expected |
 |---|---|
-| **Memory test: allocate every page** | after **about a minute** on a 4 GB VM, `Memory exhaustion test: PASS (917152 pages)` and `System ready.` Uptime keeps counting during the test. |
+| **Memory test: allocate every page** | after **about a minute** on a 4 GB VM, `Memory exhaustion test: PASS (917148 pages)` and `System ready.` Uptime keeps counting during the test. Afterwards the console's `mem` shows free pages back at 917148. |
 | **Memory test: double free** | crash screen: `Double free of physical page 0x…` |
 | **Memory test: free a kernel page** | crash screen: `Attempt to free reserved page 0x00100000` |
 
@@ -155,7 +192,7 @@ The other two crash entries should show `Invalid Opcode (#UD)` and `General Prot
 
 ### Test E: keyboard diagnostic
 
-**Diagnostics → Keyboard test: show key codes.** Each key event appears in the panel area, with `>` marking the newest line. After 8 lines it wraps to the top. Reboot to exit.
+**Diagnostics → Keyboard test: show key codes.** Each key event appears in the panel area, with `>` marking the newest line. After 9 lines it wraps to the top. Reboot to exit. (This diagnostic never opens the console.)
 
 ![Keyboard diagnostic: Shift+A, Up, Caps Lock](images/keyboard-diag-v0.4.png)
 
@@ -176,6 +213,9 @@ Check: Shift+A gives `LSHIFT` and then `'A'` with `flags=0x03`; Up is `UP` with 
 | `Keyboard … FAILED (no keyboard answered)` | i8042 / VM | VM has no PS/2 keyboard (e.g. USB-only input); check the VM's input settings |
 | Uptime stays at 0 | Timer | Timer status will also be `FAILED`; see above |
 | Keys don't change "Last key" | Keyboard / IRQ1 | Keyboard status; `key:` lines in the serial log |
+| Bottom row says `console disabled` | Keyboard or console self-test | The console is offered only if both `Keyboard (PS/2)` and `Console & shell` are `OK` |
+| Console open but typing does nothing | Keyboard / IRQ1 | `key:` lines in the serial log; keys with Ctrl or Alt held are ignored by design |
+| `FATAL: Keyboard error:995` before GRUB | VirtualBox BIOS | Keys were sent too soon after power-on; wait about 3 s |
 | Crash screen: `PIC mask is 0x…, expected 0x…` | IRQ layer | An IRQ line other than 0/1 was unmasked: a kernel bug |
 | Logo in wrong colours | VGA palette | `drivers/vga/vga_text.c` `vga_set_palette()` |
 | Crash screen: `Memory: …` or `Memory self-test failed: …` | Memory | The message names the problem; see `docs/architecture.md` |

@@ -4,10 +4,12 @@
  *   rows  0-11  logo, centred (unchanged since 0.2)
  *   row  12     M A D I R E   O S
  *   row  13     Madire OS v<version>
- *   rows 15-22  left: 8 start-up checks
- *               right: 6 memory figures (15-20), Uptime (21), Last key (22)
+ *   rows 14-22  left: 9 start-up checks
+ *               right: 6 memory figures (14-19), Uptime (20), Last key (21)
  *   row  23     message (e.g. diagnostics result)
- *   row  24     System ready.
+ *   row  24     System ready. + what happens next (e.g. open the console)
+ *
+ * Once the console starts it takes over the whole screen (kernel/console).
  *
  * The screen and the serial log are written separately: the screen is laid
  * out in two columns, the serial log stays one line per item (with the
@@ -24,15 +26,15 @@
 
 #define LOGO_ROW          0
 #define TITLE_ROW         12
-#define PANEL_ROW         15
-#define PANEL_ROWS        8
+#define PANEL_ROW         14
+#define PANEL_ROWS        9
 #define LEFT_COL          2
 #define LEFT_LABEL_WIDTH  26
 #define RIGHT_COL         40
 #define RIGHT_LABEL_WIDTH 23
 #define RIGHT_VALUE_WIDTH 6
-#define UPTIME_ROW        21
-#define LAST_KEY_ROW      22
+#define UPTIME_ROW        20
+#define LAST_KEY_ROW      21
 #define MESSAGE_ROW       23
 #define READY_ROW         24
 
@@ -197,8 +199,9 @@ void bootscreen_message(const char *text)
     serial_putc('\n');
 }
 
-void bootscreen_ready(void)
+void bootscreen_ready(const char *hint)
 {
     screen_write(READY_ROW, LEFT_COL, "System ready.", VGA_LIGHT_GREEN);
-    serial_write("System ready.\n");
+    screen_write(READY_ROW, LEFT_COL + 14, hint, VGA_WHITE);
+    klogf("System ready. %s\n", hint);
 }

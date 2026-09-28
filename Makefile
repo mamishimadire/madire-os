@@ -40,7 +40,9 @@ OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 UNIT_CC      := gcc -m32
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
-                            drivers/keyboard/scancode.c kernel/input/keyqueue.c)
+                            drivers/keyboard/scancode.c kernel/input/keyqueue.c \
+                            kernel/console/textbuf.c kernel/console/lineedit.c \
+                            kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit clean
@@ -69,7 +71,7 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 	@echo "ISO ready: $@"
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
-                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h)
+                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
 

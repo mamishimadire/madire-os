@@ -35,4 +35,9 @@ void vga_put_cell(size_t row, size_t col, uint8_t ch, uint8_t fg, uint8_t bg);
 /* Sets colour slot 0-15 to an RGB value (6 bits per channel, 0-63). */
 void vga_set_palette(uint8_t slot, uint8_t r, uint8_t g, uint8_t b);
 
+/* Hardware (blinking underline) cursor. vga_init() turns it off; the
+ * console turns it on and moves it. Independent of the vga_putc() cursor. */
+void vga_cursor_show(bool visible);
+void vga_cursor_move(size_t row, size_t col);
+
 #endif

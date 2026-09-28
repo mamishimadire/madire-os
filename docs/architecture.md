@@ -32,9 +32,11 @@ VirtualBox power-on
                                    IRQ1 handler → clear pending → unmask IRQ1
             keyboard_selftest      echo reply through IRQ1, decoder, queue
             PIC mask check         must be exactly 0xFFFC (only IRQ0/IRQ1)
-      12. diagnostics if requested (test=… on the boot command line)
-      13. "System ready."
-      14. idle loop                hlt → handle queued keys, uptime, counters
+      12. console_selftest         pure console/shell code (not hardware)
+      13. diagnostics if requested (test=… on the boot command line)
+      14. "System ready. Press any key to open the console."
+      15. idle loop                hlt → handle queued keys, uptime, counters;
+                                   first key press → console; then keys → shell
   any CPU exception → isr.asm stub → interrupt_dispatch → panic → crash screen
   IRQ0/IRQ1 → isr.asm stub → interrupt_dispatch → irq_dispatch → driver handler → EOI
 ```
@@ -65,6 +67,8 @@ kernel/               architecture-independent kernel code
   input/              key-event queue
   timer.c             system tick, uptime, bounded waits
   devtest.c           timer / keyboard / IRQ diagnostics
+  console/            console: text grid, line editor, screen + serial output
+  shell/              command parser, shell commands, CPUID decoding
 drivers/              hardware drivers
   vga/  serial/  pit/  keyboard/
 ```
@@ -296,15 +300,58 @@ The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and I
 | Queue | `kernel/input/keyqueue.c`, pure and unit-tested. 64 events; single producer (IRQ1) and single consumer (normal context, popping with interrupts off); free-running counters. **When full, the newest event is dropped and counted**, so queued events keep their order. |
 | Self-test | ① Decoder: a known byte sequence (Shift+A, Up). ② Queue: a private instance filled, overflowed and drained in order. ③ **IRQ1 delivery:** `0xEE` is sent with IRQ1 unmasked, and the echo must come back *through the interrupt handler* (bounded wait). Only if all three pass does the screen show `Keyboard (PS/2): OK`. |
 
-## Idle loop [built: 0.4]
+## Idle loop [built: 0.4, console added 0.5]
 
 After "System ready.", `kernel.c` runs the idle loop. It isn't a scheduler: it sleeps with `hlt` until any interrupt, then handles whatever the interrupt handlers queued or counted:
 
-- key events are logged to serial, and pressed keys update "Last key";
-- new drops and unexpected IRQs are reported to serial;
-- when the seconds counter changes, "Uptime" is redrawn, and every 5 s `uptime: N s` goes to serial.
+- **Key events** are logged to serial, as in 0.4.
+  - While the boot screen shows, a pressed key updates "Last key" and **opens the console** (if it was offered). That key isn't typed.
+  - Once the console is active, every key event goes to `console_handle_key()`.
+- **Counters:** new drops and unexpected IRQs are reported to serial.
+- **Uptime:** when the seconds counter changes, "Uptime" is redrawn while the boot screen shows, and every 5 s `uptime: N s` goes to serial.
 
-All screen and serial output happens here, never in interrupt context. A key arriving just before `hlt` waits at most one timer tick (10 ms).
+All screen and serial output happens here, never in interrupt context. The shell runs here too, one command at a time. A key arriving just before `hlt` waits at most one timer tick (10 ms).
+
+## Console and shell [built: 0.5]
+
+```
+IRQ1 → 0.4 driver → decoder → key queue                          [unchanged]
+idle loop → console_handle_key → line editor → (Enter) → parser → shell command
+          → output sink → console text grid → vga_put_cell + hardware cursor
+                                            → serial copy
+```
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/console/textbuf.c` | yes | The console's own 80×25 grid (character plus colour per cell): writing, newline, wrap at column 80, scrolling, clear |
+| `kernel/console/lineedit.c` | yes | Input line: insert at cursor, Backspace, Delete, Left/Right/Home/End, Enter. At most **71 characters** (8-character prompt + 71 = one row). Presses only; any key with Ctrl or Alt held is ignored; no history. |
+| `kernel/shell/parser.c` | yes | Splits the line in place: spaces and tabs separate, repeats collapse, leading/trailing ignored; at most **8 words** |
+| `kernel/shell/shell.c` | yes | The seven commands, reading values from a read-only `shell_context` and writing through a `shell_output` sink, so every output is unit-tested exactly |
+| `kernel/shell/cpuinfo.c` | yes | Decodes raw CPUID values: vendor, family/model/stepping (extended-field rules), feature names, brand string, hypervisor vendor |
+| `kernel/arch/x86/cpuid.c` | no | Checks CPUID exists by toggling EFLAGS bit 21, then runs only the leaves the CPU lists; reads CR0 |
+| `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial; builds the shell context; runs the start-up self-test |
+
+- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.5`, a hint) and the `madire> ` prompt.
+  - Colours use only VGA slots the logo doesn't reprogram: grey text, white input, cyan prompt, red errors.
+  - Output scrolls up at the bottom. There's no scrollback.
+  - `clear` empties the console's own grid and redraws it; it doesn't use `vga_clear()`.
+- **Cursor:** the VGA hardware cursor, a blinking underline, marks the edit position. The VGA driver gained two additive functions: `vga_cursor_show()` and `vga_cursor_move()`.
+- **Commands:**
+
+  | Command | Output |
+  |---|---|
+  | `help` | the command list |
+  | `clear` | clears the screen |
+  | `version` | `Madire OS v0.5 (32-bit x86, Multiboot 1)` |
+  | `uptime` | `Uptime: HH:MM:SS (N ticks at 100 Hz)`. Uses the 32-bit seconds counter with 32-bit division only. The tick count is shown only while it fits in 32 bits, and is never divided. |
+  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()` |
+  | `cpu` | CPUID information, plus the CR0 mode line |
+  | `echo <text>` | the words joined by single spaces |
+
+  An unknown name gives `Unknown command: …`. Extra arguments give `Usage: …`, and more than 8 words gives `Too many arguments (max 8).`
+- **Self-test (`Console & shell` status line):** exercises the *pure* modules with known input: the line editor, the parser, `echo ok` through the shell, and scrolling in a private grid. It isn't a test of keyboard or VGA hardware; those are proven by the keyboard self-test and by the QEMU and VirtualBox console tests.
+- **When the console is offered:** only if both the console self-test and the keyboard passed. Otherwise the bottom row says why, and the idle loop runs as in 0.4.
+- **Unchanged in 0.5:** the keyboard driver, decoder, queue, IRQ layer, PIC, PIT, timer and memory manager. There's no dynamic allocation: every buffer is static.
 
 ## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
 
@@ -319,7 +366,7 @@ All screen and serial output happens here, never in interrupt context. A key arr
 
 | Driver | File | Status |
 |---|---|---|
-| VGA text mode (80×25) | `drivers/vga/vga_text.c` | cursor off; blink off (all 16 background colours usable); direct cell writes; palette programming (attribute controller + DAC); no scrolling yet |
+| VGA text mode (80×25) | `drivers/vga/vga_text.c` | blink off (all 16 background colours usable); direct cell writes; palette programming (attribute controller + DAC); hardware cursor off at start-up, switched on and moved by the console (0.5). Scrolling is done by the console's own grid, not the driver. |
 | Serial COM1 (38400 8N1, polled) | `drivers/serial/serial.c` | debug output and automated tests |
 | PIT timer | `drivers/pit/pit.c` | channel 0, 100 Hz, IRQ0 (0.4) |
 | PS/2 keyboard | `drivers/keyboard/ps2kbd.c`, `scancode.c` | i8042 port 1, set 1, IRQ1, US layout (0.4) |
@@ -334,7 +381,7 @@ All screen and serial output happens here, never in interrupt context. A key arr
 
 All of them share one formatter. `panicf` builds on it.
 
-## Display and branding [built: 0.2, layout updated 0.3 and 0.4]
+## Display and branding [built: 0.2, layout updated 0.3, 0.4 and 0.5]
 
 The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 
@@ -342,11 +389,13 @@ The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 |---|---|
 | 0–11 | logo (unchanged since 0.2) |
 | 12–13 | title and version |
-| 15–22 | two columns. Left: 8 start-up checks (GDT, IDT, interrupt controller, exception handling, memory, display, timer, keyboard). Right: 6 memory figures, then **Uptime** and **Last key**, which the idle loop keeps up to date. |
+| 14–22 | two columns. Left: 9 start-up checks (GDT, IDT, interrupt controller, exception handling, memory, display, timer, keyboard, console & shell). Right: 6 memory figures, then **Uptime** and **Last key**, which the idle loop keeps up to date. |
 | 23 | message line (Diagnostics results) |
-| 24 | "System ready." |
+| 24 | "System ready." plus what happens next, e.g. "Press any key to open the console." |
 
-The screen and the serial log are written separately. The screen shows only the status words, and text is clipped at the row end, never wrapped. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test details for memory, timer and keyboard), which is what the tests match against. The keyboard diagnostic reuses the panel rows as an 8-line event list, with `>` marking the newest line.
+The screen and the serial log are written separately. The screen shows only the status words, and text is clipped at the row end, never wrapped. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test details for memory, timer, keyboard and console), which is what the tests match against. The keyboard diagnostic reuses the panel rows as a 9-line event list, with `>` marking the newest line.
+
+Once the console starts it owns the whole screen (see *Console and shell*). The boot results stay in the serial log.
 
 **Logo (`kernel/logo.c`):** a geometric M made of four rounded strokes. It's defined as geometry, not stored as an image:
 
@@ -377,4 +426,4 @@ User-mode services (init, logging, device manager) once user mode and system cal
 
 ## User interface [planned]
 
-Keyboard input exists since 0.4, but only as key events (plus "Last key" on screen). A text console (scrolling terminal, line editing) and then a shell come next. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.
+A text console with a small built-in command shell exists since 0.5 (see *Console and shell*). Command history, more commands and running programs come with later milestones. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.

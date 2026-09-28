@@ -4,8 +4,9 @@
  * Runs in 32-bit protected mode, entered from boot/boot.asm. Brings up the
  * display, replaces GRUB's CPU tables with our own (GDT, IDT), makes the
  * interrupt controller safe, proves exception handling works, sets up and
- * tests physical memory, enables the timer (IRQ0) and keyboard (IRQ1), then
- * runs the idle loop.
+ * tests physical memory, enables the timer (IRQ0) and keyboard (IRQ1),
+ * self-tests the console, then runs the idle loop, which opens the console
+ * and shell on the first key press.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -18,6 +19,7 @@
 #include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pic.h"
 #include "kernel/bootscreen.h"
+#include "kernel/console/console.h"
 #include "kernel/devtest.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
@@ -92,7 +94,7 @@ static void run_diagnostics(void)
  * A device failure shows FAILED and boot continues; a wrong PIC mask is a
  * kernel bug and panics.
  */
-static void start_devices(void)
+static bool start_devices(void)
 {
     char note[80];
 
@@ -133,14 +135,20 @@ static void start_devices(void)
     if (mask != expected || (uint16_t)~mask & (uint16_t)~IRQ_ALLOWED_MASK)
         panicf("PIC mask is 0x%04x, expected 0x%04x: only IRQ0/IRQ1 may be unmasked",
                mask, expected);
+    return kbd_ok;
 }
 
 /*
  * Idle event loop (not a scheduler): sleep with hlt until any interrupt,
  * then handle what the interrupt handlers queued or counted. All screen and
  * serial output happens here, never in interrupt context.
+ *
+ * While the boot screen is showing, the first key press opens the console
+ * (if offered); that key is not typed. After that, every key event goes to
+ * the console, which runs shell commands here, in normal context.
  */
-static void __attribute__((noreturn)) idle_loop(void)
+static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
+                                                 bool console_offered)
 {
     uint32_t shown_seconds = 0xFFFFFFFFu;
     uint32_t reported_dropped = 0, reported_unexpected = 0;
@@ -149,8 +157,13 @@ static void __attribute__((noreturn)) idle_loop(void)
         struct key_event e;
         while (keyboard_get_event(&e)) {
             devtest_log_key(&e);
-            if (e.flags & KEY_PRESSED)
+            if (console_active()) {
+                console_handle_key(&e);
+            } else if (e.flags & KEY_PRESSED) {
                 bootscreen_last_key(&e);
+                if (console_offered)
+                    console_start(mem);
+            }
         }
 
         uint32_t dropped = keyboard_dropped();
@@ -167,7 +180,8 @@ static void __attribute__((noreturn)) idle_loop(void)
         uint32_t seconds = timer_uptime_seconds();
         if (seconds != shown_seconds) {
             shown_seconds = seconds;
-            bootscreen_uptime(seconds);
+            if (!console_active())
+                bootscreen_uptime(seconds);
             if (seconds && seconds % 5 == 0)
                 klogf("uptime: %u s\n", seconds);
         }
@@ -221,12 +235,22 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
     bootscreen_memory(&mem);
 
-    start_devices();
+    bool keyboard_ok = start_devices();
     bootscreen_uptime(timer_uptime_seconds());
     bootscreen_last_key(NULL);
 
+    /* A test of the pure console/shell code only (line editor, parser,
+     * shell, text grid). Keyboard and VGA hardware are proven separately,
+     * by the keyboard self-test and the QEMU / VirtualBox console tests. */
+    bool console_ok = console_selftest();
+    bootscreen_status("Console & shell:", console_ok ? BOOT_OK : BOOT_FAILED,
+                      "pure self-test of line editor, parser, shell, text grid; not a hardware test");
+
     run_diagnostics();
 
-    bootscreen_ready();
-    idle_loop();
+    bool console_offered = console_ok && keyboard_ok;
+    bootscreen_ready(console_offered ? "Press any key to open the console."
+                     : !keyboard_ok ? "Keyboard unavailable: console disabled."
+                     : "Console self-test failed: console disabled.");
+    idle_loop(&mem, console_offered);
 }

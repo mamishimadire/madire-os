@@ -37,7 +37,8 @@ void bootscreen_diag_line(uint32_t index, const char *text);
 /* A highlighted one-line message below the status area. */
 void bootscreen_message(const char *text);
 
-/* Final "System ready." line. */
-void bootscreen_ready(void);
+/* Final "System ready." line, followed by what happens next
+ * (e.g. "Press any key to open the console."). */
+void bootscreen_ready(const char *hint);
 
 #endif

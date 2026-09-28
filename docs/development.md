@@ -9,6 +9,14 @@ kernel/
   kernel.c/.h             start-up sequence, device start-up, idle loop, version
   multiboot.h             Multiboot 1 structures
   bootscreen.c/.h         boot screen layout: status column, memory panel, live lines
+  console/
+    textbuf.c/.h          80x25 console character grid, scrolling    (pure)
+    lineedit.c/.h         prompt line editor (71 characters)        (pure)
+    console.c/.h          console: VGA drawing, cursor, serial copy, self-test
+  shell/
+    parser.c/.h           command-line splitter (max 8 words)       (pure)
+    shell.c/.h            the seven shell commands                  (pure)
+    cpuinfo.c/.h          CPUID register decoding                   (pure)
   timer.c/.h              system tick (IRQ0), uptime, bounded waits, timer self-test
   devtest.c/.h            timer / keyboard / IRQ diagnostics (test=...)
   input/
@@ -31,6 +39,7 @@ kernel/
     irq.c/.h              IRQ handler registration, dispatch, EOI, counters
     pic.c/.h              8259 interrupt controller (remap, mask/unmask, EOI)
     cmos.c/.h             read-only RTC seconds (timer diagnostic only)
+    cpuid.c/.h            CPUID availability check + safe leaf reads, CR0
 drivers/
   vga/vga_text.c/.h       VGA text mode
   serial/serial.c/.h      COM1
@@ -49,7 +58,7 @@ tests/
   unit/                   host unit tests for the pure modules (`make unit`)
   qemu-tests.sh           automated QEMU tests (`make test`)
   memory_check.py         independent recomputation of the kernel's memory figures
-  qmp_keys.py             types scripted keys into QEMU over QMP
+  qmp_keys.py             types scripted keys or text into QEMU over QMP
 docs/                     documentation (images/ holds reference screenshots)
 build/                    build output (git-ignored)
 ```
@@ -68,6 +77,18 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `drivers/keyboard/scancode.c`
 - `kernel/input/keyqueue.c`
 - `drivers/pit/pit_divisor.h` (header only)
+- `kernel/console/textbuf.c`, `lineedit.c`
+- `kernel/shell/parser.c`, `shell.c`, `cpuinfo.c`
+
+**Adding a shell command.** Add an entry to the `commands[]` table in `kernel/shell/shell.c`: name, usage, one-line help, maximum number of arguments, and a function. A command must:
+
+- read everything it prints from `struct shell_context`, adding a field there (filled in by `console.c`) if it needs new data;
+- write only through the `shell_output` sink;
+- stay pure, so its exact output can be unit-tested in `tests/unit/test_shell.c`.
+
+Commands run in normal context, one at a time, and must return promptly.
+
+**Screen output after the console starts:** only the console writes to the screen. Use `klogf()` for serial-only diagnostics, and don't use `kprintf()` for screen output once the console is active (the crash screen is the exception).
 
 To add one:
 

@@ -13,12 +13,16 @@ MEMCHECK=$(dirname "$0")/memory_check.py
 QMPKEYS=$(dirname "$0")/qmp_keys.py
 failures=0
 passes=0
-passes_new=0         # checks added in 0.4, tagged "[0.4]"; the rest are 0.3 regression
+passes_new=0         # checks added in 0.4, tagged "[0.4]"
+passes_05=0          # checks added in 0.5, tagged "[0.5]"; the rest are 0.3 regression
 
 pass() {
     echo "PASS: $1"
     passes=$((passes + 1))
-    case "$1" in "[0.4]"*) passes_new=$((passes_new + 1)) ;; esac
+    case "$1" in
+    "[0.4]"*) passes_new=$((passes_new + 1)) ;;
+    "[0.5]"*) passes_05=$((passes_05 + 1)) ;;
+    esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
 
@@ -75,6 +79,42 @@ boot_keys() {
     [ -f "$log" ] || : > "$log"
 }
 
+# boot_text <log> <seconds> <ready text> <text> <gap> <done text> <qemu args...>
+# Types <text> with qmp_keys.py --text once <ready text> is in the log, waits
+# until <done text> is in the log (the guest has processed every key), then
+# stops QEMU (instead of waiting for <seconds>).
+boot_text() {
+    local log=$1 secs=$2 ready=$3 text=$4 gap=$5 done=$6 sock=$OUT/qmp.sock
+    shift 6
+    rm -f "$log" "$sock"
+    timeout "$secs" qemu-system-i386 -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off "$@" >/dev/null 2>&1 &
+    local qpid=$!
+    local out
+    out=$(python3 "$QMPKEYS" "$sock" "$log" "$ready" --text "$text" --gap "$gap" \
+          --done "$done" 2>&1)
+    echo "$out"
+    case "$out" in *ERROR*) fail "[0.5] key injection into $log" ;; esac
+    sleep 2
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+}
+
+# expect_next <log> <description> <regex> <next regex>: the first line after
+# the one matching <regex>, ignoring "key:" event lines, must match <next regex>.
+expect_next() {
+    local log=$1 desc=$2
+    if awk -v pat="$3" -v nxt="$4" '
+            found && !/^key: / { ok = ($0 ~ nxt); exit }
+            !found && $0 ~ pat { found = 1 }
+            END { exit !ok }' "$log"; then
+        pass "$desc"
+    else
+        fail "$desc (line after /$3/ does not match /$4/ in $log)"
+    fi
+}
+
 # expect_in_order <log> <description> <regex>...: each regex must match a
 # line after the line matched by the previous one.
 expect_in_order() {
@@ -101,7 +141,7 @@ LOG=$OUT/serial-boot.log
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.4"                       "version shown"
+expect "$LOG" "Madire OS v0\.5"                       "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -134,6 +174,15 @@ expect "$LOG" "key: press sc=0x2d key=CHAR ascii='x' flags=0x01" \
 expect "$LOG" "key: release sc=0xad key=CHAR ascii='x' flags=0x00" \
                                                       "[0.4] key release reaches the kernel"
 reject "$LOG" "Unexpected IRQ|events dropped"         "[0.4] no unexpected IRQs, no dropped keys"
+
+# 0.5 additions to the normal boot
+expect "$LOG" "Console self-test: PASS \(line editor ok, parser ok, shell ok, text grid ok\)" \
+                                                      "[0.5] console/shell pure self-test passed"
+expect "$LOG" "Console & shell: +OK"                  "[0.5] console status OK"
+expect "$LOG" "System ready\. Press any key to open the console\." \
+                                                      "[0.5] console offered after System ready"
+expect_in_order "$LOG" "[0.5] the typed key opened the console" \
+    "System ready\. Press any key" "key: press sc=0x2d" "console: started"
 
 # Memory at different RAM sizes (QEMU's own Multiboot loader). The pinned
 # page counts come from the memory maps QEMU 8.2.2 reported when inspected
@@ -295,9 +344,106 @@ expect "$LOG" "Unexpected IRQ 2 \(total 1\)"          "[0.4] unexpected IRQ repo
 expect "$LOG" "System ready\."                        "[0.4] unexpected IRQ: system ready afterwards"
 reject "$LOG" "PANIC"                                 "[0.4] unexpected IRQ: no panic"
 
+# ---- 0.5: console and shell, typed through the real keyboard path ----
+# Every key goes QMP -> i8042 -> IRQ1 -> 0.4 driver -> decoder -> key queue
+# -> idle loop -> console. The console copies each submitted line to serial
+# as "madire> <line>" followed by the command's output lines.
+
+echo "== [0.5] Console session (scripted keys via QMP)"
+LOG=$OUT/serial-console.log
+A100=$(printf 'a%.0s' $(seq 1 100))
+S="x{wait:1}"                                        # first key: only opens the console
+S+="{ret}"                                           # 1  empty line
+S+="   {ret}"                                        # 2  blank line
+S+="help{ret}"                                       # 3
+S+="version{ret}"                                    # 4
+S+="uptime{ret}{wait:2}uptime{ret}"                  # 5, 6
+S+="mem{ret}"                                        # 7
+S+="cpu{ret}"                                        # 8
+S+="echo   Hello   World!{ret}"                      # 9  Shift + multiple spaces
+S+="echo{tab}a{tab}{tab}b{ret}"                      # 10 tabs
+S+="{caps}echo abc{caps}{ret}"                       # 11 Caps Lock
+S+="echo hellx{bs}o{ret}"                            # 12 Backspace
+S+="echo abXc{left}{left}{del}{ret}"                 # 13 Left + Delete
+S+="cho world{home}e{end}!{ret}"                     # 14 Home / End / insert
+S+="echo hllo{home}{right}{right}{right}{right}{right}{right}e{end}{ret}"   # 15 Right
+S+="{ctrl+c}{alt+x}echo ok{ret}"                     # 16 Ctrl / Alt ignored
+S+="foo{ret}"                                        # 17 unknown command
+S+="version x{ret}"                                  # 18 argument error
+S+="echo 1 2 3 4 5 6 7 8{ret}"                       # 19 too many words
+S+="echo 1 2 3 4 5 6 7{ret}"                         # 20 exactly 8 words
+S+="echo ${A100}{ret}"                               # 21 long input
+S+="version{ret}version{ret}version{ret}version{ret}version{ret}"   # 22-26
+S+="help{ret}help{ret}help{ret}"                     # 27-29 enough output to scroll
+S+="clear{ret}"                                      # 30
+S+="version{ret}"                                    # 31
+S+="echo end-of-console-test{ret}"                   # 32 marks the end of the session
+boot_text "$LOG" 180 "System ready." "$S" 0.03 $'\nend-of-console-test\n' -kernel "$KERNEL"
+TAB=$'\t'
+A66=$(printf 'a%.0s' $(seq 1 66))
+
+expect_in_order "$LOG" "[0.5] console opens on the first key, which is not typed" \
+    "System ready\. Press any key" "console: started" "^madire> $"
+PROMPTS=$(grep -c '^madire> ' "$LOG")
+if [ "$PROMPTS" -eq 32 ]; then pass "[0.5] Enter: all 32 lines submitted"
+else fail "[0.5] Enter: expected 32 submitted lines, got $PROMPTS"; fi
+expect_next "$LOG" "[0.5] empty line: new prompt, no output"   "^madire> $"      "^madire>    $"
+expect_next "$LOG" "[0.5] blank line: new prompt, no output"   "^madire>    $"   "^madire> help$"
+expect_in_order "$LOG" "[0.5] help lists all seven commands" \
+    "^madire> help$" "^Available commands:$" "^  help     Show this list$" \
+    "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
+    "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
+    "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.5 \(32-bit x86, Multiboot 1\)$"
+UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
+hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
+U1=$(sed -n 1p <<< "$UP" | hms_to_s)
+U2=$(sed -n 2p <<< "$UP" | hms_to_s)
+echo "      uptime: ${U1:-?} s, then ${U2:-?} s"
+if [ -n "$U1" ] && [ -n "$U2" ] && [ "$U2" -ge $((U1 + 1)) ]; then
+    pass "[0.5] uptime: HH:MM:SS with ticks, and it advances"
+else
+    fail "[0.5] uptime output missing or not advancing ($UP)"
+fi
+expect_in_order "$LOG" "[0.5] mem shows the 0.3 memory figures" \
+    "^madire> mem$" "^Physical RAM detected: +127 MB$" "^Usable RAM \(<4 GiB\): +127 MB$" \
+    "^RAM above 4 GiB: +0 MB$" "^Page size: +4096 bytes$" "^Usable pages: +32639$" \
+    "^Free pages \(now\): +[0-9]+$" "^Reserved ranges: +[0-9]+$"
+expect_in_order "$LOG" "[0.5] cpu reports CPUID information" \
+    "^madire> cpu$" "^CPUID: +supported$" "^Vendor: +[A-Za-z]+" \
+    "^Family/model: [0-9]+ / [0-9]+, stepping [0-9]+$" "^Features: +[a-z]" \
+    "^Mode: +32-bit protected mode, paging off, 1 CPU in use$"
+expect_next "$LOG" "[0.5] Shift and multiple spaces"   "^madire> echo   Hello   World!$" "^Hello World!$"
+expect_next "$LOG" "[0.5] tabs separate arguments"     "^madire> echo${TAB}a${TAB}${TAB}b$" "^a b$"
+expect_next "$LOG" "[0.5] Caps Lock (and names are case-sensitive)" \
+    "^madire> ECHO ABC$" "^Unknown command: ECHO\. Type 'help' for a list of commands\.$"
+# Only the final, edited line is logged: "hellx" + Backspace + "o" -> "hello".
+expect_in_order "$LOG" "[0.5] Backspace" "^madire> ECHO ABC$" "^madire> echo hello$" "^hello$"
+reject "$LOG" "hellx"                                 "[0.5] Backspace: the deleted character is gone"
+expect_next "$LOG" "[0.5] Left and Delete"             "^madire> echo abc$"    "^abc$"
+expect_next "$LOG" "[0.5] Home, End and insert at cursor" "^madire> echo world!$" "^world!$"
+expect_in_order "$LOG" "[0.5] Right and insert at cursor" \
+    "^madire> echo world!$" "^madire> echo hello$" "^hello$"
+expect_next "$LOG" "[0.5] Ctrl+key and Alt+key ignored" "^madire> echo ok$"   "^ok$"
+expect_next "$LOG" "[0.5] unknown command"             "^madire> foo$" \
+    "^Unknown command: foo\. Type 'help' for a list of commands\.$"
+expect_next "$LOG" "[0.5] argument error shows usage"  "^madire> version x$" "^Usage: version$"
+expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 6 7 8$" \
+    "^Too many arguments \(max 8\)\.$"
+expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
+expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
+expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
+VERSIONS=$(grep -c '^Madire OS v0\.5 (32-bit x86, Multiboot 1)$' "$LOG")
+if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
+else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
+expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
+expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.5"
+reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new)) 0.3 regression + $passes_new new in 0.4)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05)) 0.3 regression + $passes_new from 0.4 + $passes_05 new in 0.5)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1
