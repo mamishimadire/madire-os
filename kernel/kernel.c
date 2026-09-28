@@ -1,25 +1,34 @@
 /*
- * Madire OS kernel entry - milestone 0.2
+ * Madire OS kernel entry.
  *
  * Runs in 32-bit protected mode, entered from boot/boot.asm. Brings up the
  * display, replaces GRUB's CPU tables with our own (GDT, IDT), makes the
- * interrupt controller safe, proves exception handling works, then idles.
+ * interrupt controller safe, proves exception handling works, sets up and
+ * tests physical memory, enables the timer (IRQ0) and keyboard (IRQ1), then
+ * runs the idle loop.
  */
 #include <stdbool.h>
 #include <stddef.h>
+#include "drivers/keyboard/ps2kbd.h"
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/gdt.h"
 #include "kernel/arch/x86/idt.h"
 #include "kernel/arch/x86/interrupts.h"
+#include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pic.h"
 #include "kernel/bootscreen.h"
+#include "kernel/devtest.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/memory.h"
 #include "kernel/memory/memtest.h"
 #include "kernel/multiboot.h"
 #include "kernel/panic.h"
+#include "kernel/timer.h"
+
+/* The only IRQ lines 0.4 may unmask. */
+#define IRQ_ALLOWED_MASK ((1u << IRQ_TIMER) | (1u << IRQ_KEYBOARD))
 
 static const char *cmdline = "";
 
@@ -40,7 +49,15 @@ static int cmdline_has(const char *word)
  * to deliberately trigger a CPU exception or run a memory test. */
 static void run_diagnostics(void)
 {
-    if (cmdline_has("test=memexhaust")) {
+    if (cmdline_has("test=timer")) {
+        devtest_timer();
+    } else if (cmdline_has("test=keyboard")) {
+        devtest_keyboard();                         /* does not return */
+    } else if (cmdline_has("test=kbdflood")) {
+        devtest_kbd_flood();
+    } else if (cmdline_has("test=irqunexpected")) {
+        devtest_irq_unexpected();
+    } else if (cmdline_has("test=memexhaust")) {
         bootscreen_message("Memory test: allocating every free page...");
         char line[80];
         ksnprintf(line, sizeof(line), "Memory exhaustion test: PASS (%u pages)", memtest_exhaust());
@@ -65,6 +82,97 @@ static void run_diagnostics(void)
         /* Selector 0x28 = GDT entry 5, beyond the end of our 3-entry GDT. */
         __asm__ volatile ("mov $0x28, %%ax\n\t"
                           "mov %%ax, %%ds" ::: "eax");
+    }
+}
+
+/*
+ * Enables IRQ0 (timer) and IRQ1 (keyboard). For each line the driver does:
+ * register handler -> set up device -> clear pending data -> unmask ->
+ * verify mask. A self-test then proves the interrupt is really delivered.
+ * A device failure shows FAILED and boot continues; a wrong PIC mask is a
+ * kernel bug and panics.
+ */
+static void start_devices(void)
+{
+    char note[80];
+
+    struct timer_selftest ts = { 0 };
+    bool timer_started = timer_init();
+    bool timer_ok = timer_started && timer_selftest(&ts);
+    if (timer_ok)
+        ksnprintf(note, sizeof(note), "PIT counting, IRQ0 delivered %u ticks, divisor %u",
+                  ts.ticks_seen, ts.divisor);
+    else
+        ksnprintf(note, sizeof(note), "%s",
+                  !timer_started ? "IRQ0 could not be enabled"
+                  : !ts.pit_counting ? "PIT is not counting"
+                  : "PIT counting but IRQ0 never delivered");
+    klogf("Timer self-test: %s (%s)\n", timer_ok ? "PASS" : "FAIL", note);
+    bootscreen_status("Timer (PIT, 100 Hz):", timer_ok ? BOOT_OK : BOOT_FAILED, note);
+
+    struct kbd_selftest ks = { 0 };
+    enum kbd_status kst = keyboard_init();
+    bool kbd_ok = kst == KBD_OK && keyboard_selftest(&ks);
+    if (kbd_ok)
+        ksnprintf(note, sizeof(note), "controller set up, echo via IRQ1, decoder and queue checked");
+    else
+        ksnprintf(note, sizeof(note), "%s",
+                  kst != KBD_OK ? kbd_status_str(kst)
+                  : !ks.irq_delivered ? "IRQ1 never delivered the echo reply"
+                  : !ks.decoder_ok ? "scancode decoder self-test failed"
+                  : "key queue self-test failed");
+    klogf("Keyboard self-test: %s (%s)\n", kbd_ok ? "PASS" : "FAIL", note);
+    bootscreen_status("Keyboard (PS/2):", kbd_ok ? BOOT_OK : BOOT_FAILED, note);
+
+    /* Exactly the lines that were enabled, and never anything beyond IRQ0/1. */
+    uint16_t enabled = (uint16_t)((timer_started ? 1u << IRQ_TIMER : 0)
+                                  | (kst == KBD_OK ? 1u << IRQ_KEYBOARD : 0));
+    uint16_t expected = (uint16_t)~enabled;
+    uint16_t mask = pic_get_mask();
+    klogf("IRQ mask: 0x%04x (expected 0x%04x)\n", mask, expected);
+    if (mask != expected || (uint16_t)~mask & (uint16_t)~IRQ_ALLOWED_MASK)
+        panicf("PIC mask is 0x%04x, expected 0x%04x: only IRQ0/IRQ1 may be unmasked",
+               mask, expected);
+}
+
+/*
+ * Idle event loop (not a scheduler): sleep with hlt until any interrupt,
+ * then handle what the interrupt handlers queued or counted. All screen and
+ * serial output happens here, never in interrupt context.
+ */
+static void __attribute__((noreturn)) idle_loop(void)
+{
+    uint32_t shown_seconds = 0xFFFFFFFFu;
+    uint32_t reported_dropped = 0, reported_unexpected = 0;
+
+    for (;;) {
+        struct key_event e;
+        while (keyboard_get_event(&e)) {
+            devtest_log_key(&e);
+            if (e.flags & KEY_PRESSED)
+                bootscreen_last_key(&e);
+        }
+
+        uint32_t dropped = keyboard_dropped();
+        if (dropped != reported_dropped) {
+            klogf("Keyboard: %u events dropped (queue full)\n", dropped - reported_dropped);
+            reported_dropped = dropped;
+        }
+        uint32_t unexpected = irq_unexpected_count();
+        if (unexpected != reported_unexpected) {
+            klogf("Unexpected IRQ %u (total %u)\n", irq_last_unexpected(), unexpected);
+            reported_unexpected = unexpected;
+        }
+
+        uint32_t seconds = timer_uptime_seconds();
+        if (seconds != shown_seconds) {
+            shown_seconds = seconds;
+            bootscreen_uptime(seconds);
+            if (seconds && seconds % 5 == 0)
+                klogf("uptime: %u s\n", seconds);
+        }
+
+        __asm__ volatile ("hlt");
     }
 }
 
@@ -113,10 +221,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
     bootscreen_memory(&mem);
 
+    start_devices();
+    bootscreen_uptime(timer_uptime_seconds());
+    bootscreen_last_key(NULL);
+
     run_diagnostics();
 
     bootscreen_ready();
-
-    for (;;)
-        __asm__ volatile ("hlt");
+    idle_loop();
 }

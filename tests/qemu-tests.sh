@@ -10,10 +10,16 @@ ISO=$2
 OUT=$(dirname "$KERNEL")
 LOGO_PIXELS=293      # from: python3 scripts/logo-preview.py
 MEMCHECK=$(dirname "$0")/memory_check.py
+QMPKEYS=$(dirname "$0")/qmp_keys.py
 failures=0
 passes=0
+passes_new=0         # checks added in 0.4, tagged "[0.4]"; the rest are 0.3 regression
 
-pass() { echo "PASS: $1"; passes=$((passes + 1)); }
+pass() {
+    echo "PASS: $1"
+    passes=$((passes + 1))
+    case "$1" in "[0.4]"*) passes_new=$((passes_new + 1)) ;; esac
+}
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
 
 # memory_check <log> <label> [memory_check.py options...]
@@ -51,16 +57,51 @@ boot() {
     [ -f "$log" ] || : > "$log"
 }
 
+# boot_keys <log> <seconds> <ready text> <keys> <gap> <qemu args...>
+# Like boot, but types <keys> over QMP once <ready text> is in the log
+# (see tests/qmp_keys.py for the key syntax).
+boot_keys() {
+    local log=$1 secs=$2 ready=$3 keys=$4 gap=$5 sock=$OUT/qmp.sock
+    shift 5
+    rm -f "$log" "$sock"
+    timeout "$secs" qemu-system-i386 -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off "$@" >/dev/null 2>&1 &
+    local qpid=$!
+    local out
+    out=$(python3 "$QMPKEYS" "$sock" "$log" "$ready" "$keys" --gap "$gap" 2>&1)
+    echo "$out"
+    case "$out" in *ERROR*) fail "[0.4] key injection into $log" ;; esac
+    wait "$qpid"
+    [ -f "$log" ] || : > "$log"
+}
+
+# expect_in_order <log> <description> <regex>...: each regex must match a
+# line after the line matched by the previous one.
+expect_in_order() {
+    local log=$1 desc=$2 line=0 n
+    shift 2
+    for pattern in "$@"; do
+        n=$(awk -v start="$line" -v pat="$pattern" 'NR > start && $0 ~ pat { print NR; exit }' "$log")
+        if [ -z "$n" ]; then
+            fail "$desc (no /$pattern/ after line $line of $log)"
+            return
+        fi
+        line=$n
+    done
+    pass "$desc"
+}
+
 echo "== Multiboot header"
 if grub-file --is-x86-multiboot "$KERNEL"; then pass "kernel has a valid Multiboot header"
 else fail "kernel has no valid Multiboot header"; fi
 
 echo "== Normal boot (ISO through GRUB)"
 LOG=$OUT/serial-boot.log
-boot "$LOG" 15 -cdrom "$ISO"
+# 0.4: also type one key after boot, to prove input works in normal mode.
+boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.3"                       "version shown"
+expect "$LOG" "Madire OS v0\.4"                       "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -78,6 +119,21 @@ expect "$LOG" "Page size: +4096 bytes"                "panel: page size"
 expect "$LOG" "Usable pages: +32639$"                 "panel: usable pages"
 expect "$LOG" "Free pages: +[0-9]+$"                  "panel: free pages"
 memory_check "$LOG" "ISO 128M" --usable-pages 32639 --ram-mb 127 --above4g-mb 0
+
+# 0.4 additions to the normal boot
+expect "$LOG" "Timer self-test: PASS \(PIT counting, IRQ0 delivered [0-9]+ ticks, divisor 11932\)" \
+                                                      "[0.4] timer self-test: PIT counting, IRQ0 delivered"
+expect "$LOG" "Timer \(PIT, 100 Hz\): +OK"            "[0.4] timer status OK"
+expect "$LOG" "Keyboard self-test: PASS \(controller set up, echo via IRQ1, decoder and queue checked\)" \
+                                                      "[0.4] keyboard self-test: controller, IRQ1, decoder, queue"
+expect "$LOG" "Keyboard \(PS/2\): +OK"                "[0.4] keyboard status OK"
+expect "$LOG" "IRQ mask: 0xfffc \(expected 0xfffc\)"  "[0.4] only IRQ0 and IRQ1 unmasked"
+expect "$LOG" "^uptime: 5 s$"                         "[0.4] uptime advances (5 s logged)"
+expect "$LOG" "key: press sc=0x2d key=CHAR ascii='x' flags=0x01" \
+                                                      "[0.4] key typed after boot reaches the kernel"
+expect "$LOG" "key: release sc=0xad key=CHAR ascii='x' flags=0x00" \
+                                                      "[0.4] key release reaches the kernel"
+reject "$LOG" "Unexpected IRQ|events dropped"         "[0.4] no unexpected IRQs, no dropped keys"
 
 # Memory at different RAM sizes (QEMU's own Multiboot loader). The pinned
 # page counts come from the memory maps QEMU 8.2.2 reported when inspected
@@ -123,6 +179,7 @@ exhaust_test() {
         "exhaust $mem: all ${free:-?} free pages allocated, verified, freed"
     expect "$log" "System ready\." "exhaust $mem: system still ready afterwards"
     reject "$log" "PANIC"          "exhaust $mem: no panic"
+    expect "$log" "IRQ mask: 0xfffc" "[0.4] exhaust $mem: ran with IRQ0/IRQ1 live"
 }
 
 exhaust_test 16M
@@ -153,15 +210,94 @@ crash_test() {
     expect "$log" "Error code: 0x$errcode"              "$name: error code 0x$errcode"
     expect "$log" "EIP=0x[0-9a-f]{8}  CS=0x0008"        "$name: registers dumped, CS is our GDT code segment"
     reject "$log" "System ready"                        "$name: halted instead of continuing"
+    expect "$log" "IRQ mask: 0xfffc"                    "[0.4] $name: exception raised with IRQ0/IRQ1 live"
 }
 
 crash_test divzero 0  "Divide Error"             00000000
 crash_test ud      6  "Invalid Opcode"           00000000
 crash_test gpf     13 "General Protection Fault" 00000028
 
+# ---- 0.4: timer, keyboard and IRQ layer ----
+
+echo "== [0.4] Timer rate against the RTC"
+# Deterministic time (-icount shift=0,sleep=off -rtc clock=vm) was tried and
+# does not reach a result: the diagnostic busy-polls the RTC and each port
+# access costs far more real time than the virtual time it advances. The
+# documented fallback is QEMU's normal clock with the kernel's +-10% band.
+LOG=$OUT/serial-timer.log
+boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=timer"
+expect "$LOG" "Timer diagnostic: PASS \([0-9]+ ticks in 3 RTC seconds, expected 270-330\)" \
+                                                      "[0.4] timer: 300 +-10% ticks in 3 RTC seconds"
+grep -o "Timer diagnostic: [A-Z]* ([0-9]* ticks" "$LOG" | sed 's/^/      measured: /'
+expect "$LOG" "System ready\."                        "[0.4] timer: system ready afterwards"
+reject "$LOG" "PANIC"                                 "[0.4] timer: no panic"
+
+echo "== [0.4] Keyboard: scripted keys via QMP"
+LOG=$OUT/serial-keyboard.log
+boot_keys "$LOG" 20 "Keyboard test: ready" \
+    "a,shift+b,caps_lock,a,caps_lock,shift+1,up,ctrl_r,ret,kp_enter" 0.15 \
+    -m 32M -kernel "$KERNEL" -append "test=keyboard"
+expect_in_order "$LOG" "[0.4] keyboard: every key decoded, in order" \
+    "key: press sc=0x1e key=CHAR ascii='a' flags=0x01" \
+    "key: release sc=0x9e key=CHAR ascii='a' flags=0x00" \
+    "key: press sc=0x2a key=LSHIFT" \
+    "key: press sc=0x30 key=CHAR ascii='B' flags=0x03" \
+    "key: press sc=0x3a key=CAPSLOCK ascii=none flags=0x11" \
+    "key: press sc=0x1e key=CHAR ascii='A' flags=0x11" \
+    "key: press sc=0x3a key=CAPSLOCK ascii=none flags=0x01" \
+    "key: press sc=0x02 key=CHAR ascii='!' flags=0x03" \
+    "key: press sc=0x48 key=UP ascii=none flags=0x21" \
+    "key: press sc=0x1d key=RCTRL ascii=none flags=0x25" \
+    "key: press sc=0x1c key=ENTER ascii=none flags=0x01" \
+    "key: press sc=0x1c key=KP_ENTER ascii=none flags=0x21"
+expect "$LOG" "key: release sc=0x9d key=RCTRL"        "[0.4] keyboard: extended key release decoded"
+reject "$LOG" "events dropped|UNKNOWN|PANIC"          "[0.4] keyboard: nothing dropped or unknown"
+
+echo "== [0.4] Keyboard queue overflow"
+LOG=$OUT/serial-kbdflood.log
+# 50 keys = 100 events (make + break) sent while the kernel is not reading
+# for 3 s. The queue must end up full (64 kept, oldest first) and every
+# other event must be accounted for: dropped (counted) or, if it arrived
+# after the 3 s window, delivered normally afterwards. How many arrive
+# inside the window depends on host timing, so the check is conservation
+# (kept + dropped + late = 100), not a fixed dropped count.
+FLOOD=$(printf 'a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,%.0s' 1 2)
+boot_keys "$LOG" 20 "Keyboard flood test: ready" "$FLOOD" 0.02 \
+    -m 32M -kernel "$KERNEL" -append "test=kbdflood"
+expect "$LOG" "Keyboard flood test: kept=64 dropped=[1-9][0-9]* \(queue holds 64\)" \
+                                                      "[0.4] flood: queue full (64 kept), overflow dropped and counted"
+KEPT=$(grep -oE 'kept=[0-9]+' "$LOG" | head -1 | cut -d= -f2)
+DROPPED=$(grep -oE 'kept=[0-9]+ dropped=[0-9]+' "$LOG" | head -1 | sed 's/.*dropped=//')
+LATE=$(awk '/Keyboard flood test: kept=/ { after = 1; next } after && /^key: / { n++ } END { print n + 0 }' "$LOG")
+echo "      kept=${KEPT:-?} dropped=${DROPPED:-?} late=$LATE"
+if [ "$(( ${KEPT:-0} + ${DROPPED:-0} + LATE ))" -eq 100 ]; then
+    pass "[0.4] flood: all 100 events accounted for (kept + dropped + late)"
+else
+    fail "[0.4] flood: kept ${KEPT:-?} + dropped ${DROPPED:-?} + late $LATE != 100 events sent"
+fi
+expect "$LOG" "Keyboard: ${DROPPED:-X} events dropped \(queue full\)" \
+                                                      "[0.4] flood: drop count reported from normal context"
+expect_in_order "$LOG" "[0.4] flood: kept events are the oldest, in order" \
+    "Keyboard flood test: ready" \
+    "key: press sc=0x1e key=CHAR ascii='a'" \
+    "key: release sc=0x9e key=CHAR ascii='a'" \
+    "key: press sc=0x30 key=CHAR ascii='b'" \
+    "key: release sc=0xb0 key=CHAR ascii='b'"
+expect "$LOG" "System ready\."                        "[0.4] flood: system ready afterwards"
+reject "$LOG" "PANIC"                                 "[0.4] flood: no panic"
+
+echo "== [0.4] Unexpected IRQ"
+LOG=$OUT/serial-irqunexpected.log
+boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=irqunexpected"
+expect "$LOG" "Unexpected IRQ test: PASS \(IRQ 2 counted and acknowledged, total 1\)" \
+                                                      "[0.4] unexpected IRQ counted and acknowledged"
+expect "$LOG" "Unexpected IRQ 2 \(total 1\)"          "[0.4] unexpected IRQ reported from normal context"
+expect "$LOG" "System ready\."                        "[0.4] unexpected IRQ: system ready afterwards"
+reject "$LOG" "PANIC"                                 "[0.4] unexpected IRQ: no panic"
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new)) 0.3 regression + $passes_new new in 0.4)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

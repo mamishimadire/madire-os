@@ -19,20 +19,33 @@ VirtualBox power-on
        5. idt_init                 256-entry IDT, 48 handlers; read back
        6. pic_init                 PIC moved to vectors 32-47, all IRQs masked
        7. sti + int3 self-test     exception path works and returns
+                                   (sti is safe: every IRQ is still masked)
        8. memory_init              validate memory map → reservations →
                                    kernel-in-RAM check → page allocator
        9. memtest_boot             allocate / write / read / free self-test
       10. status + memory panel    "Memory initialization: OK" only now
-      11. diagnostics if requested (test=… on the boot command line)
-      12. "System ready."          CPU idles in a hlt loop
+      11. start_devices:
+            timer_init             register IRQ0 handler → program PIT →
+                                   unmask IRQ0 → verify mask
+            timer_selftest         PIT counting? IRQ0 delivering ticks?
+            keyboard_init          probe/configure i8042 → echo → register
+                                   IRQ1 handler → clear pending → unmask IRQ1
+            keyboard_selftest      echo reply through IRQ1, decoder, queue
+            PIC mask check         must be exactly 0xFFFC (only IRQ0/IRQ1)
+      12. diagnostics if requested (test=… on the boot command line)
+      13. "System ready."
+      14. idle loop                hlt → handle queued keys, uptime, counters
   any CPU exception → isr.asm stub → interrupt_dispatch → panic → crash screen
+  IRQ0/IRQ1 → isr.asm stub → interrupt_dispatch → irq_dispatch → driver handler → EOI
 ```
 
 **Why memory comes after the CPU set-up (steps 4–7):** if reading bootloader data hits a bad address, the IDT turns the fault into the crash screen rather than a silent reset. Nothing allocates memory before step 8, so the bootloader's structures can't be overwritten before they're reserved.
 
+**Why devices come after memory (step 11):** memory set-up and its self-test behave exactly as in 0.3 (IRQs masked). Each IRQ line is unmasked only once its handler is registered and its device configured. The timer comes first, so the keyboard self-test can use it for bounded waits.
+
 | Stage | File | Responsibility |
 |---|---|---|
-| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash and memory tests) |
+| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, memory, timer and keyboard tests) |
 | Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags, checksum; must be within the first 8 KiB of the file |
 | Entry point | `boot/boot.asm` (`_start`) | Stack setup; passes `eax` (magic) and `ebx` (info pointer) to C |
 | Memory layout | `linker/linker.ld` | Kernel linked at 1 MiB; `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; exports `__kernel_start/end` and per-section start/end symbols |
@@ -47,10 +60,13 @@ VirtualBox power-on
 ```
 boot/                 entry point (assembly)
 kernel/               architecture-independent kernel code
-  arch/x86/           everything specific to the x86 CPU
+  arch/x86/           everything specific to the x86 CPU (incl. IRQ layer, CMOS)
   memory/             memory map, reservations, page allocator, self-tests
+  input/              key-event queue
+  timer.c             system tick, uptime, bounded waits
+  devtest.c           timer / keyboard / IRQ diagnostics
 drivers/              hardware drivers
-  vga/  serial/
+  vga/  serial/  pit/  keyboard/
 ```
 
 `kernel/memory/` doesn't depend on the display or the logo. The boot screen only displays the `struct memory_stats` that `kernel.c` hands it.
@@ -75,15 +91,37 @@ The segments are flat: segmentation does no translation, and memory protection w
 
 - **IDT:** 256 entries. Vectors 0–31 (CPU exceptions) and 32–47 (hardware IRQs) point at stubs; 48–255 are marked not-present, and reaching one raises a #GP, which is reported.
 - **Entry path:** each stub pushes a dummy error code where the CPU doesn't push one, then its vector number, then jumps to `isr_common`. `isr_common` saves all registers (`pusha` plus `ds/es/fs/gs`), loads the kernel data segment and calls `interrupt_dispatch(struct interrupt_frame *)`. On return it restores everything and executes `iret`.
-- **Policy in 0.2:**
+- **Policy:**
   - Breakpoint (`int3`) is counted and execution resumes. The boot self-test relies on this.
-  - Any other exception is fatal and goes to the crash screen.
-  - IRQs are acknowledged and ignored. All are masked, so only spurious IRQ 7/15 could arrive.
+  - Any other exception (vectors 0–31) is fatal and goes to the crash screen. This behaviour is unchanged since 0.2.
+  - Vectors 32–47 (hardware IRQs) go to `irq_dispatch` (below).
 - All gates are interrupt gates, so interrupts are disabled while a handler runs.
 
 ### Interrupt controller (`pic.c`)
 
-The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptions, e.g. 8 = Double Fault) to 32–47. Every IRQ is then masked, and `pic_init` confirms both masks read back as `0xFF`. Spurious IRQs 7 and 15 are detected through the in-service register and get no end-of-interrupt signal. Timer and keyboard interrupts are unmasked in milestone 0.4.
+The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptions, e.g. 8 = Double Fault) to 32–47. Every IRQ is then masked, and `pic_init` confirms both masks read back as `0xFF`. Since 0.4:
+
+- `pic_is_spurious` and `pic_send_eoi` are separate calls, so the dispatcher can check for a spurious IRQ *before* the handler runs and send the EOI *after* it.
+- `pic_unmask`, `pic_mask` and `pic_get_mask` control individual lines.
+- Spurious IRQs 7 and 15 are detected through the in-service register. They get no EOI, except that a spurious IRQ 15 still gets the master's cascade EOI.
+
+### IRQ layer (`irq.c`) [built: 0.4]
+
+- **Registration:** `irq_register(irq, handler)` allows one handler per line. It's static and never removed. It refuses lines ≥ 16, a null handler, or a line that already has one.
+- **Enabling:** `irq_enable_line(irq)` refuses a line with no handler, unmasks it, and checks the mask actually changed. So a line can never be unmasked before its handler is ready.
+- **Dispatch:** `irq_dispatch(irq)` is the only EOI point:
+  1. spurious? count it and return, with no EOI;
+  2. count the IRQ;
+  3. call the handler, or count the IRQ as *unexpected* if there is none;
+  4. send exactly one EOI.
+- **Counters:** per line, spurious, unexpected (plus the line of the last unexpected one). Normal context reads and reports them; interrupt context never logs.
+- **Critical sections:** `irq_save`/`irq_restore` save EFLAGS and disable interrupts, then re-enable them only if they were enabled before.
+- **Masking:** only IRQ0 and IRQ1 are unmasked. Start-up panics if the final mask isn't exactly the expected value (`0xFFFC` when both devices work).
+
+**Rules for interrupt handlers:**
+
+- **Allowed:** reading the device, updating counters and state, pushing to a queue.
+- **Never:** writing to VGA or serial, allocating memory, waiting, looping without a bound, running diagnostics, or panicking over a device problem.
 
 ### Crash screen (`kernel/panic.c`)
 
@@ -230,13 +268,61 @@ The following end on the crash screen with a specific message:
 - any self-test failure;
 - any misuse of `memory_free_page`.
 
+The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live.
+
+## Timer [built: 0.4]
+
+| Item | Design |
+|---|---|
+| Hardware | PIT channel 0 → IRQ0 (vector 32); `drivers/pit/pit.c` |
+| Mode | Mode 2 (rate generator), low byte then high byte, binary: command `0x34` |
+| Rate | **100 Hz**. Divisor `round(1193182 / 100)` = **11932** (`pit_divisor_for()`, unit-tested), giving 99.998 Hz. |
+| Ticks | 64-bit counter, incremented in the IRQ0 handler. It's read with interrupts briefly off, because it's two 32-bit loads on i386. It can't wrap in practice (5.8 billion years). |
+| Seconds | A separate 32-bit counter, advanced every 100 ticks inside the handler, so nothing needs 64-bit division |
+| Order | Register the handler, program the PIT, unmask IRQ0, verify the mask (`timer_init`) |
+| Self-test | Two latched counter reads prove the PIT is counting. A **bounded busy-wait** (no `hlt`, so a dead timer can't hang the boot) must then see 3 ticks. The failure message tells "PIT not counting" apart from "counting but no IRQ0". |
+| Waiting | `timer_wait_ticks(n)` uses `hlt`, but refuses immediately if the timer isn't verified or interrupts are off, so it can never hang |
+| Reference clock | `kernel/arch/x86/cmos.c`: **read-only** RTC seconds, used only by the timer diagnostic. It waits out update-in-progress (bounded), reads until two reads agree, and handles BCD. No RTC interrupts. |
+
+## Keyboard [built: 0.4]
+
+| Item | Design |
+|---|---|
+| Hardware | i8042 controller (`0x60`/`0x64`), PS/2 port 1 → IRQ1 (vector 33); `drivers/keyboard/ps2kbd.c` |
+| Set-up ("light touch") | ① Check the controller exists (status isn't `0xFF`). ② Empty the output buffer. ③ Config byte: IRQ1 on, **translation on (set 1)**, port 1 clock on, port 2 IRQ off; write it and verify by reading back. ④ Enable port 1. ⑤ **Echo** (`0xEE`) polled with IRQ1 masked, which proves a keyboard is present. ⑥ Register the IRQ1 handler, empty the buffer again, unmask IRQ1. No controller self-test, no keyboard reset, no LEDs. |
+| Timeouts | Every controller wait is a bounded loop. Failures give a status (`no i8042 controller`, `controller timeout`, `configuration did not stick`, `no keyboard answered`, `IRQ1 could not be enabled`); the boot screen shows `FAILED` and boot continues. |
+| IRQ handler | Checks the status port, then reads **one** byte. Port-2 bytes are ignored. Keyboard replies (`FA` ACK, `EE` echo, `FE` resend, `00`/`FF` errors) are recorded as responses, not keys. Everything else goes to the decoder, then the queue. |
+| Decoder | `drivers/keyboard/scancode.c`, pure and unit-tested. Set 1 key presses and releases; `E0` extended keys; fake shifts (`E0 2A`/`E0 36` and their releases) ignored; the `E1` Pause sequence gives one event. Left and right Shift, Ctrl and Alt are tracked; Caps Lock toggles on the first press only (not on auto-repeat). Letters: Shift XOR Caps; symbols: Shift. US layout; keypad keys report their digit (Num Lock assumed on). |
+| Queue | `kernel/input/keyqueue.c`, pure and unit-tested. 64 events; single producer (IRQ1) and single consumer (normal context, popping with interrupts off); free-running counters. **When full, the newest event is dropped and counted**, so queued events keep their order. |
+| Self-test | ① Decoder: a known byte sequence (Shift+A, Up). ② Queue: a private instance filled, overflowed and drained in order. ③ **IRQ1 delivery:** `0xEE` is sent with IRQ1 unmasked, and the echo must come back *through the interrupt handler* (bounded wait). Only if all three pass does the screen show `Keyboard (PS/2): OK`. |
+
+## Idle loop [built: 0.4]
+
+After "System ready.", `kernel.c` runs the idle loop. It isn't a scheduler: it sleeps with `hlt` until any interrupt, then handles whatever the interrupt handlers queued or counted:
+
+- key events are logged to serial, and pressed keys update "Last key";
+- new drops and unexpected IRQs are reported to serial;
+- when the seconds counter changes, "Uptime" is redrawn, and every 5 s `uptime: N s` goes to serial.
+
+All screen and serial output happens here, never in interrupt context. A key arriving just before `hlt` waits at most one timer tick (10 ms).
+
+## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
+
+| `test=` | GRUB entry | Proves | Result |
+|---|---|---|---|
+| `timer` | Timer test: measure against RTC | IRQ0 rate matches an independent clock | Counts ticks across 3 RTC second boundaries (busy-polling the RTC for precise edges). `PASS` if 270–330 (±10 %); the exact count is shown. |
+| `keyboard` | Keyboard test: show key codes | Decoding of every key, extended codes, modifiers | Shows each event (scancode, key, character, flags) in the panel area and on serial. Never returns; reboot to exit. |
+| `kbdflood` | (QEMU only) | Overflow is safe and counted | Stops reading for 3 s. At the end of the window it takes the queue length and the drop count, then drains exactly that many. Events arriving later are handled by the idle loop. |
+| `irqunexpected` | (QEMU only) | Unexpected IRQs are survived | `int 34` (IRQ2's vector, no handler) must be counted and acknowledged, and must not panic |
+
 ## Drivers [built: minimal]
 
 | Driver | File | Status |
 |---|---|---|
 | VGA text mode (80×25) | `drivers/vga/vga_text.c` | cursor off; blink off (all 16 background colours usable); direct cell writes; palette programming (attribute controller + DAC); no scrolling yet |
 | Serial COM1 (38400 8N1, polled) | `drivers/serial/serial.c` | debug output and automated tests |
-| Keyboard, timer | – | planned (0.4) |
+| PIT timer | `drivers/pit/pit.c` | channel 0, 100 Hz, IRQ0 (0.4) |
+| PS/2 keyboard | `drivers/keyboard/ps2kbd.c`, `scancode.c` | i8042 port 1, set 1, IRQ1, US layout (0.4) |
 | Mouse, storage, USB, network, audio | – | planned |
 | Framebuffer / EFI GOP display | – | planned |
 
@@ -248,19 +334,19 @@ The following end on the crash screen with a specific message:
 
 All of them share one formatter. `panicf` builds on it.
 
-## Display and branding [built: 0.2, layout updated 0.3]
+## Display and branding [built: 0.2, layout updated 0.3 and 0.4]
 
 The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 
 | Rows | Content |
 |---|---|
-| 0–11 | logo |
-| 13–14 | title and version |
-| 16–21 | two columns: start-up checks on the left, memory figures on the right |
-| 22 | message line (Diagnostics results) |
-| 23 | "System ready." |
+| 0–11 | logo (unchanged since 0.2) |
+| 12–13 | title and version |
+| 15–22 | two columns. Left: 8 start-up checks (GDT, IDT, interrupt controller, exception handling, memory, display, timer, keyboard). Right: 6 memory figures, then **Uptime** and **Last key**, which the idle loop keeps up to date. |
+| 23 | message line (Diagnostics results) |
+| 24 | "System ready." |
 
-The screen and the serial log are written separately. The screen shows only the status words. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test check count), which is what the tests match against.
+The screen and the serial log are written separately. The screen shows only the status words, and text is clipped at the row end, never wrapped. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test details for memory, timer and keyboard), which is what the tests match against. The keyboard diagnostic reuses the panel rows as an 8-line event list, with `>` marking the newest line.
 
 **Logo (`kernel/logo.c`):** a geometric M made of four rounded strokes. It's defined as geometry, not stored as an image:
 
@@ -291,4 +377,4 @@ User-mode services (init, logging, device manager) once user mode and system cal
 
 ## User interface [planned]
 
-Text console first (keyboard input plus a scrolling terminal, milestone 0.4). The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.
+Keyboard input exists since 0.4, but only as key events (plus "Last key" on screen). A text console (scrolling terminal, line editing) and then a shell come next. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.

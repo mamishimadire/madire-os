@@ -6,9 +6,13 @@
 Makefile                  build rules (Linux)
 boot/boot.asm             Multiboot header + entry point (NASM)
 kernel/
-  kernel.c/.h             start-up sequence, version
+  kernel.c/.h             start-up sequence, device start-up, idle loop, version
   multiboot.h             Multiboot 1 structures
-  bootscreen.c/.h         boot screen layout: status column + memory panel
+  bootscreen.c/.h         boot screen layout: status column, memory panel, live lines
+  timer.c/.h              system tick (IRQ0), uptime, bounded waits, timer self-test
+  devtest.c/.h            timer / keyboard / IRQ diagnostics (test=...)
+  input/
+    keyqueue.c/.h         64-entry key-event queue                (pure)
   logo.c/.h               Madire M logo (stroke geometry + drawing)
   kprintf.c/.h            kprintf (screen + serial), klogf (serial), ksnprintf
   panic.c/.h              crash screen (panic, panicf, panic_exception)
@@ -23,11 +27,17 @@ kernel/
     gdt.c/.h, gdt_flush.asm   segment table
     idt.c/.h              interrupt table
     isr.asm               interrupt entry stubs
-    interrupts.c/.h       C interrupt dispatcher
-    pic.c/.h              8259 interrupt controller
+    interrupts.c/.h       C interrupt dispatcher (exceptions; IRQs -> irq.c)
+    irq.c/.h              IRQ handler registration, dispatch, EOI, counters
+    pic.c/.h              8259 interrupt controller (remap, mask/unmask, EOI)
+    cmos.c/.h             read-only RTC seconds (timer diagnostic only)
 drivers/
   vga/vga_text.c/.h       VGA text mode
   serial/serial.c/.h      COM1
+  pit/pit.c/.h            PIT channel 0 -> IRQ0
+  pit/pit_divisor.h       rate -> divisor maths                 (pure)
+  keyboard/ps2kbd.c/.h    i8042 + PS/2 keyboard -> IRQ1
+  keyboard/scancode.c/.h  scancode set 1 decoder, US layout     (pure)
 linker/linker.ld          kernel memory layout
 iso/boot/grub/grub.cfg    GRUB menu (normal boot + Diagnostics)
 scripts/
@@ -39,6 +49,7 @@ tests/
   unit/                   host unit tests for the pure modules (`make unit`)
   qemu-tests.sh           automated QEMU tests (`make test`)
   memory_check.py         independent recomputation of the kernel's memory figures
+  qmp_keys.py             types scripted keys into QEMU over QMP
 docs/                     documentation (images/ holds reference screenshots)
 build/                    build output (git-ignored)
 ```
@@ -51,7 +62,14 @@ build/                    build output (git-ignored)
 
 The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` automatically, so a new file needs no Makefile edit. Includes are written from the repository root, e.g. `#include "drivers/vga/vga_text.h"`. Header dependencies are tracked with `-MMD`. If you add a new top-level source folder, also add it to the upload list in `scripts/build.ps1`.
 
-**Pure modules and unit tests.** A module that doesn't access hardware, print or panic (currently `kernel/memory/mmap.c`, `pmm.c`, `reserve.c`) can be unit-tested on the host:
+**Pure modules and unit tests.** A module that doesn't access hardware, print or panic can be unit-tested on the host. Currently these are:
+
+- `kernel/memory/mmap.c`, `pmm.c`, `reserve.c`
+- `drivers/keyboard/scancode.c`
+- `kernel/input/keyqueue.c`
+- `drivers/pit/pit_divisor.h` (header only)
+
+To add one:
 
 - Add it to `UNIT_MODULES` in the Makefile.
 - Write `tests/unit/test_<name>.c` using `tests/unit/unit.h` (`CHECK`, `CHECK_EQ`, `RUN`). `make unit` finds new test files automatically.
@@ -72,6 +90,27 @@ Unit tests are built with `gcc -m32`, so pointers and `uint32_t` addresses match
 
 Pages are physical addresses. Writing to them directly only works while paging is off.
 
+**Adding an interrupt-driven device.** The API is in `kernel/arch/x86/irq.h`. Always follow this order:
+
+1. `irq_register(irq, handler)`
+2. set up the device
+3. clear any pending data
+4. `irq_enable_line(irq)`, which refuses a line with no handler and verifies the mask
+
+Start-up panics if the final PIC mask isn't the expected one, so a new line must also be added to `IRQ_ALLOWED_MASK` in `kernel.c` (a deliberate, reviewed step).
+
+**Handler rules** (IRQ context, interrupts off):
+
+- **Allowed:** read the device, update counters and state, push to a queue.
+- **Never:** write to VGA or serial, allocate memory, wait, loop without a bound, run diagnostics, or panic over a device problem.
+
+Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore()` around reads of multi-word state that a handler writes, such as the 64-bit tick counter or the key queue.
+
+**Waiting.**
+
+- `timer_wait_ticks(n)` sleeps with `hlt`. It returns `false` at once if the timer isn't verified or interrupts are off, so it can't hang.
+- Device polling loops must always have a fixed bound (see `ps2kbd.c`).
+
 ## Toolchain
 
 | Tool | Package (Ubuntu) | Used for |
@@ -82,7 +121,7 @@ Pages are physical addresses. Writing to them directly only works while paging i
 | `grub-mkrescue` | `grub-pc-bin`, `grub-common` | Building the BIOS-bootable ISO |
 | `xorriso`, `mtools` | `xorriso`, `mtools` | Used internally by `grub-mkrescue` |
 | `qemu-system-i386` | `qemu-system-x86` | Headless boot and crash tests |
-| `python3` | (preinstalled) | `scripts/logo-preview.py`, `tests/memory_check.py` |
+| `python3` | (preinstalled) | `scripts/logo-preview.py`, `tests/memory_check.py`, `tests/qmp_keys.py` (standard library only) |
 | host `gcc -m32` + 32-bit libc | `gcc-multilib` | host unit tests (`make unit`) |
 
 **Compiler note:** the host GCC works because the kernel is built `-ffreestanding -nostdlib`, so nothing from the Linux C library ends up in it. The OSDev community recommends a dedicated `i686-elf-gcc` cross-compiler to rule out host assumptions completely. If one is on `PATH`, the Makefile picks it up automatically. Building it becomes worthwhile once the kernel needs `libgcc`, for example for 64-bit division.
@@ -113,6 +152,8 @@ Pages are physical addresses. Writing to them directly only works while paging i
 - Never allocate memory before `memory_init()`, and never write to a physical page you didn't get from `memory_alloc_page()`.
 - The kernel owns VGA palette slots 1, 5, 6, 8, 9 and 13 for the logo. Don't use those colours for text.
 - Hardware access goes through `kernel/arch/x86/io.h`, not inline `in`/`out` instructions.
+- Screen and serial output only from normal context, never from an interrupt handler.
+- Only IRQ0 (timer) and IRQ1 (keyboard) may be unmasked; see `IRQ_ALLOWED_MASK`.
 
 ## Conventions
 

@@ -42,18 +42,38 @@ static uint16_t pic_in_service(void)
     return (uint16_t)(inb(PIC2_CMD) << 8 | inb(PIC1_CMD));
 }
 
-bool pic_acknowledge(uint8_t irq)
+bool pic_is_spurious(uint8_t irq)
 {
     /* IRQ 7 / 15 can be spurious: not really in service, so no EOI for that
      * PIC (a spurious IRQ 15 still needs EOI on the master's cascade line). */
     if ((irq == 7 || irq == 15) && !(pic_in_service() & (1u << irq))) {
         if (irq == 15)
             outb(PIC1_CMD, PIC_EOI);
-        return false;
+        return true;
     }
+    return false;
+}
 
+void pic_send_eoi(uint8_t irq)
+{
     if (irq >= 8)
         outb(PIC2_CMD, PIC_EOI);
     outb(PIC1_CMD, PIC_EOI);
-    return true;
+}
+
+void pic_unmask(uint8_t irq)
+{
+    uint16_t port = irq < 8 ? PIC1_DATA : PIC2_DATA;
+    outb(port, inb(port) & (uint8_t)~(1u << (irq & 7)));
+}
+
+void pic_mask(uint8_t irq)
+{
+    uint16_t port = irq < 8 ? PIC1_DATA : PIC2_DATA;
+    outb(port, inb(port) | (uint8_t)(1u << (irq & 7)));
+}
+
+uint16_t pic_get_mask(void)
+{
+    return (uint16_t)(inb(PIC2_DATA) << 8 | inb(PIC1_DATA));
 }

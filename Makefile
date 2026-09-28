@@ -39,7 +39,8 @@ OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 # 32-bit Linux programs so they run with the same integer and pointer sizes.
 UNIT_CC      := gcc -m32
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -I.
-UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c)
+UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
+                            drivers/keyboard/scancode.c kernel/input/keyqueue.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit clean
@@ -67,7 +68,8 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ $(BUILD)/isodir 2>/dev/null
 	@echo "ISO ready: $@"
 
-$(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h
+$(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
+                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
 
