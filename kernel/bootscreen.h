@@ -21,6 +21,15 @@ void bootscreen_draw_header(void);
  * to the serial log only, to keep the screen readable. note may be NULL. */
 void bootscreen_status(const char *label, enum boot_status status, const char *note);
 
+/* Two related checks on one screen line (screen_label, then "OK", or e.g.
+ * "FAILED (heap)" naming the first part that is not OK), but still two
+ * separate serial lines: label_a / label_b with their own status and note. */
+void bootscreen_status_pair(const char *screen_label,
+                            const char *label_a, const char *part_a, enum boot_status a,
+                            const char *note_a,
+                            const char *label_b, const char *part_b, enum boot_status b,
+                            const char *note_b);
+
 /* Memory figures in the right column (and the serial log). */
 void bootscreen_memory(const struct memory_stats *stats);
 

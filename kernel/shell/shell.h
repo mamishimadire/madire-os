@@ -13,7 +13,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "kernel/memory/heap.h"
 #include "kernel/memory/memory.h"
+#include "kernel/memory/paging.h"
 #include "kernel/shell/cpuinfo.h"
 
 struct shell_context {
@@ -27,6 +29,10 @@ struct shell_context {
     uint32_t page_size;
     const struct cpu_info *cpu;
     uint32_t cr0;
+    /* 0.6, optional: when set, "mem" adds a paging and a kernel-heap
+     * section; NULL leaves the 0.5 output exactly as it was. */
+    const struct paging_stats *paging;
+    const struct heap_stats *heap;          /* arena_bytes == 0: heap disabled */
 };
 
 enum shell_text {

@@ -8,6 +8,7 @@
 #include "kernel/kprintf.h"
 #include "kernel/memory/memory.h"
 #include "kernel/memory/memtest.h"
+#include "kernel/memory/paging.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/panic.h"
 
@@ -16,6 +17,7 @@ extern char __kernel_start[], __kernel_end[];
 #define SYM(s) ((uint32_t)(uintptr_t)(s))
 #define WORDS_PER_PAGE (PAGE_SIZE / sizeof(uint32_t))
 #define BOOT_TEST_PAGES 3
+#define MAX_HELD_PAGES  256     /* pages in use before memtest_exhaust starts */
 
 static uint32_t checks;
 
@@ -26,9 +28,20 @@ static uint32_t checks;
         checks++;                                                \
     } while (0)
 
-static volatile uint32_t *page_ptr(uint32_t addr)
+/* One physical page at a time: directly while paging is off (the boot
+ * self-test), through the physical-access window once it is on (free RAM
+ * is not mapped). Every page_open() is paired with page_close(). */
+static volatile uint32_t *page_open(uint32_t addr)
 {
+    if (paging_enabled())
+        return (volatile uint32_t *)vmm_window_map(addr);
     return (volatile uint32_t *)(uintptr_t)addr;
+}
+
+static void page_close(void)
+{
+    if (paging_enabled())
+        vmm_window_unmap();
 }
 
 static uint32_t pattern(uint32_t addr, uint32_t i)
@@ -61,13 +74,21 @@ uint32_t memtest_boot(void)
            BOOT_TEST_PAGES);
 
     /* 2. The pages are real RAM: write every word, then read it back. */
-    for (int i = 0; i < BOOT_TEST_PAGES; i++)
+    for (int i = 0; i < BOOT_TEST_PAGES; i++) {
+        volatile uint32_t *p = page_open(pages[i]);
         for (uint32_t w = 0; w < WORDS_PER_PAGE; w++)
-            page_ptr(pages[i])[w] = pattern(pages[i], w);
-    for (int i = 0; i < BOOT_TEST_PAGES; i++)
-        for (uint32_t w = 0; w < WORDS_PER_PAGE; w++)
-            EXPECT(page_ptr(pages[i])[w] == pattern(pages[i], w),
-                   "RAM at 0x%08x did not hold its value", pages[i] + w * 4);
+            p[w] = pattern(pages[i], w);
+        page_close();
+    }
+    for (int i = 0; i < BOOT_TEST_PAGES; i++) {
+        volatile uint32_t *p = page_open(pages[i]);
+        uint32_t bad = WORDS_PER_PAGE;
+        for (uint32_t w = 0; w < WORDS_PER_PAGE && bad == WORDS_PER_PAGE; w++)
+            if (p[w] != pattern(pages[i], w))
+                bad = w;
+        page_close();
+        EXPECT(bad == WORDS_PER_PAGE, "RAM at 0x%08x did not hold its value", pages[i] + bad * 4);
+    }
 
     /* 3. Free the middle page; the next allocation must return it. */
     memory_free_page(pages[1]);
@@ -104,14 +125,31 @@ uint32_t memtest_exhaust(void)
     uint32_t count = 0, prev = 0, p;
     checks = 0;
 
+    /* Pages already in use belong to someone else (with paging on: the
+     * page directory and tables). Record them, in increasing order, so the
+     * check below leaves them alone; every other allocatable page must be
+     * allocated by this test. */
+    static uint32_t held[MAX_HELD_PAGES];
+    unsigned held_count = 0;
+    for (uint32_t page = 0; page < PMM_MAX_PAGES; page++) {
+        uint32_t addr = page << PAGE_SHIFT;
+        if (!pmm_is_allocatable(addr) || pmm_is_free(addr))
+            continue;
+        EXPECT(held_count < MAX_HELD_PAGES, "more than %u pages in use before the test",
+               MAX_HELD_PAGES);
+        held[held_count++] = addr;
+    }
+
     /* Allocate everything. Strictly increasing addresses prove no page is
      * handed out twice. Each page is tagged with its own address. */
     while ((p = memory_alloc_page()) != 0) {
         EXPECT((p & (PAGE_SIZE - 1)) == 0, "page 0x%08x is not aligned", p);
         EXPECT(p > prev, "page 0x%08x returned out of order (duplicate?)", p);
         EXPECT(memory_page_is_safe(p), "page 0x%08x is reserved or outside usable RAM", p);
-        page_ptr(p)[0] = p;
-        page_ptr(p)[WORDS_PER_PAGE - 1] = ~p;
+        volatile uint32_t *w = page_open(p);
+        w[0] = p;
+        w[WORDS_PER_PAGE - 1] = ~p;
+        page_close();
         prev = p;
         count++;
     }
@@ -120,22 +158,33 @@ uint32_t memtest_exhaust(void)
     EXPECT(memory_alloc_page() == 0, "allocation succeeded after exhaustion");
     EXPECT(memory_alloc_page() == 0, "allocation succeeded after exhaustion (repeat)");
 
-    /* Every allocatable page is now in use: check its tag, then free it. */
+    /* Every allocatable page is now in use: skip the ones held before the
+     * test (still in use, untouched); check the tag of every other one,
+     * then free it. */
     uint32_t freed = 0;
+    unsigned h = 0;
     for (uint32_t page = 0; page < PMM_MAX_PAGES; page++) {
         uint32_t addr = page << PAGE_SHIFT;
         if (!pmm_is_allocatable(addr))
             continue;
-        EXPECT(page_ptr(addr)[0] == addr && page_ptr(addr)[WORDS_PER_PAGE - 1] == ~addr,
-               "page 0x%08x lost its contents (overlapping allocation?)", addr);
+        if (h < held_count && held[h] == addr) {
+            EXPECT(!pmm_is_free(addr), "page 0x%08x held before the test is now free", addr);
+            h++;
+            continue;
+        }
+        volatile uint32_t *w = page_open(addr);
+        bool intact = w[0] == addr && w[WORDS_PER_PAGE - 1] == ~addr;
+        page_close();
+        EXPECT(intact, "page 0x%08x lost its contents (overlapping allocation?)", addr);
         memory_free_page(addr);
         freed++;
     }
+    EXPECT(h == held_count, "only %u of %u held pages seen again", h, held_count);
     EXPECT(freed == count, "freed %u pages, allocated %u", freed, count);
     EXPECT(pmm_free_pages() == before, "free count not restored");
 
-    klogf("Memory exhaustion test: PASS (%u pages allocated, verified and freed; %u checks)\n",
-          count, checks);
+    klogf("Memory exhaustion test: PASS (%u pages allocated, verified and freed; %u checks; "
+          "%u pages already in use left alone)\n", count, checks, held_count);
     return count;
 }
 

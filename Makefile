@@ -42,7 +42,8 @@ UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
                             drivers/keyboard/scancode.c kernel/input/keyqueue.c \
                             kernel/console/textbuf.c kernel/console/lineedit.c \
-                            kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c)
+                            kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
+                            kernel/memory/vmm_core.c kernel/memory/heap.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit clean

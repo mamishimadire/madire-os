@@ -4,9 +4,9 @@
 #include <stdint.h>
 
 /*
- * Memory self-tests on the real allocator and real RAM. They write to the
- * pages they allocate through their physical addresses, which is valid only
- * while paging is off (until milestone 0.5).
+ * Memory self-tests on the real allocator and real RAM. They reach the
+ * pages they allocate directly while paging is off, and through the
+ * physical-access window (paging.h) once it is on.
  */
 
 /* Runs on every boot, after memory_init(). Returns the number of checks

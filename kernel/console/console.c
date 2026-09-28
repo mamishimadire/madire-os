@@ -7,6 +7,7 @@
 #include "kernel/console/textbuf.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
+#include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/shell/parser.h"
 #include "kernel/shell/shell.h"
@@ -104,6 +105,8 @@ static void build_context(struct shell_context *c)
     c->page_size = PAGE_SIZE;
     c->cpu = &cpu;
     c->cr0 = cpu_read_cr0();
+    c->paging = paging_stats();
+    c->heap = kheap_stats();            /* runs a full heap_check first */
 }
 
 static void submit(void)

@@ -2,13 +2,13 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.5 (Milestone 0.5: Kernel console and basic command shell)
+**Current version:** 0.6 (Milestone 0.6: Paging and kernel heap)
 
-![Madire OS v0.5 boot screen](docs/images/boot-screen-v0.5.png)
+![Madire OS v0.6 boot screen](docs/images/boot-screen-v0.6.png)
 
-After the boot checks, press any key to open the console:
+After the boot checks, press any key to open the console. `mem` now also shows paging and the kernel heap:
 
-![Madire OS v0.5 console](docs/images/console-v0.5.png)
+![Madire OS v0.6 console: mem](docs/images/console-mem-v0.6.png)
 
 It boots through GRUB into a 32-bit x86 kernel written in C and NASM. So far the kernel:
 
@@ -16,6 +16,9 @@ It boots through GRUB into a 32-bit x86 kernel written in C and NASM. So far the
 - catches CPU exceptions and shows them on a readable crash screen;
 - reads and validates the firmware's memory map, and protects the kernel and boot data;
 - runs a physical page allocator, which it tests on real RAM at every boot;
+- runs with paging on: its page tables are checked before paging is switched on, page 0 is left unmapped so NULL pointers fault, and kernel code is read-only;
+- has a kernel heap (`kmalloc`, `kcalloc`, `kfree`) that catches double frees, invalid frees and corrupted blocks;
+- explains page faults on the crash screen (what kind of access, and the faulting address);
 - handles hardware interrupts safely: only the timer (IRQ0) and keyboard (IRQ1) are enabled, each only after its handler is ready;
 - keeps time with the PIT at 100 Hz (uptime is shown on screen);
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel;
@@ -54,12 +57,15 @@ On Linux (Codespace terminal, WSL, CI):
 bash scripts/install-deps.sh   # once
 make            # kernel ELF: build/madire.kernel
 make iso        # bootable ISO: build/madire-os.iso
-make unit       # host unit tests (memory, keyboard decoder and queue, PIT maths,
-                # console text grid, line editor, parser, shell, CPUID decoding)
-make test       # unit tests + 212 QEMU checks (150 from 0.3 + 30 from 0.4 + 32 new):
-                # boot, logo, CPU, memory at 5 RAM sizes, crash tests, timer rate,
-                # scripted keyboard input, queue overflow, unexpected IRQs, and a
-                # scripted console session typed through the real keyboard path
+make unit       # host unit tests (memory, page tables, heap, keyboard decoder and
+                # queue, PIT maths, console text grid, line editor, parser, shell,
+                # CPUID decoding)
+make test       # unit tests + 261 QEMU checks (150 from 0.3 + 30 from 0.4 + 32 from
+                # 0.5 + 49 new): boot, logo, CPU, memory at 5 RAM sizes, crash tests,
+                # timer rate, scripted keyboard input, queue overflow, unexpected
+                # IRQs, a scripted console session typed through the real keyboard
+                # path, paging and heap self-tests, page faults, heap misuse and
+                # heap exhaustion
 make run        # boot in a QEMU window
 make clean
 ```
@@ -76,18 +82,20 @@ When the boot screen says `System ready. Press any key to open the console.`, pr
 The GRUB menu has a **Diagnostics** submenu:
 
 - **Crash tests** that deliberately trigger CPU exceptions.
+- **Page-fault tests:** read from NULL, read from an unmapped address, write to read-only kernel code.
 - **Memory tests:** allocate every page, double free, free a kernel page.
 - **Timer test:** measures the tick rate against the real-time clock.
 - **Keyboard test:** shows the code of every key pressed.
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.5)
+## Limitations (v0.6)
 
 - 32-bit x86 only; the VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
 - **Only RAM below 4 GiB is used** (no PAE). On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
 - The whole low 1 MiB is reserved on purpose, and ACPI-reclaimable memory isn't reclaimed yet.
-- Physical pages only: no paging, virtual memory or heap (`kmalloc`) yet.
+- **Paging:** the kernel is identity-mapped (not yet higher-half), 4 KiB pages only, one address space, kernel mode only. Every page fault is fatal (nothing is loaded on demand). There is no stack guard page yet, so a kernel stack overflow can't be reported.
+- **Kernel heap:** one heap, at most 16 MiB, never shrinks. Not interrupt-safe: `kmalloc`/`kcalloc`/`kfree` refuse to run with interrupts disabled (so never from an IRQ or exception handler). `kfree` checks the whole heap every time, which gets slower as the heap fills.
 - **Keyboard:** PS/2 only (USB keyboards need firmware legacy emulation), US layout only, no LEDs (Caps Lock state is tracked in software only), keypad assumes Num Lock on.
 - **Console and shell:**
   - Seven built-in commands only.

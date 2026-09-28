@@ -5,6 +5,7 @@
  * kernel's ksnprintf is not usable here: this module must stay pure).
  * Only 32-bit division is used; the 64-bit tick count is never divided.
  */
+#include "kernel/memory/vm_layout.h"
 #include "kernel/shell/parser.h"
 #include "kernel/shell/shell.h"
 
@@ -157,6 +158,62 @@ static void mem_row(const struct shell_output *o, const char *label, uint32_t va
     emit(o, &l, SHELL_TEXT);
 }
 
+static void text_row(const struct shell_output *o, const char *label, const char *text)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, label);
+    l_pad_to(&l, 23);
+    l_str(&l, text);
+    emit(o, &l, SHELL_TEXT);
+}
+
+/* "Mapped pages" is the kernel's own mapping made at boot; heap pages are
+ * shown in the heap section. */
+static void mem_paging(const struct shell_output *o, const struct paging_stats *p)
+{
+    if (!p->enabled) {
+        text_row(o, "Paging:", "disabled");
+        return;
+    }
+    text_row(o, "Paging:", "enabled (4 KiB pages, identity-mapped kernel)");
+    mem_row(o, "Mapped pages:", p->mapped_pages, "");
+    mem_row(o, "Page tables:", p->page_tables, "");
+}
+
+static void mem_heap(const struct shell_output *o, const struct heap_stats *h)
+{
+    struct line l;
+    if (h->arena_bytes == 0) {
+        text_row(o, "Kernel heap:", "disabled");
+        return;
+    }
+    l_reset(&l);
+    l_str(&l, "Kernel heap:");
+    l_pad_to(&l, 23);
+    l_uint(&l, h->arena_bytes >> 10, 6, ' ');
+    l_str(&l, " KiB mapped, max ");
+    l_uint(&l, VM_HEAP_MAX >> 10, 0, ' ');
+    l_str(&l, " KiB");
+    emit(o, &l, SHELL_TEXT);
+
+    l_str(&l, "Heap in use:");
+    l_pad_to(&l, 23);
+    l_uint(&l, h->used_bytes >> 10, 6, ' ');
+    l_str(&l, " KiB in ");
+    l_uint(&l, h->live_blocks, 0, ' ');
+    l_str(&l, h->live_blocks == 1 ? " block" : " blocks");
+    emit(o, &l, SHELL_TEXT);
+
+    l_str(&l, "Heap free:");
+    l_pad_to(&l, 23);
+    l_uint(&l, h->free_bytes >> 10, 6, ' ');
+    l_str(&l, " KiB, largest block ");
+    l_uint(&l, h->largest_free >> 10, 0, ' ');
+    l_str(&l, " KiB");
+    emit(o, &l, SHELL_TEXT);
+}
+
 static enum shell_result cmd_mem(int argc, char **argv, const struct shell_context *c,
                                  const struct shell_output *o)
 {
@@ -169,6 +226,10 @@ static enum shell_result cmd_mem(int argc, char **argv, const struct shell_conte
     mem_row(o, "Usable pages:", m->usable_pages, "");
     mem_row(o, "Free pages (now):", c->free_pages_now, "");
     mem_row(o, "Reserved ranges:", m->reservations, "");
+    if (c->paging)
+        mem_paging(o, c->paging);
+    if (c->heap)
+        mem_heap(o, c->heap);
     return SHELL_OK;
 }
 

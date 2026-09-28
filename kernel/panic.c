@@ -63,6 +63,19 @@ void panicf(const char *fmt, ...)
     panic_halt();
 }
 
+/* Exception 14: the error code decoded, and the faulting address (CR2).
+ * Every page fault is fatal: no page is ever brought in on demand. */
+static void print_page_fault(uint32_t error_code, uint32_t cr2)
+{
+    kprintf(" Page fault: %s, %s, %s%s%s, address 0x%08x\n",
+            (error_code & 0x01) ? "protection violation" : "not present",
+            (error_code & 0x02) ? "write" : "read",
+            (error_code & 0x04) ? "user mode" : "kernel mode",
+            (error_code & 0x08) ? ", reserved bit set" : "",
+            (error_code & 0x10) ? ", instruction fetch" : "",
+            cr2);
+}
+
 void panic_exception(const struct interrupt_frame *f)
 {
     uint32_t cr0, cr2, cr3, ss;
@@ -78,7 +91,10 @@ void panic_exception(const struct interrupt_frame *f)
     panic_begin();
     kprintf(" CPU exception %u: %s (%s)\n", f->vector,
             exception_names[f->vector & 31], exception_mnemonics[f->vector & 31]);
-    kprintf(" Error code: 0x%08x\n\n", f->error_code);
+    kprintf(" Error code: 0x%08x\n", f->error_code);
+    if (f->vector == 14)
+        print_page_fault(f->error_code, cr2);
+    kputc('\n');
     kprintf(" EIP=0x%08x  CS=0x%04x  EFLAGS=0x%08x\n", f->eip, f->cs & 0xFFFF, f->eflags);
     kprintf(" EAX=0x%08x  EBX=0x%08x  ECX=0x%08x  EDX=0x%08x\n", f->eax, f->ebx, f->ecx, f->edx);
     kprintf(" ESI=0x%08x  EDI=0x%08x  EBP=0x%08x  ESP=0x%08x\n", f->esi, f->edi, f->ebp, esp);

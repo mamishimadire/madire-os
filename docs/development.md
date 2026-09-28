@@ -30,6 +30,13 @@ kernel/
     pmm.c/.h              bitmap physical page allocator         (pure)
     memory.c/.h           set-up, statistics, alloc/free API
     memtest.c/.h          boot self-test + diagnostic memory tests
+    vm_layout.h           every virtual-address layout constant
+    pte.h                 page-table entry bits and index helpers  (pure)
+    vmm_core.c/.h         map / unmap / translate via callbacks    (pure)
+    paging.c/.h           build, walk-check, enable; self-test; window
+    heap.c/.h             first-fit boundary-tag allocator         (pure)
+    kmalloc.c/.h          kernel heap: kmalloc / kcalloc / kfree
+    vmtest.c/.h           page-fault and heap diagnostics
   arch/x86/
     io.h                  port I/O (inb/outb)
     gdt.c/.h, gdt_flush.asm   segment table
@@ -74,6 +81,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 **Pure modules and unit tests.** A module that doesn't access hardware, print or panic can be unit-tested on the host. Currently these are:
 
 - `kernel/memory/mmap.c`, `pmm.c`, `reserve.c`
+- `kernel/memory/pte.h` (header only), `vmm_core.c`, `heap.c`
 - `drivers/keyboard/scancode.c`
 - `kernel/input/keyqueue.c`
 - `drivers/pit/pit_divisor.h` (header only)
@@ -109,7 +117,13 @@ Unit tests are built with `gcc -m32`, so pointers and `uint32_t` addresses match
 - `memory_alloc_page()` returns a physical page address, or **0 when memory is exhausted**, which the caller must handle.
 - `memory_free_page(addr)` returns the page. It panics on an unaligned address, a reserved page or a double free, because those are bugs.
 
-Pages are physical addresses. Writing to them directly only works while paging is off.
+Pages are physical addresses. Since 0.6 paging is on and free RAM is **not mapped**, so a page from `memory_alloc_page()` can't be used through its address:
+
+- to touch one physical page briefly: `p = vmm_window_map(phys)`, use `p`, then `vmm_window_unmap()` (one user at a time; normal context only);
+- to give it a virtual address: `paging_map(va, phys, PTE_WRITE)` (or `0` for read-only), and `paging_unmap(va, &phys)` when done, then free the frame yourself;
+- for ordinary kernel data: `kmalloc(size)` / `kcalloc(n, size)` / `kfree(p)` (`kernel/memory/kmalloc.h`). They return `NULL` when the heap can't grow; handle it. A bad `kfree` panics.
+
+Virtual addresses the kernel uses are all in `kernel/memory/vm_layout.h`; add new fixed addresses there, never as literals elsewhere.
 
 **Adding an interrupt-driven device.** The API is in `kernel/arch/x86/irq.h`. Always follow this order:
 
@@ -123,7 +137,7 @@ Start-up panics if the final PIC mask isn't the expected one, so a new line must
 **Handler rules** (IRQ context, interrupts off):
 
 - **Allowed:** read the device, update counters and state, push to a queue.
-- **Never:** write to VGA or serial, allocate memory, wait, loop without a bound, run diagnostics, or panic over a device problem.
+- **Never:** write to VGA or serial, allocate memory (`memory_alloc_page`, `kmalloc`, `kcalloc`, `kfree`; the heap functions panic if called with interrupts off), use the physical-access window, wait, loop without a bound, run diagnostics, or panic over a device problem.
 
 Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore()` around reads of multi-word state that a handler writes, such as the 64-bit tick counter or the key queue.
 
@@ -171,6 +185,9 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 - No `__builtin_popcount` (needs `libgcc` on i386). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Diagnostics that shouldn't appear on screen go to `klogf()` (serial only).
 - Never allocate memory before `memory_init()`, and never write to a physical page you didn't get from `memory_alloc_page()`.
+- Kernel code and read-only data are read-only once paging is on (CR0.WP): writing to a `const` object, or to code, is a page fault.
+- Address 0 is never mapped: a NULL dereference is a page fault, not a silent read of the BIOS data area.
+- `kmalloc`, `kcalloc` and `kfree` only in normal context with interrupts enabled.
 - The kernel owns VGA palette slots 1, 5, 6, 8, 9 and 13 for the logo. Don't use those colours for text.
 - Hardware access goes through `kernel/arch/x86/io.h`, not inline `in`/`out` instructions.
 - Screen and serial output only from normal context, never from an interrupt handler.

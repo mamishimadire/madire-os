@@ -24,6 +24,15 @@ VirtualBox power-on
                                    kernel-in-RAM check → page allocator
        9. memtest_boot             allocate / write / read / free self-test
       10. status + memory panel    "Memory initialization: OK" only now
+      10a. paging_init             build page tables (paging still off) →
+                                   walk-check them → CR3, CR0.WP, CR0.PG
+                                   (check fails → paging stays off, FAILED)
+           paging_selftest         map/read back, TLB flush, window, no leak
+                                   (fails once paging is on → crash screen)
+      10b. kheap_init + selftest   first 64 KiB of the heap; mixed allocations,
+                                   growth, no leak (fails → kmalloc returns NULL)
+           status                  "Paging & kernel heap: OK" (one screen line,
+                                   two serial lines)
       11. start_devices:
             timer_init             register IRQ0 handler → program PIT →
                                    unmask IRQ0 → verify mask
@@ -43,11 +52,13 @@ VirtualBox power-on
 
 **Why memory comes after the CPU set-up (steps 4–7):** if reading bootloader data hits a bad address, the IDT turns the fault into the crash screen rather than a silent reset. Nothing allocates memory before step 8, so the bootloader's structures can't be overwritten before they're reserved.
 
+**Why paging comes here (step 10a):** after the IDT, so a mistake shows the crash screen instead of a reset; after the boot memory self-test, which reaches pages directly; and before any IRQ is unmasked, so no interrupt arrives while the address space is being switched. The heap comes right after, because it needs mappings.
+
 **Why devices come after memory (step 11):** memory set-up and its self-test behave exactly as in 0.3 (IRQs masked). Each IRQ line is unmasked only once its handler is registered and its device configured. The timer comes first, so the keyboard self-test can use it for bounded waits.
 
 | Stage | File | Responsibility |
 |---|---|---|
-| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, memory, timer and keyboard tests) |
+| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer and keyboard tests) |
 | Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags, checksum; must be within the first 8 KiB of the file |
 | Entry point | `boot/boot.asm` (`_start`) | Stack setup; passes `eax` (magic) and `ebx` (info pointer) to C |
 | Memory layout | `linker/linker.ld` | Kernel linked at 1 MiB; `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; exports `__kernel_start/end` and per-section start/end symbols |
@@ -63,7 +74,8 @@ VirtualBox power-on
 boot/                 entry point (assembly)
 kernel/               architecture-independent kernel code
   arch/x86/           everything specific to the x86 CPU (incl. IRQ layer, CMOS)
-  memory/             memory map, reservations, page allocator, self-tests
+  memory/             memory map, reservations, page allocator, paging,
+                      kernel heap, self-tests and diagnostics
   input/              key-event queue
   timer.c             system tick, uptime, bounded waits
   devtest.c           timer / keyboard / IRQ diagnostics
@@ -130,6 +142,7 @@ The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptio
 ### Crash screen (`kernel/panic.c`)
 
 - `panic_exception(frame)` shows the vector, name, mnemonic, error code, `EIP/CS/EFLAGS`, general registers, the interrupted `ESP`, segment registers and `CR0/CR2/CR3`, white on red.
+- For a page fault (exception 14) it adds one decoded line after the error code (0.6), e.g. `Page fault: protection violation, write, kernel mode, address 0x00100000`. Error-code bits: 0 not present / protection violation, 1 read / write, 2 kernel / user mode, 3 reserved bit set, 4 instruction fetch. The address is CR2. Every page fault is fatal: nothing is loaded on demand.
 - `panic(message)` and `panicf(format, ...)` show a text message instead, for fatal start-up errors and memory misuse (e.g. `Double free of physical page 0x0014c000`).
 - Both copy everything to serial, then halt with `cli; hlt`.
 
@@ -137,7 +150,7 @@ The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptio
 
 ## Memory [built: 0.3]
 
-Physical memory management. Paging is still off, so a physical address is also a pointer. Every figure is calculated at runtime from the bootloader's memory map; nothing about the machine is hard-coded.
+Physical memory management. It runs before paging is switched on (0.6), when a physical address is also a pointer. Every figure is calculated at runtime from the bootloader's memory map; nothing about the machine is hard-coded. Virtual memory is described in *Virtual memory and kernel heap* below.
 
 | Module | Pure? | Responsibility |
 |---|---|---|
@@ -154,7 +167,7 @@ A **pure** module doesn't access hardware, print or panic. That lets the host co
 
 - **Multiboot 1** (spec 0.6.96): magic `0x2BADB002`, memory map present when info flag bit 6 is set. `boot.asm` asks for it with header flag `MEMINFO`. Multiboot 2 isn't supported.
 - **32-bit, no PAE:** only physical addresses below 4 GiB are used.
-- **Paging is off:** Multiboot addresses can be read directly, and the self-tests write to pages through their physical addresses. This must change when paging arrives (0.5).
+- **Before paging:** memory set-up and the boot self-test run with paging off and use physical addresses directly. Once paging is on (0.6), the Multiboot data stay reachable because every reservation is identity-mapped; free pages are not mapped, so `memtest_exhaust` reaches them through the physical-access window.
 
 ### Memory map handling (`mmap.c`)
 
@@ -256,7 +269,7 @@ MB values mean MiB (1,048,576 bytes), rounded to the nearest whole number. The s
 
 **Diagnostics** (from the GRUB menu, or QEMU `-append`):
 
-- `test=memexhaust`: allocate every free page, then check each is safe, strictly increasing and tagged. After that, allocation must keep returning 0. Each page's tag is verified, every page is freed, and the free count must be restored.
+- `test=memexhaust`: allocate every free page, then check each is safe, strictly increasing and tagged. After that, allocation must keep returning 0. Each page's tag is verified, every page is freed, and the free count must be restored. Since 0.6 each page is reached through the physical-access window (mapped, used, unmapped). Pages already in use before the test (page tables, the page directory, heap pages; at most 256) are recorded first and left alone; the kernel logs how many it expects, and the QEMU test requires the two counts to match exactly.
 - `test=doublefree`: must end on the crash screen with `Double free of physical page 0x…`.
 - `test=freereserved`: must end on the crash screen with `Attempt to free reserved page 0x00100000`.
 
@@ -272,7 +285,64 @@ The following end on the crash screen with a specific message:
 - any self-test failure;
 - any misuse of `memory_free_page`.
 
-The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live.
+The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live. In 0.6 only `memtest.c` changed (the window, and leaving pre-existing pages alone); `mmap.c`, `reserve.c`, `pmm.c` and `memory.c` are unchanged.
+
+## Virtual memory and kernel heap [built: 0.6]
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/memory/vm_layout.h` | – | Every virtual-layout constant (one place to change for a higher-half kernel) |
+| `kernel/memory/pte.h` | yes | Page-table entry bits, index splitting, alignment helpers |
+| `kernel/memory/vmm_core.c` | yes | Map / unmap / translate 4 KiB pages; creates page tables on demand; refuses page 0 and the recursive slot; never replaces a mapping; flushes on unmap. Reaches the directory and tables only through callbacks, so it is unit-tested on fake frames. |
+| `kernel/memory/paging.c` | no | Builds the tables, walk-checks them, enables paging, self-test; `paging_map/unmap/translate`; the physical-access window |
+| `kernel/memory/heap.c` | yes | First-fit allocator with boundary tags over one growable arena |
+| `kernel/memory/kmalloc.c` | no | The kernel heap: `kmalloc`, `kcalloc`, `kfree`; grows by mapping new frames; self-test |
+| `kernel/memory/vmtest.c` | no | Page-fault and heap diagnostics |
+
+**Layout (identity-mapped kernel, 4 KiB pages only):**
+
+| Virtual range | Maps to | Access |
+|---|---|---|
+| `0x00000000–0x00000FFF` | – | unmapped: NULL guard (also the real-mode IVT and BIOS data area; nothing uses them once paging is on) |
+| `0x00001000–0x000FFFFF` | identity | read/write (VGA `0xB8000`, EBDA, ROM, GRUB data) |
+| `__text_start–__data_start` | identity | **read-only**: code and read-only data (enforced for the kernel by CR0.WP) |
+| `__data_start–__kernel_end` | identity | read/write: `.data`, `.bss`, boot stack, allocator bitmaps, GDT, IDT |
+| every boot-data reservation above 1 MiB | identity | read/write (Multiboot info, memory map, command line, modules) |
+| everything else below `0xD0000000` | – | unmapped: free RAM is not mapped |
+| `0xD0000000` → heap end | heap frames | read/write; 64 KiB at start, at most 16 MiB; unmapped above the end |
+| `0xFFBFE000` | – | page used by the paging self-test |
+| `0xFFBFF000` | any frame | physical-access window (one page) |
+| `0xFFC00000–0xFFFFFFFF` | page tables | recursive mapping; `0xFFFFF000` is the directory |
+
+**Enabling paging (`paging_init`):** the directory and tables are built with paging off, reached through their physical addresses. Before anything is loaded, a **walk-check** translates everything the kernel is running on and compares it with what is expected: the current EIP and ESP, the boot stack, the kernel's read-only and writable parts, VGA, the low 1 MiB, the GDT and IDT (found with `sgdt`/`sidt`), `.bss` (with the allocator bitmaps) and every reservation; page 0, the table frames themselves, the heap area, the self-test page and the window must be unmapped; the recursive entry must point to the directory; and the table and page counts are recomputed independently. Any mismatch frees the frames and leaves paging off (`Paging & kernel heap: FAILED (paging)`, boot continues). Otherwise CR3 is loaded, CR0.WP then CR0.PG are set, and from then on the tables are reached only through the recursive mapping.
+
+**Paging self-test** (paging on; a failure is fatal): CR0.PG and WP set, CR3 is the directory, the recursive entry reads back correctly, the kernel, stack, VGA and boot data still translate, page 0 doesn't. Then a test page is mapped to frame A, written and read back, unmapped; remapped A → B → A → B, each frame keeping its own pattern (a missing TLB flush would put B's data into A); the window is mapped to A, read and written, unmapped and must no longer translate; the free page count must return exactly to its start value.
+
+**TLB flushes:** `invlpg` on every unmap (one flush point, in `vmm_core`, counted by the unit tests). A new mapping needs no flush: the CPU never caches "not mapped".
+
+**Physical-access window:** `vmm_window_map(phys)` maps one frame at `0xFFBFF000`; `vmm_window_unmap()` clears the entry, flushes it and checks it no longer translates. The frame is never freed by the window. One user at a time, normal context only: mapping while mapped, or unmapping while not mapped, panics. The window's page table is made at boot, so it works even when physical memory is exhausted.
+
+**Kernel heap:** blocks are `[16-byte header: magic | size | prev_size | check][payload]`, all sizes multiples of 16 (magic `0xA110C8ED` used, `0xF4EEB10C` free; check = magic ^ size ^ prev_size ^ `0x5A5A5A5A`).
+
+- `kmalloc`: first free block that fits; a remainder of 32 bytes or more is split off. If nothing fits, the heap grows by whole pages (at least 16 KiB) mapped at its end, up to 16 MiB. Out of room or out of frames → `NULL`, never a panic. `kmalloc(0)` returns `NULL`; `kcalloc` zeroes and refuses `n × size` overflow.
+- `kfree`: checks the pointer is in the arena and 16-byte aligned, then validates the **whole heap** before changing anything, then merges with free neighbours on both sides. A pointer not from the heap, a misaligned one, a double free (also after the block merged) or a corrupted header ends on the crash screen, e.g. `Heap: double free of 0xd0000010.`
+- `heap_check` (every `mem` report, the self-test and the diagnostics): every header valid, `prev_size` links consistent, sizes adding up to the arena, no two free blocks adjacent.
+- **Context rule:** `kmalloc`, `kcalloc` and `kfree` panic if interrupts are disabled. Every IRQ and exception enters through an interrupt gate, which clears IF, so a call from a handler is always caught. This also refuses calls from normal code inside an `irq_save()` section (intended: the heap has no locking). It can't catch a handler that re-enables interrupts itself; none does.
+- **Self-test at boot:** 200 mixed allocations from a fixed pseudo-random sequence, each filled with a pattern and checked before it is freed (in a different order); the heap must then be one free block; a request larger than the arena must grow it; the free page count must drop by exactly the pages the heap grew by (plus any new page table).
+
+**Diagnostics:**
+
+| `test=` | GRUB entry | Result |
+|---|---|---|
+| `pfnull` | Page-fault test: read from NULL | `CR2=0x00000000`, `not present, read, kernel mode` |
+| `pfunmapped` | Page-fault test: read from unmapped address | `CR2=0x40000000`, `not present, read, kernel mode` |
+| `pfreadonly` | Page-fault test: write to read-only kernel code | `CR2=0x00100000`, `protection violation, write, kernel mode` |
+| `heapdouble` | (QEMU only) | `Heap: double free of 0xd000…` |
+| `heapinvalid` | (QEMU only) | `Heap: invalid free of 0x… (pointer not from the heap).` (a stack address) |
+| `heapcorrupt` | (QEMU only) | `Heap: corrupted block at 0xd000…` after overwriting a header |
+| `heapexhaust` | (QEMU only) | allocate until `NULL` (the 16 MiB cap, or physical memory), check, free everything; the pages used must be exactly the heap's growth plus its page tables |
+
+**Known limits:** no stack guard page (a stack overflow can't be reported without a separate double-fault stack); the heap never shrinks and isn't interrupt-safe; `kfree` validates the whole heap, which costs O(number of blocks) per free.
 
 ## Timer [built: 0.4]
 
@@ -331,7 +401,7 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 | `kernel/arch/x86/cpuid.c` | no | Checks CPUID exists by toggling EFLAGS bit 21, then runs only the leaves the CPU lists; reads CR0 |
 | `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial; builds the shell context; runs the start-up self-test |
 
-- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.5`, a hint) and the `madire> ` prompt.
+- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.6`, a hint) and the `madire> ` prompt.
   - Colours use only VGA slots the logo doesn't reprogram: grey text, white input, cyan prompt, red errors.
   - Output scrolls up at the bottom. There's no scrollback.
   - `clear` empties the console's own grid and redraws it; it doesn't use `vga_clear()`.
@@ -342,16 +412,16 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
   |---|---|
   | `help` | the command list |
   | `clear` | clears the screen |
-  | `version` | `Madire OS v0.5 (32-bit x86, Multiboot 1)` |
+  | `version` | `Madire OS v0.6 (32-bit x86, Multiboot 1)` |
   | `uptime` | `Uptime: HH:MM:SS (N ticks at 100 Hz)`. Uses the 32-bit seconds counter with 32-bit division only. The tick count is shown only while it fits in 32 bits, and is never divided. |
-  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()` |
+  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. |
   | `cpu` | CPUID information, plus the CR0 mode line |
   | `echo <text>` | the words joined by single spaces |
 
   An unknown name gives `Unknown command: …`. Extra arguments give `Usage: …`, and more than 8 words gives `Too many arguments (max 8).`
 - **Self-test (`Console & shell` status line):** exercises the *pure* modules with known input: the line editor, the parser, `echo ok` through the shell, and scrolling in a private grid. It isn't a test of keyboard or VGA hardware; those are proven by the keyboard self-test and by the QEMU and VirtualBox console tests.
 - **When the console is offered:** only if both the console self-test and the keyboard passed. Otherwise the bottom row says why, and the idle loop runs as in 0.4.
-- **Unchanged in 0.5:** the keyboard driver, decoder, queue, IRQ layer, PIC, PIT, timer and memory manager. There's no dynamic allocation: every buffer is static.
+- **Unchanged in 0.5:** the keyboard driver, decoder, queue, IRQ layer, PIC, PIT, timer and memory manager. There's no dynamic allocation: every buffer is static (still true in 0.6; the console doesn't use the heap).
 
 ## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
 
@@ -381,19 +451,21 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 
 All of them share one formatter. `panicf` builds on it.
 
-## Display and branding [built: 0.2, layout updated 0.3, 0.4 and 0.5]
+## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6]
 
 The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 
 | Rows | Content |
 |---|---|
 | 0–11 | logo (unchanged since 0.2) |
-| 12–13 | title and version |
-| 14–22 | two columns. Left: 9 start-up checks (GDT, IDT, interrupt controller, exception handling, memory, display, timer, keyboard, console & shell). Right: 6 memory figures, then **Uptime** and **Last key**, which the idle loop keeps up to date. |
+| 12 | title and version on one row (0.6; still two lines on serial) |
+| 13–22 | two columns. Left (columns 2–43): 10 start-up checks (GDT, IDT, interrupt controller, exception handling, memory, display, paging & kernel heap, timer, keyboard, console & shell). Right (from column 44): 6 memory figures, then **Uptime** and **Last key**, which the idle loop keeps up to date. |
 | 23 | message line (Diagnostics results) |
 | 24 | "System ready." plus what happens next, e.g. "Press any key to open the console." |
 
-The screen and the serial log are written separately. The screen shows only the status words, and text is clipped at the row end, never wrapped. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test details for memory, timer, keyboard and console), which is what the tests match against. The keyboard diagnostic reuses the panel rows as a 9-line event list, with `>` marking the newest line.
+The screen and the serial log are written separately. The screen shows only the status words, and text is clipped at the row end, never wrapped. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test details for memory, timer, keyboard and console), which is what the tests match against. The keyboard diagnostic reuses the panel rows as a 10-line event list, with `>` marking the newest line.
+
+`Paging & kernel heap:` is one screen line for two checks: `OK`, or `FAILED (paging)` / `FAILED (heap)` naming the part that failed (paging first, since the heap needs it). The serial log keeps them as two lines, `Paging enabled:` and `Kernel heap:`, each with its own status and note.
 
 Once the console starts it owns the whole screen (see *Console and shell*). The boot results stay in the serial log.
 

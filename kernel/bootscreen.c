@@ -2,10 +2,10 @@
  * Boot screen layout (80x25 text):
  *
  *   rows  0-11  logo, centred (unchanged since 0.2)
- *   row  12     M A D I R E   O S
- *   row  13     Madire OS v<version>
- *   rows 14-22  left: 9 start-up checks
- *               right: 6 memory figures (14-19), Uptime (20), Last key (21)
+ *   row  12     M A D I R E   O S   Madire OS v<version>   (one row on screen;
+ *               still two lines on serial)
+ *   rows 13-22  left: 10 start-up checks (value column fits "FAILED (paging)")
+ *               right: 6 memory figures (13-18), Uptime (19), Last key (20)
  *   row  23     message (e.g. diagnostics result)
  *   row  24     System ready. + what happens next (e.g. open the console)
  *
@@ -26,15 +26,15 @@
 
 #define LOGO_ROW          0
 #define TITLE_ROW         12
-#define PANEL_ROW         14
-#define PANEL_ROWS        9
+#define PANEL_ROW         13
+#define PANEL_ROWS        10
 #define LEFT_COL          2
 #define LEFT_LABEL_WIDTH  26
-#define RIGHT_COL         40
+#define RIGHT_COL         44
 #define RIGHT_LABEL_WIDTH 23
 #define RIGHT_VALUE_WIDTH 6
-#define UPTIME_ROW        20
-#define LAST_KEY_ROW      21
+#define UPTIME_ROW        19
+#define LAST_KEY_ROW      20
 #define MESSAGE_ROW       23
 #define READY_ROW         24
 
@@ -75,39 +75,79 @@ static void serial_line(const char *label, size_t width, const char *value, cons
     serial_putc('\n');
 }
 
-static void put_centered(size_t row, const char *text, enum vga_color fg)
-{
-    vga_set_cursor(row, (VGA_WIDTH - str_len(text)) / 2);
-    vga_set_color(fg, VGA_BLACK);
-    kprintf("%s\n", text);
-}
-
 void bootscreen_draw_header(void)
 {
+    static const char title[] = "M A D I R E   O S";
+    static const char version[] = MADIRE_OS_NAME " v" MADIRE_OS_VERSION;
+    static const char gap[] = "   ";
+
     unsigned lit = logo_render();
     logo_draw(LOGO_ROW, (VGA_WIDTH - LOGO_WIDTH) / 2);
     logo_print_serial(lit);
 
-    put_centered(TITLE_ROW, "M A D I R E   O S", VGA_WHITE);
-    put_centered(TITLE_ROW + 1, MADIRE_OS_NAME " v" MADIRE_OS_VERSION, VGA_LIGHT_CYAN);
+    /* Screen: title and version share one row. Serial: two lines, as before. */
+    size_t width = str_len(title) + str_len(gap) + str_len(version);
+    size_t col = (VGA_WIDTH - width) / 2;
+    screen_write(TITLE_ROW, col, title, VGA_WHITE);
+    screen_write(TITLE_ROW, col + str_len(title) + str_len(gap), version, VGA_LIGHT_CYAN);
+    serial_write(title);
+    serial_putc('\n');
+    serial_write(version);
+    serial_putc('\n');
+}
+
+static const char *status_word(enum boot_status status, enum vga_color *color)
+{
+    *color = VGA_LIGHT_GREEN;
+    if (status == BOOT_FAILED) {
+        *color = VGA_LIGHT_RED;
+        return "FAILED";
+    }
+    if (status == BOOT_PENDING) {
+        *color = VGA_YELLOW;
+        return "PENDING";
+    }
+    return "OK";
 }
 
 void bootscreen_status(const char *label, enum boot_status status, const char *note)
 {
-    const char *word = "OK";
-    enum vga_color color = VGA_LIGHT_GREEN;
-    if (status == BOOT_FAILED) {
-        word = "FAILED";
-        color = VGA_LIGHT_RED;
-    } else if (status == BOOT_PENDING) {
-        word = "PENDING";
-        color = VGA_YELLOW;
-    }
+    enum vga_color color;
+    const char *word = status_word(status, &color);
 
     screen_write(status_row, LEFT_COL, label, VGA_LIGHT_GREY);
     screen_write(status_row, LEFT_COL + LEFT_LABEL_WIDTH, word, color);
     status_row++;
     serial_line(label, LEFT_LABEL_WIDTH, word, note);
+}
+
+void bootscreen_status_pair(const char *screen_label,
+                            const char *label_a, const char *part_a, enum boot_status a,
+                            const char *note_a,
+                            const char *label_b, const char *part_b, enum boot_status b,
+                            const char *note_b)
+{
+    enum vga_color color_a, color_b;
+    const char *word_a = status_word(a, &color_a), *word_b = status_word(b, &color_b);
+    char word[24];
+    enum vga_color color = VGA_LIGHT_GREEN;
+
+    /* The first part that is not OK names the line's state. */
+    if (a != BOOT_OK) {
+        ksnprintf(word, sizeof(word), "%s (%s)", word_a, part_a);
+        color = color_a;
+    } else if (b != BOOT_OK) {
+        ksnprintf(word, sizeof(word), "%s (%s)", word_b, part_b);
+        color = color_b;
+    } else {
+        ksnprintf(word, sizeof(word), "OK");
+    }
+
+    screen_write(status_row, LEFT_COL, screen_label, VGA_LIGHT_GREY);
+    screen_write(status_row, LEFT_COL + LEFT_LABEL_WIDTH, word, color);
+    status_row++;
+    serial_line(label_a, LEFT_LABEL_WIDTH, word_a, note_a);
+    serial_line(label_b, LEFT_LABEL_WIDTH, word_b, note_b);
 }
 
 static void memory_row(size_t row, const char *label, const char *value)

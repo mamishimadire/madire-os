@@ -14,7 +14,8 @@ QMPKEYS=$(dirname "$0")/qmp_keys.py
 failures=0
 passes=0
 passes_new=0         # checks added in 0.4, tagged "[0.4]"
-passes_05=0          # checks added in 0.5, tagged "[0.5]"; the rest are 0.3 regression
+passes_05=0          # checks added in 0.5, tagged "[0.5]"
+passes_06=0          # checks added in 0.6, tagged "[0.6]"; the rest are 0.3 regression
 
 pass() {
     echo "PASS: $1"
@@ -22,6 +23,7 @@ pass() {
     case "$1" in
     "[0.4]"*) passes_new=$((passes_new + 1)) ;;
     "[0.5]"*) passes_05=$((passes_05 + 1)) ;;
+    "[0.6]"*) passes_06=$((passes_06 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -141,7 +143,7 @@ LOG=$OUT/serial-boot.log
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.5"                       "version shown"
+expect "$LOG" "Madire OS v0\.6"                       "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -222,10 +224,18 @@ exhaust_test() {
     echo "== Memory exhaustion: $mem"
     local log=$OUT/serial-exhaust-$mem.log
     boot "$log" 20 -m "$mem" -kernel "$KERNEL" -append "test=memexhaust"
-    local free
+    local free inuse held expected
     free=$(grep -oE 'free_pages=[0-9]+' "$log" | head -1 | cut -d= -f2)
-    expect "$log" "Memory exhaustion test: PASS \(${free:-X} pages allocated" \
-        "exhaust $mem: all ${free:-?} free pages allocated, verified, freed"
+    # 0.6: paging (page tables + directory) and the kernel heap hold frames
+    # before the test starts. The kernel reports them; the test must leave
+    # exactly that many alone and allocate everything else.
+    inuse=$(grep -oE 'frames in use before the test: [0-9]+ page tables \+ [0-9]+ directory \+ [0-9]+ heap pages = [0-9]+' "$log" | head -1)
+    if [ -n "$free" ] && [ -n "$inuse" ]; then
+        read -r t d hp held <<< "$(grep -oE '[0-9]+' <<< "$inuse" | tr '\n' ' ')"
+        if [ $((t + d + hp)) -eq "$held" ]; then expected=$((free - held)); else held=""; fi
+    fi
+    expect "$log" "Memory exhaustion test: PASS \(${expected:-X} pages allocated, verified and freed; [0-9]+ checks; ${held:-X} pages already in use left alone\)" \
+        "exhaust $mem: all ${expected:-?} free pages allocated, verified, freed (${free:-?} minus ${held:-?} paging + heap frames, exactly ${held:-?} left alone)"
     expect "$log" "System ready\." "exhaust $mem: system still ready afterwards"
     reject "$log" "PANIC"          "exhaust $mem: no panic"
     expect "$log" "IRQ mask: 0xfffc" "[0.4] exhaust $mem: ran with IRQ0/IRQ1 live"
@@ -394,7 +404,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.5 \(32-bit x86, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.6 \(32-bit x86, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -412,7 +422,7 @@ expect_in_order "$LOG" "[0.5] mem shows the 0.3 memory figures" \
 expect_in_order "$LOG" "[0.5] cpu reports CPUID information" \
     "^madire> cpu$" "^CPUID: +supported$" "^Vendor: +[A-Za-z]+" \
     "^Family/model: [0-9]+ / [0-9]+, stepping [0-9]+$" "^Features: +[a-z]" \
-    "^Mode: +32-bit protected mode, paging off, 1 CPU in use$"
+    "^Mode: +32-bit protected mode, paging on, 1 CPU in use$"
 expect_next "$LOG" "[0.5] Shift and multiple spaces"   "^madire> echo   Hello   World!$" "^Hello World!$"
 expect_next "$LOG" "[0.5] tabs separate arguments"     "^madire> echo${TAB}a${TAB}${TAB}b$" "^a b$"
 expect_next "$LOG" "[0.5] Caps Lock (and names are case-sensitive)" \
@@ -433,17 +443,107 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.5 (32-bit x86, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c '^Madire OS v0\.6 (32-bit x86, Multiboot 1)$' "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.5"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.6"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
+
+# ---- 0.6: paging and kernel heap ----
+
+echo "== [0.6] Paging and heap at boot (ISO)"
+LOG=$OUT/serial-boot.log
+expect "$LOG" "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "[0.6] walk-check before enabling: PASS"
+expect "$LOG" "^Paging check: page 0 .*expected unmapped, actual unmapped .*: OK$" \
+                                                      "[0.6] page 0 (NULL, BIOS data area) left unmapped"
+expect "$LOG" "^Paging self-test: TLB flush on remap: .*: OK$"      "[0.6] self-test: TLB flush on remap"
+expect "$LOG" "^Paging self-test: physical-access window: .*: OK$" "[0.6] self-test: window map, access, unmap"
+expect "$LOG" "^Paging self-test: no page leak: free pages ([0-9]+) -> \1: OK$" \
+                                                      "[0.6] paging self-test: no page leak"
+expect "$LOG" "^Paging self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "[0.6] paging self-test: PASS"
+REGS=$(grep -oE '^Paging: enabled; CR0=0x[0-9a-f]{8} CR3=0x[0-9a-f]{8}' "$LOG" | head -1)
+CR0=$(grep -oE 'CR0=0x[0-9a-f]{8}' <<< "$REGS" | cut -d= -f2)
+CR3=$(grep -oE 'CR3=0x[0-9a-f]{8}' <<< "$REGS" | cut -d= -f2)
+echo "      ${REGS:-no CR0/CR3 line}"
+if [ -n "$CR0" ] && [ $(( CR0 & 0x80010000 )) -eq $(( 0x80010000 )) ] &&
+   [ -n "$CR3" ] && [ $(( CR3 )) -ne 0 ] && [ $(( CR3 & 0xfff )) -eq 0 ]; then
+    pass "[0.6] CR0.PG and CR0.WP set, CR3 holds a page-aligned directory"
+else
+    fail "[0.6] CR0/CR3 after enabling paging: ${REGS:-missing}"
+fi
+expect "$LOG" "^Paging enabled: +OK"                  "[0.6] status: paging enabled OK"
+expect "$LOG" "^Kernel heap self-test: no page leak: .*: OK$" "[0.6] heap self-test: no page leak"
+expect "$LOG" "^Kernel heap self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "[0.6] heap self-test: PASS"
+expect "$LOG" "^Kernel heap: +OK"                     "[0.6] status: kernel heap OK"
+reject "$LOG" "MISMATCH"                              "[0.6] no walk-check or self-test mismatches"
+
+echo "== [0.6] Paging and heap at every RAM size"
+for label in 16M 32M 1G 4G module; do
+    log=$OUT/serial-mem-$label.log
+    expect "$log" "^Paging enabled: +OK" "[0.6] $label: paging enabled"
+    expect "$log" "^Kernel heap: +OK"    "[0.6] $label: kernel heap OK"
+done
+
+# pf_test <name> <CR2> <decoded line>: a deliberate page fault.
+pf_test() {
+    local name=$1 cr2=$2 decoded=$3
+    echo "== [0.6] Page fault: $name"
+    local log=$OUT/serial-$name.log
+    boot "$log" 8 -m 32M -kernel "$KERNEL" -append "test=$name"
+    expect "$log" "CPU exception 14: Page Fault \(#PF\)" "[0.6] $name: exception 14"
+    expect "$log" "CR2=0x$cr2"                           "[0.6] $name: CR2=0x$cr2"
+    expect "$log" "Page fault: $decoded, address 0x$cr2" "[0.6] $name: decoded: $decoded"
+    reject "$log" "System ready|not detected"            "[0.6] $name: halted, fault raised"
+}
+pf_test pfnull     00000000 "not present, read, kernel mode"
+pf_test pfunmapped 40000000 "not present, read, kernel mode"
+pf_test pfreadonly 00100000 "protection violation, write, kernel mode"
+
+# heap_panic_test <name> <message regex>: a kfree misuse must be caught.
+heap_panic_test() {
+    local name=$1 message=$2
+    echo "== [0.6] Heap: $name"
+    local log=$OUT/serial-$name.log
+    boot "$log" 8 -m 32M -kernel "$KERNEL" -append "test=$name"
+    expect "$log" "KERNEL PANIC"                         "[0.6] $name: crash screen shown"
+    expect "$log" "$message"                             "[0.6] $name: reported"
+    reject "$log" "System ready|not detected"            "[0.6] $name: halted, detection worked"
+}
+heap_panic_test heapdouble  "Heap: double free of 0xd000[0-9a-f]{4}\."
+heap_panic_test heapinvalid "Heap: invalid free of 0x[0-9a-f]{8} \(pointer not from the heap\)\."
+heap_panic_test heapcorrupt "Heap: corrupted block at 0xd000[0-9a-f]{4} \(while freeing 0xd000[0-9a-f]{4}\)\."
+
+echo "== [0.6] Heap exhaustion (32M: the 16 MiB cap is reachable)"
+LOG=$OUT/serial-heapexhaust.log
+boot "$LOG" 30 -m 32M -kernel "$KERNEL" -append "test=heapexhaust"
+expect "$LOG" "Heap exhaustion test: [0-9]+ blocks, arena 16384 KiB \(16 MiB cap reached\), [0-9]+ free pages left, further kmalloc still NULL" \
+                                                      "[0.6] heapexhaust: NULL at the 16 MiB cap, and still NULL after"
+expect "$LOG" "Heap exhaustion test: PASS \([0-9]+ blocks freed; heap check OK;" \
+                                                      "[0.6] heapexhaust: everything freed, heap check OK"
+ACCT=$(grep -oE 'free pages [0-9]+ -> [0-9]+ = [0-9]+ heap pages \+ [0-9]+ page tables' "$LOG" | head -1)
+read -r HB HA HG HT <<< "$(grep -oE '[0-9]+' <<< "$ACCT" | tr '\n' ' ')"
+echo "      ${ACCT:-no page accounting line}"
+if [ -n "$HT" ] && [ $((HB - HA)) -eq $((HG + HT)) ]; then
+    pass "[0.6] heapexhaust: pages used are exactly the heap's growth plus its page tables"
+else
+    fail "[0.6] heapexhaust: page accounting does not add up (${ACCT:-missing})"
+fi
+expect "$LOG" "System ready\."                        "[0.6] heapexhaust: system ready afterwards"
+reject "$LOG" "PANIC"                                 "[0.6] heapexhaust: no panic"
+
+echo "== [0.6] Console: mem shows paging and heap"
+LOG=$OUT/serial-console.log
+expect_in_order "$LOG" "[0.6] mem: paging and heap sections, in order" \
+    "^madire> mem$" "^Reserved ranges: +[0-9]+$" \
+    "^Paging: +enabled \(4 KiB pages, identity-mapped kernel\)$" "^Mapped pages: +[0-9]+$" \
+    "^Page tables: +[0-9]+$" "^Kernel heap: +[0-9]+ KiB mapped, max 16384 KiB$" \
+    "^Heap in use: +[0-9]+ KiB in [0-9]+ blocks?$" "^Heap free: +[0-9]+ KiB, largest block [0-9]+ KiB$"
 
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05)) 0.3 regression + $passes_new from 0.4 + $passes_05 new in 0.5)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 new in 0.6)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

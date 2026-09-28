@@ -9,6 +9,7 @@ These run in the Linux build environment, and `scripts/build.ps1` runs them on e
 The pure modules have no hardware access, printing or panics:
 
 - memory: `mmap.c`, `pmm.c`, `reserve.c`
+- paging and heap (0.6): `pte.h`, `vmm_core.c` (on fake physical frames), `heap.c`
 - keyboard decoder and queue: `scancode.c`, `keyqueue.c`
 - PIT divisor maths: `pit_divisor.h`
 - console and shell: `textbuf.c`, `lineedit.c`, `parser.c`, `shell.c`, `cpuinfo.c`
@@ -28,29 +29,44 @@ They're compiled with the host GCC as ordinary 32-bit Linux programs (`-m32`, sa
 | `test_parser` (9) | 0.5 | one word; multiple spaces; leading/trailing spaces; tabs; empty and blank lines; exactly 8 words accepted, a 9th refused; a 71-character word; case preserved; nothing outside the line touched |
 | `test_cpuinfo` (8) | 0.5 | CPUID unavailable; vendor strings; family/model/stepping with extended family and model (families 6, 0xF, 5); no leaf 1; brand string trimmed, absent, or exactly 48 characters; hypervisor vendor with NUL padding; feature list, "none" and safe truncation; non-printable bytes sanitised |
 | `test_shell` (12) | 0.5 | **exact output** of `help`, `version`, `uptime` (0 s up to 2^32 − 1 s; ticks hidden once they no longer fit in 32 bits; timer unavailable), `mem` (MadireOS-Test figures), `cpu` (full, minimal, unavailable, paging on), `echo` (spaces, tabs, empty, 8 words); unknown commands and case-sensitivity; usage errors for all six fixed-argument commands; too many words; empty lines; `clear`; repeated commands give identical output |
+| `test_pte` (5) | 0.6 | directory/table index split at the 4 MiB boundaries and `0xFFFFF000`; entry encode/decode (offset bits never leak into the frame); alignment helpers (`page_ceil` saturates); layout constants consistent; page 0 (and the BIOS data area in it) is the NULL guard |
+| `test_vmm` (15) | 0.6 | on fake frames: map, translate, unmap (frame returned); tables created on demand, counted and cleared; `ensure_table`; out of frames → `NO_FRAME` with nothing half-done; unaligned; only the write flag accepted (never user pages); page 0 and the recursive slot refused; no mapping replaced (`EXISTS`); unmap of an unmapped page (`NOT_MAPPED`); **exactly one flush per unmap, for that address**; remap after unmap; read-only kept; 1,024 mappings across a 4 MiB boundary; directory entries kernel-only and writable; the recursive entry (pointing to the directory) never touched; error strings |
+| `test_heap` (25) | 0.6 | init and bad parameters; basic alloc/free; **16-byte alignment for every size 1–4,096**; `alloc(0)`; 1,000 small blocks packed and intact; whole arena without growth; growth (page-sized, at least 16 KiB), refused growth, cap reached (never beyond); **repeated exhaustion → NULL, no corruption**; fragmentation then merging; merge with next, previous and both; split threshold (16 left → no split, 32 → split); **double free** (also after a merge); **invalid pointers** (outside, header, inside a block, misaligned); **corruption** (magic, check value, `prev_size`, size, payload overrun) caught by `heap_check`, `free` and `alloc`; `calloc` zeroes and refuses overflow; statistics consistent; **10,000 pseudo-random steps** with tagged payloads and overlap checks |
+| `test_shell_mem06` (5) | 0.6 | `mem` without the 0.6 pointers is exactly the 0.5 output and a prefix of the extended one; exact paging and heap lines; paging-disabled and heap-disabled wording; singular `block`, a heap at the 16 MiB cap |
 
 ### 1b. QEMU tests (`tests/qemu-tests.sh`)
 
 These boot the kernel headless in QEMU and check the serial output. The kernel copies its screen text to COM1 and logs details there. Each run writes `build/serial-*.log`.
 
-Checks added in 0.4 and 0.5 are tagged `[0.4]` and `[0.5]`, so the summary line separates them from the 0.3 regression checks:
-`ALL TESTS PASSED (212 checks: 150 0.3 regression + 30 from 0.4 + 32 new in 0.5)`.
-The only existing check that changed in 0.5 is the version check (`v0.4` → `v0.5`).
+Checks added in 0.4, 0.5 and 0.6 are tagged `[0.4]`, `[0.5]` and `[0.6]`, so the summary line separates them from the 0.3 regression checks:
+`ALL TESTS PASSED (261 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 new in 0.6)`.
+
+Existing checks updated in 0.6 (the count of existing checks is unchanged):
+
+- the version checks: `v0.5` → `v0.6`;
+- `[0.5] cpu reports CPUID information`: the mode line must now say `paging on` (only that);
+- `exhaust 16M/128M: all N free pages allocated…`: N is now the `free_pages` figure from memory set-up minus the frames paging and the heap hold before the test. The kernel logs them (`frames in use before the test: T page tables + 1 directory + H heap pages = F`); the parts must add up, and the test's own count of pages left alone (taken from the allocator's bitmaps) must be exactly F, so an unaccounted page still fails.
 
 | Group | How it boots | What it checks |
 |---|---|---|
 | Multiboot header | (not booted) | `grub-file --is-x86-multiboot` accepts the kernel |
-| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293**; title; version `v0.5`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`). |
+| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293**; title; version `v0.6`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`). |
 | RAM sizes | `-kernel` at `-m 16M`, `32M`, `1G`, `4G` | boots; self-test passes; memory `OK`; panel shows the expected MB above 4 GiB; memory model check with pinned values |
 | Boot module | `-m 32M -kernel … -initrd module.bin` | module range reserved; model check |
-| Exhaustion | `-append "test=memexhaust"` at 16M and 128M | every free page allocated, verified and freed; `System ready` afterwards; no panic. **[0.4]** ran with IRQ0/IRQ1 live. |
+| Exhaustion | `-append "test=memexhaust"` at 16M and 128M | every free page allocated, verified and freed (through the physical-access window since 0.6; the frames held by paging and the heap are left alone and must match the kernel's count exactly); `System ready` afterwards; no panic. **[0.4]** ran with IRQ0/IRQ1 live. |
 | Double free / free reserved | `test=doublefree`, `test=freereserved` | crash screen with the page address |
 | Crash tests | `test=divzero`, `ud`, `gpf` | vector, name, error code (`0x28` for #GP), register dump with `CS=0x0008`, halted. **[0.4]** raised with IRQ0/IRQ1 live. |
 | **[0.4] Timer rate** | `-m 32M -kernel … -append "test=timer"` | `Timer diagnostic: PASS`: 270–330 ticks across 3 RTC seconds. The measured value is printed (typically 293–300). |
 | **[0.4] Keyboard, scripted** | `test=keyboard`, with `tests/qmp_keys.py` typing `a, Shift+B, Caps Lock, a, Caps Lock, Shift+1, Up, right Ctrl, Enter, keypad Enter` | every event decoded exactly, **in order**: scancode, key name, character and flags. For example `'B'` with `flags=0x03`, `'A'` with Caps (`0x11`), `'!'`, `UP` extended (`0x21`), `RCTRL` (`0x25`), `KP_ENTER` (`0x21`), and the extended release. Nothing dropped or unknown. |
 | **[0.4] Queue overflow** | `test=kbdflood`, with QMP typing 50 keys (100 events) quickly | queue full (**64 kept**), overflow dropped and counted, **kept + dropped + late = 100** (no event lost unaccounted), drop count reported from normal context, kept events are the oldest in order, system ready afterwards |
 | **[0.4] Unexpected IRQ** | `test=irqunexpected` | IRQ2 counted and acknowledged, reported from normal context, system ready, no panic |
-| **[0.5] Console session** | `-kernel`, then `tests/qmp_keys.py --text` types a 32-line session: `x` (opens the console), then commands, edits and errors | first key opens the console and isn't typed; all 32 lines submitted; empty and blank lines give no output; `help` (7 lines, in order); exact `version`; `uptime` twice, advancing; `mem` figures; `cpu` lines; Shift and multiple spaces; tabs; Caps Lock (and case-sensitive names); Backspace; Left+Delete; Home/End/insert; Right/insert; Ctrl/Alt ignored; unknown command; usage error; more than 8 words refused; exactly 8 accepted; **71-character limit** (refusal logged, 66 `a`s echoed); 7 identical `version` outputs; scrolling; `clear`; no dropped keys, panic or unexpected IRQs |
+| **[0.5] Console session** | `-kernel`, then `tests/qmp_keys.py --text` types a 32-line session: `x` (opens the console), then commands, edits and errors | first key opens the console and isn't typed; all 32 lines submitted; empty and blank lines give no output; `help` (7 lines, in order); exact `version`; `uptime` twice, advancing; `mem` figures; `cpu` lines (mode `paging on`); Shift and multiple spaces; tabs; Caps Lock (and case-sensitive names); Backspace; Left+Delete; Home/End/insert; Right/insert; Ctrl/Alt ignored; unknown command; usage error; more than 8 words refused; exactly 8 accepted; **71-character limit** (refusal logged, 66 `a`s echoed); 7 identical `version` outputs; scrolling; `clear`; no dropped keys, panic or unexpected IRQs |
+| **[0.6] Paging and heap at boot** | the normal-boot log | `Paging walk-check: PASS`; page 0 left unmapped; paging self-test: TLB flush on remap, window map/access/unmap, **no page leak** (free pages equal before and after), `PASS`; CR0.PG and CR0.WP set and CR3 page-aligned (bits checked by the script); `Paging enabled: OK`; heap self-test no page leak and `PASS`; `Kernel heap: OK`; no `MISMATCH` anywhere |
+| **[0.6] RAM sizes** | the 16M, 32M, 1G, 4G and module logs | `Paging enabled: OK` and `Kernel heap: OK` at every size |
+| **[0.6] Page faults** | `test=pfnull`, `pfunmapped`, `pfreadonly` (32M) | `CPU exception 14: Page Fault (#PF)`; `CR2=0x00000000` / `0x40000000` / `0x00100000`; decoded `not present, read, kernel mode` / the same / `protection violation, write, kernel mode`; halted |
+| **[0.6] Heap misuse** | `test=heapdouble`, `heapinvalid`, `heapcorrupt` (32M) | crash screen with `Heap: double free of 0xd000…`, `Heap: invalid free of 0x… (pointer not from the heap).`, `Heap: corrupted block at 0xd000… (while freeing 0xd000…)`; halted |
+| **[0.6] Heap exhaustion** | `test=heapexhaust` (32M, so the 16 MiB cap is reachable) | `NULL` at the 16 MiB cap and still `NULL` afterwards; everything freed and `heap_check` OK; **free pages before − after = heap pages grown + page tables** (recomputed by the script); System ready; no panic |
+| **[0.6] Console `mem`** | the console session | after the 0.5 lines, in order: `Paging: enabled (4 KiB pages, identity-mapped kernel)`, `Mapped pages`, `Page tables`, `Kernel heap: … KiB mapped, max 16384 KiB`, `Heap in use`, `Heap free` |
 
 **How the console session is checked:** the console copies each submitted line to serial as `madire> <line>`, followed by the command's output lines, so the test reads exactly what was typed and printed. Only the final, edited line is logged, not the individual keystrokes (those still appear as 0.4 `key:` lines). Every key goes QMP → i8042 → IRQ1 → the unchanged 0.4 driver, decoder and queue → idle loop → console: the keyboard driver is never bypassed.
 
@@ -120,12 +136,12 @@ Keys can be typed into the VM from the host, through VirtualBox's PS/2 keyboard 
 
 ### Test A: normal boot
 
-The GRUB menu shows **Madire OS v0.5** and **Diagnostics**. After 3 seconds it boots the first entry:
+The GRUB menu shows **Madire OS v0.6** and **Diagnostics**. After 3 seconds it boots the first entry:
 
-![Madire OS v0.5 boot screen](images/boot-screen-v0.5.png)
+![Madire OS v0.6 boot screen](images/boot-screen-v0.6.png)
 
-- The M logo is drawn in the blue-to-cyan gradient.
-- Left column: **9 status lines, all `OK`**, including `Timer (PIT, 100 Hz)`, `Keyboard (PS/2)` and `Console & shell` (a self-test of the console code, not of hardware).
+- The M logo is drawn in the blue-to-cyan gradient; `M A D I R E   O S` and `Madire OS v0.6` share one row.
+- Left column: **10 status lines, all `OK`**, including `Paging & kernel heap` (0.6), `Timer (PIT, 100 Hz)`, `Keyboard (PS/2)` and `Console & shell` (a self-test of the console code, not of hardware).
 - Right column: memory figures, then **Uptime**, which counts up every second, and **Last key**, which shows the last key pressed (`none` until then). For `MadireOS-Test` (4096 MB):
 
   | Line | Value |
@@ -135,7 +151,7 @@ The GRUB menu shows **Madire OS v0.5** and **Diagnostics**. After 3 seconds it b
   | RAM above 4 GiB | **512 MB** |
   | Page size | **4096 bytes** |
   | Usable pages | **917391** |
-  | Free pages | **917148** (usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes) |
+  | Free pages | **917140** (usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes). This is taken before paging and the heap start; the console's `mem` then shows 48 fewer (**917092**: 3 page tables, the page directory and 44 heap pages). |
 
 - Bottom row: `System ready. Press any key to open the console.`
 
@@ -147,9 +163,9 @@ Press any key on the boot screen. That key opens the console and **isn't typed**
 
 | Check | Expected |
 |---|---|
-| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.5` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
-| `help`, `version`, `uptime` | the 7-command list; `Madire OS v0.5 (32-bit x86, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
-| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages; CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode |
+| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.6` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
+| `help`, `version`, `uptime` | the 7-command list; `Madire OS v0.6 (32-bit x86, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
+| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages, then (0.6) `Paging: enabled (4 KiB pages, identity-mapped kernel)`, `Mapped pages: 347`, `Page tables: 3`, `Kernel heap: 176 KiB mapped, max 16384 KiB`, `Heap in use: 0 KiB in 0 blocks`, `Heap free: 176 KiB, largest block 175 KiB`; CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode `32-bit protected mode, paging on, 1 CPU in use` |
 | Editing | `echo hellx`, Backspace, `o` → `hello`; `echo abXc`, Left, Left, Delete → `abc`; `cho world`, Home, `e`, End, `!` → `world!`; Right and insert → `hello` |
 | Shift, Caps Lock, Tab | `echo   Hello   World!` → `Hello World!`; Caps Lock, `echo abc` → `ECHO ABC` (unknown: names are lowercase); `echo`, Tab, `a`, Tab, Tab, `b` → `a b` |
 | Errors (red) | `foo` → `Unknown command: foo. …`; `version x` → `Usage: version`; `echo 1 2 3 4 5 6 7 8` → `Too many arguments (max 8).` |
@@ -157,7 +173,9 @@ Press any key on the boot screen. That key opens the console and **isn't typed**
 | Empty lines | Enter alone, or spaces then Enter: just a new prompt |
 | Scrolling, clear | several `help`s scroll the screen, with the prompt on the bottom row; `clear` leaves only the prompt on row 0 |
 
-![mem and cpu](images/console-mem-cpu-v0.5.png)
+![mem with paging and heap (0.6)](images/console-mem-v0.6.png)
+
+![mem and cpu (0.5)](images/console-mem-cpu-v0.5.png)
 
 ![Editing, errors and the 71-character limit](images/console-editing-v0.5.png)
 
@@ -177,7 +195,7 @@ The other two crash entries should show `Invalid Opcode (#UD)` and `General Prot
 
 | Entry | Expected |
 |---|---|
-| **Memory test: allocate every page** | after **about a minute** on a 4 GB VM, `Memory exhaustion test: PASS (917148 pages)` and `System ready.` Uptime keeps counting during the test. Afterwards the console's `mem` shows free pages back at 917148. |
+| **Memory test: allocate every page** | after **about 90 seconds** on a 4 GB VM (each page goes through the physical-access window since 0.6), `Memory exhaustion test: PASS (917092 pages)` and `System ready.` That is the boot panel's free pages minus the 48 frames paging and the heap already hold. Afterwards the console's `mem` shows free pages back at 917092 and the heap figures unchanged. |
 | **Memory test: double free** | crash screen: `Double free of physical page 0x…` |
 | **Memory test: free a kernel page** | crash screen: `Attempt to free reserved page 0x00100000` |
 
@@ -192,11 +210,25 @@ The other two crash entries should show `Invalid Opcode (#UD)` and `General Prot
 
 ### Test E: keyboard diagnostic
 
-**Diagnostics → Keyboard test: show key codes.** Each key event appears in the panel area, with `>` marking the newest line. After 9 lines it wraps to the top. Reboot to exit. (This diagnostic never opens the console.)
+**Diagnostics → Keyboard test: show key codes.** Each key event appears in the panel area, with `>` marking the newest line. After 10 lines it wraps to the top. Reboot to exit. (This diagnostic never opens the console.)
 
 ![Keyboard diagnostic: Shift+A, Up, Caps Lock](images/keyboard-diag-v0.4.png)
 
 Check: Shift+A gives `LSHIFT` and then `'A'` with `flags=0x03`; Up is `UP` with `flags=0x21` (extended); Caps Lock toggles (`0x11` on, `0x01` off), and `a` gives `'A'` while it's on.
+
+### Test G: page-fault diagnostics (0.6)
+
+**Diagnostics → Page-fault test: …**. Each ends on the crash screen with `CPU exception 14: Page Fault (#PF)` and a decoded line under the error code:
+
+| Entry | Error code | Decoded line | CR2 |
+|---|---|---|---|
+| read from NULL | `0x00000000` | `Page fault: not present, read, kernel mode, address 0x00000000` | `0x00000000` |
+| read from unmapped address | `0x00000000` | `Page fault: not present, read, kernel mode, address 0x40000000` | `0x40000000` |
+| write to read-only kernel code | `0x00000003` | `Page fault: protection violation, write, kernel mode, address 0x00100000` | `0x00100000` |
+
+![Page fault: write to read-only kernel code](images/pagefault-v0.6.png)
+
+The four heap diagnostics (`heapdouble`, `heapinvalid`, `heapcorrupt`, `heapexhaust`) have no GRUB entries; they run in QEMU only (section 1b).
 
 ### Troubleshooting by layer
 
@@ -219,6 +251,12 @@ Check: Shift+A gives `LSHIFT` and then `'A'` with `flags=0x03`; Up is `UP` with 
 | Crash screen: `PIC mask is 0x…, expected 0x…` | IRQ layer | An IRQ line other than 0/1 was unmasked: a kernel bug |
 | Logo in wrong colours | VGA palette | `drivers/vga/vga_text.c` `vga_set_palette()` |
 | Crash screen: `Memory: …` or `Memory self-test failed: …` | Memory | The message names the problem; see `docs/architecture.md` |
+| `Paging & kernel heap: FAILED (paging)` | Paging | The walk-check found a mismatch (or the CPU has no CPUID): the `Paging check: … MISMATCH` line in the serial log names the address; paging stays off, the heap is disabled, boot continues |
+| `Paging & kernel heap: FAILED (heap)` | Kernel heap | `Kernel heap self-test:` lines in the serial log; `kmalloc` returns `NULL` from then on |
+| Crash screen: `Paging self-test failed` | Paging | Paging was on but the self-test failed; `Paging self-test: … MISMATCH` in the serial log |
+| Crash screen: exception 14 outside the page-fault tests | A kernel bug | The `Page fault:` line gives the access type and address (CR2); EIP is the faulting instruction |
+| Crash screen: `Heap: …` | Kernel heap misuse | Double free, invalid free or a corrupted block: a kernel bug; the message gives the pointer |
+| Crash screen: `kmalloc: called with interrupts disabled` | Kernel heap | `kmalloc`/`kcalloc`/`kfree` called from an IRQ/exception handler or with interrupts off |
 | Panel shows less usable RAM than the VM has | Expected | RAM above 4 GiB and firmware-reserved areas aren't usable by a 32-bit kernel |
 | `build.ps1`: `open local "build/madire-os.iso": Broken pipe` | VM running | Power off `MadireOS-Test`, then build again |
 | `run.ps1`: "state is Saved" | VM state | Use the current `run.ps1`, which discards saved states automatically (since commit `f07b517`) |

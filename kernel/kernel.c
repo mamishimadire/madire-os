@@ -13,6 +13,7 @@
 #include "drivers/keyboard/ps2kbd.h"
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
+#include "kernel/arch/x86/cpuid.h"
 #include "kernel/arch/x86/gdt.h"
 #include "kernel/arch/x86/idt.h"
 #include "kernel/arch/x86/interrupts.h"
@@ -23,8 +24,12 @@
 #include "kernel/devtest.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
+#include "kernel/memory/kmalloc.h"
 #include "kernel/memory/memory.h"
 #include "kernel/memory/memtest.h"
+#include "kernel/memory/paging.h"
+#include "kernel/memory/vm_layout.h"
+#include "kernel/memory/vmtest.h"
 #include "kernel/multiboot.h"
 #include "kernel/panic.h"
 #include "kernel/timer.h"
@@ -61,6 +66,13 @@ static void run_diagnostics(void)
         devtest_irq_unexpected();
     } else if (cmdline_has("test=memexhaust")) {
         bootscreen_message("Memory test: allocating every free page...");
+        /* Frames other owners hold before the test (the test leaves them
+         * alone and must count exactly this many). */
+        uint32_t tables = paging_enabled() ? paging_stats()->page_tables : 0;
+        uint32_t dirs = paging_enabled() ? 1 : 0;
+        uint32_t heap_pages = kheap_stats()->arena_bytes >> 12;
+        klogf("Memory exhaustion test: frames in use before the test: %u page tables + %u directory"
+              " + %u heap pages = %u\n", tables, dirs, heap_pages, tables + dirs + heap_pages);
         char line[80];
         ksnprintf(line, sizeof(line), "Memory exhaustion test: PASS (%u pages)", memtest_exhaust());
         bootscreen_message(line);
@@ -70,6 +82,28 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=freereserved")) {
         bootscreen_message("Memory test: free a kernel page");
         memtest_free_reserved();
+    } else if (cmdline_has("test=heapdouble")) {
+        bootscreen_message("Heap test: double free");
+        vmtest_heap_double();
+    } else if (cmdline_has("test=heapinvalid")) {
+        bootscreen_message("Heap test: free a stack address");
+        vmtest_heap_invalid();
+    } else if (cmdline_has("test=heapcorrupt")) {
+        bootscreen_message("Heap test: corrupted block header");
+        vmtest_heap_corrupt();
+    } else if (cmdline_has("test=heapexhaust")) {
+        bootscreen_message("Heap test: allocating until the heap is full...");
+        bootscreen_message(vmtest_heap_exhaust() ? "Heap exhaustion test: PASS"
+                                                 : "Heap exhaustion test: FAIL (see serial log)");
+    } else if (cmdline_has("test=pfnull")) {
+        bootscreen_message("Page-fault test: read from NULL");
+        vmtest_pf_null();
+    } else if (cmdline_has("test=pfunmapped")) {
+        bootscreen_message("Page-fault test: read from unmapped 0x40000000");
+        vmtest_pf_unmapped();
+    } else if (cmdline_has("test=pfreadonly")) {
+        bootscreen_message("Page-fault test: write to read-only kernel code");
+        vmtest_pf_readonly();
     } else if (cmdline_has("test=divzero")) {
         bootscreen_message("Crash test: divide by zero");
         __asm__ volatile ("mov $10, %%eax\n\t"
@@ -234,6 +268,33 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_status("Memory initialization:", BOOT_OK, note);
     bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
     bootscreen_memory(&mem);
+
+    /* Paging: build, walk-check, enable; before any IRQ is unmasked. A
+     * failed check leaves paging off; a failed self-test once it is on is
+     * fatal. Then the kernel heap, only with paging on: a failure disables
+     * it (kmalloc returns NULL) and boot continues. */
+    bool paging_on = paging_init();
+    if (paging_on && !paging_selftest())
+        panic("Paging self-test failed (details on the serial log).");
+    bool heap_ok = paging_on && kheap_init() && kheap_selftest();
+
+    const struct paging_stats *ps = paging_stats();
+    char paging_note[96], heap_note[80];
+    if (paging_on)
+        ksnprintf(paging_note, sizeof(paging_note),
+                  "CR0=0x%08x CR3=0x%08x, %u page tables, %u pages mapped, self-test PASS",
+                  cpu_read_cr0(), ps->cr3, ps->page_tables, ps->mapped_pages);
+    else
+        ksnprintf(paging_note, sizeof(paging_note), "paging left off (see the paging lines above)");
+    if (heap_ok)
+        ksnprintf(heap_note, sizeof(heap_note), "%u KiB at 0x%08x, max %u KiB, self-test PASS",
+                  kheap_stats()->arena_bytes / 1024, VM_HEAP_BASE, VM_HEAP_MAX / 1024);
+    else
+        ksnprintf(heap_note, sizeof(heap_note), "%s; kmalloc returns NULL",
+                  paging_on ? "set-up or self-test failed" : "needs paging, which is off");
+    bootscreen_status_pair("Paging & kernel heap:",
+                           "Paging enabled:", "paging", paging_on ? BOOT_OK : BOOT_FAILED, paging_note,
+                           "Kernel heap:", "heap", heap_ok ? BOOT_OK : BOOT_FAILED, heap_note);
 
     bool keyboard_ok = start_devices();
     bootscreen_uptime(timer_uptime_seconds());
