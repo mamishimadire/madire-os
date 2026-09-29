@@ -17,6 +17,20 @@ void vmtest_pf_unmapped(void) __attribute__((noreturn));
 /* test=pfreadonly: write to the first kernel code page (read-only, CR0.WP). */
 void vmtest_pf_readonly(void) __attribute__((noreturn));
 
+/* test=pfnx: run kernel code (must work), then call a data page holding a
+ * `ret`. With NX in use that must end on the crash screen: exception 14,
+ * error code 0x11 (present, instruction fetch), "NX violation", CR2 = the
+ * page. Without NX the `ret` runs and this returns after reporting the test
+ * as NOT APPLICABLE (a skipped test is never reported as a pass). */
+void vmtest_pf_nx(void);
+
+/* test=stackoverflow: recurse with a 512-byte frame until the kernel stack
+ * runs into its guard page. That must end on the crash screen: exception 8
+ * (#DF, handled on the IST1 stack) and "kernel stack overflow" with RSP in
+ * the guard page. Without paging there is no guard page: this returns after
+ * reporting the test as NOT APPLICABLE. */
+void vmtest_stack_overflow(void);
+
 /*
  * Kernel heap diagnostics (QEMU only, no GRUB entries). The first three
  * must end on the crash screen with the kfree error message.

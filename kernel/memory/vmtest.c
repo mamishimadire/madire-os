@@ -4,6 +4,7 @@
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/memory/vmtest.h"
 #include "kernel/panic.h"
@@ -14,11 +15,13 @@ extern char __text_start[];
 
 /* The target address goes through a volatile variable so the compiler
  * cannot see (and reject or optimise away) the deliberate bad access. */
-static void report_target(const char *what, uint32_t addr)
+typedef unsigned long long ull;
+
+static void report_target(const char *what, uint64_t addr)
 {
-    uint32_t phys = 0, flags = 0;
+    uint64_t phys = 0, flags = 0;
     bool mapped = paging_translate(addr, &phys, &flags);
-    klogf("Page-fault test: %s at 0x%08x (paging %s; %s)\n", what, addr,
+    klogf("Page-fault test: %s at 0x%016llx (paging %s; %s)\n", what, (ull)addr,
           paging_enabled() ? "on" : "off",
           !mapped ? "not mapped" : (flags & 0x2u) ? "mapped read/write" : "mapped read-only");
 }
@@ -26,7 +29,7 @@ static void report_target(const char *what, uint32_t addr)
 void vmtest_pf_null(void)
 {
     static volatile uintptr_t target = 0;
-    report_target("read", (uint32_t)target);
+    report_target("read", target);
     volatile uint32_t v = *(volatile uint32_t *)target;
     (void)v;
     panic("Page-fault test: read from NULL was not detected.");
@@ -35,7 +38,7 @@ void vmtest_pf_null(void)
 void vmtest_pf_unmapped(void)
 {
     static volatile uintptr_t target = PF_UNMAPPED_ADDR;
-    report_target("read", (uint32_t)target);
+    report_target("read", target);
     volatile uint32_t v = *(volatile uint32_t *)target;
     (void)v;
     panic("Page-fault test: read from an unmapped address was not detected.");
@@ -45,9 +48,92 @@ void vmtest_pf_readonly(void)
 {
     static volatile uintptr_t target;
     target = (uintptr_t)__text_start;
-    report_target("write", (uint32_t)target);
+    report_target("write", target);
     *(volatile uint32_t *)target = 0xDEADBEEFu;
     panic("Page-fault test: write to read-only kernel code was not detected.");
+}
+
+/* ---- no-execute (NX) ---- */
+
+/* A page used only by the NX test: .bss is data, so it is mapped
+ * no-execute when NX is in use. It holds a single `ret`. */
+static uint8_t nx_test_page[4096] __attribute__((aligned(4096)));
+
+/* Kernel code (.text): must run whether or not NX is in use. */
+static __attribute__((noinline)) uint32_t nx_exec_probe(void)
+{
+    return 0x5A5A5A5Au;
+}
+
+static const char *nx_bit_str(uint64_t va)
+{
+    uint64_t flags = 0;
+    if (!paging_translate(va, 0, &flags))
+        return "not mapped";
+    return (flags & PTE_NX) ? "NX bit set" : "no NX bit";
+}
+
+void vmtest_pf_nx(void)
+{
+    const struct paging_stats *ps = paging_stats();
+    /* Called through volatile pointers: the compiler can neither inline the
+     * code-page call nor see (and reject) the deliberate data-page call. */
+    uint32_t (*volatile exec_probe)(void) = nx_exec_probe;
+    uint64_t code = (uint64_t)(uintptr_t)nx_exec_probe;
+    uint32_t result = exec_probe();
+    klogf("NX test: executable page: kernel code at 0x%016llx (%s) ran, returned 0x%08x (%s)\n",
+          (ull)code, nx_bit_str(code), result, result == 0x5A5A5A5Au ? "correct" : "WRONG");
+    if (result != 0x5A5A5A5Au)
+        panic("NX test: kernel code did not run correctly.");
+
+    nx_test_page[0] = 0xC3;                         /* ret */
+    uint64_t data = (uint64_t)(uintptr_t)nx_test_page;
+    klogf("NX test: data page at 0x%016llx (%s); NX %s; calling it\n", (ull)data,
+          nx_bit_str(data), ps->nx ? "in use: this must fault" : "not in use: it will run");
+    void (*volatile data_code)(void) = (void (*)(void))(uintptr_t)data;
+    data_code();
+
+    /* Only reached if the instruction fetch was allowed. */
+    if (ps->nx)
+        panic("NX test: an instruction fetch from a no-execute page was not detected.");
+    klogf("NX test: NOT APPLICABLE: NX not supported by this CPU; the data page executed "
+          "without a fault, so no-execute protection could not be tested\n");
+}
+
+/* ---- kernel stack guard page ---- */
+
+extern char kstack_guard[], stack_bottom[], stack_top[];
+
+/* Each level keeps a 512-byte buffer live across the next call, so every
+ * level really uses the stack. The depth limit is never reached (it only
+ * keeps the compiler from treating this as infinite recursion). */
+static __attribute__((noinline)) uint32_t stack_eater(uint32_t depth)
+{
+    volatile uint8_t buf[512];
+    buf[0] = (uint8_t)depth;
+    buf[sizeof(buf) - 1] = (uint8_t)depth;
+    if (depth >= 0x100000u)
+        return depth;
+    return stack_eater(depth + 1) + buf[0] + buf[sizeof(buf) - 1];
+}
+
+void vmtest_stack_overflow(void)
+{
+    uint64_t rsp;
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
+    uint64_t guard = (uint64_t)(uintptr_t)kstack_guard;
+    if (!paging_enabled()) {
+        klogf("Stack test: NOT APPLICABLE: paging is off, so there is no guard page to hit\n");
+        return;
+    }
+    klogf("Stack test: kernel stack 0x%016llx-0x%016llx, RSP 0x%016llx, guard page "
+          "0x%016llx (%s); recursing until the stack overflows\n",
+          (ull)(uintptr_t)stack_bottom, (ull)(uintptr_t)stack_top, (ull)rsp, (ull)guard,
+          nx_bit_str(guard));
+    uint32_t (*volatile eat)(uint32_t) = stack_eater;
+    uint32_t r = eat(0);
+    klogf("Stack test: recursion returned %u\n", r);
+    panic("Stack test: kernel stack overflow was not detected.");
 }
 
 /* ---- kernel heap ---- */
@@ -57,7 +143,7 @@ void vmtest_heap_double(void)
     void *p = kmalloc(64);
     if (!p)
         panic("Heap test: kmalloc(64) returned NULL (heap disabled?).");
-    klogf("Heap test: freeing 0x%08x twice\n", (uint32_t)(uintptr_t)p);
+    klogf("Heap test: freeing 0x%016llx twice\n", (ull)(uintptr_t)p);
     kfree(p);
     kfree(p);                                       /* must panic */
     panic("Heap test: double free was not detected.");
@@ -66,7 +152,7 @@ void vmtest_heap_double(void)
 void vmtest_heap_invalid(void)
 {
     uint32_t local[4] __attribute__((aligned(16))) = { 0 };
-    klogf("Heap test: freeing stack address 0x%08x\n", (uint32_t)(uintptr_t)local);
+    klogf("Heap test: freeing stack address 0x%016llx\n", (ull)(uintptr_t)local);
     kfree(local);                                   /* must panic */
     panic("Heap test: invalid free was not detected.");
 }
@@ -77,8 +163,8 @@ void vmtest_heap_corrupt(void)
     if (!p)
         panic("Heap test: kmalloc(64) returned NULL (heap disabled?).");
     volatile uint32_t *header = p - HEAP_HEADER / sizeof(uint32_t);
-    klogf("Heap test: overwriting the header at 0x%08x, then freeing 0x%08x\n",
-          (uint32_t)(uintptr_t)header, (uint32_t)(uintptr_t)p);
+    klogf("Heap test: overwriting the header at 0x%016llx, then freeing 0x%016llx\n",
+          (ull)(uintptr_t)header, (ull)(uintptr_t)p);
     header[0] = 0x0BADC0DEu;                        /* the magic */
     kfree(p);                                       /* must panic */
     panic("Heap test: corrupted header was not detected.");

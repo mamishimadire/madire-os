@@ -1,6 +1,6 @@
 # Roadmap
 
-Each milestone must build, pass `make test`, boot in VirtualBox, and update the docs before the next one starts.
+Each milestone must build, pass `make test`, boot in VirtualBox, and update the docs before the next one starts. [PROGRESS.md](PROGRESS.md) has the commit history, the tests at each milestone, the decision log and the longer-term direction.
 
 | Milestone | Goal | Status |
 |---|---|---|
@@ -9,24 +9,27 @@ Each milestone must build, pass `make test`, boot in VirtualBox, and update the 
 | **0.3** | Memory foundation: validated Multiboot memory map, reservations (low 1 MiB, kernel, boot data, modules), bitmap physical page allocator, boot self-test, real RAM figures on screen | done (booted in VirtualBox 2026-09-28) |
 | **0.4** | Hardware interrupts: IRQ layer (registration, mask/unmask, single EOI point); PIT timer at 100 Hz on IRQ0 (uptime, bounded waits); PS/2 keyboard on IRQ1 (set 1 decoder, modifiers, extended keys, 64-event queue); idle event loop; timer/keyboard/IRQ self-tests and diagnostics | done (booted in VirtualBox 2026-09-28) |
 | **0.5** | Kernel console and basic command shell: scrolling 80×25 console with hardware cursor; line editor (insert, Backspace, Delete, Left/Right/Home/End, 71 characters); parser; `help`, `clear`, `version`, `uptime`, `mem`, `cpu` (CPUID), `echo`; pure modules unit-tested; console session tested through the real keyboard path | done (booted in VirtualBox 2026-09-28) |
-| **0.6** | Paging (virtual memory foundation) and kernel heap: identity-mapped kernel with page 0 unmapped (NULL guard), kernel code read-only (CR0.WP), free RAM unmapped; page tables walk-checked before paging is enabled; recursive page-table access; map/unmap/translate with per-page TLB flushes; physical-access window; decoded page-fault crash line; `kmalloc`/`kcalloc`/`kfree` (first-fit, boundary tags, 16-byte alignment, double/invalid free and corruption detection, grows to a 16 MiB cap); `mem` shows paging and heap figures | done (booted in VirtualBox 2026-09-28) |
-| **0.7** (next) | 64-bit (x86_64) and higher-half kernel. All 0.6 layout constants are in `kernel/memory/vm_layout.h`, so the move changes that file, the linker script and the boot code. | planned |
-| 0.8 | Processes: tasks and a round-robin scheduler, then user mode, system calls and a first user program loaded from a GRUB module | planned |
-| 0.9 | Filesystem: VFS and an initial RAM disk | planned |
-| 1.0 | Interactive shell that can run programs. The console, line editing and built-in commands exist since 0.5; history, more commands and running user programs build on them. | planned |
+| **0.6** | Paging (virtual memory foundation) and kernel heap: identity-mapped kernel with page 0 unmapped (NULL guard), kernel code read-only (CR0.WP), free RAM unmapped; page tables walk-checked before paging is enabled; recursive page-table access; map/unmap/translate with per-page TLB flushes; physical-access window; decoded page-fault crash line; `kmalloc`/`kcalloc`/`kfree`; `mem` shows paging and heap figures | done (booted in VirtualBox 2026-09-28) |
+| **0.7** | 64-bit long mode, kernel still identity-mapped at 1 MiB: 32-bit boot stub (CPU checks, clear message and halt without long mode or PAE, temporary tables, switch to long mode); 64-bit GDT, TSS and IDT; 4-level paging, walk-checked before it is loaded; NX on everything except kernel code; IST1 double-fault stack and unmapped guard pages below the kernel and IST1 stacks; heap moved to `0xFFFFFE8000000000`; 64-bit crash screen; `pfnx` and `stackoverflow` diagnostics; boot-module integrity check; the 32-bit build dropped | done (booted in VirtualBox 2026-09-29) |
+| **0.8** (next) | Higher-half kernel: the kernel moves to `0xFFFFFFFF80000000` (PML4 slot 511, kept free in 0.7) and the low identity mapping is removed | planned |
+| 0.9 | Processes: tasks and a scheduler, user mode, system calls, a first user program. The plan must consider Linux/POSIX-compatible system calls (for porting Chromium, Linux applications and Wine). | planned |
+| 1.0 | Filesystem: a virtual filesystem layer and an initial RAM disk, then disk filesystems | planned |
 
-Order decided in 0.6: paging and heap (0.6), then the 64-bit, higher-half kernel, then processes and the filesystem. The earlier "0.6: cross-compiler and CI" item moved to the later stages below.
+Order decided in 0.7 planning: 64-bit long mode (0.7), then the higher-half kernel (0.8), then processes (0.9) and the filesystem (1.0).
 
-## Later stages (order to be decided)
+**Candidate items for 0.8** (to be decided in its plan): show the boot-module integrity result on the boot screen's message line, for real hardware without a serial port; a stack high-water measurement (before processes); make the `test_reserve` unit test independent of the test binary's load address; a reproducible build (objects linked in a fixed, sorted order).
 
-- **Toolchain:** dedicated `i686-elf` (or `x86_64-elf`) cross-compiler; CI build on every push (GitHub Actions)
-- **Memory (after 0.6):** stack guard page (needs a separate double-fault stack to report it), 2/4 MiB pages, a heap that can give memory back, faster `kfree` validation (today it checks the whole heap on every free), per-CPU or interrupt-safe allocation
-- **Platform:** EFI boot + framebuffer graphics (the logo's stroke geometry can then be drawn with smooth edges), SMP (multiple CPUs), double-fault stack (TSS)
-- **Memory:** use RAM above 4 GiB (needs PAE or 64-bit; 512 MB on `MadireOS-Test` today); reclaim ACPI-reclaimable memory after the ACPI tables are parsed; revisit the whole-low-1 MiB reservation when something needs low memory (e.g. starting other CPU cores)
-- **Drivers:** storage (ATA/AHCI), disk filesystem, mouse, USB, network (virtio/e1000), audio, all behind a Hardware Abstraction Layer
-- **Console (after 0.5):** command history, tab completion, scrollback, word-aware wrapping of long output lines
-- **Input and time (after 0.4):** keyboard LEDs (needs the command/ACK protocol), non-US layouts, Num Lock state; Local APIC/IOAPIC instead of the 8259 PIC; RTC interrupts, HPET or a calibrated TSC if finer timing is needed
-- **Security:** users, permissions, application permissions, secure boot and update architecture
-- **Networking:** TCP/IP stack
-- **User experience:** desktop environment, settings, application runtime
-- **Distribution:** Madire Store, update system
+## Later stages (direction only; planned, not committed)
+
+- **Toolchain:** a dedicated `x86_64-elf` cross-compiler if the host compiler ever becomes a problem; CI build on every push (GitHub Actions)
+- **Memory:** 2 MiB pages for the kernel, a heap that can give memory back, faster `kfree` validation (today it checks the whole heap on every free), per-CPU or interrupt-safe allocation; use RAM above 4 GiB; reclaim ACPI-reclaimable memory after the ACPI tables are parsed; revisit the whole-low-1 MiB reservation when something needs low memory (e.g. starting other CPU cores)
+- **Platform:** UEFI boot and an installer, framebuffer graphics (the logo's stroke geometry can then be drawn with smooth edges), SMP (multiple CPUs), Local APIC/IOAPIC instead of the 8259 PIC
+- **Hardware and drivers:** storage (ATA/AHCI/NVMe), disk filesystems, mouse, USB, network, Wi-Fi, Bluetooth, audio, sensors, all behind a Hardware Abstraction Layer
+- **Console:** command history, tab completion, scrollback, word-aware wrapping of long output lines
+- **Input and time:** keyboard LEDs, non-US layouts and input methods, Num Lock state; RTC interrupts, HPET or a calibrated TSC for finer timing
+- **Security:** the Madire Security Platform (see [PROGRESS.md](PROGRESS.md))
+- **User experience:** graphics and desktop, settings, accessibility, languages, power management, backup and recovery, built-in apps, system utilities
+- **Apps and distribution:** application runtime, the Madire Browser, the Madire Store, update system
+- **Later:** AI features, virtualisation and containers, speech, enterprise management, media codecs (licensing required)
+
+Phones (likely ARM64) come after computers and laptops, which is why CPU-specific code stays under `kernel/arch/`.

@@ -19,6 +19,7 @@
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pic.h"
+#include "kernel/bootmod.h"
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
@@ -50,6 +51,69 @@ static int cmdline_has(const char *word)
             return 1;
     }
     return 0;
+}
+
+/*
+ * Long-mode proof, read from the CPU itself (serial log): EFER (LME set by
+ * the stub, LMA set by the CPU once paging was switched on), CR0, CR4, the
+ * code segment's descriptor (L bit), the task register and the GDTR. Plus
+ * 64-bit arithmetic on values above 2^32, without libgcc.
+ */
+static void log_cpu_mode(void)
+{
+    struct __attribute__((packed)) { uint16_t limit; uint64_t base; } gdtr;
+    uint16_t cs, tr;
+    __asm__ volatile ("sgdt %0" : "=m"(gdtr));
+    __asm__ volatile ("mov %%cs, %0" : "=r"(cs));
+    __asm__ volatile ("str %0" : "=r"(tr));
+    uint64_t efer = cpu_read_efer(), cr4 = cpu_read_cr4(), desc = gdt_descriptor(cs);
+    uint32_t cr0 = cpu_read_cr0();
+    unsigned lme = !!(efer & EFER_LME), lma = !!(efer & EFER_LMA), nxe = !!(efer & EFER_NXE);
+    unsigned l_bit = (desc >> 53) & 1, d_bit = (desc >> 54) & 1;
+
+    klogf("CPU mode: EFER=0x%016llx (LME=%u LMA=%u NXE=%u) CR0=0x%08x (PE=%u PG=%u WP=%u) "
+          "CR4=0x%016llx (PAE=%u)\n", (unsigned long long)efer, lme, lma, nxe, cr0,
+          !!(cr0 & CR0_PE), !!(cr0 & CR0_PG), !!(cr0 & CR0_WP), (unsigned long long)cr4,
+          !!(cr4 & CR4_PAE));
+    klogf("CPU mode: CS=0x%04x descriptor=0x%016llx (L=%u D=%u) TR=0x%04x "
+          "GDTR base=0x%016llx limit=0x%04x\n", cs, (unsigned long long)desc, l_bit, d_bit,
+          tr, (unsigned long long)gdtr.base, gdtr.limit);
+
+    volatile uint64_t a = 0x123456789ABCDEF0ull, b = 0x1234567ull;
+    uint64_t q = a / b, r = a % b;
+    bool arith = q == 0x1000000790ull && r == 0x400ull && q * b + r == a;
+    bool long_mode = lme && lma && (cr0 & CR0_PG) && (cr4 & CR4_PAE) && l_bit && !d_bit &&
+                     sizeof(void *) == 8;
+    klogf("CPU mode: %s; 64-bit arithmetic %s\n",
+          long_mode ? "64-bit long mode active" : "long mode NOT active",
+          arith ? "PASS" : "WRONG");
+}
+
+/* Checks every Multiboot module after start-up (memory, paging and heap are
+ * set up by now): a test module (kernel/bootmod.h) must still be intact,
+ * which proves nothing the kernel set up was placed on top of it. Serial
+ * log only; boot continues either way. */
+static void check_boot_modules(const struct multiboot_info *mbi)
+{
+    if (!(mbi->flags & MULTIBOOT_INFO_MODS) || mbi->mods_count == 0) {
+        klogf("Boot modules: none\n");
+        return;
+    }
+    const struct multiboot_module *mods =
+        (const struct multiboot_module *)(uintptr_t)mbi->mods_addr;
+    for (uint32_t i = 0; i < mbi->mods_count; i++) {
+        uint32_t size = mods[i].mod_end - mods[i].mod_start;
+        struct bootmod_result r;
+        enum bootmod_status s =
+            bootmod_check((const uint8_t *)(uintptr_t)mods[i].mod_start, size, &r);
+        if (s == BOOTMOD_NO_HEADER)
+            klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s\n", i + 1, mods[i].mod_start,
+                  mods[i].mod_end, size, bootmod_status_str(s));
+        else
+            klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s (FNV-1a 0x%08x, expected 0x%08x)\n",
+                  i + 1, mods[i].mod_start, mods[i].mod_end, size, bootmod_status_str(s),
+                  r.actual, r.expected);
+    }
 }
 
 /* Diagnostics: GRUB's "Diagnostics" menu (or QEMU -append) passes test=<name>
@@ -101,6 +165,14 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=pfunmapped")) {
         bootscreen_message("Page-fault test: read from unmapped 0x40000000");
         vmtest_pf_unmapped();
+    } else if (cmdline_has("test=pfnx")) {
+        bootscreen_message("Page-fault test: execute from a no-execute data page");
+        vmtest_pf_nx();                             /* returns only without NX */
+        bootscreen_message("NX test: NOT APPLICABLE (NX not supported by this CPU)");
+    } else if (cmdline_has("test=stackoverflow")) {
+        bootscreen_message("Crash test: kernel stack overflow into the guard page");
+        vmtest_stack_overflow();                    /* returns only without paging */
+        bootscreen_message("Stack test: NOT APPLICABLE (paging is off, no guard page)");
     } else if (cmdline_has("test=pfreadonly")) {
         bootscreen_message("Page-fault test: write to read-only kernel code");
         vmtest_pf_readonly();
@@ -242,8 +314,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
 
     bootscreen_draw_header();
 
-    bootscreen_status("GDT loaded:", gdt_init() ? BOOT_OK : BOOT_FAILED, NULL);
+    bootscreen_status("GDT loaded:", gdt_init() ? BOOT_OK : BOOT_FAILED,
+                      "64-bit code 0x08, data 0x10, TSS 0x18 (IST1 double-fault stack)");
     bootscreen_status("IDT loaded (256 entries):", idt_init() ? BOOT_OK : BOOT_FAILED, NULL);
+    log_cpu_mode();
     bootscreen_status("Interrupt controller:", pic_init() ? BOOT_OK : BOOT_FAILED,
                       "remapped, IRQs masked");
 
@@ -279,22 +353,26 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bool heap_ok = paging_on && kheap_init() && kheap_selftest();
 
     const struct paging_stats *ps = paging_stats();
-    char paging_note[96], heap_note[80];
+    char paging_note[112], heap_note[80];
     if (paging_on)
         ksnprintf(paging_note, sizeof(paging_note),
-                  "CR0=0x%08x CR3=0x%08x, %u page tables, %u pages mapped, self-test PASS",
-                  cpu_read_cr0(), ps->cr3, ps->page_tables, ps->mapped_pages);
+                  "CR0=0x%08x CR3=0x%016llx, %u page tables, %u pages mapped, self-test PASS",
+                  cpu_read_cr0(), (unsigned long long)ps->cr3, ps->page_tables, ps->mapped_pages);
     else
-        ksnprintf(paging_note, sizeof(paging_note), "paging left off (see the paging lines above)");
+        ksnprintf(paging_note, sizeof(paging_note),
+                  "kernel page tables not loaded; still on the boot page tables (see above)");
     if (heap_ok)
-        ksnprintf(heap_note, sizeof(heap_note), "%u KiB at 0x%08x, max %u KiB, self-test PASS",
-                  kheap_stats()->arena_bytes / 1024, VM_HEAP_BASE, VM_HEAP_MAX / 1024);
+        ksnprintf(heap_note, sizeof(heap_note), "%u KiB at 0x%016llx, max %u KiB, self-test PASS",
+                  kheap_stats()->arena_bytes / 1024, (unsigned long long)VM_HEAP_BASE,
+                  VM_HEAP_MAX / 1024);
     else
         ksnprintf(heap_note, sizeof(heap_note), "%s; kmalloc returns NULL",
                   paging_on ? "set-up or self-test failed" : "needs paging, which is off");
     bootscreen_status_pair("Paging & kernel heap:",
                            "Paging enabled:", "paging", paging_on ? BOOT_OK : BOOT_FAILED, paging_note,
                            "Kernel heap:", "heap", heap_ok ? BOOT_OK : BOOT_FAILED, heap_note);
+
+    check_boot_modules(mbi);
 
     bool keyboard_ok = start_devices();
     bootscreen_uptime(timer_uptime_seconds());

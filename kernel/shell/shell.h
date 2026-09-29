@@ -29,6 +29,9 @@ struct shell_context {
     uint32_t page_size;
     const struct cpu_info *cpu;
     uint32_t cr0;
+    uint64_t efer;                          /* 0.7: EFER MSR (0 = not read); LMA
+                                             * picks the 64-bit wording of "cpu"
+                                             * and "version" */
     /* 0.6, optional: when set, "mem" adds a paging and a kernel-heap
      * section; NULL leaves the 0.5 output exactly as it was. */
     const struct paging_stats *paging;

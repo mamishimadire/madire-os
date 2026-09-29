@@ -86,9 +86,10 @@ static void test_exact_extra_lines(void)
     run_mem();
 
     strcpy(expected, base);
-    row(expected, sizeof(expected), "Paging:", "enabled (4 KiB pages, identity-mapped kernel)");
+    row(expected, sizeof(expected), "Paging:", "enabled (4-level, 4 KiB, identity-mapped, NX off)");
     row(expected, sizeof(expected), "Mapped pages:", "   343");
     row(expected, sizeof(expected), "Page tables:", "     3");
+    row(expected, sizeof(expected), "NX:", "not supported by this CPU");
     row(expected, sizeof(expected), "Kernel heap:", "   176 KiB mapped, max 16384 KiB");
     row(expected, sizeof(expected), "Heap in use:", "     0 KiB in 0 blocks");
     row(expected, sizeof(expected), "Heap free:", "   176 KiB, largest block 175 KiB");
@@ -97,6 +98,24 @@ static void test_exact_extra_lines(void)
         printf("--- got:\n%s--- expected:\n%s", out, expected);
     /* One line spelled out in full, so the format itself is pinned too. */
     CHECK(strstr(out, "\nMapped pages:             343\n") != NULL);
+    /* 0.7: with no-execute bits in use the paging line says so, and the NX
+     * row tells supported / enabled apart. */
+    paging.nx_supported = paging.nx_enabled = paging.nx = true;
+    run_mem();
+    char want[160] = "\n";
+    row(want, sizeof(want), "Paging:", "enabled (4-level, 4 KiB, identity-mapped, NX on)");
+    CHECK(strstr(out, want) != NULL);
+    strcpy(want, "\n");
+    row(want, sizeof(want), "NX:", "supported, enabled");
+    CHECK(strstr(out, want) != NULL);
+    paging.nx_enabled = paging.nx = false;          /* supported, but EFER.NXE not set */
+    run_mem();
+    strcpy(want, "\n");
+    row(want, sizeof(want), "NX:", "supported, not enabled");
+    CHECK(strstr(out, want) != NULL);
+    strcpy(want, "\n");
+    row(want, sizeof(want), "Paging:", "enabled (4-level, 4 KiB, identity-mapped, NX off)");
+    CHECK(strstr(out, want) != NULL);
 }
 
 static void test_paging_disabled(void)

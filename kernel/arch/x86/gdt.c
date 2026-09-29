@@ -1,66 +1,88 @@
 /*
- * Global Descriptor Table.
+ * Global Descriptor Table and Task State Segment (x86-64).
  *
- * GRUB leaves its own GDT loaded, and the Multiboot spec says the kernel must
- * not rely on it. Madire OS uses a flat model: code and data segments both
- * cover all 4 GiB, so segmentation does no translation and memory protection
- * will come from paging (milestone 0.5). User-mode segments and the TSS are
- * added with user mode.
+ * GRUB's GDT (and the boot stub's temporary one) are replaced. In long mode
+ * segmentation does no translation: code and data descriptors only select
+ * 64-bit mode and ring 0. The TSS is used only for its Interrupt Stack
+ * Table: IST1 is a separate stack for double faults, so a double fault
+ * caused by a kernel stack overflow can still be reported. User-mode
+ * segments come with user mode.
  */
 #include <stdint.h>
 #include "kernel/arch/x86/gdt.h"
 
-struct gdt_entry {
-    uint16_t limit_low;
-    uint16_t base_low;
-    uint8_t  base_mid;
-    uint8_t  access;
-    uint8_t  granularity;     /* high nibble: flags, low nibble: limit 19:16 */
-    uint8_t  base_high;
+struct tss64 {
+    uint32_t reserved0;
+    uint64_t rsp[3];            /* stacks for privilege changes (unused: ring 0 only) */
+    uint64_t reserved1;
+    uint64_t ist[7];            /* IST1..IST7 */
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iomap_base;        /* = sizeof: no I/O permission bitmap */
 } __attribute__((packed));
 
 struct gdt_ptr {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 } __attribute__((packed));
 
-#define GDT_ACCESS_KERNEL_CODE 0x9A   /* present, ring 0, code, readable */
-#define GDT_ACCESS_KERNEL_DATA 0x92   /* present, ring 0, data, writable */
-#define GDT_FLAGS_4K_32BIT     0xC0   /* 4 KiB granularity, 32-bit */
+#define DESC_KERNEL_CODE 0x00AF9A000000FFFFull  /* present, ring 0, code, L=1 */
+#define DESC_KERNEL_DATA 0x00CF92000000FFFFull  /* present, ring 0, data, writable */
+#define TSS_TYPE_AVAIL   0x89u                  /* present, 64-bit TSS (available) */
 
-static struct gdt_entry gdt[3];
+static uint64_t gdt[5] __attribute__((aligned(16)));
 static struct gdt_ptr gdtr;
+static struct tss64 tss __attribute__((aligned(16)));
 
+extern char ist1_stack_top[];
 extern void gdt_flush(const struct gdt_ptr *gdtr);
 
-static void gdt_set(int i, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags)
+static void set_tss_descriptor(int i, uint64_t base, uint32_t limit)
 {
-    gdt[i].limit_low   = limit & 0xFFFF;
-    gdt[i].base_low    = base & 0xFFFF;
-    gdt[i].base_mid    = (base >> 16) & 0xFF;
-    gdt[i].access      = access;
-    gdt[i].granularity = ((limit >> 16) & 0x0F) | (flags & 0xF0);
-    gdt[i].base_high   = (base >> 24) & 0xFF;
+    gdt[i] = (limit & 0xFFFFull)
+           | ((base & 0xFFFFFFull) << 16)
+           | ((uint64_t)TSS_TYPE_AVAIL << 40)
+           | ((uint64_t)((limit >> 16) & 0xF) << 48)
+           | (((base >> 24) & 0xFFull) << 56);
+    gdt[i + 1] = base >> 32;
+}
+
+uint64_t gdt_descriptor(uint16_t selector)
+{
+    struct gdt_ptr loaded;
+    __asm__ volatile ("sgdt %0" : "=m"(loaded));
+    uint16_t offset = selector & ~7u;
+    if ((uint32_t)offset + 7 > loaded.limit)
+        return 0;
+    return *(const uint64_t *)(uintptr_t)(loaded.base + offset);
 }
 
 bool gdt_init(void)
 {
-    gdt_set(0, 0, 0, 0, 0);                                            /* null */
-    gdt_set(1, 0, 0xFFFFF, GDT_ACCESS_KERNEL_CODE, GDT_FLAGS_4K_32BIT);
-    gdt_set(2, 0, 0xFFFFF, GDT_ACCESS_KERNEL_DATA, GDT_FLAGS_4K_32BIT);
+    tss.ist[0] = (uint64_t)(uintptr_t)ist1_stack_top;
+    tss.iomap_base = sizeof(tss);
+
+    gdt[0] = 0;
+    gdt[1] = DESC_KERNEL_CODE;
+    gdt[2] = DESC_KERNEL_DATA;
+    set_tss_descriptor(3, (uint64_t)(uintptr_t)&tss, sizeof(tss) - 1);
 
     gdtr.limit = sizeof(gdt) - 1;
-    gdtr.base  = (uint32_t)(uintptr_t)&gdt;
+    gdtr.base  = (uint64_t)(uintptr_t)&gdt;
     gdt_flush(&gdtr);
+    __asm__ volatile ("ltr %w0" : : "r"((uint16_t)GDT_TSS));
 
     /* Read back what the CPU is actually using. */
     struct gdt_ptr loaded;
-    uint16_t cs, ds, ss;
+    uint16_t cs, ds, ss, tr;
     __asm__ volatile ("sgdt %0" : "=m"(loaded));
     __asm__ volatile ("mov %%cs, %0" : "=r"(cs));
     __asm__ volatile ("mov %%ds, %0" : "=r"(ds));
     __asm__ volatile ("mov %%ss, %0" : "=r"(ss));
+    __asm__ volatile ("str %0" : "=r"(tr));
+    bool code_64 = (gdt_descriptor(cs) >> 53) & 1;      /* L bit */
 
     return loaded.base == gdtr.base && loaded.limit == gdtr.limit
-        && cs == GDT_KERNEL_CODE && ds == GDT_KERNEL_DATA && ss == GDT_KERNEL_DATA;
+        && cs == GDT_KERNEL_CODE && ds == GDT_KERNEL_DATA && ss == GDT_KERNEL_DATA
+        && tr == GDT_TSS && code_64;
 }

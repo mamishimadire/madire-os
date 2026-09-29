@@ -15,7 +15,8 @@ failures=0
 passes=0
 passes_new=0         # checks added in 0.4, tagged "[0.4]"
 passes_05=0          # checks added in 0.5, tagged "[0.5]"
-passes_06=0          # checks added in 0.6, tagged "[0.6]"; the rest are 0.3 regression
+passes_06=0          # checks added in 0.6, tagged "[0.6]"
+passes_07=0          # checks added in 0.7, tagged "[0.7]"; the rest are 0.3 regression
 
 pass() {
     echo "PASS: $1"
@@ -24,6 +25,7 @@ pass() {
     "[0.4]"*) passes_new=$((passes_new + 1)) ;;
     "[0.5]"*) passes_05=$((passes_05 + 1)) ;;
     "[0.6]"*) passes_06=$((passes_06 + 1)) ;;
+    "[0.7]"*) passes_07=$((passes_07 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -58,7 +60,7 @@ boot() {
     local log=$1 secs=$2
     shift 2
     rm -f "$log"
-    timeout "$secs" qemu-system-i386 -display none -no-reboot \
+    timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
         -serial file:"$log" "$@" >/dev/null 2>&1
     [ -f "$log" ] || : > "$log"
 }
@@ -70,7 +72,7 @@ boot_keys() {
     local log=$1 secs=$2 ready=$3 keys=$4 gap=$5 sock=$OUT/qmp.sock
     shift 5
     rm -f "$log" "$sock"
-    timeout "$secs" qemu-system-i386 -display none -no-reboot -serial file:"$log" \
+    timeout "$secs" qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
         -qmp unix:"$sock",server=on,wait=off "$@" >/dev/null 2>&1 &
     local qpid=$!
     local out
@@ -89,7 +91,7 @@ boot_text() {
     local log=$1 secs=$2 ready=$3 text=$4 gap=$5 done=$6 sock=$OUT/qmp.sock
     shift 6
     rm -f "$log" "$sock"
-    timeout "$secs" qemu-system-i386 -display none -no-reboot -serial file:"$log" \
+    timeout "$secs" qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
         -qmp unix:"$sock",server=on,wait=off "$@" >/dev/null 2>&1 &
     local qpid=$!
     local out
@@ -143,7 +145,7 @@ LOG=$OUT/serial-boot.log
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.6"                       "version shown"
+expect "$LOG" "Madire OS v0\.7"                       "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -213,10 +215,58 @@ ram_test 4G   4G  786303 4095 1024
 
 echo "== Memory: boot module reserved (-initrd)"
 LOG=$OUT/serial-mem-module.log
-head -c 14000 /dev/urandom > "$OUT/test-module.bin"
+# 0.7: a test module (kernel/bootmod.h): "MADIRETM", payload length, FNV-1a
+# of the payload, then 14000 random payload bytes. The kernel checks it after
+# start-up; "corrupt" flips one payload byte after the checksum is taken.
+make_test_module() {
+    python3 - "$1" "$2" "${3:-}" <<'PY'
+import os, struct, sys
+path, length, corrupt = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "corrupt"
+payload = bytearray(os.urandom(length))
+h = 0x811C9DC5
+for b in payload:
+    h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+if corrupt:
+    payload[length // 2] ^= 0xFF
+open(path, "wb").write(b"MADIRETM" + struct.pack("<II", length, h) + payload)
+PY
+}
+make_test_module "$OUT/test-module.bin" 14000
 boot "$LOG" 10 -m 32M -kernel "$KERNEL" -initrd "$OUT/test-module.bin"
 expect "$LOG" "System ready\." "module: boots to System ready"
 memory_check "$LOG" "module" --expect-module
+expect "$LOG" "^Boot module 1: 0x[0-9a-f]{8}-0x[0-9a-f]{8} \(14016 bytes\): test pattern intact" \
+                                                      "[0.7] module (QEMU -kernel/-initrd): contents intact after boot"
+
+echo "== [0.7] Boot module: corruption is detected"
+LOG=$OUT/serial-mem-module-corrupt.log
+make_test_module "$OUT/test-module-corrupt.bin" 14000 corrupt
+boot "$LOG" 10 -m 32M -kernel "$KERNEL" -initrd "$OUT/test-module-corrupt.bin"
+expect "$LOG" "^Boot module 1: .*: test pattern CORRUPTED \(FNV-1a 0x[0-9a-f]{8}, expected 0x[0-9a-f]{8}\)" \
+                                                      "[0.7] module: a changed byte is reported as CORRUPTED"
+
+echo "== [0.7] Boot module through GRUB (ISO with a module line)"
+LOG=$OUT/serial-grub-module.log
+rm -rf "$OUT/isomod" && mkdir -p "$OUT/isomod/boot/grub"
+cp "$KERNEL" "$OUT/isomod/boot/madire.kernel"
+cp "$OUT/test-module.bin" "$OUT/isomod/boot/test-module.bin"
+cat > "$OUT/isomod/boot/grub/grub.cfg" <<'CFG'
+set timeout=0
+set default=0
+menuentry "Madire OS (module test)" {
+    multiboot /boot/madire.kernel
+    module /boot/test-module.bin test-module
+    boot
+}
+CFG
+if grub-mkrescue -o "$OUT/madire-os-module.iso" "$OUT/isomod" >/dev/null 2>&1; then
+    boot "$LOG" 12 -m 128M -cdrom "$OUT/madire-os-module.iso"
+    expect "$LOG" "^Boot module 1: 0x[0-9a-f]{8}-0x[0-9a-f]{8} \(14016 bytes\): test pattern intact" \
+                                                      "[0.7] module (GRUB): contents intact after boot"
+    expect "$LOG" "System ready\."                    "[0.7] module (GRUB): boots to System ready"
+else
+    fail "[0.7] module (GRUB): grub-mkrescue failed"
+fi
 
 # exhaust_test <-m size>: allocate every free page, verify, free them all.
 exhaust_test() {
@@ -267,7 +317,7 @@ crash_test() {
     expect "$log" "KERNEL PANIC"                        "$name: crash screen shown"
     expect "$log" "CPU exception $vector: $exname"      "$name: reports vector $vector ($exname)"
     expect "$log" "Error code: 0x$errcode"              "$name: error code 0x$errcode"
-    expect "$log" "EIP=0x[0-9a-f]{8}  CS=0x0008"        "$name: registers dumped, CS is our GDT code segment"
+    expect "$log" "RIP=0x[0-9a-f]{16}  CS=0x0008"       "$name: registers dumped, CS is our GDT code segment"
     reject "$log" "System ready"                        "$name: halted instead of continuing"
     expect "$log" "IRQ mask: 0xfffc"                    "[0.4] $name: exception raised with IRQ0/IRQ1 live"
 }
@@ -404,7 +454,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.6 \(32-bit x86, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.7 \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -422,7 +472,7 @@ expect_in_order "$LOG" "[0.5] mem shows the 0.3 memory figures" \
 expect_in_order "$LOG" "[0.5] cpu reports CPUID information" \
     "^madire> cpu$" "^CPUID: +supported$" "^Vendor: +[A-Za-z]+" \
     "^Family/model: [0-9]+ / [0-9]+, stepping [0-9]+$" "^Features: +[a-z]" \
-    "^Mode: +32-bit protected mode, paging on, 1 CPU in use$"
+    "^Mode: +64-bit long mode, paging on, 1 CPU in use$"
 expect_next "$LOG" "[0.5] Shift and multiple spaces"   "^madire> echo   Hello   World!$" "^Hello World!$"
 expect_next "$LOG" "[0.5] tabs separate arguments"     "^madire> echo${TAB}a${TAB}${TAB}b$" "^a b$"
 expect_next "$LOG" "[0.5] Caps Lock (and names are case-sensitive)" \
@@ -443,12 +493,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.6 (32-bit x86, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c '^Madire OS v0\.7 (64-bit x86-64, Multiboot 1)$' "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.6"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.7"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -463,13 +513,17 @@ expect "$LOG" "^Paging self-test: physical-access window: .*: OK$" "[0.6] self-t
 expect "$LOG" "^Paging self-test: no page leak: free pages ([0-9]+) -> \1: OK$" \
                                                       "[0.6] paging self-test: no page leak"
 expect "$LOG" "^Paging self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "[0.6] paging self-test: PASS"
-REGS=$(grep -oE '^Paging: enabled; CR0=0x[0-9a-f]{8} CR3=0x[0-9a-f]{8}' "$LOG" | head -1)
+# 0.7: 4-level paging in long mode also needs CR4.PAE and EFER.LMA.
+REGS=$(grep -oE '^Paging: enabled; CR0=0x[0-9a-f]{8} CR3=0x[0-9a-f]{16} CR4=0x[0-9a-f]{16} EFER=0x[0-9a-f]{16}' "$LOG" | head -1)
 CR0=$(grep -oE 'CR0=0x[0-9a-f]{8}' <<< "$REGS" | cut -d= -f2)
-CR3=$(grep -oE 'CR3=0x[0-9a-f]{8}' <<< "$REGS" | cut -d= -f2)
+CR3=$(grep -oE 'CR3=0x[0-9a-f]{16}' <<< "$REGS" | cut -d= -f2)
+CR4=$(grep -oE 'CR4=0x[0-9a-f]{16}' <<< "$REGS" | cut -d= -f2)
+EFER=$(grep -oE 'EFER=0x[0-9a-f]{16}' <<< "$REGS" | cut -d= -f2)
 echo "      ${REGS:-no CR0/CR3 line}"
 if [ -n "$CR0" ] && [ $(( CR0 & 0x80010000 )) -eq $(( 0x80010000 )) ] &&
-   [ -n "$CR3" ] && [ $(( CR3 )) -ne 0 ] && [ $(( CR3 & 0xfff )) -eq 0 ]; then
-    pass "[0.6] CR0.PG and CR0.WP set, CR3 holds a page-aligned directory"
+   [ -n "$CR3" ] && [ $(( CR3 )) -ne 0 ] && [ $(( CR3 & 0xfff )) -eq 0 ] &&
+   [ -n "$CR4" ] && [ $(( CR4 & 0x20 )) -ne 0 ] && [ -n "$EFER" ] && [ $(( EFER & 0x400 )) -ne 0 ]; then
+    pass "[0.6] CR0.PG, CR0.WP, CR4.PAE and EFER.LMA set, CR3 holds a page-aligned PML4"
 else
     fail "[0.6] CR0/CR3 after enabling paging: ${REGS:-missing}"
 fi
@@ -494,12 +548,14 @@ pf_test() {
     boot "$log" 8 -m 32M -kernel "$KERNEL" -append "test=$name"
     expect "$log" "CPU exception 14: Page Fault \(#PF\)" "[0.6] $name: exception 14"
     expect "$log" "CR2=0x$cr2"                           "[0.6] $name: CR2=0x$cr2"
-    expect "$log" "Page fault: $decoded, address 0x$cr2" "[0.6] $name: decoded: $decoded"
+    # 0.7: the address has its own line (no crash-screen line reaches column 80).
+    expect_in_order "$log" "[0.6] $name: decoded: $decoded" \
+        "^ Page fault: $decoded$" "^ Address: 0x$cr2$"
     reject "$log" "System ready|not detected"            "[0.6] $name: halted, fault raised"
 }
-pf_test pfnull     00000000 "not present, read, kernel mode"
-pf_test pfunmapped 40000000 "not present, read, kernel mode"
-pf_test pfreadonly 00100000 "protection violation, write, kernel mode"
+pf_test pfnull     0000000000000000 "not present, read, kernel mode"
+pf_test pfunmapped 0000000040000000 "not present, read, kernel mode"
+pf_test pfreadonly 0000000000100000 "protection violation, write, kernel mode"
 
 # heap_panic_test <name> <message regex>: a kfree misuse must be caught.
 heap_panic_test() {
@@ -511,9 +567,9 @@ heap_panic_test() {
     expect "$log" "$message"                             "[0.6] $name: reported"
     reject "$log" "System ready|not detected"            "[0.6] $name: halted, detection worked"
 }
-heap_panic_test heapdouble  "Heap: double free of 0xd000[0-9a-f]{4}\."
-heap_panic_test heapinvalid "Heap: invalid free of 0x[0-9a-f]{8} \(pointer not from the heap\)\."
-heap_panic_test heapcorrupt "Heap: corrupted block at 0xd000[0-9a-f]{4} \(while freeing 0xd000[0-9a-f]{4}\)\."
+heap_panic_test heapdouble  "Heap: double free of 0xfffffe80000[0-9a-f]{5}\."
+heap_panic_test heapinvalid "Heap: invalid free of 0x[0-9a-f]{16} \(pointer not from the heap\)\."
+heap_panic_test heapcorrupt "Heap: corrupted block at 0xfffffe80000[0-9a-f]{5} \(freeing 0xfffffe80000[0-9a-f]{5}\)\."
 
 echo "== [0.6] Heap exhaustion (32M: the 16 MiB cap is reachable)"
 LOG=$OUT/serial-heapexhaust.log
@@ -537,13 +593,268 @@ echo "== [0.6] Console: mem shows paging and heap"
 LOG=$OUT/serial-console.log
 expect_in_order "$LOG" "[0.6] mem: paging and heap sections, in order" \
     "^madire> mem$" "^Reserved ranges: +[0-9]+$" \
-    "^Paging: +enabled \(4 KiB pages, identity-mapped kernel\)$" "^Mapped pages: +[0-9]+$" \
+    "^Paging: +enabled \(4-level, 4 KiB, identity-mapped, NX (on|off)\)$" "^Mapped pages: +[0-9]+$" \
     "^Page tables: +[0-9]+$" "^Kernel heap: +[0-9]+ KiB mapped, max 16384 KiB$" \
     "^Heap in use: +[0-9]+ KiB in [0-9]+ blocks?$" "^Heap free: +[0-9]+ KiB, largest block [0-9]+ KiB$"
 
+# ---- 0.7: long mode, 4-level layout ----
+
+echo "== [0.7] Long mode active (normal boot, ISO)"
+LOG=$OUT/serial-boot.log
+expect_in_order "$LOG" "[0.7] stub markers: boot32 start, CPU checks passed, entered 64-bit mode" \
+    "^boot32: start$" "^boot32: CPUID ok, long mode and PAE present$" "^boot64: entered 64-bit long mode$"
+MODE=$(grep -m1 -oE '^CPU mode: EFER=0x[0-9a-f]{16} .* CR0=0x[0-9a-f]{8} .* CR4=0x[0-9a-f]{16}' "$LOG")
+read -r ME MC MR <<< "$(grep -oE '(EFER|CR0|CR4)=0x[0-9a-f]+' <<< "$MODE" | cut -d= -f2 | tr '\n' ' ')"
+echo "      ${MODE:-no CPU mode line}"
+if [ -n "${MR:-}" ] && [ $(( ME & 0x100 )) -ne 0 ] && [ $(( ME & 0x400 )) -ne 0 ] &&
+   [ $(( MC & 0x1 )) -ne 0 ] && [ $(( MC & 0x80000000 )) -ne 0 ] && [ $(( MR & 0x20 )) -ne 0 ]; then
+    pass "[0.7] EFER.LME and LMA, CR0.PE and PG, CR4.PAE set (bits checked by the script)"
+else
+    fail "[0.7] long-mode control bits: ${MODE:-missing}"
+fi
+DESC=$(grep -m1 -oE '^CPU mode: CS=0x0008 descriptor=0x[0-9a-f]{16} \(L=1 D=0\) TR=0x0018' "$LOG" |
+       grep -oE 'descriptor=0x[0-9a-f]{16}' | cut -d= -f2)
+if [ -n "$DESC" ] && [ $(( (DESC >> 53) & 1 )) -eq 1 ] && [ $(( (DESC >> 54) & 1 )) -eq 0 ]; then
+    pass "[0.7] CS=0x0008 is a 64-bit code segment (descriptor $DESC: L=1, D=0)"
+else
+    fail "[0.7] CS descriptor not 64-bit code (${DESC:-missing})"
+fi
+expect "$LOG" "^CPU mode: CS=0x0008 .* TR=0x0018 "     "[0.7] task register 0x18 (the 64-bit TSS is loaded)"
+expect "$LOG" "^CPU mode: 64-bit long mode active; 64-bit arithmetic PASS$" \
+                                                      "[0.7] kernel reports long mode active; 64-bit multiply/divide above 2^32 correct"
+expect "$LOG" "^Paging check: table walk counts .*, actual as expected: OK$" \
+                                                      "[0.7] 4-level walk: independent recount of tables and pages matches"
+
+echo "== [0.7] Kernel at its identity address; PML4 slots 508-510 in use"
+RIPL=$(grep -m1 -oE '^Paging check: RIP \(running code\) 0x[0-9a-f]{16}-0x[0-9a-f]{16}: expected identity ro exec, actual identity ro exec \(1 pages\): OK$' "$LOG")
+CODEL=$(grep -m1 -oE '^Paging check: kernel code 0x0000000000100000-0x[0-9a-f]{16}: expected identity ro exec, actual identity ro exec \([0-9]+ pages\): OK$' "$LOG")
+RIPA=$(grep -oE '0x[0-9a-f]{16}' <<< "$RIPL" | head -1)
+CODEE=$(grep -oE '0x[0-9a-f]{16}' <<< "$CODEL" | sed -n 2p)
+if [ -n "$RIPA" ] && [ -n "$CODEE" ] && [ $((RIPA)) -ge $((0x100000)) ] && [ $((RIPA)) -lt $((CODEE)) ]; then
+    pass "[0.7] kernel runs at its identity address: RIP $RIPA in kernel code 0x100000-$CODEE (virtual = physical)"
+else
+    fail "[0.7] kernel identity address: RIP ${RIPA:-?}, code end ${CODEE:-?}"
+fi
+pml4() { echo $(( ($1 >> 39) & 511 )); }
+TESTP=$(grep -m1 -oE '^Paging self-test: map and read back: 0x[0-9a-f]{16} -> A, .*: OK$' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+WINP=$(grep -m1 -oE '^Paging check: window page table present 0x[0-9a-f]{16}-.*: OK$' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+if [ -n "$TESTP" ] && [ -n "$WINP" ] && [ "$(pml4 "$TESTP")" -eq 508 ] && [ "$(pml4 "$WINP")" -eq 508 ]; then
+    pass "[0.7] PML4[508]: self-test page $TESTP mapped and read back; window table present at $WINP"
+else
+    fail "[0.7] PML4[508] in use (test page ${TESTP:-?}, window ${WINP:-?})"
+fi
+HEAPB=$(grep -m1 -oE '^Kernel heap: [0-9]+ KiB at 0x[0-9a-f]{16}, ' "$LOG" | grep -oE '0x[0-9a-f]{16}')
+if [ -n "$HEAPB" ] && [ "$(pml4 "$HEAPB")" -eq 509 ] && grep -qE '^Kernel heap self-test: PASS' "$LOG"; then
+    pass "[0.7] PML4[509]: kernel heap mapped at $HEAPB, heap self-test PASS"
+else
+    fail "[0.7] PML4[509] in use (heap ${HEAPB:-?})"
+fi
+RECA=$(grep -m1 -oE '^Paging self-test: recursive mapping: PML4\[510\] read at 0x[0-9a-f]{16} = 0x[0-9a-f]{16}: OK$' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+if [ -n "$RECA" ] && [ "$(pml4 "$RECA")" -eq 510 ] &&
+   grep -qE '^Paging check: recursive entry \(PML4\[510\]\) .*: expected points to the PML4, rw nx, actual as expected: OK$' "$LOG"; then
+    pass "[0.7] PML4[510]: recursive entry points to the PML4, read back through $RECA"
+else
+    fail "[0.7] PML4[510] recursive entry (${RECA:-missing})"
+fi
+
+# ---- 0.7: no-execute (NX) ----
+
+echo "== [0.7] NX at boot (QEMU default CPU: NX supported)"
+LOG=$OUT/serial-boot.log
+expect "$LOG" "^NX: supported by the CPU \(CPUID 0x80000001 EDX bit 20\); EFER.NXE enabled \(EFER=0x[0-9a-f]{16}, LMA still set\); NX bits used for everything but kernel code$" \
+                                                      "[0.7] NX: supported by the CPU, EFER.NXE enabled, LMA kept"
+EFER=$(grep -oE '^Paging: enabled; .* EFER=0x[0-9a-f]{16}' "$LOG" | grep -oE 'EFER=0x[0-9a-f]{16}' | head -1 | cut -d= -f2)
+if [ -n "$EFER" ] && [ $(( EFER & 0x800 )) -ne 0 ] && [ $(( EFER & 0x400 )) -ne 0 ]; then
+    pass "[0.7] EFER after loading the kernel tables: NXE and LMA set ($EFER)"
+else
+    fail "[0.7] EFER after loading the kernel tables: ${EFER:-missing}"
+fi
+expect "$LOG" "^Paging check: kernel code .*: expected identity ro exec, actual identity ro exec .*: OK$" \
+                                                      "[0.7] kernel code executable (no NX bit)"
+expect "$LOG" "^Paging check: interrupt entry stubs \(isr.asm\) .*: expected identity ro exec, .*: OK$" \
+                                                      "[0.7] interrupt entry stubs executable"
+expect "$LOG" "^Paging check: panic_exception \(page-fault path\) .*: expected identity ro exec, .*: OK$" \
+                                                      "[0.7] page-fault handler executable"
+expect "$LOG" "^Paging check: irq_dispatch \(timer, keyboard\) .*: expected identity ro exec, .*: OK$" \
+                                                      "[0.7] IRQ handlers (timer, keyboard) executable"
+expect "$LOG" "^Paging check: kernel rodata .*: expected identity ro nx, actual identity ro nx .*: OK$" \
+                                                      "[0.7] kernel rodata no-execute"
+expect "$LOG" "^Paging check: kernel data\+bss .*: expected identity rw nx, actual identity rw nx .*: OK$" \
+                                                      "[0.7] kernel data, bss, bitmaps no-execute"
+expect "$LOG" "^Paging check: IST1 stack \(double faults\) .*: expected identity rw nx, actual identity rw nx .*: OK$" \
+                                                      "[0.7] IST1 stack no-execute"
+expect "$LOG" "^Paging check: RSP \(current stack\) .*: expected identity rw nx, actual identity rw nx .*: OK$" \
+                                                      "[0.7] current stack no-execute"
+expect "$LOG" "^Kernel heap: [0-9]+ KiB at 0xfffffe8000000000, max 16384 KiB, pages no-execute \(NX bit set\)$" \
+                                                      "[0.7] heap pages no-execute"
+expect_in_order "$OUT/serial-console.log" "[0.7] mem: NX supported, enabled" \
+    "^madire> mem$" "^Page tables: +[0-9]+$" "^NX: +supported, enabled$"
+
+echo "== [0.7] NX: instruction fetch from a no-execute page (test=pfnx)"
+LOG=$OUT/serial-pfnx.log
+boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=pfnx"
+expect "$LOG" "^NX test: executable page: kernel code at 0x[0-9a-f]{16} \(no NX bit\) ran, returned 0x5a5a5a5a \(correct\)$" \
+                                                      "[0.7] pfnx: kernel code ran first"
+NXPAGE=$(grep -oE '^NX test: data page at 0x[0-9a-f]{16} \(NX bit set\)' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+echo "      data page: ${NXPAGE:-missing}"
+expect "$LOG" "^NX test: data page at ${NXPAGE:-X} \(NX bit set\); NX in use: this must fault; calling it$" \
+                                                      "[0.7] pfnx: target page has the NX bit"
+expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.7] pfnx: exception 14"
+expect "$LOG" "Error code: 0x00000011"                "[0.7] pfnx: error code 0x11 (present, instruction fetch)"
+expect_in_order "$LOG" "[0.7] pfnx: decoded as an NX violation at the page" \
+    "^ Page fault: protection violation, read, kernel mode$" \
+    "^ Details: instruction fetch \(NX violation\)$" "^ Address: ${NXPAGE:-X}$"
+expect "$LOG" "CR2=${NXPAGE:-X}"                      "[0.7] pfnx: CR2 is the fetched address"
+reject "$LOG" "System ready|not detected"             "[0.7] pfnx: halted, fault raised"
+
+echo "== [0.7] CPU without NX (-cpu qemu64,-nx)"
+LOG=$OUT/serial-nonx.log
+boot "$LOG" 10 -cpu qemu64,-nx -m 32M -kernel "$KERNEL"
+expect "$LOG" "^NX: not supported by this CPU \(CPUID 0x80000001 EDX bit 20 clear\); EFER.NXE left clear, no NX bits in the page tables" \
+                                                      "[0.7] no NX: reported as not supported"
+expect "$LOG" "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "[0.7] no NX: walk-check PASS"
+expect "$LOG" "^Paging check: kernel data\+bss .*: expected identity rw exec, actual identity rw exec .*: OK$" \
+                                                      "[0.7] no NX: no NX bits in the tables"
+expect "$LOG" "^Paging self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "[0.7] no NX: paging self-test PASS"
+expect "$LOG" "^Paging enabled: +OK"                  "[0.7] no NX: paging enabled"
+expect "$LOG" "^Kernel heap: +OK"                     "[0.7] no NX: kernel heap OK"
+expect "$LOG" "System ready\."                        "[0.7] no NX: boots to System ready"
+reject "$LOG" "PANIC|MISMATCH|FAILED"                 "[0.7] no NX: no failures or panic"
+
+echo "== [0.7] CPU without NX: test=pfnx must not fault"
+LOG=$OUT/serial-nonx-pfnx.log
+boot "$LOG" 10 -cpu qemu64,-nx -m 32M -kernel "$KERNEL" -append "test=pfnx"
+expect "$LOG" "^NX test: NOT APPLICABLE: NX not supported by this CPU; the data page executed without a fault, so no-execute protection could not be tested$" \
+                                                      "[0.7] no NX: pfnx reports NOT APPLICABLE (not a pass of the NX test)"
+expect "$LOG" "^NX test: NOT APPLICABLE \(NX not supported by this CPU\)$" \
+                                                      "[0.7] no NX: pfnx screen message says NOT APPLICABLE"
+expect "$LOG" "System ready\."                        "[0.7] no NX: pfnx, system ready afterwards"
+reject "$LOG" "PANIC"                                 "[0.7] no NX: pfnx, no panic"
+
+# ---- 0.7: stack guard pages, IST1 double-fault stack ----
+
+echo "== [0.7] Stack guard pages (walk-check before enabling, self-test after)"
+LOG=$OUT/serial-boot.log
+expect "$LOG" "^Paging check: kernel stack 0x[0-9a-f]{16}-0x[0-9a-f]{16}: expected identity rw nx, actual identity rw nx \(4 pages\): OK$" \
+                                                      "[0.7] kernel stack: 16 KiB, rw nx"
+expect "$LOG" "^Paging check: IST1 stack \(double faults\) 0x[0-9a-f]{16}-0x[0-9a-f]{16}: expected identity rw nx, actual identity rw nx \(2 pages\): OK$" \
+                                                      "[0.7] IST1 stack: 8 KiB, rw nx"
+for g in "kernel stack guard page" "IST1 stack guard page"; do
+    n=$(grep -cE "^Paging check: $g 0x[0-9a-f]{16}-0x[0-9a-f]{16}: expected unmapped, actual unmapped \(1 pages\): OK$" "$LOG")
+    if [ "$n" -eq 2 ]; then pass "[0.7] $g UNMAPPED (walk-check and self-test)"
+    else fail "[0.7] $g UNMAPPED (walk-check and self-test): $n of 2 lines"; fi
+done
+expect "$LOG" "^Paging check: kernel stack guard directly below the stack .*, actual as expected: OK$" \
+                                                      "[0.7] kernel stack guard directly below the stack"
+expect "$LOG" "^Paging check: IST1 guard directly below the IST1 stack .*, actual as expected: OK$" \
+                                                      "[0.7] IST1 guard directly below the IST1 stack"
+expect "$LOG" "^Paging check: kernel data\+bss .*, actual identity rw nx \([0-9]+ pages, 2 guard pages unmapped\): OK$" \
+                                                      "[0.7] data+bss: both guard pages left as holes"
+KSTACK=$(grep -oE '^Paging check: kernel stack 0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+KGUARD=$(grep -oE '^Paging check: kernel stack guard page 0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+ISTACK=$(grep -oE '^Paging check: IST1 stack \(double faults\) 0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+IGUARD=$(grep -oE '^Paging check: IST1 stack guard page 0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+echo "      kernel stack ${KSTACK:-?} (guard ${KGUARD:-?}), IST1 stack ${ISTACK:-?} (guard ${IGUARD:-?})"
+
+# Deep normal use: touching a guard page is a #PF on a present stack
+# (or a #DF when the stack is the guard), so none of these may show one.
+for l in boot kbdflood console heapexhaust exhaust-16M exhaust-128M; do
+    reject "$OUT/serial-$l.log" "CPU exception|Double fault|PANIC" \
+                                                      "[0.7] $l: never touched a stack guard page"
+done
+
+echo "== [0.7] Kernel stack overflow (test=stackoverflow)"
+LOG=$OUT/serial-stackoverflow.log
+boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=stackoverflow"
+G=$(grep -oE '^Paging check: kernel stack guard page 0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
+expect "$LOG" "^Stack test: kernel stack 0x[0-9a-f]{16}-0x[0-9a-f]{16}, RSP 0x[0-9a-f]{16}, guard page ${G:-X} \(not mapped\); recursing until the stack overflows$" \
+                                                      "[0.7] stackoverflow: started, guard page not mapped"
+expect "$LOG" "CPU exception 8: Double Fault \(#DF\)" "[0.7] stackoverflow: exception 8"
+expect "$LOG" "Error code: 0x00000000"                "[0.7] stackoverflow: error code 0"
+expect "$LOG" "^ Double fault: kernel stack overflow \(RSP is in the stack guard page\)$" \
+                                                      "[0.7] stackoverflow: reported as a kernel stack overflow"
+RSPG=$(grep -oE '^ RSP=0x[0-9a-f]{16}  guard page 0x[0-9a-f]{16}-0x[0-9a-f]{16}$' "$LOG" | head -1)
+read -r R GS GE <<< "$(grep -oE '0x[0-9a-f]{16}' <<< "$RSPG" | tr '\n' ' ')"
+echo "      ${RSPG:-no RSP/guard line}"
+if [ -n "${GE:-}" ] && [ "$GS" = "${G:-X}" ] && [ $((R)) -ge $((GS)) ] && [ $((R)) -le $((GE)) ]; then
+    pass "[0.7] stackoverflow: RSP $R inside the guard page $GS-$GE"
+else
+    fail "[0.7] stackoverflow: RSP not inside the walk-checked guard page (${RSPG:-missing}, guard ${G:-?})"
+fi
+expect "$LOG" "RIP=0x[0-9a-f]{16}  CS=0x0008"         "[0.7] stackoverflow: full register dump (handler ran on IST1)"
+expect "$LOG" "System halted\. Power off the machine\." "[0.7] stackoverflow: halted"
+n=$(grep -c '^boot32: start' "$LOG")
+if [ "$n" -eq 1 ]; then pass "[0.7] stackoverflow: no reset (booted once)"
+else fail "[0.7] stackoverflow: no reset (boot32: start seen $n times)"; fi
+reject "$LOG" "System ready|not detected|recursion returned" \
+                                                      "[0.7] stackoverflow: overflow caught, not survived"
+
+# ---- 0.7: no screen line reaches column 80 ----
+
+# The crash screen writes through vga_putc, which moves to the next row
+# after column 79; a line of exactly 80 characters would therefore leave a
+# blank line (and a longer one wraps). The console (textbuf) has a pending
+# wrap instead, but the same limit is used there: at most 79 characters.
+# max_width <log> <start regex> <end regex>: longest line from the first
+# line matching <start> to the next line matching <end> (both included).
+max_width() {
+    awk -v s="$2" -v e="$3" '
+        !on && $0 ~ s { on = 1 }
+        on { if (length($0) > m) m = length($0) }
+        on && $0 ~ e && !($0 ~ s) { on = 0 }
+        END { print m + 0 }' "$1"
+}
+echo "== [0.7] Screen width: crash screens and mem output stay within 79 columns"
+for l in divzero ud gpf doublefree freereserved pfnull pfunmapped pfreadonly pfnx stackoverflow \
+         heapdouble heapinvalid heapcorrupt; do
+    w=$(max_width "$OUT/serial-$l.log" "KERNEL PANIC" "System halted")
+    if grep -q "KERNEL PANIC" "$OUT/serial-$l.log" && [ "$w" -le 79 ]; then
+        pass "[0.7] $l: crash screen lines at most 79 characters (longest $w)"
+    else
+        fail "[0.7] $l: crash screen line of $w characters (limit 79), or no crash screen"
+    fi
+done
+w=$(max_width "$OUT/serial-console.log" "^madire> mem$" "^madire> ")
+if grep -q "^madire> mem$" "$OUT/serial-console.log" && [ "$w" -le 79 ]; then
+    pass "[0.7] console mem: every line at most 79 characters (longest $w)"
+else
+    fail "[0.7] console mem: a line of $w characters (limit 79)"
+fi
+
+# ---- 0.7: CPUs that cannot run Madire OS ----
+
+# no_lm_test <label> <expected message> <qemu binary> <args...>: the stub
+# prints the message and halts before any mode switch. QEMU must still be
+# running at the timeout (exit 124): with -no-reboot a triple fault would
+# have ended the run early.
+no_lm_test() {
+    local label=$1 message=$2 bin=$3 rc
+    shift 3
+    echo "== [0.7] No 64-bit CPU: $label"
+    local log=$OUT/serial-nolm-${label//[^a-z0-9]/-}.log
+    rm -f "$log"
+    timeout 6 "$bin" -display none -no-reboot -serial file:"$log" -m 32M -kernel "$KERNEL" \
+        "$@" >/dev/null 2>&1
+    rc=$?
+    [ -f "$log" ] || : > "$log"
+    expect_in_order "$log" "[0.7] $label: stub started, then refused the CPU" \
+        "^boot32: start$" "^$message$"
+    reject "$log" "boot32: CPUID ok|boot64|PANIC|System ready" \
+                                                      "[0.7] $label: no mode switch attempted"
+    if [ "$rc" -eq 124 ]; then pass "[0.7] $label: halted, still running at the timeout (no reset)"
+    else fail "[0.7] $label: QEMU exited with $rc before the timeout (reset or crash)"; fi
+}
+NO_LM="Madire OS needs a 64-bit \(x86-64\) CPU: long mode not supported\. Halted\."
+NO_PAE="Madire OS needs a 64-bit \(x86-64\) CPU: PAE not supported\. Halted\."
+no_lm_test "qemu32"         "$NO_LM"  qemu-system-x86_64 -cpu qemu32
+no_lm_test "i386"           "$NO_LM"  qemu-system-i386
+no_lm_test "486"            "$NO_LM"  qemu-system-x86_64 -cpu 486
+no_lm_test "qemu64 no lm"   "$NO_LM"  qemu-system-x86_64 -cpu qemu64,-lm
+no_lm_test "qemu64 no pae"  "$NO_PAE" qemu-system-x86_64 -cpu qemu64,-pae
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 new in 0.6)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 new in 0.7)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

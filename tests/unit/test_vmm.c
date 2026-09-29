@@ -1,185 +1,227 @@
-/* Unit tests for kernel/memory/vmm_core.c, on fake physical frames. */
+/* Unit tests for kernel/memory/vmm_core.c (x86-64 4-level paging), on fake
+ * physical frames. Entry and address helpers: test_pte.c. */
 #include <stdint.h>
 #include <string.h>
 #include "kernel/memory/pte.h"
-#include "kernel/memory/vm_layout.h"
 #include "kernel/memory/vmm_core.h"
 #include "tests/unit/unit.h"
 
 /* Fake physical memory: frame i lives at physical FAKE_BASE + i * 4 KiB. */
-#define FAKE_BASE   0x00200000u
-#define FAKE_FRAMES 16u
+#define FAKE_BASE   0x00200000ull
+#define FAKE_FRAMES 64u
 
-static uint32_t frames[FAKE_FRAMES][VM_ENTRIES] __attribute__((aligned(4096)));
-static uint32_t next_frame;         /* frames handed out so far */
-static uint32_t frame_limit;        /* stop handing out frames after this many */
-static uint32_t dir_phys;
-static uint32_t flush_count;
-static uint32_t last_flush;
-static uint32_t fresh_count;
+static uint64_t frames[FAKE_FRAMES][VM_ENTRIES] __attribute__((aligned(4096)));
+static uint32_t next_frame, frame_limit, freed_frames, flush_count, fresh_count;
+static uint64_t root, last_flush;
+static uint64_t freed[8];
+static struct vmm vm;
 
-static uint32_t *fake_ptr(uint32_t phys)
+static uint64_t *fake_ptr(uint64_t phys)
 {
     return frames[(phys - FAKE_BASE) / 4096];
 }
 
-static uint32_t fake_alloc(void *ctx)
+
+/* Frames given back are reused first, like the real allocator would. */
+static uint64_t reuse[8];
+static uint32_t reuse_count;
+
+static uint64_t fake_alloc(void *ctx)
 {
     (void)ctx;
-    if (next_frame >= frame_limit)
+    uint64_t f;
+    if (reuse_count)
+        f = reuse[--reuse_count];
+    else if (next_frame < frame_limit)
+        f = FAKE_BASE + 4096ull * next_frame++;
+    else
         return 0;
-    memset(frames[next_frame], 0xAB, 4096);         /* garbage: table must be cleared */
-    return FAKE_BASE + 4096 * next_frame++;
+    memset(fake_ptr(f), 0xAB, 4096);                /* garbage: tables must be cleared */
+    return f;
 }
 
-static uint32_t *fake_directory(void *ctx)
+static void fake_free(void *ctx, uint64_t frame)
 {
     (void)ctx;
-    return fake_ptr(dir_phys);
+    if (freed_frames < 8)
+        freed[freed_frames] = frame;
+    freed_frames++;
+    if (reuse_count < 8)
+        reuse[reuse_count++] = frame;
 }
 
-static uint32_t *fake_table(void *ctx, uint32_t pdi, uint32_t phys, bool fresh)
+static uint64_t *fake_table(void *ctx, int level, uint64_t va, uint64_t phys, bool fresh)
 {
     (void)ctx;
-    (void)pdi;
+    (void)level;
+    (void)va;
     if (fresh)
         fresh_count++;
     return fake_ptr(phys);
 }
 
-static void fake_flush(void *ctx, uint32_t va)
+static void fake_flush(void *ctx, uint64_t va)
 {
     (void)ctx;
     flush_count++;
     last_flush = va;
 }
 
-static const struct vmm_ops ops = { fake_alloc, fake_directory, fake_table, fake_flush, 0 };
-static struct vmm vm;
+static const struct vmm_ops ops = { fake_alloc, fake_free, fake_table, fake_flush, 0 };
 
 static void setup(uint32_t limit)
 {
     next_frame = 0;
     frame_limit = limit;
-    flush_count = fresh_count = last_flush = 0;
-    dir_phys = fake_alloc(0);
-    memset(fake_ptr(dir_phys), 0, 4096);
-    vmm_init(&vm, &ops);
+    freed_frames = flush_count = fresh_count = reuse_count = 0;
+    last_flush = 0;
+    root = fake_alloc(0);
+    memset(fake_ptr(root), 0, 4096);
+    vmm_init(&vm, &ops, root);
 }
+
+#define KERNEL_TEXT   0x0000000000100000ull
+#define HEAP_BASE     0xFFFFFE8000000000ull
+#define WINDOW        0xFFFFFE0000001000ull
+#define HIGHER_HALF   0xFFFFFFFF80000000ull
 
 static void test_map_translate_unmap(void)
 {
-    uint32_t phys, flags;
+    uint64_t phys = 0, flags = 0;
     setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_map(&vm, 0x00400000u, 0x12345000u, PTE_WRITE), VMM_OK);
-    CHECK(vmm_translate(&vm, 0x00400ABCu, &phys, &flags));
-    CHECK_EQ(phys, 0x12345ABCu);                            /* frame + offset */
-    CHECK_EQ(flags & (PTE_PRESENT | PTE_WRITE | PTE_USER), PTE_PRESENT | PTE_WRITE);
+    CHECK_EQ(vmm_map(&vm, 0x00400000ull, 0x123456000ull, PTE_WRITE | PTE_NX), VMM_OK);
+    CHECK(vmm_translate(&vm, 0x00400ABCull, &phys, &flags));
+    CHECK_EQ(phys, 0x123456ABCull);                     /* above 4 GiB: 52-bit frames */
+    CHECK_EQ(flags & (PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX),
+             PTE_PRESENT | PTE_WRITE | PTE_NX);
     CHECK_EQ(vm.mapped_pages, 1);
-    CHECK_EQ(vm.page_tables, 1);
-    CHECK_EQ(vmm_unmap(&vm, 0x00400000u, &phys), VMM_OK);
-    CHECK_EQ(phys, 0x12345000u);                            /* frame returned to caller */
-    CHECK(!vmm_translate(&vm, 0x00400000u, &phys, &flags));
+    CHECK_EQ(vm.page_tables, 3);                        /* PDPT, PD, PT */
+    CHECK_EQ(vmm_unmap(&vm, 0x00400000ull, &phys), VMM_OK);
+    CHECK_EQ(phys, 0x123456000ull);
+    CHECK(!vmm_translate(&vm, 0x00400000ull, &phys, &flags));
     CHECK_EQ(vm.mapped_pages, 0);
 }
 
-static void test_tables_created_on_demand_and_cleared(void)
+static void test_tables_per_level(void)
 {
-    uint32_t phys;
+    uint64_t phys = 0;
     setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_map(&vm, 0x00001000u, 0x1000u, PTE_WRITE), VMM_OK);
-    CHECK_EQ(vm.page_tables, 1);
-    CHECK_EQ(fresh_count, 1);
-    CHECK_EQ(vmm_map(&vm, 0x00002000u, 0x2000u, PTE_WRITE), VMM_OK);   /* same table */
-    CHECK_EQ(vm.page_tables, 1);
-    CHECK_EQ(vmm_map(&vm, 0x00400000u, 0x3000u, PTE_WRITE), VMM_OK);   /* next 4 MiB */
-    CHECK_EQ(vm.page_tables, 2);
-    /* The new table was filled with garbage by fake_alloc: every other
-     * entry must read as not present. */
-    for (uint32_t va = 0x00401000u; va < 0x00800000u; va += 0x1000u)
+    CHECK_EQ(vmm_map(&vm, 0x00001000ull, 0x1000, PTE_WRITE), VMM_OK);
+    CHECK_EQ(vm.page_tables, 3);
+    CHECK_EQ(fresh_count, 3);
+    CHECK_EQ(vmm_map(&vm, 0x00002000ull, 0x2000, PTE_WRITE), VMM_OK);   /* same PT */
+    CHECK_EQ(vm.page_tables, 3);
+    CHECK_EQ(vmm_map(&vm, 0x00200000ull, 0x3000, PTE_WRITE), VMM_OK);   /* next 2 MiB: new PT */
+    CHECK_EQ(vm.page_tables, 4);
+    CHECK_EQ(vmm_map(&vm, 0x40000000ull, 0x4000, PTE_WRITE), VMM_OK);   /* next 1 GiB: PD + PT */
+    CHECK_EQ(vm.page_tables, 6);
+    CHECK_EQ(vmm_map(&vm, 0x8000000000ull, 0x5000, PTE_WRITE), VMM_OK); /* next 512 GiB: 3 */
+    CHECK_EQ(vm.page_tables, 9);
+    /* New tables were filled with garbage by fake_alloc: all must read as empty. */
+    for (uint64_t va = 0x00201000ull; va < 0x00400000ull; va += 0x1000)
         if (vmm_translate(&vm, va, &phys, 0))
             CHECK(0 && "stale entry in a new table");
-    CHECK(!vmm_translate(&vm, 0x00003000u, &phys, 0));
+    CHECK(!vmm_translate(&vm, 0x00003000ull, &phys, 0));
+    CHECK(!vmm_translate(&vm, 0x80000000ull, &phys, 0));
 }
 
 static void test_ensure_table(void)
 {
     setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_ensure_table(&vm, VM_WINDOW), VMM_OK);
-    CHECK_EQ(vm.page_tables, 1);
-    CHECK_EQ(vmm_ensure_table(&vm, VM_TEST_PAGE), VMM_OK);          /* same table */
-    CHECK_EQ(vm.page_tables, 1);
+    CHECK_EQ(vmm_ensure_table(&vm, WINDOW), VMM_OK);
+    CHECK_EQ(vm.page_tables, 3);
+    CHECK_EQ(vmm_ensure_table(&vm, WINDOW + 0x1000), VMM_OK);   /* same PT */
+    CHECK_EQ(vm.page_tables, 3);
     CHECK_EQ(vm.mapped_pages, 0);
-    CHECK_EQ(vmm_ensure_table(&vm, VM_RECURSIVE_BASE), VMM_ERR_RESERVED_VA);
+    CHECK_EQ(vmm_ensure_table(&vm, 0xFFFFFF0000000000ull), VMM_ERR_RESERVED_VA);
 }
 
-static void test_out_of_frames(void)
+static void test_out_of_frames_at_each_level(void)
 {
-    uint32_t phys;
-    setup(2);                                       /* directory + one table */
-    CHECK_EQ(vmm_map(&vm, 0x00001000u, 0x1000u, PTE_WRITE), VMM_OK);
-    CHECK_EQ(vmm_map(&vm, 0x00400000u, 0x2000u, PTE_WRITE), VMM_ERR_NO_FRAME);
-    CHECK_EQ(vm.page_tables, 1);
-    CHECK_EQ(vm.mapped_pages, 1);
-    CHECK(!vmm_translate(&vm, 0x00400000u, &phys, 0));   /* nothing half-done */
-    CHECK_EQ(fake_directory(0)[1], 0);
-    CHECK_EQ(vmm_map(&vm, 0x00002000u, 0x2000u, PTE_WRITE), VMM_OK);   /* existing table still fine */
-}
-
-static void test_unaligned_and_flags(void)
-{
-    setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_map(&vm, 0x00401001u, 0x1000u, PTE_WRITE), VMM_ERR_UNALIGNED);
-    CHECK_EQ(vmm_map(&vm, 0x00401000u, 0x1001u, PTE_WRITE), VMM_ERR_UNALIGNED);
-    CHECK_EQ(vmm_map(&vm, 0x00401000u, 0x1000u, PTE_USER), VMM_ERR_FLAGS);   /* no user pages */
-    CHECK_EQ(vmm_map(&vm, 0x00401000u, 0x1000u, PTE_PRESENT), VMM_ERR_FLAGS);
-    CHECK_EQ(vmm_unmap(&vm, 0x00401001u, 0), VMM_ERR_UNALIGNED);
-    CHECK_EQ(vm.page_tables, 0);                    /* refusals create nothing */
-}
-
-static void test_reserved_addresses(void)
-{
-    uint32_t phys;
-    setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_map(&vm, 0x00000000u, 0x5000u, PTE_WRITE), VMM_ERR_RESERVED_VA);   /* NULL page */
-    CHECK_EQ(vmm_map(&vm, VM_RECURSIVE_BASE, 0x5000u, PTE_WRITE), VMM_ERR_RESERVED_VA);
-    CHECK_EQ(vmm_map(&vm, VM_PAGE_DIRECTORY, 0x5000u, PTE_WRITE), VMM_ERR_RESERVED_VA);
-    CHECK_EQ(vmm_unmap(&vm, 0x00000000u, 0), VMM_ERR_RESERVED_VA);
-    CHECK(!vmm_translate(&vm, 0x00000400u, &phys, 0));   /* BIOS data area: never */
+    uint64_t phys = 0;
+    /* root + 1: the PDPT fits, the PD does not. Nothing may be linked, and
+     * the PDPT frame must be given back. */
+    setup(2);
+    CHECK_EQ(vmm_map(&vm, 0x00400000ull, 0x1000, PTE_WRITE), VMM_ERR_NO_FRAME);
+    CHECK_EQ(freed_frames, 1);
+    CHECK_EQ(freed[0], FAKE_BASE + 4096);
+    CHECK_EQ(fake_ptr(root)[0], 0);
     CHECK_EQ(vm.page_tables, 0);
-    CHECK_EQ(vmm_map(&vm, 0x00001000u, 0x1000u, PTE_WRITE), VMM_OK);                /* page 1 is fine */
+    CHECK(!vmm_translate(&vm, 0x00400000ull, &phys, 0));
+
+    /* root + 3: one full path, then a new PT (1 frame) fits but a path
+     * needing PD + PT does not. */
+    setup(5);
+    CHECK_EQ(vmm_map(&vm, 0x00001000ull, 0x1000, PTE_WRITE), VMM_OK);     /* 3 tables */
+    CHECK_EQ(vmm_map(&vm, 0x40000000ull, 0x2000, PTE_WRITE), VMM_ERR_NO_FRAME);  /* needs 2 */
+    CHECK_EQ(freed_frames, 1);
+    CHECK_EQ(vm.page_tables, 3);
+    CHECK_EQ(vmm_map(&vm, 0x00200000ull, 0x3000, PTE_WRITE), VMM_OK);     /* needs 1 */
+    CHECK_EQ(vm.page_tables, 4);
+    CHECK_EQ(vmm_map(&vm, 0x00002000ull, 0x4000, PTE_WRITE), VMM_OK);     /* needs 0 */
+}
+
+static void test_unaligned_flags_and_frames(void)
+{
+    setup(FAKE_FRAMES);
+    CHECK_EQ(vmm_map(&vm, 0x00401001ull, 0x1000, PTE_WRITE), VMM_ERR_UNALIGNED);
+    CHECK_EQ(vmm_map(&vm, 0x00401000ull, 0x1001, PTE_WRITE), VMM_ERR_UNALIGNED);
+    CHECK_EQ(vmm_map(&vm, 0x00401000ull, 1ull << 52, PTE_WRITE), VMM_ERR_UNALIGNED);
+    CHECK_EQ(vmm_map(&vm, 0x00401000ull, 0x1000, PTE_USER), VMM_ERR_FLAGS);
+    CHECK_EQ(vmm_map(&vm, 0x00401000ull, 0x1000, PTE_PRESENT), VMM_ERR_FLAGS);
+    CHECK_EQ(vmm_map(&vm, 0x00401000ull, 0x1000, PTE_LARGE), VMM_ERR_FLAGS);
+    CHECK_EQ(vmm_unmap(&vm, 0x00401001ull, 0), VMM_ERR_UNALIGNED);
+    CHECK_EQ(vm.page_tables, 0);                        /* refusals create nothing */
+}
+
+static void test_reserved_and_noncanonical(void)
+{
+    uint64_t phys = 0;
+    setup(FAKE_FRAMES);
+    CHECK_EQ(vmm_map(&vm, 0, 0x5000, PTE_WRITE), VMM_ERR_RESERVED_VA);           /* NULL page */
+    CHECK_EQ(vmm_map(&vm, 0xFFFFFF0000000000ull, 0x5000, 0), VMM_ERR_RESERVED_VA);  /* recursive */
+    CHECK_EQ(vmm_map(&vm, 0xFFFFFF7FBFDFE000ull, 0x5000, 0), VMM_ERR_RESERVED_VA);  /* the PML4 */
+    CHECK_EQ(vmm_unmap(&vm, 0, 0), VMM_ERR_RESERVED_VA);
+    CHECK(!vmm_translate(&vm, 0x400, &phys, 0));                                    /* BIOS data */
+    CHECK_EQ(vmm_map(&vm, 0x0000800000000000ull, 0x5000, 0), VMM_ERR_NONCANONICAL);
+    CHECK_EQ(vmm_map(&vm, 0xFFFF7FFFFFFFF000ull, 0x5000, 0), VMM_ERR_NONCANONICAL);
+    CHECK_EQ(vmm_unmap(&vm, 0x0000800000000000ull, 0), VMM_ERR_NONCANONICAL);
+    CHECK_EQ(vmm_ensure_table(&vm, 0x1234000000000000ull), VMM_ERR_NONCANONICAL);
+    CHECK(!vmm_translate(&vm, 0x0000800000000000ull, &phys, 0));
+    CHECK_EQ(vm.page_tables, 0);
+    CHECK_EQ(vmm_map(&vm, 0x1000, 0x1000, PTE_WRITE), VMM_OK);                   /* page 1 fine */
 }
 
 static void test_existing_mapping_not_replaced(void)
 {
-    uint32_t phys;
+    uint64_t phys = 0;
     setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_map(&vm, 0x00800000u, 0x7000u, PTE_WRITE), VMM_OK);
-    CHECK_EQ(vmm_map(&vm, 0x00800000u, 0x9000u, PTE_WRITE), VMM_ERR_EXISTS);
-    CHECK(vmm_translate(&vm, 0x00800000u, &phys, 0));
-    CHECK_EQ(phys, 0x7000u);
+    CHECK_EQ(vmm_map(&vm, 0x00800000ull, 0x7000, PTE_WRITE), VMM_OK);
+    CHECK_EQ(vmm_map(&vm, 0x00800000ull, 0x9000, PTE_WRITE), VMM_ERR_EXISTS);
+    CHECK(vmm_translate(&vm, 0x00800000ull, &phys, 0));
+    CHECK_EQ(phys, 0x7000);
     CHECK_EQ(vm.mapped_pages, 1);
 }
 
 static void test_unmap_not_mapped(void)
 {
     setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_unmap(&vm, 0x00800000u, 0), VMM_ERR_NOT_MAPPED);   /* no table */
-    vmm_map(&vm, 0x00800000u, 0x7000u, PTE_WRITE);
-    CHECK_EQ(vmm_unmap(&vm, 0x00801000u, 0), VMM_ERR_NOT_MAPPED);   /* table, no entry */
-    CHECK_EQ(vmm_unmap(&vm, 0x00800000u, 0), VMM_OK);
-    CHECK_EQ(vmm_unmap(&vm, 0x00800000u, 0), VMM_ERR_NOT_MAPPED);   /* twice */
+    CHECK_EQ(vmm_unmap(&vm, 0x00800000ull, 0), VMM_ERR_NOT_MAPPED);   /* no tables */
+    vmm_map(&vm, 0x00800000ull, 0x7000, PTE_WRITE);
+    CHECK_EQ(vmm_unmap(&vm, 0x00801000ull, 0), VMM_ERR_NOT_MAPPED);   /* table, no entry */
+    CHECK_EQ(vmm_unmap(&vm, 0x00800000ull, 0), VMM_OK);
+    CHECK_EQ(vmm_unmap(&vm, 0x00800000ull, 0), VMM_ERR_NOT_MAPPED);   /* twice */
     CHECK_EQ(flush_count, 1);
 }
 
 static void test_flush_exactly_once_per_unmap(void)
 {
     setup(FAKE_FRAMES);
-    for (uint32_t i = 0; i < 8; i++)
-        vmm_map(&vm, 0x00C00000u + i * 0x1000u, 0x10000u + i * 0x1000u, PTE_WRITE);
-    CHECK_EQ(flush_count, 0);                       /* mapping new pages never flushes */
-    for (uint32_t i = 0; i < 8; i++) {
-        uint32_t va = 0x00C00000u + i * 0x1000u;
+    for (uint64_t i = 0; i < 8; i++)
+        vmm_map(&vm, HEAP_BASE + i * 0x1000, 0x10000 + i * 0x1000, PTE_WRITE | PTE_NX);
+    CHECK_EQ(flush_count, 0);                           /* new mappings never flush */
+    for (uint64_t i = 0; i < 8; i++) {
+        uint64_t va = HEAP_BASE + i * 0x1000;
         CHECK_EQ(vmm_unmap(&vm, va, 0), VMM_OK);
         CHECK_EQ(flush_count, i + 1);
         CHECK_EQ(last_flush, va);
@@ -188,98 +230,166 @@ static void test_flush_exactly_once_per_unmap(void)
 
 static void test_remap_after_unmap(void)
 {
-    uint32_t phys;
+    uint64_t phys = 0;
     setup(FAKE_FRAMES);
-    vmm_map(&vm, VM_TEST_PAGE, 0xA000u, PTE_WRITE);
-    vmm_unmap(&vm, VM_TEST_PAGE, 0);
-    CHECK_EQ(vmm_map(&vm, VM_TEST_PAGE, 0xB000u, PTE_WRITE), VMM_OK);
-    CHECK(vmm_translate(&vm, VM_TEST_PAGE, &phys, 0));
-    CHECK_EQ(phys, 0xB000u);
-    CHECK_EQ(last_flush, VM_TEST_PAGE);
+    vmm_map(&vm, WINDOW, 0xA000, PTE_WRITE | PTE_NX);
+    vmm_unmap(&vm, WINDOW, 0);
+    CHECK_EQ(vmm_map(&vm, WINDOW, 0xB000, PTE_WRITE | PTE_NX), VMM_OK);
+    CHECK(vmm_translate(&vm, WINDOW, &phys, 0));
+    CHECK_EQ(phys, 0xB000);
+    CHECK_EQ(last_flush, WINDOW);
 }
 
-static void test_read_only_flag_kept(void)
+static void test_leaf_flags_and_intermediate_entries(void)
 {
-    uint32_t flags;
+    uint64_t flags = 0;
     setup(FAKE_FRAMES);
-    CHECK_EQ(vmm_map(&vm, 0x00100000u, 0x00100000u, 0), VMM_OK);    /* kernel code: read-only */
-    CHECK(vmm_translate(&vm, 0x00100000u, 0, &flags));
+    CHECK_EQ(vmm_map(&vm, KERNEL_TEXT, KERNEL_TEXT, 0), VMM_OK);          /* code: RO, exec */
+    CHECK(vmm_translate(&vm, KERNEL_TEXT, 0, &flags));
     CHECK(flags & PTE_PRESENT);
     CHECK(!(flags & PTE_WRITE));
+    CHECK(!(flags & PTE_NX));
     CHECK(!(flags & PTE_USER));
+    CHECK_EQ(vmm_map(&vm, KERNEL_TEXT + 0x1000, KERNEL_TEXT + 0x1000, PTE_NX), VMM_OK);  /* rodata */
+    CHECK(vmm_translate(&vm, KERNEL_TEXT + 0x1000, 0, &flags));
+    CHECK(!(flags & PTE_WRITE) && (flags & PTE_NX));
+    /* Intermediate entries: present, writable, never NX or user. */
+    uint64_t e4 = fake_ptr(root)[vm_index(KERNEL_TEXT, 4)];
+    uint64_t e3 = fake_ptr(pte_frame(e4))[vm_index(KERNEL_TEXT, 3)];
+    uint64_t e2 = fake_ptr(pte_frame(e3))[vm_index(KERNEL_TEXT, 2)];
+    CHECK_EQ(e4 & ~PTE_ADDR_MASK, PTE_PRESENT | PTE_WRITE);
+    CHECK_EQ(e3 & ~PTE_ADDR_MASK, PTE_PRESENT | PTE_WRITE);
+    CHECK_EQ(e2 & ~PTE_ADDR_MASK, PTE_PRESENT | PTE_WRITE);
 }
 
-static void test_many_mappings_across_a_4mib_boundary(void)
+static void test_many_mappings_across_boundaries(void)
 {
-    uint32_t phys;
+    uint64_t phys = 0;
     setup(FAKE_FRAMES);
-    uint32_t start = 0x00300000u;                   /* 3 MiB .. 7 MiB: crosses 4 MiB */
-    for (uint32_t i = 0; i < 1024; i++)
-        CHECK_EQ(vmm_map(&vm, start + i * 0x1000u, start + i * 0x1000u, PTE_WRITE), VMM_OK);
-    CHECK_EQ(vm.page_tables, 2);
+    uint64_t start = 0x3FF00000ull;                     /* 1 GiB - 1 MiB: crosses 2 MiB and 1 GiB */
+    for (uint64_t i = 0; i < 1024; i++)
+        CHECK_EQ(vmm_map(&vm, start + i * 0x1000, start + i * 0x1000, PTE_WRITE), VMM_OK);
     CHECK_EQ(vm.mapped_pages, 1024);
-    for (uint32_t i = 0; i < 1024; i += 97) {
-        CHECK(vmm_translate(&vm, start + i * 0x1000u + 5, &phys, 0));
-        CHECK_EQ(phys, start + i * 0x1000u + 5);    /* identity */
+    CHECK_EQ(vm.page_tables, 1 + 2 + 3);                /* PDPT; 2 PDs; PTs at 1G-1M, 1G, 1G+2M */
+    for (uint64_t i = 0; i < 1024; i += 97) {
+        CHECK(vmm_translate(&vm, start + i * 0x1000 + 5, &phys, 0));
+        CHECK_EQ(phys, start + i * 0x1000 + 5);
     }
-    CHECK(!vmm_translate(&vm, start - 0x1000u, &phys, 0));
-    CHECK(!vmm_translate(&vm, start + 1024 * 0x1000u, &phys, 0));
+    CHECK(!vmm_translate(&vm, start - 0x1000, &phys, 0));
+    CHECK(!vmm_translate(&vm, start + 1024 * 0x1000, &phys, 0));
 }
 
-static void test_directory_entries_are_kernel_writable(void)
+static void test_upper_half_addresses(void)
 {
+    uint64_t phys = 0;
     setup(FAKE_FRAMES);
-    vmm_map(&vm, 0xD0000000u, 0x5000u, 0);          /* even for a read-only page */
-    uint32_t pde = fake_directory(0)[pd_index(0xD0000000u)];
-    CHECK(pte_present(pde));
-    CHECK(pte_writable(pde));                       /* the page entry decides */
-    CHECK(!(pde & PTE_USER));
+    CHECK_EQ(vmm_map(&vm, HEAP_BASE, 0x20000, PTE_WRITE | PTE_NX), VMM_OK);
+    CHECK_EQ(vmm_map(&vm, HIGHER_HALF + 0x100000, 0x100000, 0), VMM_OK);
+    CHECK(vmm_translate(&vm, HEAP_BASE + 0x10, &phys, 0) && phys == 0x20010);
+    CHECK(vmm_translate(&vm, HIGHER_HALF + 0x100123, &phys, 0) && phys == 0x100123);
+    CHECK_EQ(fake_ptr(root)[509] & PTE_PRESENT, PTE_PRESENT);
+    CHECK_EQ(fake_ptr(root)[511] & PTE_PRESENT, PTE_PRESENT);
 }
 
-/* paging.c sets PD[1023] to the directory itself; the core must never touch
- * that entry and must refuse addresses resolved through it. */
+static void test_large_pages(void)
+{
+    uint64_t phys = 0, flags = 0;
+    setup(FAKE_FRAMES);
+    vmm_ensure_table(&vm, 0x1000);                     /* PML4 -> PDPT -> PD -> PT */
+    uint64_t e4 = fake_ptr(root)[0];
+    uint64_t e3 = fake_ptr(pte_frame(e4))[0];
+    uint64_t *pd = fake_ptr(pte_frame(e3));
+    pd[1] = pte_make(0x40000000ull, PTE_PRESENT | PTE_WRITE | PTE_LARGE);   /* 2 MiB at 2 MiB */
+    CHECK(vmm_translate(&vm, 0x00212345ull, &phys, &flags));
+    CHECK_EQ(phys, 0x40012345ull);
+    CHECK(flags & PTE_LARGE);
+    CHECK_EQ(vmm_map(&vm, 0x00300000ull, 0x5000, 0), VMM_ERR_EXISTS);
+    CHECK_EQ(vmm_unmap(&vm, 0x00200000ull, 0), VMM_ERR_NOT_MAPPED);
+    CHECK_EQ(vmm_ensure_table(&vm, 0x00200000ull), VMM_ERR_EXISTS);
+}
+
 static void test_recursive_entry_left_alone(void)
 {
-    uint32_t phys;
     setup(FAKE_FRAMES);
-    uint32_t recursive = pte_make(dir_phys, PTE_PRESENT | PTE_WRITE);
-    fake_directory(0)[VM_RECURSIVE_INDEX] = recursive;
-    for (uint32_t i = 0; i < 8; i++)                /* one new table each */
-        CHECK_EQ(vmm_map(&vm, 0x00400000u + i * 0x00400000u, 0x1000u * (i + 1), PTE_WRITE), VMM_OK);
-    CHECK_EQ(vmm_ensure_table(&vm, VM_WINDOW), VMM_OK);   /* table in slot 1022, next to it */
-    CHECK_EQ(vm.page_tables, 9);
-    CHECK_EQ(fake_directory(0)[VM_RECURSIVE_INDEX], recursive);
-    CHECK_EQ(pte_frame(fake_directory(0)[VM_RECURSIVE_INDEX]), dir_phys);   /* points to the directory */
-    CHECK(!vmm_translate(&vm, VM_PAGE_DIRECTORY, &phys, 0));
-    CHECK(!vmm_translate(&vm, VM_RECURSIVE_BASE + 0x1000u, &phys, 0));
-    CHECK_EQ(vmm_unmap(&vm, VM_PAGE_DIRECTORY, 0), VMM_ERR_RESERVED_VA);
-    CHECK_EQ(fake_directory(0)[VM_RECURSIVE_INDEX], recursive);
+    uint64_t recursive = pte_make(root, PTE_PRESENT | PTE_WRITE);
+    fake_ptr(root)[VM_RECURSIVE_INDEX] = recursive;
+    for (uint64_t i = 0; i < 6; i++)
+        CHECK_EQ(vmm_map(&vm, 0x1000 + i * 0x8000000000ull, 0x1000 * (i + 1), PTE_WRITE), VMM_OK);
+    CHECK_EQ(vmm_ensure_table(&vm, WINDOW), VMM_OK);
+    CHECK_EQ(fake_ptr(root)[VM_RECURSIVE_INDEX], recursive);
+    CHECK_EQ(vmm_unmap(&vm, 0xFFFFFF7FBFDFE000ull, 0), VMM_ERR_RESERVED_VA);
+}
+
+/* The CPU's own walk over fake memory, following the recursive entry like
+ * any other: where does virtual address va really lead? */
+static bool cpu_walk(uint64_t va, uint64_t *phys)
+{
+    uint64_t table = root;
+    for (int level = 4; level >= 1; level--) {
+        uint64_t e = fake_ptr(table)[vm_index(va, level)];
+        if (!pte_present(e))
+            return false;
+        table = pte_frame(e);
+    }
+    *phys = table | (va & 0xFFF);
+    return true;
+}
+
+static void test_recursive_table_addresses(void)
+{
+    uint64_t phys = 0;
+    setup(FAKE_FRAMES);
+    fake_ptr(root)[VM_RECURSIVE_INDEX] = pte_make(root, PTE_PRESENT | PTE_WRITE);
+    static const uint64_t vas[] = { 0x1000, 0x3FF00000ull, HEAP_BASE + 0x5000, WINDOW,
+                                    HIGHER_HALF + 0x100000, 0x00007FFFFFFFF000ull };
+    for (unsigned i = 0; i < sizeof(vas) / sizeof(vas[0]); i++)
+        vmm_map(&vm, vas[i], 0x1000 * (i + 1), PTE_WRITE);
+    for (unsigned i = 0; i < sizeof(vas) / sizeof(vas[0]); i++) {
+        uint64_t va = vas[i];
+        /* The frame of each table on va's path, from the tables themselves. */
+        uint64_t f4 = root;
+        uint64_t f3 = pte_frame(fake_ptr(f4)[vm_index(va, 4)]);
+        uint64_t f2 = pte_frame(fake_ptr(f3)[vm_index(va, 3)]);
+        uint64_t f1 = pte_frame(fake_ptr(f2)[vm_index(va, 2)]);
+        const uint64_t want[5] = { 0, f1, f2, f3, f4 };
+        for (int level = 1; level <= 4; level++) {
+            uint64_t rva = vm_recursive_table(VM_RECURSIVE_INDEX, level, va);
+            CHECK(vm_canonical(rva));
+            CHECK_EQ(vm_index(rva, 4), VM_RECURSIVE_INDEX);
+            CHECK(cpu_walk(rva, &phys));
+            CHECK_EQ(phys, want[level]);
+        }
+    }
+    CHECK_EQ(vm_recursive_table(VM_RECURSIVE_INDEX, 4, 0), 0xFFFFFF7FBFDFE000ull);
+    CHECK_EQ(vm_recursive_table(VM_RECURSIVE_INDEX, 1, 0), 0xFFFFFF0000000000ull);
 }
 
 static void test_result_strings(void)
 {
-    for (int r = VMM_OK; r <= VMM_ERR_FLAGS; r++)
+    for (int r = VMM_OK; r <= VMM_ERR_NONCANONICAL; r++)
         CHECK(strcmp(vmm_result_str((enum vmm_result)r), "unknown vmm error") != 0);
-    CHECK(strcmp(vmm_result_str(VMM_ERR_EXISTS), "address already mapped") == 0);
+    CHECK(strcmp(vmm_result_str(VMM_ERR_NONCANONICAL), "non-canonical address") == 0);
 }
 
 int main(void)
 {
     printf("vmm unit tests\n");
     RUN(test_map_translate_unmap);
-    RUN(test_tables_created_on_demand_and_cleared);
+    RUN(test_tables_per_level);
     RUN(test_ensure_table);
-    RUN(test_out_of_frames);
-    RUN(test_unaligned_and_flags);
-    RUN(test_reserved_addresses);
+    RUN(test_out_of_frames_at_each_level);
+    RUN(test_unaligned_flags_and_frames);
+    RUN(test_reserved_and_noncanonical);
     RUN(test_existing_mapping_not_replaced);
     RUN(test_unmap_not_mapped);
     RUN(test_flush_exactly_once_per_unmap);
     RUN(test_remap_after_unmap);
-    RUN(test_read_only_flag_kept);
-    RUN(test_many_mappings_across_a_4mib_boundary);
-    RUN(test_directory_entries_are_kernel_writable);
+    RUN(test_leaf_flags_and_intermediate_entries);
+    RUN(test_many_mappings_across_boundaries);
+    RUN(test_upper_half_addresses);
+    RUN(test_large_pages);
     RUN(test_recursive_entry_left_alone);
+    RUN(test_recursive_table_addresses);
     RUN(test_result_strings);
     return unit_report("vmm");
 }

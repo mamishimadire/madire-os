@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
@@ -64,6 +65,35 @@ static void put_uint(struct sink *out, uint32_t value, unsigned base, int width,
         sink_putc(out, buf[n]);
 }
 
+/* 64-bit value in base 10 or 16 using only 32-bit arithmetic (no libgcc in
+ * a 32-bit build): the value is divided by the base 16 bits at a time. */
+static void put_u64(struct sink *out, uint64_t value, unsigned base, int width, char pad)
+{
+    static const char digits[] = "0123456789abcdef";
+    char buf[24];
+    int n = 0;
+
+    if ((value >> 32) == 0) {
+        put_uint(out, (uint32_t)value, base, width, pad);
+        return;
+    }
+    while (value) {
+        uint64_t q = 0;
+        uint32_t r = 0;
+        for (int shift = 48; shift >= 0; shift -= 16) {
+            uint32_t cur = (r << 16) | (uint32_t)((value >> shift) & 0xFFFFu);
+            q |= (uint64_t)(cur / base) << shift;
+            r = cur % base;
+        }
+        buf[n++] = digits[r];
+        value = q;
+    }
+    while (width-- > n)
+        sink_putc(out, pad);
+    while (n--)
+        sink_putc(out, buf[n]);
+}
+
 static void format(struct sink *out, const char *fmt, va_list ap)
 {
     for (; *fmt; fmt++) {
@@ -81,6 +111,31 @@ static void format(struct sink *out, const char *fmt, va_list ap)
         }
         while (*fmt >= '0' && *fmt <= '9')
             width = width * 10 + (*fmt++ - '0');
+
+        /* Length: l (long) and ll (long long), for d, u and x. */
+        int longs = 0;
+        while (*fmt == 'l' && longs < 2) {
+            longs++;
+            fmt++;
+        }
+        if (longs && (*fmt == 'd' || *fmt == 'u' || *fmt == 'x')) {
+            uint64_t v;
+            bool negative = false;
+            if (*fmt == 'd') {
+                int64_t s = longs == 2 ? (int64_t)va_arg(ap, long long) : (int64_t)va_arg(ap, long);
+                negative = s < 0;
+                v = negative ? -(uint64_t)s : (uint64_t)s;
+            } else {
+                v = longs == 2 ? (uint64_t)va_arg(ap, unsigned long long)
+                               : (uint64_t)va_arg(ap, unsigned long);
+            }
+            if (negative) {
+                sink_putc(out, '-');
+                width--;
+            }
+            put_u64(out, v, *fmt == 'x' ? 16 : 10, width, pad);
+            continue;
+        }
 
         switch (*fmt) {
         case 's': {
@@ -107,9 +162,10 @@ static void format(struct sink *out, const char *fmt, va_list ap)
         case 'x':
             put_uint(out, va_arg(ap, uint32_t), 16, width, pad);
             break;
-        case 'p':
+        case 'p':                       /* full pointer width: 8 or 16 digits */
             sink_puts(out, "0x");
-            put_uint(out, (uint32_t)(uintptr_t)va_arg(ap, void *), 16, 8, '0');
+            put_u64(out, (uint64_t)(uintptr_t)va_arg(ap, void *), 16,
+                    (int)(sizeof(void *) * 2), '0');
             break;
         case '%':
             sink_putc(out, '%');

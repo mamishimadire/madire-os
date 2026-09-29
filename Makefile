@@ -1,6 +1,7 @@
 # Madire OS build (runs on Linux: Codespace, WSL, or CI).
 #
-#   make        build the kernel ELF
+#   make        build the kernel (build/madire.elf with symbols, and the
+#               bootable flat image build/madire.kernel)
 #   make iso    build the bootable ISO (build/madire-os.iso)
 #   make unit   host unit tests for the pure kernel modules (tests/unit/)
 #   make test   unit tests, then tests/qemu-tests.sh: Multiboot header,
@@ -9,23 +10,26 @@
 #               scripts/run.ps1 to boot in VirtualBox instead)
 #   make clean  remove build output
 
-# Prefer a dedicated i686-elf cross compiler when installed; otherwise use the
-# host GCC in 32-bit freestanding mode.
-ifneq ($(shell command -v i686-elf-gcc 2>/dev/null),)
-CC := i686-elf-gcc
-LD := i686-elf-ld
-else
-CC := gcc -m32
-LD := ld -m elf_i386
-endif
+# x86-64 kernel, built with the host GCC in freestanding mode (0.7).
+#   -mno-red-zone        interrupts push onto the stack below RSP, so the
+#                        128-byte red zone would be overwritten
+#   -mgeneral-regs-only  no SSE/MMX/x87/AVX in kernel code (checked below;
+#                        CR4.OSFXSR also stays clear, so any SSE faults)
+#   -mcmodel=small       the kernel is linked below 2 GiB (at 1 MiB)
+# libgcc is not linked: 64-bit division is a native instruction here, and
+# 128-bit arithmetic is not used.
+CC := gcc
+LD := ld -m elf_x86_64
 AS := nasm
 
-CFLAGS  := -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
+CFLAGS  := -std=gnu11 -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone -mgeneral-regs-only \
+           -mcmodel=small -fno-stack-protector -fno-asynchronous-unwind-tables \
            -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra -Werror -I.
-ASFLAGS := -f elf32
-LDFLAGS := -T linker/linker.ld -nostdlib -z noexecstack
+ASFLAGS := -f elf64
+LDFLAGS := -T linker/linker.ld -nostdlib -z noexecstack -z max-page-size=0x1000
 
 BUILD  := build
+ELF    := $(BUILD)/madire.elf
 KERNEL := $(BUILD)/madire.kernel
 ISO    := $(BUILD)/madire-os.iso
 
@@ -36,14 +40,17 @@ C_SRCS   := $(shell find kernel drivers -name '*.c')
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # Host unit tests: kernel modules with no hardware access, built as ordinary
-# 32-bit Linux programs so they run with the same integer and pointer sizes.
-UNIT_CC      := gcc -m32
-UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -I.
+# 64-bit Linux programs (0.7: the kernel's integer and pointer sizes).
+# Non-PIE and linked at 256 MiB: the memory tests pass the addresses of their
+# static test data as 32-bit physical addresses, so that data must lie below
+# 4 GiB; test_reserve also expects it above its fake 32 MiB machine.
+UNIT_CC      := gcc -m64 -no-pie -Wl,-Ttext-segment=0x10000000
+UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -fno-pie -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
                             drivers/keyboard/scancode.c kernel/input/keyqueue.c \
                             kernel/console/textbuf.c kernel/console/lineedit.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
-                            kernel/memory/vmm_core.c kernel/memory/heap.c)
+                            kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit clean
@@ -58,8 +65,17 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(KERNEL): $(OBJS) linker/linker.ld
+$(ELF): $(OBJS) linker/linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+
+# The bootable image: the ELF's loaded sections as one flat binary starting
+# at 1 MiB. boot/boot.asm's Multiboot header gives the loader its addresses
+# (a.out kludge); GRUB and QEMU's -kernel both accept it. The build fails if
+# the compiler used any SSE/x87 register.
+$(KERNEL): $(ELF)
+	@if objdump -d $(ELF) | grep -qE '%(xmm|ymm|zmm|st)'; then \
+	    echo "error: SSE/x87 registers used in $(ELF)"; exit 1; fi
+	objcopy -O binary $(ELF) $@
 
 iso: $(ISO)
 
@@ -72,6 +88,7 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 	@echo "ISO ready: $@"
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
+                 kernel/bootmod.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
                  $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
@@ -83,7 +100,7 @@ test: unit $(ISO)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -serial stdio
+	qemu-system-x86_64 -cdrom $(ISO) -serial stdio
 
 clean:
 	rm -rf $(BUILD)

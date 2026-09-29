@@ -9,7 +9,9 @@
 void kputc(char c);
 void kputs(const char *s);
 
-/* Supports %s %c %d %u %x %p %%, with optional zero-pad and width (%08x). */
+/* Supports %s %c %d %u %x %p %%, with optional zero-pad and width (%08x);
+ * l and ll lengths for d, u, x (%llx for uint64_t on both 32- and 64-bit
+ * builds). %p prints the full pointer width (8 or 16 hex digits). */
 void kprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void kvprintf(const char *fmt, va_list ap);
 

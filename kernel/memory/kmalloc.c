@@ -13,17 +13,19 @@ static struct heap heap;
 static bool ready;
 static struct heap_stats current;
 
+typedef unsigned long long ull;
+
 /* Maps [va, va + bytes) to fresh frames. All or nothing: on failure every
  * page mapped here is unmapped and its frame freed. Page tables created on
- * the way stay (they are never freed in 0.6). */
-static bool map_new_pages(uint32_t va, uint32_t bytes)
+ * the way stay (they are never freed). */
+static bool map_new_pages(uint64_t va, uint32_t bytes)
 {
     uint32_t off;
     for (off = 0; off < bytes; off += VM_PAGE_SIZE) {
         uint32_t frame = memory_alloc_page();
         if (!frame)
             break;
-        if (paging_map(va + off, frame, PTE_WRITE) != VMM_OK) {
+        if (paging_map(va + off, frame, PTE_WRITE | paging_nx_flag()) != VMM_OK) {
             memory_free_page(frame);
             break;
         }
@@ -31,9 +33,9 @@ static bool map_new_pages(uint32_t va, uint32_t bytes)
     if (off >= bytes)
         return true;
     for (uint32_t o = 0; o < off; o += VM_PAGE_SIZE) {
-        uint32_t phys;
+        uint64_t phys;
         if (paging_unmap(va + o, &phys) == VMM_OK)
-            memory_free_page(phys);
+            memory_free_page((uint32_t)phys);
     }
     return false;
 }
@@ -56,13 +58,17 @@ bool kheap_init(void)
               VM_HEAP_INITIAL / 1024);
         return false;
     }
-    if (!heap_init(&heap, VM_HEAP_BASE, VM_HEAP_INITIAL, VM_HEAP_MAX, VM_HEAP_GROW_MIN, grow, 0)) {
+    if (!heap_init(&heap, (uintptr_t)VM_HEAP_BASE, VM_HEAP_INITIAL, VM_HEAP_MAX, VM_HEAP_GROW_MIN,
+                   grow, 0)) {
         klogf("Kernel heap: heap_init refused its parameters; heap disabled\n");
         return false;
     }
     ready = true;
-    klogf("Kernel heap: %u KiB at 0x%08x, max %u KiB\n", VM_HEAP_INITIAL / 1024, VM_HEAP_BASE,
-          VM_HEAP_MAX / 1024);
+    uint64_t flags = 0;
+    paging_translate(VM_HEAP_BASE, 0, &flags);
+    klogf("Kernel heap: %u KiB at 0x%016llx, max %u KiB, pages %s\n", VM_HEAP_INITIAL / 1024,
+          (ull)VM_HEAP_BASE, VM_HEAP_MAX / 1024,
+          (flags & PTE_NX) ? "no-execute (NX bit set)" : "executable (no NX bit)");
     return true;
 }
 
@@ -89,25 +95,25 @@ void kfree(void *p)
     require_normal_context("kfree");
     if (!p)
         return;
-    uint32_t a = (uint32_t)(uintptr_t)p;
+    ull a = (uintptr_t)p;
     if (!ready)
-        panicf("Heap: invalid free of 0x%08x (the kernel heap is disabled).", a);
+        panicf("Heap: invalid free of 0x%016llx (the kernel heap is disabled).", a);
     enum heap_error e = heap_free(&heap, p);
     switch (e) {
     case HEAP_OK:
         return;
     case HEAP_ERR_DOUBLE_FREE:
-        panicf("Heap: double free of 0x%08x.", a);
+        panicf("Heap: double free of 0x%016llx.", a);
     case HEAP_ERR_NOT_HEAP:
     case HEAP_ERR_MISALIGNED:
-        panicf("Heap: invalid free of 0x%08x (%s).", a, heap_error_str(e));
+        panicf("Heap: invalid free of 0x%016llx (%s).", a, heap_error_str(e));
     case HEAP_ERR_CORRUPT: {
         uintptr_t bad = 0;
         heap_check(&heap, &bad);
-        panicf("Heap: corrupted block at 0x%08x (while freeing 0x%08x).", (uint32_t)bad, a);
+        panicf("Heap: corrupted block at 0x%016llx (freeing 0x%016llx).", (ull)bad, a);
     }
     }
-    panicf("Heap: free of 0x%08x failed (%s).", a, heap_error_str(e));
+    panicf("Heap: free of 0x%016llx failed (%s).", a, heap_error_str(e));
 }
 
 const struct heap_stats *kheap_stats(void)
@@ -115,7 +121,7 @@ const struct heap_stats *kheap_stats(void)
     if (ready) {
         uintptr_t bad = 0;
         if (heap_check(&heap, &bad) != HEAP_OK)
-            panicf("Heap: corrupted block at 0x%08x (found by heap_check).", (uint32_t)bad);
+            panicf("Heap: corrupted block at 0x%016llx (found by heap_check).", (ull)bad);
         heap_stats(&heap, &current);
     } else {
         struct heap_stats none = { 0 };

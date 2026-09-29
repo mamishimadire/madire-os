@@ -6,8 +6,8 @@
 #define IDT_ENTRIES          256
 #define IDT_HANDLED_VECTORS  48    /* 0-31 CPU exceptions, 32-47 PIC IRQs */
 
-/* Fills the IDT with the entry stubs from isr.asm and loads it.
- * Returns true if the CPU reports the new table in use. */
+/* Fills the IDT with the entry stubs from isr.asm (the double fault on
+ * IST1) and loads it. Returns true if the CPU reports the new table in use. */
 bool idt_init(void);
 
 #endif

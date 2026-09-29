@@ -85,6 +85,13 @@ static uint32_t bytes_to_mb(uint64_t bytes)
     return (uint32_t)((bytes + (1u << 19)) >> 20);      /* shift, not division */
 }
 
+/* EFER.LMA (bit 10): long mode is active. 0 = EFER not read. Used by both
+ * "cpu" and "version", so the two always agree. */
+static bool long_mode_active(const struct shell_context *c)
+{
+    return (c->efer & (1u << 10)) != 0;
+}
+
 /* ---- Commands ---- */
 
 struct command {
@@ -113,7 +120,8 @@ static enum shell_result cmd_version(int argc, char **argv, const struct shell_c
     l_reset(&l);
     l_str(&l, "Madire OS v");
     l_str(&l, c->version);
-    l_str(&l, " (32-bit x86, Multiboot 1)");
+    l_str(&l, long_mode_active(c) ? " (64-bit x86-64, Multiboot 1)"
+                                  : " (32-bit x86, Multiboot 1)");
     emit(o, &l, SHELL_TEXT);
     return SHELL_OK;
 }
@@ -176,9 +184,13 @@ static void mem_paging(const struct shell_output *o, const struct paging_stats *
         text_row(o, "Paging:", "disabled");
         return;
     }
-    text_row(o, "Paging:", "enabled (4 KiB pages, identity-mapped kernel)");
+    text_row(o, "Paging:", p->nx ? "enabled (4-level, 4 KiB, identity-mapped, NX on)"
+                                 : "enabled (4-level, 4 KiB, identity-mapped, NX off)");
     mem_row(o, "Mapped pages:", p->mapped_pages, "");
     mem_row(o, "Page tables:", p->page_tables, "");
+    text_row(o, "NX:", !p->nx_supported ? "not supported by this CPU"
+                       : !p->nx_enabled ? "supported, not enabled"
+                       : "supported, enabled");
 }
 
 static void mem_heap(const struct shell_output *o, const struct heap_stats *h)
@@ -277,7 +289,8 @@ static enum shell_result cmd_cpu(int argc, char **argv, const struct shell_conte
     l_reset(&l);
     l_str(&l, "Mode:");
     l_pad_to(&l, 14);
-    l_str(&l, (c->cr0 & 1u) ? "32-bit protected mode" : "real mode");
+    l_str(&l, long_mode_active(c) ? "64-bit long mode"
+              : (c->cr0 & 1u) ? "32-bit protected mode" : "real mode");
     l_str(&l, (c->cr0 & 0x80000000u) ? ", paging on" : ", paging off");
     l_str(&l, ", 1 CPU in use");
     emit(o, &l, SHELL_TEXT);

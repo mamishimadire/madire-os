@@ -3,12 +3,12 @@
 
 #include <stdint.h>
 
-/* Stack layout built by isr.asm, lowest address first. */
+/* Stack layout built by isr.asm (x86-64), lowest address first. */
 struct interrupt_frame {
-    uint32_t gs, fs, es, ds;                           /* pushed by isr_common */
-    uint32_t edi, esi, ebp, esp_pusha, ebx, edx, ecx, eax;  /* pusha */
-    uint32_t vector, error_code;                       /* pushed by the stub */
-    uint32_t eip, cs, eflags;                          /* pushed by the CPU */
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;     /* pushed by isr_common */
+    uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
+    uint64_t vector, error_code;                        /* pushed by the stub */
+    uint64_t rip, cs, rflags, rsp, ss;                  /* pushed by the CPU */
 } __attribute__((packed));
 
 #define EXCEPTION_BREAKPOINT 3

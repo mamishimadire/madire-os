@@ -2,12 +2,12 @@
 #define MADIRE_MEMORY_PAGING_H
 
 /*
- * Paging (hardware side): builds the kernel's page directory and tables
- * with the pure vmm_core, checks them by walking them, then loads CR3 and
- * sets CR0.WP and CR0.PG. Layout: vm_layout.h.
+ * Paging (hardware side, x86-64): builds the kernel's own 4-level tables
+ * with the pure vmm_core while the boot stub's temporary tables are still
+ * in use, checks them by walking them, then loads CR3. Layout: vm_layout.h.
  *
  * The map/unmap/translate calls and the window are for normal (non-IRQ)
- * context only and need paging to be on.
+ * context only and need the kernel's tables to be loaded.
  */
 
 #include <stdbool.h>
@@ -15,23 +15,31 @@
 #include "kernel/memory/vmm_core.h"
 
 struct paging_stats {
-    bool enabled;
-    uint32_t cr3;               /* directory's physical address (0 while off) */
-    uint32_t mapped_pages;      /* page-table entries created at build time */
-    uint32_t page_tables;       /* page tables now, incl. later ones (e.g. the heap's);
-                                 * the directory not included */
+    bool enabled;               /* the kernel's own tables are loaded */
+    bool nx_supported;          /* CPUID: the CPU supports no-execute pages */
+    bool nx_enabled;            /* EFER.NXE set (and read back) */
+    bool nx;                    /* no-execute bits used in the kernel's tables */
+    uint64_t cr3;               /* PML4 physical address (0 while not loaded) */
+    uint32_t mapped_pages;      /* leaf entries created at build time */
+    uint32_t page_tables;       /* PDPTs + PDs + PTs now, incl. later ones (e.g. the
+                                 * heap's); the PML4 not included */
     uint32_t kernel_ro_pages;   /* kernel code + read-only data */
 };
 
-/* Build + walk-check + enable. false = paging left OFF (frames released). */
+/* Build + walk-check + load. false = the kernel keeps running on the boot
+ * stub's temporary tables (frames released). */
 bool paging_init(void);
 /* After paging_init() returned true; a failure must panic in the caller. */
 bool paging_selftest(void);
 bool paging_enabled(void);
 
-enum vmm_result paging_map(uint32_t va, uint32_t phys, uint32_t flags);
-enum vmm_result paging_unmap(uint32_t va, uint32_t *phys_out);
-bool paging_translate(uint32_t va, uint32_t *phys_out, uint32_t *flags_out);
+/* PTE_NX when no-execute bits are in use, else 0: add it to the flags of
+ * every data mapping (e.g. heap pages). */
+uint64_t paging_nx_flag(void);
+
+enum vmm_result paging_map(uint64_t va, uint64_t phys, uint64_t flags);
+enum vmm_result paging_unmap(uint64_t va, uint64_t *phys_out);
+bool paging_translate(uint64_t va, uint64_t *phys_out, uint64_t *flags_out);
 
 /*
  * Physical-access window: one page at VM_WINDOW that shows any physical
@@ -43,7 +51,7 @@ bool paging_translate(uint32_t va, uint32_t *phys_out, uint32_t *flags_out);
  * flushes its TLB entry; it never frees the frame, which stays the
  * caller's (and may then go back to the allocator).
  */
-volatile void *vmm_window_map(uint32_t phys);
+volatile void *vmm_window_map(uint64_t phys);
 void vmm_window_unmap(void);
 
 const struct paging_stats *paging_stats(void);

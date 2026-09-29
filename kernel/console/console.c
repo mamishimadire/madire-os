@@ -105,6 +105,7 @@ static void build_context(struct shell_context *c)
     c->page_size = PAGE_SIZE;
     c->cpu = &cpu;
     c->cr0 = cpu_read_cr0();
+    c->efer = cpu_read_efer();          /* LMA: the CPU really is in long mode */
     c->paging = paging_stats();
     c->heap = kheap_stats();            /* runs a full heap_check first */
 }

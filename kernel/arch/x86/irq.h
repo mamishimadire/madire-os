@@ -50,13 +50,14 @@ const char *irq_result_str(enum irq_result result);
 
 #define EFLAGS_IF 0x200u
 
-/* Disable interrupts, returning the previous EFLAGS; restore re-enables
- * them only if they were enabled before. For short critical sections. */
+/* Disable interrupts, returning the previous (low 32 bits of) RFLAGS;
+ * restore re-enables them only if they were enabled before. For short
+ * critical sections. */
 static inline uint32_t irq_save(void)
 {
-    uint32_t flags;
-    __asm__ volatile ("pushf\n\tpop %0\n\tcli" : "=r"(flags) : : "memory");
-    return flags;
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
+    return (uint32_t)flags;
 }
 
 static inline void irq_restore(uint32_t flags)
@@ -67,8 +68,8 @@ static inline void irq_restore(uint32_t flags)
 
 static inline bool irq_enabled(void)
 {
-    uint32_t flags;
-    __asm__ volatile ("pushf\n\tpop %0" : "=r"(flags));
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpopq %0" : "=r"(flags));
     return flags & EFLAGS_IF;
 }
 

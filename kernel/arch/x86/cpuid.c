@@ -1,4 +1,4 @@
-/* CPUID and CR0 access (see cpuid.h). */
+/* CPUID, control-register and EFER access (see cpuid.h). */
 #include "kernel/arch/x86/cpuid.h"
 
 #define EFLAGS_ID        0x00200000u
@@ -10,17 +10,17 @@
 
 bool cpuid_supported(void)
 {
-    uint32_t before, after;
-    __asm__ volatile ("pushfl\n\t"
-                      "popl %0\n\t"
-                      "movl %0, %1\n\t"
-                      "xorl %2, %1\n\t"
-                      "pushl %1\n\t"
-                      "popfl\n\t"
-                      "pushfl\n\t"
-                      "popl %1\n\t"
-                      "pushl %0\n\t"             /* restore the original EFLAGS */
-                      "popfl"
+    uint64_t before, after;
+    __asm__ volatile ("pushfq\n\t"
+                      "popq %0\n\t"
+                      "movq %0, %1\n\t"
+                      "xorq %2, %1\n\t"
+                      "pushq %1\n\t"
+                      "popfq\n\t"
+                      "pushfq\n\t"
+                      "popq %1\n\t"
+                      "pushq %0\n\t"             /* restore the original RFLAGS */
+                      "popfq"
                       : "=&r"(before), "=&r"(after)
                       : "i"(EFLAGS_ID)
                       : "cc");
@@ -81,7 +81,40 @@ void cpuid_read_all(struct cpuid_raw *raw)
 
 uint32_t cpu_read_cr0(void)
 {
-    uint32_t cr0;
+    uint64_t cr0;                           /* bits 32-63 are reserved (zero) */
     __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
-    return cr0;
+    return (uint32_t)cr0;
+}
+
+uint64_t cpu_read_cr4(void)
+{
+    uint64_t cr4;
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    return cr4;
+}
+
+uint64_t cpu_read_efer(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(MSR_EFER));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+bool cpu_nx_supported(void)
+{
+    uint32_t ext[4], features[4] = { 0, 0, 0, 0 };
+    if (!cpuid_supported())
+        return false;
+    cpuid(CPUID_EXT_MAX, ext);
+    if (ext[0] >= CPUID_EXT_FEATURES && ext[0] <= CPUID_EXT_MAX + 0xFFFFu)
+        cpuid(CPUID_EXT_FEATURES, features);
+    return cpuid_nx_supported(ext[0], features[3]);
+}
+
+bool cpu_enable_nx(void)
+{
+    uint64_t efer = cpu_read_efer() | EFER_NXE;
+    __asm__ volatile ("wrmsr" : : "c"(MSR_EFER), "a"((uint32_t)efer),
+                      "d"((uint32_t)(efer >> 32)) : "memory");
+    return (cpu_read_efer() & EFER_NXE) != 0;
 }
