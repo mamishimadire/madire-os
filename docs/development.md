@@ -6,10 +6,13 @@
 Makefile                  build rules (Linux)
 .devcontainer/            Codespace / Dev Container definition (runs install-deps.sh)
 boot/boot.asm             Multiboot header (a.out kludge) + 32-bit stub: CPU checks,
-                          temporary page tables, switch to 64-bit long mode;
-                          boot page tables, kernel and IST1 stacks with guard pages
+                          temporary page tables, switch to 64-bit long mode, jump
+                          to the higher half; boot page tables, kernel and IST1
+                          stacks with guard pages
 kernel/
-  kernel.c/.h             start-up sequence, device start-up, idle loop, version
+  kernel.c/.h             start-up sequence, stack paint, device start-up, idle
+                          loop, version
+  stackpeak.c/.h          stack high-water mark: paint and measure     (pure)
   multiboot.h             Multiboot 1 structures
   bootmod.c/.h            boot-module integrity check (test modules)  (pure)
   bootscreen.c/.h         boot screen layout: status column, memory panel, live lines
@@ -34,13 +37,16 @@ kernel/
     pmm.c/.h              bitmap physical page allocator         (pure)
     memory.c/.h           set-up, statistics, alloc/free API
     memtest.c/.h          boot self-test + diagnostic memory tests
-    vm_layout.h           every virtual-address layout constant (64-bit layout)
+    vm_layout.h           every virtual-address layout constant; phys_view(),
+                          kernel_phys() (higher-half layout since 0.8)
     pte.h                 4-level entry bits (incl. NX), index helpers  (pure)
     vmm_core.c/.h         map / unmap / translate via callbacks    (pure)
-    paging.c/.h           build, walk-check, load CR3; NX; guard pages; self-test; window
+    paging.c/.h           build, walk-check, load CR3; NX; guard pages; physical
+                          view; empty lower half; self-test; window
     heap.c/.h             first-fit boundary-tag allocator         (pure)
     kmalloc.c/.h          kernel heap: kmalloc / kcalloc / kfree
-    vmtest.c/.h           page-fault, NX, stack-overflow and heap diagnostics
+    vmtest.c/.h           page-fault (incl. pflow), NX, stack-overflow and heap
+                          diagnostics
   arch/x86/
     io.h                  port I/O (inb/outb)
     gdt.c/.h, gdt_flush.asm   64-bit segment table + TSS (IST1 double-fault stack)
@@ -60,7 +66,8 @@ drivers/
   pit/pit_divisor.h       rate -> divisor maths                 (pure)
   keyboard/ps2kbd.c/.h    i8042 + PS/2 keyboard -> IRQ1
   keyboard/scancode.c/.h  scancode set 1 decoder, US layout     (pure)
-linker/linker.ld          kernel memory layout (64-bit, loaded and run at 1 MiB)
+linker/linker.ld          kernel memory layout (64-bit; loaded at 1 MiB, linked and
+                          run at 0xFFFFFFFF80000000 + physical since 0.8)
 iso/boot/grub/grub.cfg    GRUB menu (normal boot + Diagnostics)
 scripts/
   install-deps.sh         installs the toolchain on Ubuntu (run by .devcontainer/)
@@ -85,7 +92,7 @@ build/                    build output (git-ignored): madire.elf (symbols),
 
 ## Adding source files
 
-The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` automatically, so a new file needs no Makefile edit. They are linked in the order `find` lists them, which depends on the file system, so two builds of the same sources can differ by a few bytes of layout (a known limitation; a fixed order is a candidate for 0.8). Includes are written from the repository root, e.g. `#include "drivers/vga/vga_text.h"`. Header dependencies are tracked with `-MMD`. If you add a new top-level source folder, also add it to the upload list in `scripts/build.ps1`.
+The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` automatically, so a new file needs no Makefile edit. Since 0.8 the source lists are sorted (`$(sort …)`), so the link order, and with it the binary, doesn't depend on the order in which the file system lists the files (see *Reproducible build*). Includes are written from the repository root, e.g. `#include "drivers/vga/vga_text.h"`. Header dependencies are tracked with `-MMD`. If you add a new top-level source folder, also add it to the upload list in `scripts/build.ps1`.
 
 **Pure modules and unit tests.** A module that doesn't access hardware, print or panic can be unit-tested on the host. Currently these are:
 
@@ -96,7 +103,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `drivers/pit/pit_divisor.h` (header only)
 - `kernel/console/textbuf.c`, `lineedit.c`
 - `kernel/shell/parser.c`, `shell.c`, `cpuinfo.c`
-- `kernel/bootmod.c`
+- `kernel/bootmod.c`, `kernel/stackpeak.c`
 - `kernel/arch/x86/pagefault.h` and the inline NX decision in `cpuid.h` (header only)
 - the formatter in `kernel/kprintf.c` (`test_kprintf` includes the file, with the two output drivers stubbed)
 
@@ -120,7 +127,10 @@ Unit tests are built as ordinary 64-bit Linux programs (`gcc -m64 -no-pie`), so 
 **Linker symbols.** `linker/linker.ld` exports:
 
 - `__kernel_start` / `__kernel_end` (page-aligned; `.bss` includes the boot page tables and the stacks);
-- `__text_`, `__rodata_`, `__data_` and `__bss_` `start`/`end`.
+- `__text_`, `__rodata_`, `__data_` and `__bss_` `start`/`end`;
+- since 0.8, the physical addresses the Multiboot header and the boot stub need: `__kernel_phys_start`, `__data_end_phys`, `__kernel_end_phys`, `__bss_start_phys`.
+
+All the other symbols are **virtual (higher-half) addresses**. Where C needs a physical address (for example to reserve the kernel's pages), convert with `kernel_phys()` from `vm_layout.h`. Only `.boot` (the Multiboot header and the 32-bit stub) is linked at its load address.
 
 `boot/boot.asm` exports `stack_bottom` and `stack_top` (the 16 KiB kernel stack), `kstack_guard` (the unmapped page below it), `ist1_stack_bottom` and `ist1_stack_top` (the 8 KiB double-fault stack) and `ist1_guard`. In C, declare them as `extern char __kernel_end[];` and use only their addresses.
 
@@ -129,7 +139,9 @@ Unit tests are built as ordinary 64-bit Linux programs (`gcc -m64 -no-pie`), so 
 - `memory_alloc_page()` returns a physical page address, or **0 when memory is exhausted**, which the caller must handle.
 - `memory_free_page(addr)` returns the page. It panics on an unaligned address, a reserved page or a double free, because those are bugs.
 
-Pages are physical addresses. Since 0.6 paging is on and free RAM is **not mapped**, so a page from `memory_alloc_page()` can't be used through its address:
+Pages are physical addresses. Since 0.6 paging is on and free RAM is **not mapped**, and since 0.8 **nothing in the lower half is mapped**: a physical address is never a usable pointer, and a page from `memory_alloc_page()` can't be used through its address:
+
+- to read the low 1 MiB (VGA, BIOS area) or the bootloader's data (Multiboot info, memory map, command line, modules): `phys_view(phys)` from `vm_layout.h`. The physical view covers only those; it never maps free RAM, page 0 or the kernel image;
 
 - to touch one physical page briefly: `p = vmm_window_map(phys)`, use `p`, then `vmm_window_unmap()` (one user at a time; normal context only);
 - to give it a virtual address: `paging_map(va, phys, PTE_WRITE | paging_nx_flag())` (drop `PTE_WRITE` for read-only; `paging_nx_flag()` is the NX bit when the CPU has NX, else 0; data is never mapped executable), and `paging_unmap(va, &phys)` when done, then free the frame yourself;
@@ -174,11 +186,13 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 
 **Compiler note:** the host GCC works because the kernel is built `-ffreestanding -nostdlib`, so nothing from the Linux C library ends up in it. A dedicated `x86_64-elf-gcc` cross-compiler would rule out host assumptions completely; it isn't needed so far. Two build checks guard against the host compiler's defaults: the link must leave no undefined symbols (no `libgcc` or libc helpers), and the build fails if `objdump` finds any SSE/x87 register in the kernel.
 
-**Boot image:** GRUB and QEMU load `build/madire.kernel`, a flat binary, through the Multiboot 1 "a.out kludge" address fields in `boot/boot.asm` (load address, end of file, end of `.bss`, entry). `build/madire.elf` has the same code with symbols, for `objdump`/`nm` and debugging.
+**Boot image:** GRUB and QEMU load `build/madire.kernel`, a flat binary, through the Multiboot 1 "a.out kludge" address fields in `boot/boot.asm` (load address, end of file, end of `.bss`, entry). Those fields are physical addresses (the `*_phys` linker symbols), so the higher-half link in 0.8 didn't change how the image is loaded. `build/madire.elf` has the same code with symbols, for `objdump`/`nm` and debugging.
+
+**Reproducible build (0.8):** `make repro` copies the sources into two fresh directories and builds each from clean; the second build runs with a `find` that lists files in reverse order, so a link order that followed the file system would show up as a different binary. `madire.elf` and `madire.kernel` must be byte-identical in both, and identical to the kernel the QEMU tests boot. `make test` runs it, and `tests/qemu-tests.sh` turns the result into 3 `[0.8]` checks. The ISO isn't covered: `grub-mkrescue` records timestamps. The kernel was also byte-identical across two Ubuntu builds of GCC 13.3.0 (the old and the new Codespace).
 
 ## Build environments
 
-1. **GitHub Codespace (current):** `.devcontainer/devcontainer.json` (Ubuntu 24.04) runs `scripts/install-deps.sh` when the Codespace is created. `scripts/build.ps1` copies the source to `/tmp/madire-os-build` in the Codespace, runs `make iso test` there, and downloads the ISO. It needs `gh auth refresh -h github.com -s codespace` once. A Codespace that restarts loses `/tmp`, so the next build uploads everything again.
+1. **GitHub Codespace (current):** `.devcontainer/devcontainer.json` (Ubuntu 24.04, plus the `sshd` feature that `gh codespace ssh`/`cp` need) runs `scripts/install-deps.sh` when the Codespace is created. **Proven in 0.8** on a fresh Codespace (`gh codespace create -R mamishimadire/madire-os -b wip/0.8 -m basicLinux32gb`): set-up took about 83 s including the automatic `install-deps.sh`; every tool was present (GCC 13.3.0, NASM 2.16.01, GRUB 2.12, QEMU 8.2.2 with `qemu-system-i386`, Python 3.12.3, binutils 2.42); `gh codespace ssh` and `cp` worked; `make test` passed in its own checkout and `make repro` gave the same kernel as the older Codespace. No change to `.devcontainer/` was needed, and that Codespace is now the one in use. `scripts/build.ps1` copies the source to `/tmp/madire-os-build` in the Codespace, runs `make iso test` there, and downloads the ISO. It needs `gh auth refresh -h github.com -s codespace` once. A Codespace that restarts loses `/tmp`, so the next build uploads everything again.
 2. **WSL2 Ubuntu:** `wsl --install -d Ubuntu` (admin, reboot), then `bash scripts/install-deps.sh` and `make`.
 3. **Any Ubuntu machine or CI:** same as WSL.
 
@@ -190,7 +204,7 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 | `-ffreestanding` | No hosted C library; don't assume `main`, and don't replace code with library builtins |
 | `-mno-red-zone` | An interrupt pushes onto the stack just below RSP, so the 128-byte red zone would be overwritten |
 | `-mgeneral-regs-only` | No SSE/MMX/x87/AVX registers (the FPU and SSE aren't set up; CR4.OSFXSR stays clear, so SSE would fault) |
-| `-mcmodel=small` | The kernel is linked below 2 GiB (at 1 MiB) |
+| `-mcmodel=kernel` | The kernel is linked in the top 2 GiB of the address space (0.8: `0xFFFFFFFF80000000` + physical), where 32-bit sign-extended addresses reach every symbol. 0.7 used `-mcmodel=small` (linked at 1 MiB). Addresses outside the kernel image (heap, recursive mapping, physical view) are 64-bit constants in `vm_layout.h` |
 | `-fno-stack-protector` | No `__stack_chk_fail` exists in the kernel |
 | `-fno-pic -fno-pie` | Kernel is linked at a fixed address |
 | `-fno-asynchronous-unwind-tables` | No `.eh_frame` unwind data in the kernel |
@@ -204,11 +218,12 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 - 64-bit division and modulo are native instructions since 0.7 and fine. 128-bit arithmetic (`__int128`) isn't: it would need `libgcc`, which isn't linked.
 - No `__builtin_popcount` (without a POPCNT target it calls `libgcc`). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Data is never executable: map pages with `paging_nx_flag()` (see *Using memory*). Only kernel code (`.text`) runs.
-- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`).
+- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8); a change that raises it noticeably deserves a look.
+- Never use a low (physical) address as a pointer: the lower half is empty (0.8). Use `phys_view()` for the low 1 MiB and boot data, the window for other frames, and `kernel_phys()` to turn a kernel symbol into a physical address.
 - Diagnostics that shouldn't appear on screen go to `klogf()` (serial only).
 - Never allocate memory before `memory_init()`, and never write to a physical page you didn't get from `memory_alloc_page()`.
 - Kernel code and read-only data are read-only once paging is on (CR0.WP): writing to a `const` object, or to code, is a page fault.
-- Address 0 is never mapped: a NULL dereference is a page fault, not a silent read of the BIOS data area.
+- Address 0 is never mapped: a NULL dereference is a page fault, not a silent read of the BIOS data area. Since 0.8 the same is true for every address in 0–4 GiB.
 - `kmalloc`, `kcalloc` and `kfree` only in normal context with interrupts enabled.
 - The kernel owns VGA palette slots 1, 5, 6, 8, 9 and 13 for the logo. Don't use those colours for text.
 - Hardware access goes through `kernel/arch/x86/io.h`, not inline `in`/`out` instructions.

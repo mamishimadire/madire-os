@@ -36,6 +36,10 @@ struct shell_context {
      * section; NULL leaves the 0.5 output exactly as it was. */
     const struct paging_stats *paging;
     const struct heap_stats *heap;          /* arena_bytes == 0: heap disabled */
+    /* 0.8, optional: when stack_size is set, "mem" adds the kernel stack's
+     * high-water mark (bytes used at the deepest point so far). */
+    uint32_t stack_size;
+    uint32_t stack_peak;
 };
 
 enum shell_text {

@@ -184,8 +184,8 @@ static void mem_paging(const struct shell_output *o, const struct paging_stats *
         text_row(o, "Paging:", "disabled");
         return;
     }
-    text_row(o, "Paging:", p->nx ? "enabled (4-level, 4 KiB, identity-mapped, NX on)"
-                                 : "enabled (4-level, 4 KiB, identity-mapped, NX off)");
+    text_row(o, "Paging:", p->nx ? "enabled (4-level, 4 KiB, higher-half, NX on)"
+                                 : "enabled (4-level, 4 KiB, higher-half, NX off)");
     mem_row(o, "Mapped pages:", p->mapped_pages, "");
     mem_row(o, "Page tables:", p->page_tables, "");
     text_row(o, "NX:", !p->nx_supported ? "not supported by this CPU"
@@ -242,6 +242,16 @@ static enum shell_result cmd_mem(int argc, char **argv, const struct shell_conte
         mem_paging(o, c->paging);
     if (c->heap)
         mem_heap(o, c->heap);
+    if (c->stack_size) {
+        struct line l;
+        l_reset(&l);
+        l_str(&l, "Kernel stack:");
+        l_pad_to(&l, 23);
+        l_uint(&l, c->stack_peak, 6, ' ');
+        l_str(&l, " bytes at peak, of ");
+        l_uint(&l, c->stack_size, 0, ' ');
+        emit(o, &l, SHELL_TEXT);
+    }
     return SHELL_OK;
 }
 

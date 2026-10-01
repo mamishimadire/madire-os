@@ -7,6 +7,7 @@
  */
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/io.h"
+#include "kernel/memory/vm_layout.h"
 
 #define VGA_CRTC_INDEX   0x3D4
 #define VGA_CRTC_DATA    0x3D5
@@ -20,7 +21,7 @@
 #define VGA_AC_MODE      0x10
 #define VGA_AC_MODE_BLINK 0x08
 
-static volatile uint16_t *const vga = (volatile uint16_t *)0xB8000;
+static volatile uint16_t *const vga = (volatile uint16_t *)(uintptr_t)(VM_PHYS_VIEW_BASE + 0xB8000u);
 static size_t cursor_row;
 static size_t cursor_col;
 static uint8_t color;

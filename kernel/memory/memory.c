@@ -15,21 +15,25 @@
 #include "kernel/memory/memory.h"
 #include "kernel/memory/mmap.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
 
 #define ADDR_LIMIT 0x100000000ull
 
-/* Linker script and boot.asm symbols: only their addresses are meaningful. */
+/* Linker script and boot.asm symbols: only their addresses are meaningful.
+ * They are higher-half virtual addresses (0.8); the memory manager works
+ * with the PHYSICAL addresses of the kernel image, below 4 GiB. */
 extern char __kernel_start[], __kernel_end[];
 extern char __text_start[], __text_end[], __rodata_start[], __rodata_end[];
 extern char __data_start[], __data_end[], __bss_start[], __bss_end[];
 extern char stack_bottom[], stack_top[];
 
-#define SYM(s) ((uint32_t)(uintptr_t)(s))
+#define SYM(s) ((uint32_t)kernel_phys((uint64_t)(uintptr_t)(s)))
 
 static struct phys_range reservations[RESERVE_MAX_RANGES];
 static unsigned reservation_count;
 static uint32_t map_addr, map_length;
+static const void *map_view;            /* where the map is read (mmap.h) */
 
 static uint32_t hi32(uint64_t v) { return (uint32_t)(v >> 32); }
 static uint32_t lo32(uint64_t v) { return (uint32_t)v; }
@@ -45,7 +49,7 @@ static void log_map_and_totals(struct memory_stats *st)
     struct mem_region r;
 
     klogf("Memory map: %u bytes at 0x%08x\n", map_length, map_addr);
-    mmap_iter_init(&it, map_addr, map_length);
+    mmap_iter_init(&it, map_view, map_length);
     while (mmap_next(&it, &r)) {
         uint64_t end = r.base + r.length;
         klogf("mmap: base=0x%08x%08x end=0x%08x%08x type=%u %s\n",
@@ -71,7 +75,7 @@ static bool kernel_in_usable_ram(void)
 {
     struct mmap_iter it;
     struct mem_region r;
-    mmap_iter_init(&it, map_addr, map_length);
+    mmap_iter_init(&it, map_view, map_length);
     while (mmap_next(&it, &r))
         if (r.kind == MEM_USABLE && r.base <= SYM(__kernel_start)
             && SYM(__kernel_end) <= r.base + r.length)
@@ -95,11 +99,15 @@ void memory_init(const struct multiboot_info *mbi, struct memory_stats *st)
         panic("Memory: the bootloader provided no memory map (Multiboot flag 6).");
 
     uint32_t bad_offset;
-    enum mmap_status ms = mmap_validate(mbi->mmap_addr, mbi->mmap_length, &bad_offset);
+    /* The map is read through the physical view (it is boot data, so it
+     * stays in the view once the kernel's own tables are loaded). */
+    const void *view = phys_view(mbi->mmap_addr);
+    enum mmap_status ms = mmap_validate(mbi->mmap_addr, mbi->mmap_length, view, &bad_offset);
     if (ms != MMAP_OK)
         panicf("Memory: invalid memory map: %s (entry at byte %u).", mmap_status_str(ms), bad_offset);
     map_addr = mbi->mmap_addr;
     map_length = mbi->mmap_length;
+    map_view = view;
 
     log_map_and_totals(st);
     log_kernel_layout();
@@ -122,11 +130,11 @@ void memory_init(const struct multiboot_info *mbi, struct memory_stats *st)
     struct mmap_iter it;
     struct mem_region r;
     pmm_begin();
-    mmap_iter_init(&it, map_addr, map_length);
+    mmap_iter_init(&it, map_view, map_length);
     while (mmap_next(&it, &r))
         if (r.kind == MEM_USABLE)
             check(pmm_add_usable(r.base, r.base + r.length), "adding usable RAM");
-    mmap_iter_init(&it, map_addr, map_length);
+    mmap_iter_init(&it, map_view, map_length);
     while (mmap_next(&it, &r))
         if (r.kind != MEM_USABLE)
             check(pmm_reserve(r.base, r.base + r.length), "excluding non-usable regions");
@@ -150,8 +158,8 @@ void memory_init(const struct multiboot_info *mbi, struct memory_stats *st)
           hi32(st->ram_bytes), lo32(st->ram_bytes), hi32(st->usable_bytes), lo32(st->usable_bytes),
           hi32(st->above_4g_bytes), lo32(st->above_4g_bytes),
           st->usable_pages, st->free_pages, st->reserved_pages);
-    klogf("Memory: %u MB detected, %u MB usable below 4 GiB, %u MB above 4 GiB not addressable "
-          "(32-bit, no PAE)\n", memory_bytes_to_mb(st->ram_bytes),
+    klogf("Memory: %u MB detected, %u MB usable below 4 GiB, %u MB above 4 GiB not used yet\n",
+          memory_bytes_to_mb(st->ram_bytes),
           memory_bytes_to_mb(st->usable_bytes), memory_bytes_to_mb(st->above_4g_bytes));
 
     if (st->free_pages == 0)
@@ -189,7 +197,7 @@ bool memory_page_is_safe(uint32_t addr)
     if (addr == 0 || (addr & (PAGE_SIZE - 1)))
         return false;
 
-    mmap_iter_init(&it, map_addr, map_length);
+    mmap_iter_init(&it, map_view, map_length);
     while (mmap_next(&it, &r)) {
         uint64_t r_end = r.base + r.length;
         if (r.kind == MEM_USABLE) {

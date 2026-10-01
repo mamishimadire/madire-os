@@ -40,7 +40,7 @@ static unsigned count_regions(void)
     struct mmap_iter it;
     struct mem_region r;
     unsigned n = 0;
-    mmap_iter_init(&it, buf_addr(), len);
+    mmap_iter_init(&it, buf, len);
     while (mmap_next(&it, &r))
         n++;
     return n;
@@ -56,12 +56,12 @@ static void test_qemu_map(void)
     map_add(0x100000, 0x7ee0000, 1);
     map_add(0x7fe0000, 0x20000, 2);
     map_add(0xfffc0000, 0x40000, 2);
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
     CHECK_EQ(count_regions(), 6);
 
     struct mmap_iter it;
     struct mem_region r;
-    mmap_iter_init(&it, buf_addr(), len);
+    mmap_iter_init(&it, buf, len);
     CHECK(mmap_next(&it, &r));
     CHECK_EQ(r.base, 0);
     CHECK_EQ(r.length, 0x9fc00);
@@ -83,14 +83,14 @@ static void test_virtualbox_map_types(void)
     map_add(0xfee00000, 0x1000, 2);
     map_add(0xfffc0000, 0x40000, 2);
     map_add(0x100000000ull, 0x20000000, 1);
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
     CHECK_EQ(count_regions(), 9);
 
     struct mmap_iter it;
     struct mem_region r;
     enum mem_kind kinds[9];
     unsigned n = 0;
-    mmap_iter_init(&it, buf_addr(), len);
+    mmap_iter_init(&it, buf, len);
     while (mmap_next(&it, &r) && n < 9)
         kinds[n++] = r.kind;
     CHECK_EQ(kinds[4], MEM_ACPI_RECLAIMABLE);
@@ -117,7 +117,7 @@ static void test_larger_entry_size_skipped_correctly(void)
     map_reset();
     map_add_sized(24, 0x0, 0x1000, 1);       /* 4 extra bytes after type */
     map_add(0x100000, 0x100000, 1);
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
     CHECK_EQ(count_regions(), 2);
 }
 
@@ -127,7 +127,7 @@ static void test_entry_size_too_small(void)
     map_reset();
     map_add(0x0, 0x1000, 1);
     map_add_sized(16, 0x100000, 0x1000, 1);
-    CHECK_EQ(mmap_validate(buf_addr(), len, &off), MMAP_ERR_ENTRY_SIZE);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, &off), MMAP_ERR_ENTRY_SIZE);
     CHECK_EQ(off, 24);
 }
 
@@ -136,33 +136,33 @@ static void test_truncated_entry(void)
     map_reset();
     map_add(0x0, 0x1000, 1);
     map_add(0x100000, 0x1000, 1);
-    CHECK_EQ(mmap_validate(buf_addr(), len - 1, NULL), MMAP_ERR_TRUNCATED);
-    CHECK_EQ(mmap_validate(buf_addr(), 24 + 2, NULL), MMAP_ERR_TRUNCATED);  /* partial size field */
+    CHECK_EQ(mmap_validate(buf_addr(), len - 1, buf, NULL), MMAP_ERR_TRUNCATED);
+    CHECK_EQ(mmap_validate(buf_addr(), 24 + 2, buf, NULL), MMAP_ERR_TRUNCATED);  /* partial size field */
 }
 
 static void test_overflowing_entry(void)
 {
     map_reset();
     map_add(0xfffffffffffff000ull, 0x2000, 1);
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_ERR_OVERFLOW);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_ERR_OVERFLOW);
 
     map_reset();
     map_add(0xfffffffffffff000ull, 0x1000, 1);   /* end would be exactly 2^64 */
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_ERR_OVERFLOW);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_ERR_OVERFLOW);
 
     map_reset();
     map_add(0xffffffffffffe000ull, 0x1000, 1);   /* ends at 2^64 - 4096: fine */
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
 }
 
 static void test_empty_maps(void)
 {
     map_reset();
-    CHECK_EQ(mmap_validate(buf_addr(), 0, NULL), MMAP_ERR_EMPTY);
+    CHECK_EQ(mmap_validate(buf_addr(), 0, buf, NULL), MMAP_ERR_EMPTY);
 
     map_reset();
     map_add(0x100000, 0, 1);                     /* only a zero-length entry */
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_ERR_EMPTY);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_ERR_EMPTY);
 }
 
 static void test_zero_length_entries_skipped(void)
@@ -171,14 +171,14 @@ static void test_zero_length_entries_skipped(void)
     map_add(0x0, 0x1000, 1);
     map_add(0x5000, 0, 1);
     map_add(0x100000, 0x1000, 2);
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
     CHECK_EQ(count_regions(), 2);
 }
 
 static void test_bad_buffer(void)
 {
-    CHECK_EQ(mmap_validate(0, 24, NULL), MMAP_ERR_BAD_BUFFER);
-    CHECK_EQ(mmap_validate(0xfffffff0u, 0x20, NULL), MMAP_ERR_BAD_BUFFER);  /* wraps 4 GiB */
+    CHECK_EQ(mmap_validate(0, 24, buf, NULL), MMAP_ERR_BAD_BUFFER);
+    CHECK_EQ(mmap_validate(0xfffffff0u, 0x20, buf, NULL), MMAP_ERR_BAD_BUFFER);  /* wraps 4 GiB */
 }
 
 static void test_unsorted_and_overlapping_are_reported_as_is(void)
@@ -189,7 +189,7 @@ static void test_unsorted_and_overlapping_are_reported_as_is(void)
     map_add(0x200000, 0x100000, 1);
     map_add(0x0, 0x9f000, 1);
     map_add(0x250000, 0x1000, 2);                /* inside the first region */
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
     CHECK_EQ(count_regions(), 3);
 }
 
@@ -198,8 +198,51 @@ static void test_many_entries(void)
     map_reset();
     for (unsigned i = 0; i < 150; i++)
         map_add((uint64_t)i * 0x10000, 0x8000, (i % 2) ? 2 : 1);
-    CHECK_EQ(mmap_validate(buf_addr(), len, NULL), MMAP_OK);
+    CHECK_EQ(mmap_validate(buf_addr(), len, buf, NULL), MMAP_OK);
     CHECK_EQ(count_regions(), 150);              /* no silent entry limit */
+}
+
+/* 0.8: the physical address (validated) and the view (read) are separate.
+ * A fake physical address, as GRUB might give, with the bytes read from
+ * this test's buffer: nothing depends on where the test binary is loaded. */
+#define FAKE_PHYS 0x9000u
+
+static void test_view_separate_from_physical(void)
+{
+    map_reset();
+    map_add(0x0, 0x9fc00, 1);
+    map_add(0x9fc00, 0x400, 2);
+    map_add(0x100000, 0x7ee0000, 1);
+    CHECK_EQ(mmap_validate(FAKE_PHYS, len, buf, NULL), MMAP_OK);
+
+    struct mmap_iter it;
+    struct mem_region r;
+    unsigned n = 0;
+    mmap_iter_init(&it, buf, len);
+    while (mmap_next(&it, &r))
+        n++;
+    CHECK_EQ(n, 3);
+    mmap_iter_init(&it, buf, len);
+    CHECK(mmap_next(&it, &r));
+    CHECK_EQ(r.base, 0);
+    CHECK_EQ(r.length, 0x9fc00);
+
+    /* Offsets are relative to the buffer, whatever its physical address. */
+    uint32_t off = 99;
+    map_add_sized(16, 0x200000, 0x1000, 1);
+    CHECK_EQ(mmap_validate(FAKE_PHYS, len, buf, &off), MMAP_ERR_ENTRY_SIZE);
+    CHECK_EQ(off, 72);
+}
+
+static void test_physical_checks_ignore_the_view(void)
+{
+    map_reset();
+    map_add(0x100000, 0x1000, 1);
+    /* A valid view does not excuse a bad physical address... */
+    CHECK_EQ(mmap_validate(0, len, buf, NULL), MMAP_ERR_BAD_BUFFER);
+    CHECK_EQ(mmap_validate(0xfffff000u, 0x2000, buf, NULL), MMAP_ERR_BAD_BUFFER);
+    /* ...and a good physical address needs something to read through. */
+    CHECK_EQ(mmap_validate(FAKE_PHYS, len, NULL, NULL), MMAP_ERR_BAD_BUFFER);
 }
 
 int main(void)
@@ -217,5 +260,7 @@ int main(void)
     RUN(test_bad_buffer);
     RUN(test_unsorted_and_overlapping_are_reported_as_is);
     RUN(test_many_entries);
+    RUN(test_view_separate_from_physical);
+    RUN(test_physical_checks_ignore_the_view);
     return unit_report("mmap");
 }

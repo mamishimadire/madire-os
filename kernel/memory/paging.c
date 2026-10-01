@@ -2,13 +2,20 @@
  * Paging (see paging.h), x86-64 4-level.
  *
  * The kernel starts in long mode on the boot stub's temporary tables
- * (boot/boot.asm: 0-4 GiB identity, read/write, page 0 included). The
- * kernel's own tables are built while those are still in use: every frame
- * the allocator hands out lies below 4 GiB, so vmm_core reaches the new
- * PML4 and tables through their physical addresses. Before anything is
- * loaded, the result is walk-checked: everything the kernel is running on
- * right now must translate to itself with the right access, and page 0 and
- * free RAM must not be mapped. Every check is logged on serial as
+ * (boot/boot.asm: 0-4 GiB at 0 and in the physical view, the kernel in the
+ * higher half, 2 MiB pages, page 0 included). The kernel's own tables are
+ * built while those are still in use: every frame the allocator hands out
+ * lies below 4 GiB, so vmm_core reaches the new PML4 and tables through the
+ * physical view. Three address spaces are mapped (vm_layout.h):
+ *   kernel     slot 511: the kernel image at VM_KERNEL_VIRT_OFFSET + phys
+ *   phys-view  slot 256: the low 1 MiB and the boot data (never page 0,
+ *              free RAM or the kernel image) at VM_PHYS_VIEW_BASE + phys
+ * Nothing is mapped in the lower half (PML4 slot 0 is empty): once these
+ * tables are loaded, every address in 0-4 GiB faults, which the checks
+ * below prove. Before anything is loaded, the result is walk-checked: everything the
+ * kernel is running on right now must translate to the right physical page
+ * with the right access, and page 0 and free RAM must not be mapped. Every
+ * check is logged on serial as
  * "Paging check: <item> <range>: expected <...>, actual <...>: OK|MISMATCH".
  *
  * If the check passes, CR3 is loaded (CR0.PG, CR0.WP and CR4.PAE are
@@ -31,20 +38,26 @@
 #include "kernel/memory/vm_layout.h"
 #include "kernel/memory/vmm_core.h"
 
-extern char __text_start[], __rodata_start[], __rodata_end[], __data_start[];
+extern char __kernel_start[], __text_start[], __rodata_start[], __rodata_end[], __data_start[];
 extern char __bss_start[], __bss_end[], __kernel_end[];
 extern char stack_bottom[], stack_top[], ist1_stack_bottom[], ist1_stack_top[];
 extern char kstack_guard[], ist1_guard[];                       /* boot.asm .stacks */
 extern const uint64_t isr_stub_table[IDT_HANDLED_VECTORS];      /* isr.asm */
 
-#define SYM(s) ((uint64_t)(uintptr_t)(s))
+#define SYM(s)   ((uint64_t)(uintptr_t)(s))                     /* virtual (high) */
+#define KPHYS(s) (kernel_phys(SYM(s)))                          /* its physical address */
 
 typedef unsigned long long ull;
 
-#define VGA_TEXT_START   0x00000000000B8000ull
+#define VGA_TEXT_START   0x00000000000B8000ull                  /* physical */
 #define VGA_TEXT_END     (VGA_TEXT_START + 80u * 25 * 2)
 #define LOW_4G           0x0000000100000000ull
 #define MAX_TABLE_FRAMES 64u
+
+/* The three spaces: virtual address = base + physical address. */
+#define SPACE_KERNEL     VM_KERNEL_VIRT_OFFSET
+#define SPACE_VIEW       VM_PHYS_VIEW_BASE
+#define SPACE_IDENTITY   0ull           /* nothing is mapped here any more */
 
 static uint64_t pml4_phys;
 static uint64_t table_frames[MAX_TABLE_FRAMES];     /* frames taken while building */
@@ -83,7 +96,7 @@ static uint64_t *phys_table(void *ctx, int level, uint64_t va, uint64_t table_ph
     (void)level;
     (void)va;
     (void)fresh;
-    return (uint64_t *)(uintptr_t)table_phys;   /* below 4 GiB: identity-mapped by the stub */
+    return phys_view(table_phys);   /* below 4 GiB: in the stub's physical view */
 }
 
 static void phys_flush(void *ctx, uint64_t va)
@@ -147,27 +160,79 @@ static const struct vmm_ops recursive_ops = {
 /* The two stack guard pages (boot/boot.asm .stacks): never mapped, so a
  * stack running past its bottom faults instead of overwriting what lies
  * below it. The kernel stack's overflow then becomes a double fault, which
- * runs on the IST1 stack (idt.c) and is reported (panic.c). */
-static bool is_guard_page(uint64_t va)
+ * runs on the IST1 stack (idt.c) and is reported (panic.c). Compared by
+ * physical page, so they are holes in every space. */
+static bool is_guard_phys(uint64_t phys)
 {
-    uint64_t page = vm_floor(va);
-    return page == SYM(kstack_guard) || page == SYM(ist1_guard);
+    uint64_t page = vm_floor(phys);
+    return page == KPHYS(kstack_guard) || page == KPHYS(ist1_guard);
 }
 
-/* Identity-maps [start, end), skipping the guard pages; pages already
- * mapped (by an earlier, more specific range) are left as they are when
- * allow_existing is set. */
-static bool map_identity(const char *what, uint64_t start, uint64_t end, uint64_t flags,
-                         bool allow_existing)
+static bool in_kernel_image_phys(uint64_t phys)
 {
-    for (uint64_t va = vm_floor(start); va < end; va += VM_PAGE_SIZE) {
-        if (is_guard_page(va))
+    return phys >= KPHYS(__kernel_start) && phys < KPHYS(__kernel_end);
+}
+
+/*
+ * EXPECT_RX: kernel code: read-only, executable.
+ * EXPECT_RO: read-only data: read-only, no-execute (when NX is in use).
+ * EXPECT_RW: everything written: read/write, no-execute (when NX is in use).
+ * EXPECT_KERNEL_AWARE: RX in .text, RO in .rodata, RW elsewhere (decided by
+ *                      physical address, so it works in every space).
+ * Without NX no entry may carry the NX bit (it would be a reserved bit).
+ */
+enum expect { EXPECT_RX, EXPECT_RO, EXPECT_RW, EXPECT_KERNEL_AWARE, EXPECT_UNMAPPED };
+
+static enum expect expect_at(enum expect e, uint64_t phys)
+{
+    if (e != EXPECT_KERNEL_AWARE)
+        return e;
+    if (phys >= KPHYS(__text_start) && phys < KPHYS(__rodata_start))
+        return EXPECT_RX;
+    if (phys >= KPHYS(__rodata_start) && phys < KPHYS(__data_start))
+        return EXPECT_RO;
+    return EXPECT_RW;
+}
+
+static uint64_t flags_for(enum expect e)
+{
+    uint64_t nx = pte_nx_flag(stats.nx);
+    return e == EXPECT_RX ? 0 : e == EXPECT_RO ? nx : PTE_WRITE | nx;
+}
+
+/* Maps physical [start, end) at base + physical, skipping the guard pages
+ * and (in the physical view) the kernel image; pages already mapped (by an
+ * earlier, more specific range) are left as they are when allow_existing
+ * is set. */
+static bool map_range(const char *what, uint64_t base, uint64_t start, uint64_t end,
+                      enum expect e, bool allow_existing)
+{
+    for (uint64_t phys = vm_floor(start); phys < end; phys += VM_PAGE_SIZE) {
+        if (is_guard_phys(phys) || (base == SPACE_VIEW && in_kernel_image_phys(phys)))
             continue;
-        enum vmm_result r = vmm_map(&vm, va, va, flags);
+        enum vmm_result r = vmm_map(&vm, base + phys, phys, flags_for(expect_at(e, phys)));
         if (r == VMM_OK || (r == VMM_ERR_EXISTS && allow_existing))
             continue;
-        klogf("Paging build: %s: page 0x%016llx: %s\n", what, (ull)va, vmm_result_str(r));
+        klogf("Paging build: %s: page 0x%016llx: %s\n", what, (ull)(base + phys),
+              vmm_result_str(r));
         return false;
+    }
+    return true;
+}
+
+/* Every boot-data reservation below 4 GiB, page 0 excluded, in one space. */
+static bool map_reservations(uint64_t base, enum expect e)
+{
+    unsigned count;
+    const struct phys_range *r = memory_reservations(&count);
+    for (unsigned i = 0; i < count; i++) {
+        if (r[i].start >= r[i].end || r[i].start >= LOW_4G)
+            continue;
+        uint64_t start = r[i].start, end = r[i].end > LOW_4G ? LOW_4G : r[i].end;
+        if (start < VM_NULL_GUARD_END)
+            start = VM_NULL_GUARD_END;              /* page 0 stays the NULL guard */
+        if (start < end && !map_range(r[i].what, base, start, end, e, true))
+            return false;
     }
     return true;
 }
@@ -179,7 +244,7 @@ static bool build_tables(void)
         klogf("Paging build: no free page for the PML4\n");
         return false;
     }
-    uint64_t *pml4 = (uint64_t *)(uintptr_t)pml4_phys;
+    uint64_t *pml4 = phys_view(pml4_phys);
     for (uint32_t i = 0; i < VM_ENTRIES; i++)
         pml4[i] = 0;
     /* Only kernel code (.text, which includes the boot stub and every
@@ -189,26 +254,20 @@ static bool build_tables(void)
     pml4[VM_RECURSIVE_INDEX] = pte_make(pml4_phys, PTE_PRESENT | PTE_WRITE | nx);
     vmm_init(&vm, &phys_ops, pml4_phys);
 
-    /* Most specific first: the kernel's read-only part must not be mapped
-     * writable by the (overlapping) kernel reservation afterwards. */
-    if (!map_identity("kernel code", SYM(__text_start), SYM(__rodata_start), 0, false) ||
-        !map_identity("kernel rodata", SYM(__rodata_start), SYM(__data_start), nx, false) ||
-        !map_identity("kernel data+bss", SYM(__data_start), SYM(__kernel_end), PTE_WRITE | nx,
-                      false) ||
-        !map_identity("low memory", VM_LOW_MAP_START, VM_LOW_MAP_END, PTE_WRITE | nx, false))
+    /* The kernel image in the higher half: code RX, rodata RO, the rest RW
+     * (guard pages left out). */
+    if (!map_range("kernel image", SPACE_KERNEL, KPHYS(__kernel_start), KPHYS(__kernel_end),
+                   EXPECT_KERNEL_AWARE, false))
         return false;
 
-    unsigned count;
-    const struct phys_range *r = memory_reservations(&count);
-    for (unsigned i = 0; i < count; i++) {
-        if (r[i].start >= r[i].end || r[i].start >= LOW_4G)
-            continue;
-        uint64_t start = r[i].start, end = r[i].end > LOW_4G ? LOW_4G : r[i].end;
-        if (start < VM_NULL_GUARD_END)
-            start = VM_NULL_GUARD_END;              /* page 0 stays the NULL guard */
-        if (start < end && !map_identity(r[i].what, start, end, PTE_WRITE | nx, true))
-            return false;
-    }
+    /* The physical view: the low 1 MiB (VGA, BIOS area; not page 0) and the
+     * boot data. Never the kernel image (no writable alias of its code) and
+     * never free RAM. */
+    if (!map_range("physical view: low memory", SPACE_VIEW, VM_LOW_MAP_START, VM_LOW_MAP_END,
+                   EXPECT_RW, false) ||
+        !map_reservations(SPACE_VIEW, EXPECT_RW))
+        return false;
+    /* Nothing in the lower half: PML4[0] stays empty. */
 
     /* The test page and the window share one page table, made now so that
      * mapping either never needs a frame (not even with memory exhausted). */
@@ -245,30 +304,15 @@ static const char *access_str(bool present, uint64_t flags)
     return (flags & PTE_NX) ? "ro nx" : "ro exec";
 }
 
+/* A kernel virtual address inside the read-only part (code + rodata). */
 static bool in_kernel_ro(uint64_t va)
 {
     return va >= SYM(__text_start) && va < SYM(__data_start);
 }
 
-static bool in_kernel_text(uint64_t va)
+static const char *space_name(uint64_t base)
 {
-    return va >= SYM(__text_start) && va < SYM(__rodata_start);
-}
-
-/*
- * EXPECT_RX: kernel code: read-only, executable.
- * EXPECT_RO: read-only data: read-only, no-execute (when NX is in use).
- * EXPECT_RW: everything written: read/write, no-execute (when NX is in use).
- * EXPECT_KERNEL_AWARE: RX in .text, RO in .rodata, RW elsewhere.
- * Without NX no entry may carry the NX bit (it would be a reserved bit).
- */
-enum expect { EXPECT_RX, EXPECT_RO, EXPECT_RW, EXPECT_KERNEL_AWARE, EXPECT_UNMAPPED };
-
-static enum expect expect_at(enum expect e, uint64_t va)
-{
-    if (e != EXPECT_KERNEL_AWARE)
-        return e;
-    return in_kernel_text(va) ? EXPECT_RX : in_kernel_ro(va) ? EXPECT_RO : EXPECT_RW;
+    return base == SPACE_KERNEL ? "kernel" : base == SPACE_VIEW ? "phys-view" : "identity";
 }
 
 static void report(const char *what, uint64_t start, uint64_t end, const char *expected,
@@ -281,46 +325,54 @@ static void report(const char *what, uint64_t start, uint64_t end, const char *e
           what, (ull)start, (ull)end, expected, actual, ok ? "OK" : "MISMATCH");
 }
 
-/* Every page of [start, end) must match. Logs one line for the range; on a
- * mismatch the actual value shown is the first bad page. */
-static bool check_range(const char *what, uint64_t start, uint64_t end, enum expect e)
+/* Every page of virtual [start, end), in the space at `base` (virtual =
+ * base + physical), must match. Guard pages are holes in every space, and
+ * so is the kernel image in the physical view (no alias of it there). Logs
+ * one line for the range; on a mismatch the actual value shown is the
+ * first bad page. */
+static bool check_range(const char *what, uint64_t base, uint64_t start, uint64_t end,
+                        enum expect e)
 {
-    const char *nx = stats.nx ? "nx" : "exec";
-    char expected[64], actual[80];
+    const char *nx = stats.nx ? "nx" : "exec", *sp = space_name(base);
+    char expected[64], actual[96];
     switch (e) {
     case EXPECT_RX:
-        ksnprintf(expected, sizeof(expected), "identity ro exec");
+        ksnprintf(expected, sizeof(expected), "%s ro exec", sp);
         break;
     case EXPECT_RO:
-        ksnprintf(expected, sizeof(expected), "identity ro %s", nx);
+        ksnprintf(expected, sizeof(expected), "%s ro %s", sp, nx);
         break;
     case EXPECT_RW:
-        ksnprintf(expected, sizeof(expected), "identity rw %s", nx);
+        ksnprintf(expected, sizeof(expected), "%s rw %s", sp, nx);
         break;
     case EXPECT_KERNEL_AWARE:
-        ksnprintf(expected, sizeof(expected), "identity; code ro exec, rodata ro %s, else rw %s",
-                  nx, nx);
+        ksnprintf(expected, sizeof(expected), "%s; code ro exec, rodata ro %s, else rw %s",
+                  sp, nx, nx);
         break;
     case EXPECT_UNMAPPED:
         ksnprintf(expected, sizeof(expected), "unmapped");
         break;
     }
-    uint32_t pages = 0, guards = 0;
+    uint32_t pages = 0, guards = 0, kernel_holes = 0;
     bool ok = true;
     for (uint64_t va = vm_floor(start); va < end && ok; va += VM_PAGE_SIZE) {
-        uint64_t phys = 0, flags = 0;
+        uint64_t phys = 0, flags = 0, want_phys = va - base;
         bool present = vmm_translate(&vm, va, &phys, &flags);
-        enum expect want = expect_at(e, va);
-        if (want != EXPECT_UNMAPPED && is_guard_page(va)) {
+        enum expect want = expect_at(e, want_phys);
+        if (want != EXPECT_UNMAPPED && is_guard_phys(want_phys)) {
             want = EXPECT_UNMAPPED;             /* inside a writable range: must be a hole */
             guards++;
+        } else if (want != EXPECT_UNMAPPED && base == SPACE_VIEW &&
+                   in_kernel_image_phys(want_phys)) {
+            want = EXPECT_UNMAPPED;             /* the view never aliases the kernel image */
+            kernel_holes++;
         }
         bool want_rw = want == EXPECT_RW;
         bool want_nx = want != EXPECT_RX && stats.nx;
         if (want == EXPECT_UNMAPPED)
             ok = !present;
         else
-            ok = present && phys == va && ((flags & PTE_WRITE) != 0) == want_rw &&
+            ok = present && phys == want_phys && ((flags & PTE_WRITE) != 0) == want_rw &&
                  ((flags & PTE_NX) != 0) == want_nx && !(flags & PTE_USER);
         if (!ok)
             ksnprintf(actual, sizeof(actual), "page 0x%016llx -> %s 0x%016llx", (ull)va,
@@ -330,14 +382,17 @@ static bool check_range(const char *what, uint64_t start, uint64_t end, enum exp
             break;
     }
     if (ok) {
-        char holes[40] = "";
+        char holes[64] = "";
         if (guards)
             ksnprintf(holes, sizeof(holes), ", %u guard page%s unmapped", guards,
                       guards == 1 ? "" : "s");
+        else if (kernel_holes)
+            ksnprintf(holes, sizeof(holes), ", %u kernel-image page%s absent", kernel_holes,
+                      kernel_holes == 1 ? "" : "s");
         if (e == EXPECT_UNMAPPED)
             ksnprintf(actual, sizeof(actual), "unmapped (%u pages)", pages);
         else if (e == EXPECT_KERNEL_AWARE)
-            ksnprintf(actual, sizeof(actual), "identity as expected (%u pages%s)", pages, holes);
+            ksnprintf(actual, sizeof(actual), "%s as expected (%u pages%s)", sp, pages, holes);
         else
             ksnprintf(actual, sizeof(actual), "%s (%u pages%s)", expected, pages, holes);
     }
@@ -345,11 +400,60 @@ static bool check_range(const char *what, uint64_t start, uint64_t end, enum exp
     return ok;
 }
 
+/* The same range, checked by the physical addresses it maps to. */
+static bool check_phys(const char *what, uint64_t base, uint64_t phys_start, uint64_t phys_end,
+                       enum expect e)
+{
+    return check_range(what, base, base + phys_start, base + phys_end, e);
+}
+
 /* A fact about the layout (not a translation); logged the same way. */
 static void check_fact(const char *what, uint64_t start, uint64_t end, const char *expected,
                        bool ok)
 {
     report(what, start, end, expected, ok ? "as expected" : "different", ok);
+}
+
+static bool starts_with(const char *s, const char *prefix)
+{
+    while (*prefix)
+        if (*s++ != *prefix++)
+            return false;
+    return true;
+}
+
+/* Physical start of the reservation whose name begins with `prefix`, or
+ * `fallback` if there is none. */
+static uint64_t reservation_start(const char *prefix, uint64_t fallback)
+{
+    unsigned count;
+    const struct phys_range *r = memory_reservations(&count);
+    for (unsigned i = 0; i < count; i++)
+        if (starts_with(r[i].what, prefix))
+            return r[i].start;
+    return fallback;
+}
+
+/* The lower half is empty: PML4[0] is not present (so 0-512 GiB, and all
+ * of 0-4 GiB, faults), checked directly, and at the addresses the kernel
+ * used before the move (0.7 identity-mapped them all). `pml4_entry0` is
+ * PML4[0] as read from the tables being checked. */
+static void check_low_half_empty(uint64_t pml4_entry0)
+{
+    check_fact("lower half empty: PML4[0] not present", 0, 0x0000007FFFFFFFFFull,
+               "not present (0-512 GiB unmapped)", !pte_present(pml4_entry0));
+    static const struct { const char *what; uint64_t addr; } points[] = {
+        { "low address 0x0 (NULL)", 0 },
+        { "low address 0x100000 (kernel's physical start)", 0x100000 },
+        { "low address 0xB8000 (VGA text buffer)", 0xB8000 },
+        { "low address 0xFFFFF000 (last page below 4 GiB)", 0xFFFFF000ull },
+    };
+    for (unsigned i = 0; i < sizeof(points) / sizeof(points[0]); i++)
+        check_range(points[i].what, SPACE_IDENTITY, points[i].addr, points[i].addr + 1,
+                    EXPECT_UNMAPPED);
+    uint64_t mbi = reservation_start("multiboot info", 0);
+    check_range("low address of the Multiboot info", SPACE_IDENTITY, mbi, mbi + 1,
+                EXPECT_UNMAPPED);
 }
 
 struct __attribute__((packed)) descriptor_table {
@@ -362,18 +466,24 @@ static bool in_kernel_rw(uint64_t start, uint64_t end)
     return start >= SYM(__data_start) && end <= SYM(__kernel_end) && start < end;
 }
 
-/* Entry at `level` on va's path in the (not yet loaded) new tables, read
- * physically; 0 if a level above it is missing. */
+/* A page-table frame of the (not yet loaded) new tables, through the view. */
+static const uint64_t *table_at(uint64_t phys)
+{
+    return (const uint64_t *)phys_view(phys);
+}
+
+/* Entry at `level` on va's path in the new tables; 0 if a level above it
+ * is missing. */
 static uint64_t phys_entry(uint64_t va, int level)
 {
     uint64_t table = pml4_phys;
     for (int l = 4; l > level; l--) {
-        uint64_t e = ((const uint64_t *)(uintptr_t)table)[vm_index(va, l)];
+        uint64_t e = table_at(table)[vm_index(va, l)];
         if (!pte_present(e))
             return 0;
         table = pte_frame(e);
     }
-    return ((const uint64_t *)(uintptr_t)table)[vm_index(va, level)];
+    return table_at(table)[vm_index(va, level)];
 }
 
 static void walk_check(void)
@@ -395,28 +505,30 @@ static void walk_check(void)
 
     check_items = check_failures = 0;
 
-    /* What the CPU is using at this moment. */
-    check_range("RIP (running code)", rip, rip + 1, EXPECT_RX);
+    /* What the CPU is using at this moment: all in the kernel space. */
+    check_range("RIP (running code)", SPACE_KERNEL, rip, rip + 1, EXPECT_RX);
     /* Every interrupt/exception entry stub and the C handlers stay
      * executable (a no-execute handler would turn any interrupt into a
      * fault inside the fault path). */
-    check_range("interrupt entry stubs (isr.asm)", isr_stub_table[0],
+    check_range("interrupt entry stubs (isr.asm)", SPACE_KERNEL, isr_stub_table[0],
                 isr_stub_table[IDT_HANDLED_VECTORS - 1] + 1, EXPECT_RX);
-    check_range("interrupt_dispatch", (uint64_t)(uintptr_t)interrupt_dispatch,
+    check_range("interrupt_dispatch", SPACE_KERNEL, (uint64_t)(uintptr_t)interrupt_dispatch,
                 (uint64_t)(uintptr_t)interrupt_dispatch + 1, EXPECT_RX);
-    check_range("panic_exception (page-fault path)", (uint64_t)(uintptr_t)panic_exception,
-                (uint64_t)(uintptr_t)panic_exception + 1, EXPECT_RX);
-    check_range("irq_dispatch (timer, keyboard)", (uint64_t)(uintptr_t)irq_dispatch,
+    check_range("panic_exception (page-fault path)", SPACE_KERNEL,
+                (uint64_t)(uintptr_t)panic_exception, (uint64_t)(uintptr_t)panic_exception + 1,
+                EXPECT_RX);
+    check_range("irq_dispatch (timer, keyboard)", SPACE_KERNEL, (uint64_t)(uintptr_t)irq_dispatch,
                 (uint64_t)(uintptr_t)irq_dispatch + 1, EXPECT_RX);
-    check_range("RSP (current stack)", rsp, rsp + 1, EXPECT_RW);
-    check_range("kernel stack", SYM(stack_bottom), SYM(stack_top), EXPECT_RW);
-    check_range("IST1 stack (double faults)", SYM(ist1_stack_bottom), SYM(ist1_stack_top), EXPECT_RW);
+    check_range("RSP (current stack)", SPACE_KERNEL, rsp, rsp + 1, EXPECT_RW);
+    check_range("kernel stack", SPACE_KERNEL, SYM(stack_bottom), SYM(stack_top), EXPECT_RW);
+    check_range("IST1 stack (double faults)", SPACE_KERNEL, SYM(ist1_stack_bottom),
+                SYM(ist1_stack_top), EXPECT_RW);
     /* One unmapped page directly below each stack: an overflow faults
      * instead of silently overwriting whatever lies below. */
-    check_range("kernel stack guard page", SYM(kstack_guard), SYM(kstack_guard) + VM_PAGE_SIZE,
-                EXPECT_UNMAPPED);
-    check_range("IST1 stack guard page", SYM(ist1_guard), SYM(ist1_guard) + VM_PAGE_SIZE,
-                EXPECT_UNMAPPED);
+    check_range("kernel stack guard page", SPACE_KERNEL, SYM(kstack_guard),
+                SYM(kstack_guard) + VM_PAGE_SIZE, EXPECT_UNMAPPED);
+    check_range("IST1 stack guard page", SPACE_KERNEL, SYM(ist1_guard),
+                SYM(ist1_guard) + VM_PAGE_SIZE, EXPECT_UNMAPPED);
     check_fact("kernel stack guard directly below the stack", SYM(kstack_guard), SYM(stack_bottom),
                "guard + 4 KiB = stack bottom, page-aligned",
                vm_aligned(SYM(kstack_guard)) &&
@@ -425,16 +537,21 @@ static void walk_check(void)
                "guard + 4 KiB = IST1 stack bottom, page-aligned",
                vm_aligned(SYM(ist1_guard)) &&
                SYM(ist1_guard) + VM_PAGE_SIZE == SYM(ist1_stack_bottom));
-    check_range("kernel code", SYM(__text_start), SYM(__rodata_start), EXPECT_RX);
-    check_range("kernel rodata", SYM(__rodata_start), SYM(__data_start), EXPECT_RO);
-    check_range("kernel data+bss", SYM(__data_start), SYM(__kernel_end), EXPECT_RW);
-    check_range("VGA text buffer", VGA_TEXT_START, VGA_TEXT_END, EXPECT_RW);
-    check_range("low memory pages 1-255", VM_LOW_MAP_START, VM_LOW_MAP_END, EXPECT_RW);
+    check_range("kernel code", SPACE_KERNEL, SYM(__text_start), SYM(__rodata_start), EXPECT_RX);
+    check_range("kernel rodata", SPACE_KERNEL, SYM(__rodata_start), SYM(__data_start), EXPECT_RO);
+    check_range("kernel data+bss", SPACE_KERNEL, SYM(__data_start), SYM(__kernel_end), EXPECT_RW);
+    check_phys("VGA text buffer", SPACE_VIEW, VGA_TEXT_START, VGA_TEXT_END, EXPECT_RW);
+    check_phys("low memory pages 1-255", SPACE_VIEW, VM_LOW_MAP_START, VM_LOW_MAP_END, EXPECT_RW);
+    /* The physical view never aliases the kernel image (no writable view
+     * of its code) and never holds page 0. */
+    check_phys("kernel image not in the physical view", SPACE_VIEW, KPHYS(__kernel_start),
+               KPHYS(__kernel_end), EXPECT_UNMAPPED);
+    check_phys("physical view: page 0", SPACE_VIEW, 0, VM_NULL_GUARD_END, EXPECT_UNMAPPED);
 
     /* The CPU's own tables, found where the CPU says they are. */
-    check_range("GDT (sgdt)", gdtr.base, gdt_end, EXPECT_RW);
-    check_range("IDT (sidt)", idtr.base, idt_end, EXPECT_RW);
-    check_range("TSS (str)", tss_base, tss_end, EXPECT_RW);
+    check_range("GDT (sgdt)", SPACE_KERNEL, gdtr.base, gdt_end, EXPECT_RW);
+    check_range("IDT (sidt)", SPACE_KERNEL, idtr.base, idt_end, EXPECT_RW);
+    check_range("TSS (str)", SPACE_KERNEL, tss_base, tss_end, EXPECT_RW);
     check_fact("GDT inside kernel .data/.bss", gdtr.base, gdt_end, "writable kernel data",
                in_kernel_rw(gdtr.base, gdt_end));
     check_fact("IDT inside kernel .data/.bss", idtr.base, idt_end, "writable kernel data",
@@ -443,9 +560,10 @@ static void walk_check(void)
                in_kernel_rw(tss_base, tss_end));
 
     /* The pmm bitmaps are static in pmm.c, in .bss: covered page by page. */
-    check_range("pmm bitmaps (.bss)", SYM(__bss_start), SYM(__bss_end), EXPECT_RW);
+    check_range("pmm bitmaps (.bss)", SPACE_KERNEL, SYM(__bss_start), SYM(__bss_end), EXPECT_RW);
 
-    /* Every boot-data reservation (page 0 excluded: see the next check). */
+    /* Every boot-data reservation, in the physical view (page 0 excluded:
+     * see below). The kernel image's own reservation is the item above. */
     unsigned count;
     const struct phys_range *r = memory_reservations(&count);
     for (unsigned i = 0; i < count; i++) {
@@ -454,15 +572,28 @@ static void walk_check(void)
         uint64_t start = r[i].start, end = r[i].end > LOW_4G ? LOW_4G : r[i].end;
         if (start < VM_NULL_GUARD_END)
             start = VM_NULL_GUARD_END;
+        if (start >= KPHYS(__kernel_start) && end <= KPHYS(__kernel_end))
+            continue;
         char what[80];
         ksnprintf(what, sizeof(what), "reservation %s", r[i].what);
-        check_range(what, start, end, EXPECT_KERNEL_AWARE);
+        check_phys(what, SPACE_VIEW, start, end, EXPECT_RW);
     }
+
+    /* Nothing in the lower half: the 0.7 identity mapping is gone. */
+    check_low_half_empty(table_at(pml4_phys)[0]);
 
     /* Page 0 (NULL, real-mode IVT, BIOS data area 0x400, EBDA pointer
      * 0x40E) is not mapped: the boot tables map it, these must not. */
-    check_range("page 0 (NULL, IVT, BDA 0x400, EBDA ptr 0x40E)", 0, VM_NULL_GUARD_END,
-                EXPECT_UNMAPPED);
+    check_range("page 0 (NULL, IVT, BDA 0x400, EBDA ptr 0x40E)", SPACE_IDENTITY, 0,
+                VM_NULL_GUARD_END, EXPECT_UNMAPPED);
+
+    /* The two new slots. */
+    check_fact("kernel slot (PML4[511])", SPACE_KERNEL, SPACE_KERNEL + KPHYS(__kernel_end),
+               "present, maps the kernel image",
+               pte_present(table_at(pml4_phys)[VM_KERNEL_HIGH_INDEX]));
+    check_fact("physical view slot (PML4[256])", SPACE_VIEW, SPACE_VIEW + LOW_4G - 1,
+               "present, maps the low 1 MiB and the boot data",
+               pte_present(table_at(pml4_phys)[VM_PHYS_VIEW_INDEX]));
 
     /* The read-only range holds only .text/.rodata, and everything the
      * kernel writes lies outside it. */
@@ -480,21 +611,30 @@ static void walk_check(void)
                !in_kernel_ro(idtr.base) && !in_kernel_ro(tss_base) &&
                !in_kernel_ro(SYM(__data_start)) && !in_kernel_ro(SYM(__bss_start)));
 
-    /* Free RAM is not mapped: the table frames themselves came from it. */
-    check_range("PML4 frame (free RAM)", pml4_phys, pml4_phys + 1, EXPECT_UNMAPPED);
-    for (unsigned i = 0; i < table_frame_count; i++)
-        check_range("page table frame (free RAM)", table_frames[i], table_frames[i] + 1,
-                    EXPECT_UNMAPPED);
+    /* Free RAM is not mapped: the table frames themselves came from it.
+     * Not at their physical address, and not in the physical view. */
+    check_range("PML4 frame (free RAM)", SPACE_IDENTITY, pml4_phys, pml4_phys + 1,
+                EXPECT_UNMAPPED);
+    check_phys("PML4 frame (free RAM) in the physical view", SPACE_VIEW, pml4_phys,
+               pml4_phys + 1, EXPECT_UNMAPPED);
+    for (unsigned i = 0; i < table_frame_count; i++) {
+        check_range("page table frame (free RAM)", SPACE_IDENTITY, table_frames[i],
+                    table_frames[i] + 1, EXPECT_UNMAPPED);
+        check_phys("page table frame (free RAM) in the physical view", SPACE_VIEW,
+                   table_frames[i], table_frames[i] + 1, EXPECT_UNMAPPED);
+    }
 
     /* Addresses reserved for later use are empty. */
-    check_range("heap area (mapped by kmalloc)", VM_HEAP_BASE, VM_HEAP_BASE + VM_HEAP_INITIAL,
+    check_range("heap area (mapped by kmalloc)", SPACE_IDENTITY, VM_HEAP_BASE,
+                VM_HEAP_BASE + VM_HEAP_INITIAL, EXPECT_UNMAPPED);
+    check_range("paging self-test page", SPACE_IDENTITY, VM_TEST_PAGE, VM_TEST_PAGE + 1,
                 EXPECT_UNMAPPED);
-    check_range("paging self-test page", VM_TEST_PAGE, VM_TEST_PAGE + 1, EXPECT_UNMAPPED);
-    check_range("physical-access window", VM_WINDOW, VM_WINDOW + 1, EXPECT_UNMAPPED);
+    check_range("physical-access window", SPACE_IDENTITY, VM_WINDOW, VM_WINDOW + 1,
+                EXPECT_UNMAPPED);
 
     check_fact("window page table present", VM_WINDOW, VM_WINDOW + VM_PAGE_SIZE,
                "PML4, PDPT and PD entries present", pte_present(phys_entry(VM_WINDOW, 2)));
-    uint64_t rec = ((const uint64_t *)(uintptr_t)pml4_phys)[VM_RECURSIVE_INDEX];
+    uint64_t rec = table_at(pml4_phys)[VM_RECURSIVE_INDEX];
     check_fact("recursive entry (PML4[510])", VM_RECURSIVE_BASE, VM_PML4 + VM_PAGE_SIZE - 1,
                stats.nx ? "points to the PML4, rw nx" : "points to the PML4, rw",
                pte_present(rec) && pte_writable(rec) && pte_frame(rec) == pml4_phys &&
@@ -502,22 +642,22 @@ static void walk_check(void)
 
     /* Counts, recomputed independently of vmm_core's counters. */
     uint32_t tables = 0, pages = 0;
-    const uint64_t *l4 = (const uint64_t *)(uintptr_t)pml4_phys;
+    const uint64_t *l4 = table_at(pml4_phys);
     for (uint32_t a = 0; a < VM_ENTRIES; a++) {
         if (a == VM_RECURSIVE_INDEX || !pte_present(l4[a]))
             continue;
         tables++;
-        const uint64_t *l3 = (const uint64_t *)(uintptr_t)pte_frame(l4[a]);
+        const uint64_t *l3 = table_at(pte_frame(l4[a]));
         for (uint32_t b = 0; b < VM_ENTRIES; b++) {
             if (!pte_present(l3[b]))
                 continue;
             tables++;
-            const uint64_t *l2 = (const uint64_t *)(uintptr_t)pte_frame(l3[b]);
+            const uint64_t *l2 = table_at(pte_frame(l3[b]));
             for (uint32_t c = 0; c < VM_ENTRIES; c++) {
                 if (!pte_present(l2[c]))
                     continue;
                 tables++;
-                const uint64_t *l1 = (const uint64_t *)(uintptr_t)pte_frame(l2[c]);
+                const uint64_t *l1 = table_at(pte_frame(l2[c]));
                 for (uint32_t d = 0; d < VM_ENTRIES; d++)
                     if (pte_present(l1[d]))
                         pages++;
@@ -531,7 +671,8 @@ static void walk_check(void)
 }
 
 /* CR3 = the new PML4. CR0.PG/WP and CR4.PAE are already set (boot stub).
- * Identity mapping: execution continues at the same addresses. */
+ * The kernel runs in the higher half in both the boot tables and these, so
+ * execution continues at the same addresses. */
 static void load(void)
 {
     __asm__ volatile ("mov %0, %%cr3" :: "r"(pml4_phys) : "memory");
@@ -668,26 +809,34 @@ bool paging_selftest(void)
      * the recursive mapping now), and page 0 is not mapped. */
     uint64_t rsp;
     __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
-    check_range("kernel code", SYM(__text_start), SYM(__rodata_start), EXPECT_RX);
-    check_range("kernel rodata", SYM(__rodata_start), SYM(__data_start), EXPECT_RO);
-    check_range("kernel data+bss", SYM(__data_start), SYM(__kernel_end), EXPECT_RW);
-    check_range("RSP (current stack)", rsp, rsp + 1, EXPECT_RW);
-    check_range("kernel stack guard page", SYM(kstack_guard), SYM(kstack_guard) + VM_PAGE_SIZE,
-                EXPECT_UNMAPPED);
-    check_range("IST1 stack guard page", SYM(ist1_guard), SYM(ist1_guard) + VM_PAGE_SIZE,
-                EXPECT_UNMAPPED);
-    check_range("VGA text buffer", VGA_TEXT_START, VGA_TEXT_END, EXPECT_RW);
+    check_range("kernel code", SPACE_KERNEL, SYM(__text_start), SYM(__rodata_start), EXPECT_RX);
+    check_range("kernel rodata", SPACE_KERNEL, SYM(__rodata_start), SYM(__data_start), EXPECT_RO);
+    check_range("kernel data+bss", SPACE_KERNEL, SYM(__data_start), SYM(__kernel_end), EXPECT_RW);
+    check_range("RSP (current stack)", SPACE_KERNEL, rsp, rsp + 1, EXPECT_RW);
+    check_range("kernel stack guard page", SPACE_KERNEL, SYM(kstack_guard),
+                SYM(kstack_guard) + VM_PAGE_SIZE, EXPECT_UNMAPPED);
+    check_range("IST1 stack guard page", SPACE_KERNEL, SYM(ist1_guard),
+                SYM(ist1_guard) + VM_PAGE_SIZE, EXPECT_UNMAPPED);
+    check_phys("VGA text buffer", SPACE_VIEW, VGA_TEXT_START, VGA_TEXT_END, EXPECT_RW);
+    check_phys("kernel image not in the physical view", SPACE_VIEW, KPHYS(__kernel_start),
+               KPHYS(__kernel_end), EXPECT_UNMAPPED);
     unsigned count;
     const struct phys_range *r = memory_reservations(&count);
     for (unsigned i = 0; i < count; i++) {
         if (r[i].start >= r[i].end || r[i].start >= LOW_4G || r[i].start < 0x100000u)
             continue;                               /* low 1 MiB: covered by the build check */
+        uint64_t end = r[i].end > LOW_4G ? LOW_4G : r[i].end;
+        if (r[i].start >= KPHYS(__kernel_start) && end <= KPHYS(__kernel_end))
+            continue;                               /* the kernel image: the item above */
         char what[80];
         ksnprintf(what, sizeof(what), "reservation %s", r[i].what);
-        check_range(what, r[i].start, r[i].end > LOW_4G ? LOW_4G : r[i].end, EXPECT_KERNEL_AWARE);
+        check_phys(what, SPACE_VIEW, r[i].start, end, EXPECT_RW);
     }
-    check_range("page 0 (NULL, IVT, BDA 0x400, EBDA ptr 0x40E)", 0, VM_NULL_GUARD_END,
-                EXPECT_UNMAPPED);
+    check_range("page 0 (NULL, IVT, BDA 0x400, EBDA ptr 0x40E)", SPACE_IDENTITY, 0,
+                VM_NULL_GUARD_END, EXPECT_UNMAPPED);
+    check_phys("physical view: page 0", SPACE_VIEW, 0, VM_NULL_GUARD_END, EXPECT_UNMAPPED);
+    /* The live tables, read through the recursive mapping. */
+    check_low_half_empty(((const volatile uint64_t *)(uintptr_t)VM_PML4)[0]);
 
     /* Map, write, read back, translate. */
     uint32_t free_before = pmm_free_pages();

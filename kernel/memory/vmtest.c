@@ -53,6 +53,16 @@ void vmtest_pf_readonly(void)
     panic("Page-fault test: write to read-only kernel code was not detected.");
 }
 
+void vmtest_pf_low(void)
+{
+    /* The kernel's physical load address: where 0.7 ran it (identity). */
+    static volatile uintptr_t target = 0x100000u;
+    report_target("read", target);
+    volatile uint32_t v = *(volatile uint32_t *)target;
+    (void)v;
+    panic("Page-fault test: read from the old low address of the kernel was not detected.");
+}
+
 /* ---- no-execute (NX) ---- */
 
 /* A page used only by the NX test: .bss is data, so it is mapped

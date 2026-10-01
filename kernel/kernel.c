@@ -33,10 +33,37 @@
 #include "kernel/memory/vmtest.h"
 #include "kernel/multiboot.h"
 #include "kernel/panic.h"
+#include "kernel/stackpeak.h"
 #include "kernel/timer.h"
 
 /* The only IRQ lines 0.4 may unmask. */
 #define IRQ_ALLOWED_MASK ((1u << IRQ_TIMER) | (1u << IRQ_KEYBOARD))
+
+/* Kernel stack high-water mark (0.8). At the very start of kernel_main the
+ * unused part of the stack is painted: from its bottom up to STACK_PAINT_
+ * MARGIN bytes below the current RSP. The margin keeps the paint away from
+ * the live frames (kernel_main's own is already allocated; stack_paint is
+ * a leaf call that uses only its 8-byte return address below RSP), and
+ * interrupts are still off (boot.asm: cli, then RFLAGS = 0; the first sti
+ * is interrupts_enable() further down), so no interrupt frame can land in
+ * the painted area. Bytes in the margin count as used. */
+#define STACK_PAINT_MARGIN 256u
+
+extern char stack_bottom[], stack_top[];               /* boot/boot.asm */
+static uint8_t *paint_lo;
+static size_t paint_len;
+static uint64_t paint_rsp;
+
+uint32_t kernel_stack_size(void)
+{
+    return (uint32_t)(stack_top - stack_bottom);
+}
+
+uint32_t kernel_stack_peak(void)
+{
+    size_t untouched = paint_len - stack_peak(paint_lo, paint_len);
+    return kernel_stack_size() - (uint32_t)untouched;
+}
 
 static const char *cmdline = "";
 
@@ -92,20 +119,20 @@ static void log_cpu_mode(void)
 /* Checks every Multiboot module after start-up (memory, paging and heap are
  * set up by now): a test module (kernel/bootmod.h) must still be intact,
  * which proves nothing the kernel set up was placed on top of it. Serial
- * log only; boot continues either way. */
+ * log only; boot continues either way. Everything is read through the
+ * physical view (the module table and the modules are boot data). */
 static void check_boot_modules(const struct multiboot_info *mbi)
 {
     if (!(mbi->flags & MULTIBOOT_INFO_MODS) || mbi->mods_count == 0) {
         klogf("Boot modules: none\n");
         return;
     }
-    const struct multiboot_module *mods =
-        (const struct multiboot_module *)(uintptr_t)mbi->mods_addr;
+    const struct multiboot_module *mods = phys_view(mbi->mods_addr);
     for (uint32_t i = 0; i < mbi->mods_count; i++) {
         uint32_t size = mods[i].mod_end - mods[i].mod_start;
         struct bootmod_result r;
         enum bootmod_status s =
-            bootmod_check((const uint8_t *)(uintptr_t)mods[i].mod_start, size, &r);
+            bootmod_check((const uint8_t *)phys_view(mods[i].mod_start), size, &r);
         if (s == BOOTMOD_NO_HEADER)
             klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s\n", i + 1, mods[i].mod_start,
                   mods[i].mod_end, size, bootmod_status_str(s));
@@ -113,6 +140,12 @@ static void check_boot_modules(const struct multiboot_info *mbi)
             klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s (FNV-1a 0x%08x, expected 0x%08x)\n",
                   i + 1, mods[i].mod_start, mods[i].mod_end, size, bootmod_status_str(s),
                   r.actual, r.expected);
+        /* 0.8: also on the screen's message line, for machines without a
+         * serial port (only when a module was loaded). */
+        char msg[80];
+        ksnprintf(msg, sizeof(msg), "Boot module %u: %s (%u bytes)", i + 1,
+                  bootmod_status_str(s), size);
+        bootscreen_message(msg);
     }
 }
 
@@ -169,6 +202,9 @@ static void run_diagnostics(void)
         bootscreen_message("Page-fault test: execute from a no-execute data page");
         vmtest_pf_nx();                             /* returns only without NX */
         bootscreen_message("NX test: NOT APPLICABLE (NX not supported by this CPU)");
+    } else if (cmdline_has("test=pflow")) {
+        bootscreen_message("Page-fault test: read the kernel's old low address 0x100000");
+        vmtest_pf_low();
     } else if (cmdline_has("test=stackoverflow")) {
         bootscreen_message("Crash test: kernel stack overflow into the guard page");
         vmtest_stack_overflow();                    /* returns only without paging */
@@ -298,19 +334,38 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
 
 void kernel_main(uint32_t magic, uint32_t mb_info)
 {
+    /* First, before anything else uses the stack (interrupts are off). */
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(paint_rsp));
+    paint_lo = (uint8_t *)stack_bottom;
+    paint_len = (size_t)(paint_rsp - STACK_PAINT_MARGIN - (uint64_t)(uintptr_t)stack_bottom);
+    stack_paint(paint_lo, paint_len);
+
     serial_init();
     bool display_ok = vga_init();
+    klogf("Kernel stack: 0x%016llx-0x%016llx; painted 0x%016llx-0x%016llx, %u bytes below "
+          "RSP 0x%016llx (live frames untouched)\n",
+          (unsigned long long)(uintptr_t)stack_bottom, (unsigned long long)(uintptr_t)stack_top,
+          (unsigned long long)(uintptr_t)paint_lo,
+          (unsigned long long)((uintptr_t)paint_lo + paint_len), STACK_PAINT_MARGIN,
+          (unsigned long long)paint_rsp);
 
     if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
         panic("Not loaded by a Multiboot bootloader.");
 
     if (mb_info == 0)
         panic("No Multiboot information from the bootloader.");
-    const struct multiboot_info *mbi = (const struct multiboot_info *)(uintptr_t)mb_info;
+    /* Boot data is read through the physical view (vm_layout.h), which
+     * stays mapped for it once the low identity mapping is gone. Only
+     * memory_init() gets the physical pointer itself: reserve.c records
+     * the info block's own (physical) address, and it runs before the
+     * kernel's page tables are loaded, while the boot tables still map
+     * 0-4 GiB at 0. */
+    const struct multiboot_info *mbi = phys_view(mb_info);
+    const struct multiboot_info *mbi_phys = (const struct multiboot_info *)(uintptr_t)mb_info;
     /* Only the pointer is kept here; memory_init() validates and reserves
      * the string before anything reads it. */
     if (mbi->flags & MULTIBOOT_INFO_CMDLINE)
-        cmdline = (const char *)(uintptr_t)mbi->cmdline;
+        cmdline = phys_view(mbi->cmdline);
 
     bootscreen_draw_header();
 
@@ -330,7 +385,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     /* After the IDT, so a fault while reading boot data shows the crash
      * screen instead of resetting the machine. */
     static struct memory_stats mem;
-    memory_init(mbi, &mem);
+    memory_init(mbi_phys, &mem);
     uint32_t mem_checks = memtest_boot();
 
     /* Only reached if the map was parsed, usable memory identified, the
@@ -391,5 +446,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_ready(console_offered ? "Press any key to open the console."
                      : !keyboard_ok ? "Keyboard unavailable: console disabled."
                      : "Console self-test failed: console disabled.");
+    klogf("Kernel stack: %u bytes at peak, of %u\n", kernel_stack_peak(), kernel_stack_size());
     idle_loop(&mem, console_offered);
 }

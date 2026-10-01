@@ -10,17 +10,23 @@ VirtualBox power-on
   -> GRUB 2               reads iso/boot/grub/grub.cfg, shows menu (3 s)
   -> Multiboot load       GRUB loads build/madire.kernel (a flat binary, through
                           the a.out kludge fields) at 1 MiB, in 32-bit protected mode
-  -> boot/boot.asm        _start (32-bit stub, 0.7):
+  -> boot/boot.asm        _start (32-bit stub, 0.7; runs at its load address):
                             zero .bss; serial marker "boot32: start"
                             CPUID present? long mode? PAE? — if not: message on
                               serial and screen, halt (no mode switch, no reset)
-                            temporary tables: 0-4 GiB identity, 2 MiB pages,
-                              page 0 included
+                            temporary tables, 2 MiB pages (0.8: three views):
+                              0-4 GiB identity (page 0 included), the same
+                              0-4 GiB in the physical view, and the kernel's
+                              first 1 GiB in the higher half
                             CR4.PAE, EFER.LME, CR0.PG|WP → long mode; boot GDT;
-                            far jump to 64-bit code; "boot64" marker;
+                            far jump to 64-bit code; jump to the kernel's
+                            higher-half address (0.8); "boot64" markers;
                             16 KiB kernel stack; call kernel_main(magic, info)
-  -> kernel/kernel.c      kernel_main (64-bit):
-       1. serial_init, vga_init    drivers ready; cursor off, blink off
+  -> kernel/kernel.c      kernel_main (64-bit, in the higher half):
+       0. stack paint (0.8)        fill the unused kernel stack with 0xA5 (for
+                                   the high-water mark); interrupts still off
+       1. serial_init, vga_init    drivers ready; cursor off, blink off; VGA
+                                   and boot data read through the physical view
        2. check Multiboot magic    and info pointer (wrong → crash screen)
        3. boot screen header       logo (custom palette), title, version
        4. gdt_init                 64-bit GDT: code 0x08, data 0x10, TSS 0x18
@@ -37,7 +43,9 @@ VirtualBox power-on
       10. status + memory panel    "Memory initialization: OK" only now
       10a. paging_init             NX detected and enabled (EFER.NXE); build
                                    the 4-level tables (still on the boot
-                                   tables) → walk-check them → load CR3
+                                   tables): kernel in the higher half,
+                                   physical view, nothing in the lower half
+                                   → walk-check them → load CR3
                                    (check fails → the boot tables stay, FAILED)
            paging_selftest         map/read back, TLB flush, window, no leak
                                    (fails once the tables are loaded → crash screen)
@@ -45,7 +53,8 @@ VirtualBox power-on
                                    growth, no leak (fails → kmalloc returns NULL)
            status                  "Paging & kernel heap: OK" (one screen line,
                                    two serial lines)
-      10c. check_boot_modules      a test module must be intact (serial log)
+      10c. check_boot_modules      a test module must be intact (serial log;
+                                   since 0.8 also the screen's message line)
       11. start_devices:
             timer_init             register IRQ0 handler → program PIT →
                                    unmask IRQ0 → verify mask
@@ -56,7 +65,8 @@ VirtualBox power-on
             PIC mask check         must be exactly 0xFFFC (only IRQ0/IRQ1)
       12. console_selftest         pure console/shell code (not hardware)
       13. diagnostics if requested (test=… on the boot command line)
-      14. "System ready. Press any key to open the console."
+      14. "System ready. Press any key to open the console."; the stack's
+          high-water mark so far goes to serial (0.8)
       15. idle loop                hlt → handle queued keys, uptime, counters;
                                    first key press → console; then keys → shell
   any CPU exception → isr.asm stub → interrupt_dispatch → panic → crash screen
@@ -67,23 +77,25 @@ VirtualBox power-on
 
 **Why paging comes here (step 10a):** after the IDT, so a mistake shows the crash screen instead of a reset; after the boot memory self-test, which reaches pages directly through the stub's temporary identity tables; and before any IRQ is unmasked, so no interrupt arrives while the address space is being switched. The heap comes right after, because it needs mappings.
 
-**The temporary boot tables** identity-map 0–4 GiB with 2 MiB pages, **including page 0**. They are only a bridge: long mode can't run with paging off, so the stub needs *some* tables before it can call C. `paging_init` replaces them with the kernel's own 4-level tables, which leave page 0 unmapped; the walk-check and a QEMU test prove it.
+**The temporary boot tables** map, with 2 MiB pages: 0–4 GiB identity (**including page 0**) in PML4[0]; the same 0–4 GiB in the physical view (PML4[256]); and the kernel's first 1 GiB at `0xFFFFFFFF80000000` (PML4[511]). They are only a bridge: long mode can't run with paging off, so the stub needs *some* tables before it can call C. The identity part lets the 32-bit stub keep running after paging is switched on, and lets memory set-up and the boot self-test use physical addresses directly. `paging_init` replaces them with the kernel's own 4-level tables, which map **nothing in the lower half** (0.8; page 0 was already unmapped since 0.6); the walk-check, the self-test and QEMU tests prove it.
+
+**How the kernel gets to the higher half (0.8):** everything except `.boot` (the Multiboot header and the 32-bit stub) is linked at `0xFFFFFFFF80000000` + physical, but loaded at 1 MiB. The stub uses physical addresses (`symbol - 0xFFFFFFFF80000000`) for everything it touches outside `.boot`. After the far jump into 64-bit mode it is still running at its load address; it then jumps (through a 64-bit absolute address) to `long_entry` in `.text`, at its high address, which loads the data segments and the stack, logs `boot64: running at the higher half, RIP=0xffffffff80…`, and calls `kernel_main`. From the first C instruction on, the kernel runs high.
 
 **Why devices come after memory (step 11):** memory set-up and its self-test behave exactly as in 0.3 (IRQs masked). Each IRQ line is unmasked only once its handler is registered and its device configured. The timer comes first, so the keyboard self-test can use it for bounded waits.
 
 | Stage | File | Responsibility |
 |---|---|---|
 | Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer and keyboard tests) |
-| Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags (page-aligned modules, memory map, a.out kludge), checksum, then the load addresses: `load_addr = __kernel_start`, `load_end_addr = __data_end`, `bss_end_addr = __kernel_end`, `entry_addr = _start`; must be within the first 8 KiB of the file |
-| Entry point | `boot/boot.asm` (`_start`, `.boot32`) | 32-bit stub: CPU checks, temporary tables, switch to long mode; passes `eax` (magic) and `ebx` (info pointer) to C as the first two arguments |
-| Memory layout | `linker/linker.ld` | 64-bit ELF, loaded and run at 1 MiB (identity-mapped); `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; `.bss` ends with the boot tables and the stacks; exports `__kernel_start/end` and per-section start/end symbols |
+| Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags (page-aligned modules, memory map, a.out kludge), checksum, then the physical load addresses: `load_addr = __kernel_phys_start`, `load_end_addr = __data_end_phys`, `bss_end_addr = __kernel_end_phys`, `entry_addr = _start`; must be within the first 8 KiB of the file |
+| Entry point | `boot/boot.asm` (`_start`, `.boot32`) | 32-bit stub: CPU checks, temporary tables, switch to long mode, jump to the higher half; passes `eax` (magic) and `ebx` (info pointer) to C as the first two arguments |
+| Memory layout | `linker/linker.ld` | 64-bit ELF, loaded at 1 MiB; since 0.8 linked and run at `0xFFFFFFFF80000000` + physical (`.boot` alone is linked at its load address); `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; `.bss` ends with the boot tables and the stacks; exports `__kernel_start/end` and per-section start/end symbols (virtual), plus the `*_phys` symbols the loader and the stub need |
 | Start-up sequence | `kernel/kernel.c` | Calls each subsystem in order and reports each result on the boot screen |
 
 **Why GRUB/Multiboot:** GRUB already handles BIOS disk access, reading the ISO filesystem and switching the CPU into protected mode. That lets the project start with kernel code instead of a hand-written boot sector. A custom bootloader could replace it later without changing the kernel's entry contract.
 
 **Why a 32-bit stub:** Multiboot (version 1) hands over in 32-bit protected mode, so the first instructions must be 32-bit. The stub does only what long mode needs: check the CPU, build temporary tables, switch. Everything else is 64-bit C. Up to 0.6 the whole kernel was 32-bit; 0.7 made it 64-bit and dropped the 32-bit build.
 
-**Why Multiboot 1 and a flat binary:** most QEMU tests boot with `-kernel … -append … -initrd`, and QEMU's `-kernel` loader supports Multiboot 1 (not Multiboot 2) and refuses 64-bit ELF files. The a.out kludge fields give the physical load addresses and the end of `.bss`, so GRUB and QEMU both load `objcopy`'s flat output directly, whatever the format. The ELF (`build/madire.elf`) is kept for symbols and debugging. The same approach still works when 0.8 links the kernel high.
+**Why Multiboot 1 and a flat binary:** most QEMU tests boot with `-kernel … -append … -initrd`, and QEMU's `-kernel` loader supports Multiboot 1 (not Multiboot 2) and refuses 64-bit ELF files. The a.out kludge fields give the physical load addresses and the end of `.bss`, so GRUB and QEMU both load `objcopy`'s flat output directly, whatever the format. The ELF (`build/madire.elf`) is kept for symbols and debugging. The approach still works with the higher-half link (0.8): the kludge fields are physical addresses, and a stage-3 probe confirmed GRUB and QEMU `-kernel` both load the high-linked flat binary.
 
 **CPUs that can't run it:** without CPUID, long mode or PAE, the stub prints `Madire OS needs a 64-bit (x86-64) CPU: … not supported. Halted.` on serial and in white on red on the screen's top row, and halts. No mode switch is attempted, so there is no triple fault.
 
@@ -182,6 +194,14 @@ The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptio
 
 **Stack overflow (0.7):** the kernel stack (16 KiB) and the IST1 stack (8 KiB) each have an unmapped guard page directly below them. When the kernel stack runs into its guard page, the CPU can't push the page-fault frame there and raises a double fault instead, which runs on IST1 and reaches the crash screen. Before 0.7 this reset the machine.
 
+**Stack high-water mark (0.8, `kernel/stackpeak.c`):** the guard page catches an overflow, but not how close the stack comes to one. So the very first thing `kernel_main` does is paint the unused part of the kernel stack with `0xA5`: from the stack's bottom up to 256 bytes below the current RSP. Interrupts are still off at that point (the stub cleared RFLAGS), so no interrupt frame can land in the painted area, and the 256-byte margin keeps the paint clear of the live frames (`stack_paint` is a leaf call that touches only its return address). Later, `stack_peak` finds the lowest byte that no longer holds the pattern; everything above it counts as used.
+
+- The result goes to serial at "System ready." (`Kernel stack: 1480 bytes at peak, of 16384`) and is the last row of `mem`. The paint itself is logged too (`painted 0x…-0x…, 256 bytes below RSP 0x…`).
+- The 0.8 baseline is **1480 of 16384 bytes** after booting, after the keyboard flood and after the console session, in QEMU and VirtualBox alike.
+- It can read a few bytes too low (if the deepest byte ever written happened to equal `0xA5`), never too high. The top 736 bytes (the stub's frames plus the margin) are never painted and always count as used, so 736 is the smallest value it can report.
+- It covers the kernel stack only; the IST1 stack isn't painted.
+- `stackpeak.c` is pure and unit-tested (`test_stackpeak`).
+
 ## Memory [built: 0.3]
 
 Physical memory management. It runs before the kernel's own page tables are loaded, on the boot stub's identity tables (since 0.7; with paging off up to 0.6), when a physical address is also a pointer. Every figure is calculated at runtime from the bootloader's memory map; nothing about the machine is hard-coded. Virtual memory is described in *Virtual memory and kernel heap* below.
@@ -201,7 +221,8 @@ A **pure** module doesn't access hardware, print or panic. That lets the host co
 
 - **Multiboot 1** (spec 0.6.96): magic `0x2BADB002`, memory map present when info flag bit 6 is set. `boot.asm` asks for it with header flag `MEMINFO`. Multiboot 2 isn't supported.
 - **Below 4 GiB only:** only physical addresses below 4 GiB are managed (the allocator's bitmaps cover the 32-bit space). RAM above 4 GiB is counted and shown, but not used yet.
-- **Before the kernel's tables:** memory set-up and the boot self-test run on the stub's temporary tables, which identity-map 0–4 GiB, so a physical address below 4 GiB is also a pointer. Once the kernel's tables are loaded (0.6; 4-level since 0.7), the Multiboot data stay reachable because every reservation is identity-mapped; free pages are not mapped, so `memtest_exhaust` reaches them through the physical-access window.
+- **Before the kernel's tables:** memory set-up and the boot self-test run on the stub's temporary tables, which identity-map 0–4 GiB, so a physical address below 4 GiB is also a pointer. Once the kernel's tables are loaded (0.6; 4-level since 0.7), nothing below 4 GiB is mapped any more (0.8). The Multiboot data stay reachable through the physical view (`phys_view()`), which maps every boot-data reservation; free pages are not mapped, so `memtest_exhaust` reaches them through the physical-access window.
+- **Physical addresses of the kernel (0.8):** the linker symbols are high virtual addresses. `memory.c` and `memtest.c` convert them with `kernel_phys()` before using them as physical addresses (so the pure `reserve.c` still receives physical ranges and is unchanged), and `memory.c` reads the memory map through the physical view. `mmap_validate()` keeps validating the map's **physical** address (null, wrap past 4 GiB) but reads the bytes through a separate `view` pointer, and `mmap_iter_init()` iterates through that view; the checks are unchanged and the unit tests cover the two addresses separately.
 
 ### Memory map handling (`mmap.c`)
 
@@ -319,38 +340,47 @@ The following end on the crash screen with a specific message:
 - any self-test failure;
 - any misuse of `memory_free_page`.
 
-The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live. In 0.6 only `memtest.c` changed (the window, and leaving pre-existing pages alone); `mmap.c`, `reserve.c`, `pmm.c` and `memory.c` are unchanged. In 0.7 none of these files changed; they are built as 64-bit code, and their unit tests run as 64-bit programs.
+The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live. In 0.6 only `memtest.c` changed (the window, and leaving pre-existing pages alone); `mmap.c`, `reserve.c`, `pmm.c` and `memory.c` are unchanged. In 0.7 none of these files changed; they are built as 64-bit code, and their unit tests run as 64-bit programs. In 0.8, `mmap.c`/`mmap.h` (the separate read view), `memory.c` (its call sites and the stale "(32-bit, no PAE)" serial text) and `memtest.c` (kernel symbols converted to physical) changed, each approved in the 0.8 plan; `reserve.c` and `pmm.c` are unchanged.
 
-## Virtual memory and kernel heap [built: 0.6, 4-level since 0.7]
+## Virtual memory and kernel heap [built: 0.6, 4-level since 0.7, higher half since 0.8]
 
 | Module | Pure? | Responsibility |
 |---|---|---|
-| `kernel/memory/vm_layout.h` | – | Every virtual-layout constant (one place to change for the higher-half kernel) |
+| `kernel/memory/vm_layout.h` | – | Every virtual-layout constant; `phys_view(phys)` (address in the physical view) and `kernel_phys(virt)` (physical address of a kernel-image address) |
 | `kernel/memory/pte.h` | yes | 4-level entry bits (present, write, user, NX), index splitting per level, canonical-address checks, alignment helpers, recursive-table addresses |
 | `kernel/memory/vmm_core.c` | yes | Map / unmap / translate 4 KiB pages; creates PDPT, PD and PT on demand, all-or-nothing; refuses non-canonical addresses, page 0 and the recursive slot; accepts only the write and NX flags (never user pages); never replaces a mapping; flushes on unmap. Reaches the tables only through callbacks, so it is unit-tested on fake frames. |
-| `kernel/memory/paging.c` | no | NX set-up, builds the tables, walk-checks them, loads CR3, self-test; `paging_map/unmap/translate`; the physical-access window |
+| `kernel/memory/paging.c` | no | NX set-up, builds the tables (kernel image, physical view, nothing in the lower half), walk-checks them, loads CR3, self-test; `paging_map/unmap/translate`; the physical-access window |
 | `kernel/memory/heap.c` | yes | First-fit allocator with boundary tags over one growable arena |
 | `kernel/memory/kmalloc.c` | no | The kernel heap: `kmalloc`, `kcalloc`, `kfree`; grows by mapping new frames; self-test |
-| `kernel/memory/vmtest.c` | no | Page-fault, NX, stack-overflow and heap diagnostics |
+| `kernel/memory/vmtest.c` | no | Page-fault (including `pflow`), NX, stack-overflow and heap diagnostics |
 
-**Layout (0.7: 4-level paging, identity-mapped kernel, 4 KiB pages only):**
+**Layout (0.8: 4-level paging, higher-half kernel, empty lower half, 4 KiB pages only):**
 
 | Virtual range | PML4 slot | Maps to | Access |
 |---|---|---|---|
-| `0x0000000000000000–0x0000000000000FFF` | 0 | – | unmapped: NULL guard (also the real-mode IVT and BIOS data area; nothing uses them once the kernel's tables are loaded) |
-| `0x0000000000001000–0x00000000000FFFFF` | 0 | identity | read/write, no-execute (VGA `0xB8000`, EBDA, ROM, GRUB data) |
-| `__text_start–__rodata_start` | 0 | identity | **read-only, executable**: kernel code (CR0.WP makes read-only apply to the kernel too) |
-| `__rodata_start–__data_start` | 0 | identity | read-only, no-execute |
-| `__data_start–__kernel_end` | 0 | identity | read/write, no-execute: `.data`, `.bss`, allocator bitmaps, GDT, IDT, TSS, the kernel and IST1 stacks, **except the two guard pages, which are unmapped** |
-| every boot-data reservation above 1 MiB | 0 | identity | read/write, no-execute (Multiboot info, memory map, command line, modules) |
-| everything else below 4 GiB | 0 | – | unmapped: free RAM is not mapped |
+| `0x0000000000000000–0x00007FFFFFFFFFFF` (the whole lower half) | 0–255 | – | **unmapped** (0.8): PML4[0] is not present, so every address in 0–4 GiB faults: page 0 (NULL), the kernel's old address `0x100000`, VGA's physical address, free RAM |
+| `0xFFFF800000001000–0xFFFF8000000FFFFF` | 256 | physical `0x1000–0xFFFFF` (pages 1–255) | physical view: read/write, no-execute (VGA text buffer at `0xFFFF8000000B8000`, EBDA, ROM, GRUB data) |
+| `0xFFFF800000000000` + each boot-data reservation | 256 | that reservation | physical view: read/write, no-execute (Multiboot info, memory map, command line, module table, modules, module names) |
+| rest of slot 256 | 256 | – | unmapped: page 0 (`0xFFFF800000000000`), **free RAM** and the **kernel image** are deliberately not in the view |
 | `0xFFFFFE0000000000` | 508 | – | page used by the paging self-test |
 | `0xFFFFFE0000001000` | 508 | any frame | physical-access window (one page) |
 | `0xFFFFFE8000000000` → heap end | 509 | heap frames | read/write, no-execute; 64 KiB at start, at most 16 MiB; unmapped above the end |
 | `0xFFFFFF0000000000–0xFFFFFF7FFFFFFFFF` | 510 | page tables | recursive mapping; `0xFFFFFF7FBFDFE000` is the PML4 |
-| `0xFFFFFF8000000000` → top | 511 | – | empty, reserved for the higher-half kernel (0.8) |
+| `0xFFFFFFFF80100000` = `__text_start` → `__rodata_start` | 511 | kernel code (physical `0x100000`…) | **read-only, executable**: kernel code, including the boot stub's page (CR0.WP makes read-only apply to the kernel too) |
+| `__rodata_start–__data_start` | 511 | kernel rodata | read-only, no-execute |
+| `__data_start–__kernel_end` | 511 | kernel data | read/write, no-execute: `.data`, `.bss`, allocator bitmaps, GDT, IDT, TSS, the kernel and IST1 stacks, **except the two guard pages, which are unmapped** |
 
-There is no direct map of all physical memory: the kernel reaches other frames one page at a time through the window.
+Every kernel-image address is `0xFFFFFFFF80000000` + its physical address, and every physical-view address is `0xFFFF800000000000` + its physical address, so both translations are a single addition (`kernel_phys()`, `phys_view()`).
+
+**The physical view (0.8)** exists because the kernel still has to read things the bootloader and the hardware put at fixed physical addresses (VGA, the Multiboot info, the memory map, the command line, modules), and the lower half is gone. It maps only those: the low 1 MiB without page 0, and every boot-data reservation. It deliberately leaves out:
+
+- **page 0**, so `phys_view(0)` still faults like NULL;
+- **free RAM**, so a stray pointer into the view can't silently corrupt memory the allocator hands out (free frames are reached one page at a time through the window, as since 0.6);
+- **the kernel image**, so there is no second, writable alias of kernel code or read-only data. The walk-check and the self-test prove it (`kernel image not in the physical view … expected unmapped`), and a QEMU check requires both lines.
+
+There is still no direct map of all physical memory.
+
+**The empty lower half (0.8):** the kernel's tables never get a PML4[0] entry. Once CR3 is loaded, nothing below `0x0000800000000000` is mapped, which the walk-check and the self-test prove twice each: a fact line `lower half empty: PML4[0] not present`, and point translations of `0x0`, `0x100000`, `0xB8000`, `0xFFFFF000` and the Multiboot info's physical address, all expected unmapped. The `pflow` diagnostic shows what a stray low access looks like: reading `0x100000`, the kernel's old identity address, ends on the crash screen as a page fault (not present, read, CR2 `0x100000`).
 
 **No-execute (NX), 0.7:** the CPU's NX support is read from CPUID `0x80000001` (EDX bit 20). If present, `paging_init` sets EFER.NXE (and reads it back; LMA must still be set), and every mapping except kernel code gets the NX bit. Callers take the bit from `paging_nx_flag()`, so on a CPU without NX the kernel runs the same way with no NX bits (the walk-check then expects none). Executing data ends on the crash screen with a page fault decoded as an **NX violation**.
 
@@ -358,16 +388,19 @@ There is no direct map of all physical memory: the kernel reaches other frames o
 
 - the current RIP and RSP; the interrupt entry stubs, `interrupt_dispatch`, `panic_exception` and `irq_dispatch` (all must stay executable);
 - the kernel stack and the IST1 stack; **both guard pages must be unmapped**, and each must lie directly below its stack;
-- the kernel's code, read-only data and writable parts; VGA; the low 1 MiB;
+- the kernel's code, read-only data and writable parts, at their higher-half addresses (`expected kernel ro exec` and so on); VGA and the low 1 MiB in the physical view (`phys-view rw nx`);
 - the GDT, IDT and TSS (found with `sgdt`, `sidt` and `str`), and that each lies inside the kernel's writable data;
-- `.bss` (with the allocator bitmaps) and every reservation;
+- `.bss` (with the allocator bitmaps), and every reservation in the physical view;
 - page 0, the table frames themselves, the heap area, the self-test page and the window must be unmapped; the window's page table must exist;
+- 0.8: PML4[511] maps the kernel image and PML4[256] the physical view; the lower half is empty (PML4[0] not present, and the five low addresses above unmapped); the kernel image, page 0 and a free-RAM frame (the PML4's own frame and the page-table frames) are not in the physical view;
 - the recursive entry must point to the PML4 (read/write, no-execute);
 - the table and page counts are recomputed independently.
 
+On `MadireOS-Test` and in QEMU this is 68 items (71 with one boot module).
+
 Any mismatch frees the frames and leaves the temporary tables in place (`Paging & kernel heap: FAILED (paging)`, boot continues). Otherwise CR3 is loaded, and from then on the tables are reached only through the recursive mapping.
 
-**Paging self-test** (a failure is fatal): CR0.PG and WP set, CR3 is the PML4, CR4.PAE and EFER.LMA set, the recursive entry reads back correctly, the kernel, stack, VGA and boot data still translate, page 0 and both guard pages don't. Then a test page is mapped to frame A, written and read back, unmapped; remapped A → B → A → B, each frame keeping its own pattern (a missing TLB flush would put B's data into A); the window is mapped to A, read and written, unmapped and must no longer translate; the free page count must return exactly to its start value.
+**Paging self-test** (a failure is fatal): CR0.PG and WP set, CR3 is the PML4, CR4.PAE and EFER.LMA set, the recursive entry reads back correctly, the kernel, stack, VGA and boot data still translate, page 0 and both guard pages don't; since 0.8 also, on the live tables, the lower half is empty, the low addresses are unmapped, and neither the kernel image nor page 0 is in the physical view (26 checks with a GRUB boot, 27 with QEMU's `-kernel`). Then a test page is mapped to frame A, written and read back, unmapped; remapped A → B → A → B, each frame keeping its own pattern (a missing TLB flush would put B's data into A); the window is mapped to A, read and written, unmapped and must no longer translate; the free page count must return exactly to its start value.
 
 **TLB flushes:** `invlpg` on every unmap (one flush point, in `vmm_core`, counted by the unit tests). A new mapping needs no flush: the CPU never caches "not mapped".
 
@@ -387,19 +420,22 @@ Any mismatch frees the frames and leaves the temporary tables in place (`Paging 
 |---|---|---|
 | `pfnull` | Page-fault test: read from NULL | address and CR2 `0x0000000000000000`, `not present, read, kernel mode` |
 | `pfunmapped` | Page-fault test: read from unmapped address | address and CR2 `0x0000000040000000`, `not present, read, kernel mode` |
-| `pfreadonly` | Page-fault test: write to read-only kernel code | address and CR2 `0x0000000000100000`, `protection violation, write, kernel mode` |
+| `pfreadonly` | Page-fault test: write to read-only kernel code | address and CR2 `0xffffffff80100000` (0.8: kernel code is high; `0x0000000000100000` up to 0.7), `protection violation, write, kernel mode` |
 | `pfnx` (0.7) | Page-fault test: execute from no-execute data (NX) | first calls kernel code (must run), then calls a data page holding a `ret`: error code `0x11`, `protection violation, read, kernel mode`, `Details: instruction fetch (NX violation)`, address = the page. On a CPU without NX the call runs, and the test reports **NOT APPLICABLE** (never a pass) |
+| `pflow` (0.8) | Page-fault test: read the kernel's old low address | reads `0x100000`, where the kernel ran up to 0.7: error code `0x0`, `not present, read, kernel mode`, address and CR2 `0x0000000000100000`, halted. Proves the low identity mapping is gone |
 | `stackoverflow` (0.7) | Crash test: kernel stack overflow | recursion with a 512-byte frame until the kernel stack reaches its guard page: `CPU exception 8: Double Fault (#DF)`, `Double fault: kernel stack overflow (RSP is in the stack guard page)`, no reset. Without paging there is no guard page, and the test reports NOT APPLICABLE |
 | `heapdouble` | (QEMU only) | `Heap: double free of 0xfffffe80000…` |
 | `heapinvalid` | (QEMU only) | `Heap: invalid free of 0x… (pointer not from the heap).` (a stack address) |
 | `heapcorrupt` | (QEMU only) | `Heap: corrupted block at 0xfffffe80000… (freeing 0xfffffe80000…).` after overwriting a header |
 | `heapexhaust` | (QEMU only) | allocate until `NULL` (the 16 MiB cap, or physical memory), check, free everything; the pages used must be exactly the heap's growth plus its page tables |
 
-**Known limits:** the kernel is still identity-mapped at 1 MiB (the higher-half move is 0.8); no direct map; the guard pages prove normal use never reaches them, but how close the stack gets isn't measured (no high-water mark); the heap never shrinks and isn't interrupt-safe; `kfree` validates the whole heap, which costs O(number of blocks) per free.
+**Known limits:** no direct map (the physical view covers only the low 1 MiB and the boot data); 4 KiB pages only, also for the kernel image; one address space, kernel mode only; until `paging_init` loads the kernel's tables the boot tables still map 0–4 GiB at 0, and if the walk-check fails the kernel stays on them; the heap never shrinks and isn't interrupt-safe; `kfree` validates the whole heap, which costs O(number of blocks) per free.
 
-## Boot modules [built: 0.3 reserved, 0.7 checked]
+## Boot modules [built: 0.3 reserved, 0.7 checked, 0.8 on screen]
 
-GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are reserved since 0.3. Since 0.7, after paging and the heap are set up, `check_boot_modules()` looks at each one: a **test module** (`kernel/bootmod.h`: `MADIRETM`, payload length, FNV-1a of the payload, then the payload) must still be intact, which proves the reservations kept it safe through memory set-up, the self-tests and the switch of page tables. The result goes to the serial log, e.g. `Boot module 1: 0x0016b000-0x0016e6c0 (14016 bytes): test pattern intact (FNV-1a 0xe3a1a940, expected 0xe3a1a940)`; a changed byte is reported as `CORRUPTED`. `kernel/bootmod.c` is pure and unit-tested. Showing the result on screen, for machines without a serial port, is a candidate for 0.8.
+GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are reserved since 0.3. Since 0.7, after paging and the heap are set up, `check_boot_modules()` looks at each one: a **test module** (`kernel/bootmod.h`: `MADIRETM`, payload length, FNV-1a of the payload, then the payload) must still be intact, which proves the reservations kept it safe through memory set-up, the self-tests and the switch of page tables. The result goes to the serial log, e.g. `Boot module 1: 0x0016f000-0x001726c0 (14016 bytes): test pattern intact (FNV-1a 0x2feffe68, expected 0x2feffe68)`; a changed byte is reported as `CORRUPTED`. `kernel/bootmod.c` is pure and unit-tested. The module table and the modules are read through the physical view (0.8).
+
+**On screen (0.8):** for machines without a serial port, the result also goes to the boot screen's message line (row 23), e.g. `Boot module 1: test pattern intact (14016 bytes)` or `… test pattern CORRUPTED (14016 bytes)`. Only when a module was loaded: a normal boot's screen is unchanged. With several modules, each result replaces the previous one on that line, so only the last stays visible; the serial log has all of them.
 
 ## Timer [built: 0.4]
 
@@ -458,7 +494,7 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 | `kernel/arch/x86/cpuid.c` | no | Checks CPUID exists by toggling EFLAGS bit 21, then runs only the leaves the CPU lists; reads CR0 |
 | `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial; builds the shell context; runs the start-up self-test |
 
-- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.7`, a hint) and the `madire> ` prompt.
+- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.8`, a hint) and the `madire> ` prompt.
   - Colours use only VGA slots the logo doesn't reprogram: grey text, white input, cyan prompt, red errors.
   - Output scrolls up at the bottom. There's no scrollback.
   - `clear` empties the console's own grid and redraws it; it doesn't use `vga_clear()`.
@@ -469,9 +505,9 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
   |---|---|
   | `help` | the command list |
   | `clear` | clears the screen |
-  | `version` | `Madire OS v0.7 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
+  | `version` | `Madire OS v0.8 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
   | `uptime` | `Uptime: HH:MM:SS (N ticks at 100 Hz)`. Uses the 32-bit seconds counter with 32-bit division only. The tick count is shown only while it fits in 32 bits, and is never divided. |
-  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. Since 0.7 the paging line reads `enabled (4-level, 4 KiB, identity-mapped, NX on)` (or `NX off`), followed by an `NX:` row (`supported, enabled`, `supported, not enabled` or `not supported by this CPU`). Every `mem` line fits in 79 columns (checked by a QEMU test). |
+  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. Since 0.7 the paging line is followed by an `NX:` row (`supported, enabled`, `supported, not enabled` or `not supported by this CPU`); since 0.8 it reads `enabled (4-level, 4 KiB, higher-half, NX on)` (or `NX off`; `identity-mapped` in 0.7), and a last row gives the stack's high-water mark, `Kernel stack: 1480 bytes at peak, of 16384` (only when the context has the stack fields; without them the output is unchanged). Every `mem` line fits in 79 columns (checked by a QEMU test and `test_shell_mem08`). |
   | `cpu` | CPUID information, plus the mode line: `64-bit long mode, paging on, 1 CPU in use` when EFER.LMA is set (0.7); otherwise the CR0-based wording. `cpu` and `version` use the same long-mode test. |
   | `echo <text>` | the words joined by single spaces |
 
@@ -508,7 +544,7 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 
 All of them share one formatter. `panicf` builds on it. Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
 
-## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6; unchanged in 0.7]
+## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6; unchanged in 0.7 and 0.8]
 
 The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 
@@ -517,7 +553,7 @@ The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 | 0–11 | logo (unchanged since 0.2) |
 | 12 | title and version on one row (0.6; still two lines on serial) |
 | 13–22 | two columns. Left (columns 2–43): 10 start-up checks (GDT, IDT, interrupt controller, exception handling, memory, display, paging & kernel heap, timer, keyboard, console & shell). Right (from column 44): 6 memory figures, then **Uptime** and **Last key**, which the idle loop keeps up to date. |
-| 23 | message line (Diagnostics results) |
+| 23 | message line (Diagnostics results; since 0.8 also the boot-module result when a module was loaded) |
 | 24 | "System ready." plus what happens next, e.g. "Press any key to open the console." |
 
 The screen and the serial log are written separately. The screen shows only the status words, and text is clipped at the row end, never wrapped. The serial log gets one line per item, including the detail notes (`remapped, IRQs masked`, `int3 self-test`, the self-test details for memory, timer, keyboard and console), which is what the tests match against. The keyboard diagnostic reuses the panel rows as a 10-line event list, with `>` marking the newest line.
@@ -543,7 +579,7 @@ This will be the only layer that touches port I/O, MMIO and CPU-specific instruc
 
 ## Security [planned]
 
-Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). Designing these needs process isolation (user mode) first. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7).
+Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). Designing these needs process isolation (user mode) first. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7), an empty lower half and no writable alias of kernel code in the physical view (0.8).
 
 ## Filesystem [planned]
 

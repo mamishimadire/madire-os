@@ -81,7 +81,32 @@ static void test_layout_consistency(void)
     CHECK_EQ(vm_index(VM_HEAP_BASE + VM_HEAP_MAX + VM_PAGE_SIZE, 4), 509);
     CHECK(VM_HEAP_INITIAL % VM_PAGE_SIZE == 0 && VM_HEAP_GROW_MIN % VM_PAGE_SIZE == 0);
     CHECK(VM_LOW_MAP_START == VM_NULL_GUARD_END);
-    CHECK_EQ(VM_KERNEL_HIGH_INDEX, vm_index(HIGHER_HALF, 4));   /* free for 0.8 */
+    CHECK_EQ(VM_KERNEL_HIGH_INDEX, vm_index(HIGHER_HALF, 4));
+}
+
+/* 0.8: the kernel slot and the physical view, and their helpers. */
+static void test_higher_half_helpers(void)
+{
+    CHECK_EQ(VM_KERNEL_VIRT_OFFSET, HIGHER_HALF);
+    CHECK_EQ(vm_index(VM_KERNEL_VIRT_OFFSET, 4), VM_KERNEL_HIGH_INDEX);
+    CHECK_EQ(vm_index(VM_KERNEL_VIRT_OFFSET + 0x100000, 3), 510);   /* kernel: PDPT slot 510 */
+    CHECK_EQ(kernel_phys(VM_KERNEL_VIRT_OFFSET + 0x100000), 0x100000);
+    CHECK_EQ(kernel_phys(0xFFFFFFFF80163000ull), 0x163000);
+    /* -mcmodel=kernel needs the kernel in the top 2 GiB: anything loaded
+     * below 1 GiB physical lands there, canonical. */
+    CHECK(vm_canonical(VM_KERNEL_VIRT_OFFSET + 0x3FFFFFFFull));
+
+    CHECK_EQ(vm_index(VM_PHYS_VIEW_BASE, 4), VM_PHYS_VIEW_INDEX);
+    CHECK_EQ(VM_PHYS_VIEW_INDEX, 256);
+    CHECK(vm_canonical(VM_PHYS_VIEW_BASE) && vm_aligned(VM_PHYS_VIEW_BASE));
+    CHECK_EQ((uint64_t)(uintptr_t)phys_view(0), VM_PHYS_VIEW_BASE);
+    CHECK_EQ((uint64_t)(uintptr_t)phys_view(0xB8000), 0xFFFF8000000B8000ull);
+    /* All of 0-4 GiB stays inside slot 256. */
+    CHECK_EQ(vm_index((uint64_t)(uintptr_t)phys_view(0xFFFFF000ull), 4), 256);
+    /* Slot 256 is apart from every other area. */
+    CHECK(VM_PHYS_VIEW_INDEX != vm_index(VM_TEST_PAGE, 4) &&
+          VM_PHYS_VIEW_INDEX != vm_index(VM_HEAP_BASE, 4) &&
+          VM_PHYS_VIEW_INDEX != VM_RECURSIVE_INDEX && VM_PHYS_VIEW_INDEX != VM_KERNEL_HIGH_INDEX);
 }
 
 static void test_page_zero_is_the_null_guard(void)
@@ -100,6 +125,7 @@ int main(void)
     RUN(test_entry_encode_decode);
     RUN(test_alignment_helpers);
     RUN(test_layout_consistency);
+    RUN(test_higher_half_helpers);
     RUN(test_page_zero_is_the_null_guard);
     return unit_report("pte");
 }

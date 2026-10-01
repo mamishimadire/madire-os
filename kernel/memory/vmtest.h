@@ -16,6 +16,9 @@ void vmtest_pf_null(void) __attribute__((noreturn));
 void vmtest_pf_unmapped(void) __attribute__((noreturn));
 /* test=pfreadonly: write to the first kernel code page (read-only, CR0.WP). */
 void vmtest_pf_readonly(void) __attribute__((noreturn));
+/* test=pflow (0.8): read the kernel's own physical address 0x100000, which
+ * 0.7 identity-mapped. The lower half is empty now: #PF, not present. */
+void vmtest_pf_low(void) __attribute__((noreturn));
 
 /* test=pfnx: run kernel code (must work), then call a data page holding a
  * `ret`. With NX in use that must end on the crash screen: exception 14,

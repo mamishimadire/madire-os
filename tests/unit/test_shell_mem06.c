@@ -86,7 +86,7 @@ static void test_exact_extra_lines(void)
     run_mem();
 
     strcpy(expected, base);
-    row(expected, sizeof(expected), "Paging:", "enabled (4-level, 4 KiB, identity-mapped, NX off)");
+    row(expected, sizeof(expected), "Paging:", "enabled (4-level, 4 KiB, higher-half, NX off)");
     row(expected, sizeof(expected), "Mapped pages:", "   343");
     row(expected, sizeof(expected), "Page tables:", "     3");
     row(expected, sizeof(expected), "NX:", "not supported by this CPU");
@@ -103,7 +103,7 @@ static void test_exact_extra_lines(void)
     paging.nx_supported = paging.nx_enabled = paging.nx = true;
     run_mem();
     char want[160] = "\n";
-    row(want, sizeof(want), "Paging:", "enabled (4-level, 4 KiB, identity-mapped, NX on)");
+    row(want, sizeof(want), "Paging:", "enabled (4-level, 4 KiB, higher-half, NX on)");
     CHECK(strstr(out, want) != NULL);
     strcpy(want, "\n");
     row(want, sizeof(want), "NX:", "supported, enabled");
@@ -114,7 +114,7 @@ static void test_exact_extra_lines(void)
     row(want, sizeof(want), "NX:", "supported, not enabled");
     CHECK(strstr(out, want) != NULL);
     strcpy(want, "\n");
-    row(want, sizeof(want), "Paging:", "enabled (4-level, 4 KiB, identity-mapped, NX off)");
+    row(want, sizeof(want), "Paging:", "enabled (4-level, 4 KiB, higher-half, NX off)");
     CHECK(strstr(out, want) != NULL);
 }
 

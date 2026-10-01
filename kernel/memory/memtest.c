@@ -10,11 +10,13 @@
 #include "kernel/memory/memtest.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
 
 extern char __kernel_start[], __kernel_end[];
 
-#define SYM(s) ((uint32_t)(uintptr_t)(s))
+/* Kernel symbols are higher-half addresses (0.8); the checks need physical. */
+#define SYM(s) ((uint32_t)kernel_phys((uint64_t)(uintptr_t)(s)))
 #define WORDS_PER_PAGE (PAGE_SIZE / sizeof(uint32_t))
 #define BOOT_TEST_PAGES 3
 #define MAX_HELD_PAGES  256     /* pages in use before memtest_exhaust starts */

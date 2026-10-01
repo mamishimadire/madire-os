@@ -6,15 +6,27 @@
 ;   interrupts disabled, paging off, no usable stack.
 ;
 ; This stub (still 32-bit code) checks that the CPU can run a 64-bit kernel,
-; builds temporary page tables, switches to 64-bit long mode and calls
-; kernel_main(magic, info). If the CPU can't run it, a message is shown and
-; the CPU halts: no mode switch is attempted, so there is no triple fault.
+; builds temporary page tables, switches to 64-bit long mode, jumps to the
+; kernel's higher-half address and calls kernel_main(magic, info). If the
+; CPU can't run it, a message is shown and the CPU halts: no mode switch is
+; attempted, so there is no triple fault.
 ;
-; Temporary boot tables: PML4 -> PDPT -> 4 page directories of 2 MiB pages,
-; identity-mapping 0-4 GiB read/write, INCLUDING page 0. They stay in use
-; until paging_init() loads the kernel's own 4-level tables, which leave
-; page 0 unmapped. The boot memory set-up and self-test (and the Multiboot
-; data, which can lie anywhere below 4 GiB) are reached through them.
+; The stub runs at its load address (linker/linker.ld: .boot is linked at
+; 1 MiB); the rest of the kernel is linked at 0xFFFFFFFF80000000 + physical
+; (0.8). 32-bit code therefore uses PHYSICAL addresses for everything it
+; touches outside .boot: `symbol - KERNEL_VIRT_OFFSET`.
+;
+; Temporary boot tables, 2 MiB pages, read/write:
+;   PML4[0]    -> PDPT -> 4 page directories: identity 0-4 GiB, INCLUDING
+;                 page 0 (the stub, memory set-up and the boot self-test)
+;   PML4[256]  -> the same PDPT: the physical view, 0xFFFF800000000000 +
+;                 physical, 0-4 GiB (VGA and boot data from the first C line)
+;   PML4[511]  -> PDPT_high, entry 510 -> the first page directory: the
+;                 kernel, 0xFFFFFFFF80000000 + physical, 0-1 GiB
+; They stay in use until paging_init() loads the kernel's own 4-level
+; tables, which map only what is needed (and leave page 0 unmapped).
+
+KERNEL_VIRT_OFFSET equ 0xFFFFFFFF80000000   ; = VM_KERNEL_VIRT_OFFSET
 
 MB_ALIGN    equ 1 << 0              ; align loaded modules on page boundaries
 MB_MEMINFO  equ 1 << 1              ; ask the loader for a memory map
@@ -30,19 +42,19 @@ CR0_PG      equ 1 << 31
 CR0_WP      equ 1 << 16
 CR4_PAE     equ 1 << 5
 
-extern __kernel_start, __data_end, __kernel_end, __bss_start, kernel_main
+extern __kernel_phys_start, __data_end_phys, __kernel_end_phys, __bss_start_phys, kernel_main
 
-; ---- Multiboot 1 header, with the a.out kludge address fields ----
+; ---- Multiboot 1 header, with the a.out kludge address fields (physical) ----
 section .multiboot
 align 4
 mb_header:
     dd MB_MAGIC
     dd MB_FLAGS
     dd MB_CHECKSUM
-    dd mb_header                    ; header_addr
-    dd __kernel_start               ; load_addr: the image starts here
-    dd __data_end                   ; load_end_addr: the file ends here
-    dd __kernel_end                 ; bss_end_addr: ALL of .bss (tables, stacks)
+    dd mb_header                    ; header_addr (.boot: virtual = physical)
+    dd __kernel_phys_start          ; load_addr: the image starts here
+    dd __data_end_phys              ; load_end_addr: the file ends here
+    dd __kernel_end_phys            ; bss_end_addr: ALL of .bss (tables, stacks)
     dd _start                       ; entry_addr
 
 ; ---- 32-bit stub ----
@@ -51,14 +63,14 @@ bits 32
 global _start
 _start:
     cli
-    mov esp, stack_top              ; nothing is pushed before .bss is zeroed
-    mov [boot_magic], eax
-    mov [boot_info], ebx
+    mov esp, stack_top - KERNEL_VIRT_OFFSET     ; nothing is pushed before .bss is zeroed
+    mov [boot_magic - KERNEL_VIRT_OFFSET], eax
+    mov [boot_info - KERNEL_VIRT_OFFSET], ebx
 
     ; Zero .bss (tables and stacks included). The loader already does, but
     ; the stub must not depend on it.
-    mov edi, __bss_start
-    mov ecx, __kernel_end
+    mov edi, __bss_start_phys
+    mov ecx, __kernel_end_phys
     sub ecx, edi
     shr ecx, 2
     xor eax, eax
@@ -100,16 +112,23 @@ _start:
     call serial_puts
 
     ; Boot tables (all zeroed above).
-    mov eax, boot_pdpt
+    mov eax, boot_pdpt - KERNEL_VIRT_OFFSET
     or eax, 3                       ; present, writable
-    mov [boot_pml4], eax
+    mov [boot_pml4 - KERNEL_VIRT_OFFSET], eax               ; PML4[0]: identity
+    mov [boot_pml4 - KERNEL_VIRT_OFFSET + 256 * 8], eax     ; PML4[256]: physical view
+    mov eax, boot_pdpt_high - KERNEL_VIRT_OFFSET
+    or eax, 3
+    mov [boot_pml4 - KERNEL_VIRT_OFFSET + 511 * 8], eax     ; PML4[511]: kernel
+    mov eax, boot_pds - KERNEL_VIRT_OFFSET
+    or eax, 3
+    mov [boot_pdpt_high - KERNEL_VIRT_OFFSET + 510 * 8], eax ; 0-1 GiB at -2 GiB
     xor ecx, ecx
 .pdpt:
     mov eax, ecx
     shl eax, 12
-    add eax, boot_pds
+    add eax, boot_pds - KERNEL_VIRT_OFFSET
     or eax, 3
-    mov [boot_pdpt + ecx * 8], eax
+    mov [boot_pdpt - KERNEL_VIRT_OFFSET + ecx * 8], eax
     inc ecx
     cmp ecx, 4
     jb .pdpt
@@ -118,15 +137,15 @@ _start:
     mov eax, ecx
     shl eax, 21
     or eax, 0x83                    ; present, writable, 2 MiB page
-    mov [boot_pds + ecx * 8], eax
+    mov [boot_pds - KERNEL_VIRT_OFFSET + ecx * 8], eax
     mov eax, ecx
     shr eax, 11                     ; bits 32+ of the address (0 below 4 GiB)
-    mov [boot_pds + ecx * 8 + 4], eax
+    mov [boot_pds - KERNEL_VIRT_OFFSET + ecx * 8 + 4], eax
     inc ecx
     cmp ecx, 2048
     jb .pd
 
-    mov eax, boot_pml4
+    mov eax, boot_pml4 - KERNEL_VIRT_OFFSET
     mov cr3, eax
     mov eax, cr4
     or eax, CR4_PAE
@@ -140,7 +159,7 @@ _start:
     mov cr0, eax
 
     lgdt [boot_gdt_ptr]
-    jmp 0x08:long_entry             ; into a 64-bit code segment
+    jmp 0x08:long_low               ; into a 64-bit code segment, still low
 
 .no_cpuid:
     mov esi, msg_no_cpuid
@@ -212,6 +231,12 @@ serial_puts:
 .done:
     ret
 
+; 64-bit, still at the load address: jump to the kernel's high address.
+bits 64
+long_low:
+    mov rax, long_entry             ; 64-bit absolute (higher half)
+    jmp rax
+
 ; Boot GDT: null, 64-bit code (0x08, L=1), data (0x10). gdt_init() replaces it.
 align 8
 boot_gdt:
@@ -228,7 +253,7 @@ msg_no_cpuid:     db "Madire OS needs a 64-bit (x86-64) CPU: CPUID not supported
 msg_no_long_mode: db "Madire OS needs a 64-bit (x86-64) CPU: long mode not supported. Halted.", 10, 0
 msg_no_pae:       db "Madire OS needs a 64-bit (x86-64) CPU: PAE not supported. Halted.", 10, 0
 
-; ---- 64-bit entry ----
+; ---- 64-bit entry, in the higher half ----
 section .text
 bits 64
 long_entry:
@@ -238,15 +263,32 @@ long_entry:
     mov ss, ax
     mov fs, ax
     mov gs, ax
-    mov rsp, stack_top              ; 16-byte aligned at the call below
+    lea rsp, [rel stack_top]        ; 16-byte aligned at the call below
     push 0
     popfq                           ; clean RFLAGS (IF off, DF clear)
 
     lea rsi, [rel msg_boot64]
-.next:
-    lodsb
-    test al, al
-    jz .done
+    call puts64
+    lea rsi, [rel msg_high]
+    call puts64
+    lea rax, [rel long_entry]       ; this code's own (high) address
+    call puthex64
+    mov al, 10
+    call putc64
+
+    mov edi, [rel boot_magic]       ; arg 1: Multiboot magic
+    mov esi, [rel boot_info]        ; arg 2: Multiboot info address (physical)
+    call kernel_main
+
+    ; kernel_main should never return; if it does, halt forever.
+    cli
+.hang:
+    hlt
+    jmp .hang
+
+; al = character, to COM1.
+putc64:
+    push rdx
     mov ah, al
 .wait:
     mov dx, COM1 + 5
@@ -256,20 +298,48 @@ long_entry:
     mov al, ah
     mov dx, COM1
     out dx, al
-    jmp .next
-.done:
-    mov edi, [rel boot_magic]       ; arg 1: Multiboot magic
-    mov esi, [rel boot_info]        ; arg 2: Multiboot info address
-    call kernel_main
+    pop rdx
+    ret
 
-    ; kernel_main should never return; if it does, halt forever.
-    cli
-.hang:
-    hlt
-    jmp .hang
+; rsi = NUL-terminated string.
+puts64:
+    lodsb
+    test al, al
+    jz .done
+    call putc64
+    jmp puts64
+.done:
+    ret
+
+; rax = value: "0x" and 16 hex digits.
+puthex64:
+    push rbx
+    push rcx
+    mov rbx, rax
+    mov al, '0'
+    call putc64
+    mov al, 'x'
+    call putc64
+    mov ecx, 16
+.digit:
+    rol rbx, 4
+    mov eax, ebx
+    and eax, 15
+    cmp al, 10
+    jb .num
+    add al, 'a' - 10 - '0'
+.num:
+    add al, '0'
+    call putc64
+    dec ecx
+    jnz .digit
+    pop rcx
+    pop rbx
+    ret
 
 section .rodata
 msg_boot64: db "boot64: entered 64-bit long mode", 10, 0
+msg_high:   db "boot64: running at the higher half, RIP=", 0
 
 section .data
 boot_magic:   dd 0
@@ -277,9 +347,10 @@ boot_info:    dd 0
 
 ; ---- temporary boot tables (inside .bss, below __kernel_end) ----
 section .boot_tables nobits alloc write align=4096
-boot_pml4: resb 4096
-boot_pdpt: resb 4096
-boot_pds:  resb 4096 * 4
+boot_pml4:      resb 4096
+boot_pdpt:      resb 4096
+boot_pdpt_high: resb 4096
+boot_pds:       resb 4096 * 4
 
 ; ---- stacks, each with an unmapped guard page below it once the kernel's
 ; own page tables are in use ----

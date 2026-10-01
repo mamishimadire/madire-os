@@ -108,6 +108,8 @@ static void build_context(struct shell_context *c)
     c->efer = cpu_read_efer();          /* LMA: the CPU really is in long mode */
     c->paging = paging_stats();
     c->heap = kheap_stats();            /* runs a full heap_check first */
+    c->stack_size = kernel_stack_size();
+    c->stack_peak = kernel_stack_peak();
 }
 
 static void submit(void)

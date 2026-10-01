@@ -3,7 +3,9 @@
  *
  * Entry layout: { u32 size; u64 base; u64 length; u32 type }. `size` does
  * not count itself, so the next entry starts at entry + size + 4. The buffer
- * address is a physical address; with paging off it is also a pointer.
+ * address the bootloader gives is physical; it is validated as such, and
+ * the bytes are read through a separate `view` pointer (0.8), which is the
+ * same address only while the kernel runs identity-mapped.
  */
 #include "kernel/memory/mmap.h"
 #include "kernel/multiboot.h"
@@ -15,21 +17,22 @@ static const struct multiboot_mmap_entry *entry_at(uint64_t pos)
     return (const struct multiboot_mmap_entry *)(uintptr_t)pos;
 }
 
-enum mmap_status mmap_validate(uint32_t addr, uint32_t length, uint32_t *bad_offset)
+enum mmap_status mmap_validate(uint32_t addr, uint32_t length, const void *view,
+                               uint32_t *bad_offset)
 {
     if (bad_offset)
         *bad_offset = 0;
     if (length == 0)
         return MMAP_ERR_EMPTY;
-    if (addr == 0 || (uint64_t)addr + length > ADDR_LIMIT)
+    if (addr == 0 || (uint64_t)addr + length > ADDR_LIMIT || !view)
         return MMAP_ERR_BAD_BUFFER;
 
-    uint64_t pos = addr, end = (uint64_t)addr + length;
+    uint64_t start = (uintptr_t)view, pos = start, end = start + length;
     unsigned entries = 0;
 
     while (pos < end) {
         if (bad_offset)
-            *bad_offset = (uint32_t)(pos - addr);
+            *bad_offset = (uint32_t)(pos - start);
         if (end - pos < sizeof(uint32_t))
             return MMAP_ERR_TRUNCATED;
 
@@ -54,10 +57,10 @@ enum mmap_status mmap_validate(uint32_t addr, uint32_t length, uint32_t *bad_off
     return entries ? MMAP_OK : MMAP_ERR_EMPTY;
 }
 
-void mmap_iter_init(struct mmap_iter *it, uint32_t addr, uint32_t length)
+void mmap_iter_init(struct mmap_iter *it, const void *view, uint32_t length)
 {
-    it->pos = addr;
-    it->end = (uint64_t)addr + length;
+    it->pos = (uintptr_t)view;
+    it->end = it->pos + length;
 }
 
 bool mmap_next(struct mmap_iter *it, struct mem_region *out)

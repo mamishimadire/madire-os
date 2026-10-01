@@ -37,17 +37,22 @@ enum mmap_status {
 };
 
 struct mmap_iter {
-    uint64_t pos;
+    uint64_t pos;           /* addresses in the view, not physical */
     uint64_t end;
 };
 
-/* Checks the whole buffer before any entry is used. On error, *bad_offset
- * (if not NULL) is the byte offset of the offending entry. */
-enum mmap_status mmap_validate(uint32_t addr, uint32_t length, uint32_t *bad_offset);
+/* Checks the whole buffer before any entry is used. `addr` is the buffer's
+ * physical address, as the bootloader gave it: it is what is validated
+ * (not null, not wrapping past 4 GiB). `view` is where the kernel can read
+ * those bytes (0.8: through the physical view; the host tests: the buffer
+ * itself). On error, *bad_offset (if not NULL) is the byte offset of the
+ * offending entry. */
+enum mmap_status mmap_validate(uint32_t addr, uint32_t length, const void *view,
+                               uint32_t *bad_offset);
 
-/* Iterates a buffer that passed mmap_validate(). Zero-length entries are
- * skipped. Returns false after the last entry. */
-void mmap_iter_init(struct mmap_iter *it, uint32_t addr, uint32_t length);
+/* Iterates a buffer that passed mmap_validate(), read through `view`.
+ * Zero-length entries are skipped. Returns false after the last entry. */
+void mmap_iter_init(struct mmap_iter *it, const void *view, uint32_t length);
 bool mmap_next(struct mmap_iter *it, struct mem_region *out);
 
 enum mem_kind mem_kind_from_type(uint32_t type);
