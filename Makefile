@@ -55,7 +55,8 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
                             kernel/stackpeak.c kernel/proc/sched_core.c \
-                            kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c)
+                            kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c \
+                            kernel/console/scrollback.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit repro clean

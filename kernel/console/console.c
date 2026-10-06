@@ -7,6 +7,7 @@
 #include "kernel/console/console.h"
 #include "kernel/console/history.h"
 #include "kernel/console/lineedit.h"
+#include "kernel/console/scrollback.h"
 #include "kernel/console/textbuf.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
@@ -40,6 +41,7 @@ static struct cpu_info cpu;
 static struct history hist;             /* 0.9.1 */
 static bool confirming;                 /* 0.9.1: the next line answers "reboot" */
 static const char *prompt = PROMPT;
+static struct scrollback sb;            /* 0.9.2: 1000 lines, about 156 KiB */
 
 /* ---- Drawing (grid -> VGA) ---- */
 
@@ -63,10 +65,77 @@ static void place_cursor(void)
     vga_cursor_move(screen.row, screen.col < TB_COLS ? screen.col : TB_COLS - 1);
 }
 
+/* ---- Scrollback (0.9.2) ---- */
+
+/* Every character the console writes to its grid goes through here: a
+ * line about to scroll off the top is copied first and, if it did scroll
+ * off, kept in the scrollback (textbuf.c itself is unchanged). Only a
+ * character written on the bottom row can scroll, at most one line. */
+static void grid_putc(char c)
+{
+    static uint16_t top_row[TB_COLS];
+    if (screen.row == TB_ROWS - 1)
+        for (uint32_t i = 0; i < TB_COLS; i++)
+            top_row[i] = screen.cells[0][i];
+    uint32_t before = screen.scrolls;
+    textbuf_putc(&screen, c);
+    if (screen.scrolls != before)
+        sb_push(&sb, top_row);
+}
+
+/* While scrolled back: rows 0-23 from the scrollback and the live screen,
+ * row 24 the indicator (reverse colours), the hardware cursor hidden. */
+static void show_view(void)
+{
+    char top[SB_TEXT_MAX + 1], ind[TB_COLS + 1];
+    for (uint32_t r = 0; r < SB_VIEW_ROWS; r++) {
+        struct sb_source src = sb_view_row(&sb, r);
+        const uint16_t *cells = src.from_screen ? screen.cells[src.index]
+                                                : sb_line(&sb, src.index);
+        for (uint32_t c = 0; c < TB_COLS; c++)
+            vga_put_cell(r, c, (uint8_t)(cells[c] & 0xFF), (uint8_t)((cells[c] >> 8) & 0x0F),
+                         (uint8_t)(cells[c] >> 12));
+        if (r == 0)
+            sb_row_text(cells, top, SB_TEXT_MAX);
+    }
+    uint32_t n = sb_indicator(&sb, ind);
+    for (uint32_t c = 0; c < TB_COLS; c++)
+        vga_put_cell(TB_ROWS - 1, c, (uint8_t)(c < n ? ind[c] : ' '), SB_INDICATOR_ATTR & 0x0F,
+                     SB_INDICATOR_ATTR >> 4);
+    vga_cursor_show(false);
+    klogf("console: scrolled back: line %u of %u, top '%s'\n", sb_first_shown(&sb),
+          sb_total(&sb), top);
+}
+
+static void show_bottom(void)
+{
+    render_all();
+    vga_cursor_show(true);
+    place_cursor();
+    klogf("console: back at the bottom\n");
+}
+
+/* Any other key, and any new output, returns to the live screen. */
+static void leave_scrollback(void)
+{
+    if (sb_to_bottom(&sb))
+        show_bottom();
+}
+
+/* "clear" keeps the screen's used rows in the scrollback first. */
+static void keep_screen_rows(void)
+{
+    int32_t last = sb_last_used_row(screen.cells);
+    for (int32_t r = 0; r <= last; r++)
+        sb_push(&sb, screen.cells[r]);
+}
+
 static void write_screen(const char *text, uint8_t attr)
 {
+    leave_scrollback();
     textbuf_set_attr(&screen, attr);
-    textbuf_puts(&screen, text);
+    while (*text)
+        grid_putc(*text++);
 }
 
 /* ---- Input line ---- */
@@ -86,7 +155,7 @@ static void draw_input(void)
 static void show_prompt(void)
 {
     if (screen.col != 0)
-        textbuf_putc(&screen, '\n');
+        grid_putc('\n');
     prompt = confirming ? CONFIRM_PROMPT : PROMPT;
     write_screen(prompt, ATTR_PROMPT);
     prompt_row = screen.row;
@@ -188,7 +257,7 @@ static void submit(void)
 
     klogf("%s%s\n", prompt, input.buf);
     textbuf_set_cursor(&screen, prompt_row, (uint8_t)(PROMPT_LEN + input.len));
-    textbuf_putc(&screen, '\n');
+    grid_putc('\n');
 
     enum shell_result r = SHELL_OK;
     if (confirming) {
@@ -202,6 +271,7 @@ static void submit(void)
         confirming = r == SHELL_REBOOT;
     }
     if (r == SHELL_CLEAR) {
+        keep_screen_rows();                 /* 0.9.2: clear never loses lines */
         textbuf_clear(&screen);
         klogf("console: cleared\n");
     } else if (screen.scrolls != scrolls_before) {
@@ -235,6 +305,7 @@ void console_start(const struct memory_stats *mem)
     cpuinfo_decode(&raw, &cpu);
 
     textbuf_init(&screen, ATTR_TEXT);
+    sb_init(&sb);
     write_screen("M A D I R E   O S\n", ATTR_TITLE);
     write_screen(MADIRE_OS_NAME " v" MADIRE_OS_VERSION "\n\n", ATTR_PROMPT);
     write_screen("Type 'help' for a list of commands.\n\n", ATTR_TEXT);
@@ -258,6 +329,25 @@ void console_handle_key(const struct key_event *e)
 {
     if (!active)
         return;
+
+    /* 0.9.2: Shift+PgUp / Shift+PgDn page through the scrollback; while
+     * scrolled back, any other key press first returns to the live screen
+     * and is then handled as usual. Not scrolled back, plain PgUp/PgDn
+     * still do nothing (the line editor ignores them). */
+    enum sb_key k = sb_classify_key(e);
+    if (k == SB_KEY_PAGE_UP || k == SB_KEY_PAGE_DOWN) {
+        enum sb_move m = k == SB_KEY_PAGE_UP ? sb_page_up(&sb) : sb_page_down(&sb);
+        if (m == SB_EMPTY)
+            klogf("console: scrollback is empty\n");
+        else if (m == SB_MOVED && sb_scrolled(&sb))
+            show_view();
+        else if (m == SB_MOVED)
+            show_bottom();                  /* Shift+PgDn reached the live screen */
+        return;
+    }
+    if (k == SB_KEY_OTHER)
+        leave_scrollback();
+
     if ((e->keycode == KEY_UP || e->keycode == KEY_DOWN) && (e->flags & KEY_PRESSED)
         && !(e->flags & (KEY_CTRL | KEY_ALT)) && !confirming) {
         const char *text = e->keycode == KEY_UP ? history_up(&hist) : history_down(&hist);

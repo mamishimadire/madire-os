@@ -11,6 +11,7 @@ OUT=$(dirname "$KERNEL")
 LOGO_PIXELS=293      # from: python3 scripts/logo-preview.py
 MEMCHECK=$(dirname "$0")/memory_check.py
 QMPKEYS=$(dirname "$0")/qmp_keys.py
+QMPSCREEN=$(dirname "$0")/qmp_screen.py   # 0.9.2: reads the VGA text screen through QMP
 failures=0
 passes=0
 passes_new=0         # checks added in 0.4, tagged "[0.4]"
@@ -19,7 +20,8 @@ passes_06=0          # checks added in 0.6, tagged "[0.6]"
 passes_07=0          # checks added in 0.7, tagged "[0.7]"
 passes_08=0          # checks added in 0.8, tagged "[0.8]"
 passes_09=0          # checks added in 0.9, tagged "[0.9]"
-passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"; the rest are 0.3 regression
+passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"
+passes_092=0         # checks added in 0.9.2, tagged "[0.9.2]"; the rest are 0.3 regression
 
 pass() {
     echo "PASS: $1"
@@ -32,6 +34,7 @@ pass() {
     "[0.8]"*) passes_08=$((passes_08 + 1)) ;;
     "[0.9]"*) passes_09=$((passes_09 + 1)) ;;
     "[0.9.1]"*) passes_091=$((passes_091 + 1)) ;;
+    "[0.9.2]"*) passes_092=$((passes_092 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -149,9 +152,20 @@ echo "== Normal boot (ISO through GRUB)"
 LOG=$OUT/serial-boot.log
 # 0.4: also type one key after boot, to prove input works in normal mode.
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
+# 0.9.2: key events are logged only with the boot option "keylog" (off by
+# default). The checks below that read key lines use a test-only ISO: the
+# same kernel and grub.cfg, with "keylog" added to the default entry only.
+KLOG=$OUT/serial-boot-keylog.log
+KISO=$OUT/madire-os-keylog.iso
+rm -rf "$OUT/isokeylog" && mkdir -p "$OUT/isokeylog/boot/grub"
+cp "$KERNEL" "$OUT/isokeylog/boot/madire.kernel"
+sed '0,/^\( *multiboot \/boot\/madire\.kernel\)$/s//\1 keylog/' \
+    "$(dirname "$0")/../iso/boot/grub/grub.cfg" > "$OUT/isokeylog/boot/grub/grub.cfg"
+grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
+boot_keys "$KLOG" 15 "System ready." "x" 0.15 -cdrom "$KISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.9\.1"                   "version shown"
+expect "$LOG" "Madire OS v0\.9\.2"                   "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -179,10 +193,12 @@ expect "$LOG" "Keyboard self-test: PASS \(controller set up, echo via IRQ1, deco
 expect "$LOG" "Keyboard \(PS/2\): +OK"                "[0.4] keyboard status OK"
 expect "$LOG" "IRQ mask: 0xfffc \(expected 0xfffc\)"  "[0.4] only IRQ0 and IRQ1 unmasked"
 expect "$LOG" "^uptime: 5 s$"                         "[0.4] uptime advances (5 s logged)"
+LOG=$KLOG                                             # 0.9.2: the keylog test ISO
 expect "$LOG" "key: press sc=0x2d key=CHAR ascii='x' flags=0x01" \
                                                       "[0.4] key typed after boot reaches the kernel"
 expect "$LOG" "key: release sc=0xad key=CHAR ascii='x' flags=0x00" \
                                                       "[0.4] key release reaches the kernel"
+LOG=$OUT/serial-boot.log                              # 0.9.2: back to the real ISO
 reject "$LOG" "Unexpected IRQ|events dropped"         "[0.4] no unexpected IRQs, no dropped keys"
 
 # 0.5 additions to the normal boot
@@ -191,8 +207,10 @@ expect "$LOG" "Console self-test: PASS \(line editor ok, parser ok, shell ok, te
 expect "$LOG" "Console & shell: +OK"                  "[0.5] console status OK"
 expect "$LOG" "System ready\. Press any key to open the console\." \
                                                       "[0.5] console offered after System ready"
+LOG=$KLOG                                             # 0.9.2: the keylog test ISO
 expect_in_order "$LOG" "[0.5] the typed key opened the console" \
     "System ready\. Press any key" "key: press sc=0x2d" "console: started"
+LOG=$OUT/serial-boot.log                              # 0.9.2: back to the real ISO
 
 # Memory at different RAM sizes (QEMU's own Multiboot loader). The pinned
 # page counts come from the memory maps QEMU 8.2.2 reported when inspected
@@ -460,7 +478,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9\.1 \(64-bit x86-64, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -499,12 +517,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.9\.1 (64-bit x86-64, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c '^Madire OS v0\.9\.2 (64-bit x86-64, Multiboot 1)$' "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9\.1"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9\.2"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -1092,7 +1110,7 @@ preempt_panic preemptsleep thread_sleep
 echo "== [0.9] Preemption: three threads that never yield (test=preempt, keys typed meanwhile)"
 LOG=$OUT/serial-preempt.log
 boot_keys "$LOG" 14 "Preempt test: 3 threads spinning" "a,b,c,d,e,f,g,h" 0.15 \
-    -m 32M -kernel "$KERNEL" -append "test=preempt"
+    -m 32M -kernel "$KERNEL" -append "test=preempt keylog"
 grep -E "^Preempt test: (fair shares|preemptions)" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Preempt test: fair shares: .* \(each 25-42%\): OK$" \
                                                       "[0.9] preempt: each thread got 25-42% of the CPU"
@@ -1298,7 +1316,7 @@ S+="{up}{ret}"                                       # 19 recalls "history"
 S+="reboot{ret}no{ret}"                              # 20; "no" is an answer, not a command
 S+="history{ret}"                                    # 21: lists 6..21
 S+="echo end-of-091-test{ret}"
-boot_text "$LOG" 120 "System ready." "$S" 0.03 $'\nend-of-091-test\n' -kernel "$KERNEL"
+boot_text "$LOG" 120 "System ready." "$S" 0.03 $'\nend-of-091-test\n' -kernel "$KERNEL" -append "keylog"
 
 expect_in_order "$LOG" "[0.9.1] help lists the six new commands after ps, in order" \
     "^madire> help$" "^  ps       Show threads$" \
@@ -1319,7 +1337,7 @@ expect_lines "$LOG" "[0.9.1] reboot --help: help only, no restart question" \
     "^madire> reboot --help$" "^reboot: Restart the computer \(asks first\)$" "^Usage: reboot$" "^(console: |madire> )"
 expect_lines "$LOG" "[0.9.1] uname" "^madire> uname$" "^Madire OS$"
 expect_lines "$LOG" "[0.9.1] uname -a: name, host, version, architecture" \
-    "^madire> uname -a$" "^Madire OS madire 0\.9\.1 x86_64$"
+    "^madire> uname -a$" "^Madire OS madire 0\.9\.2 x86_64$"
 expect_lines "$LOG" "[0.9.1] uname -x: usage" "^madire> uname -x$" "^Usage: uname \[-a\]$"
 expect_lines "$LOG" "[0.9.1] hostname: the fixed name" "^madire> hostname$" "^madire$"
 expect_lines "$LOG" "[0.9.1] date: YYYY-MM-DD HH:MM:SS from the RTC, no time zone" \
@@ -1396,9 +1414,153 @@ else fail "[0.9.1] reboottriple: QEMU still running at the timeout ($((T1 - T0))
 count_lines "$LOG" "^boot32: start$" 1                "[0.9.1] reboottriple: booted once"
 reject "$LOG" "KERNEL PANIC|System ready"             "[0.9.1] reboottriple: no crash screen, never reached System ready"
 
+# ---- 0.9.2: key logging off by default, console scrollback ----
+
+echo "== [0.9.2] Key events are logged only with 'keylog' or a keyboard diagnostic"
+NOTLOGGED="^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$"
+LOG=$OUT/serial-boot.log
+expect "$LOG" "$NOTLOGGED"                            "[0.9.2] normal boot (real ISO): 'Key events: not logged'"
+reject "$LOG" "^key: "                                "[0.9.2] normal boot: a key was typed, but no key event is logged"
+expect_in_order "$LOG" "[0.9.2] normal boot: the typed key still opened the console" \
+    "System ready\. Press any key" "^console: started$"
+expect "$KLOG" "^Key events: logged \(boot option 'keylog'\)$" \
+                                                      "[0.9.2] keylog test ISO: 'Key events: logged (boot option 'keylog')'"
+KDIFF=$(diff "$(dirname "$0")/../iso/boot/grub/grub.cfg" "$OUT/isokeylog/boot/grub/grub.cfg" | grep -c '^[<>]')
+if [ "$KDIFF" -eq 2 ] && grep -q '^ *multiboot /boot/madire\.kernel keylog$' "$OUT/isokeylog/boot/grub/grub.cfg"; then
+    pass "[0.9.2] keylog test ISO: its grub.cfg differs from the real one only by 'keylog' on one line"
+else
+    fail "[0.9.2] keylog test ISO: grub.cfg differs in $KDIFF diff lines"
+fi
+LOG=$OUT/serial-nokeylog.log
+boot_keys "$LOG" 15 "System ready." "x,a" 0.15 -m 32M -kernel "$KERNEL" -append "nokeylog"
+expect "$LOG" "$NOTLOGGED"                            "[0.9.2] 'nokeylog' does not turn key logging on (whole-word match)"
+reject "$LOG" "^key: "                                "[0.9.2] 'nokeylog': keys typed, no key event logged"
+expect "$OUT/serial-keyboard.log" "^Key events: logged \(keyboard diagnostic\)$" \
+                                                      "[0.9.2] test=keyboard turns key logging on"
+expect "$OUT/serial-kbdflood.log" "^Key events: logged \(keyboard diagnostic\)$" \
+                                                      "[0.9.2] test=kbdflood turns key logging on"
+LOG=$OUT/serial-nokeys-dmesg.log
+boot_text "$LOG" 60 "System ready." "x{wait:1}echo hello{ret}dmesg 30{ret}echo end-of-keylog-test{ret}" 0.05 \
+    $'\nend-of-keylog-test\n' -kernel "$KERNEL"
+DM=$(awk '/^madire> dmesg 30$/ && !n { n = 1; next } n == 1 && /^madire> echo end-of-keylog-test$/ { n = 2 } n == 1' "$LOG")
+if grep -q '^madire> echo hello$' <<< "$DM" && ! grep -q '^key: ' <<< "$DM"; then
+    pass "[0.9.2] dmesg on a normal boot: the commands are there, no key event"
+else
+    fail "[0.9.2] dmesg on a normal boot: key events present or the log is missing"
+fi
+reject "$LOG" "^key: "                                "[0.9.2] normal boot with typed commands: no key event in the serial log"
+
+echo "== [0.9.2] Console scrollback: Shift+PgUp / Shift+PgDn, the indicator on the VGA screen"
+LOG=$OUT/serial-scroll.log
+SOCK=$OUT/qmp.sock
+rm -f "$LOG" "$SOCK" "$OUT"/screen-*.bin
+timeout 400 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
+    -qmp unix:"$SOCK",server=on,wait=off -kernel "$KERNEL" >/dev/null 2>&1 &
+QPID=$!
+sb_text() { python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "$1" --gap 0.05 >/dev/null 2>&1; }
+sb_keys() { python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." "$1" --gap 0.2 >/dev/null 2>&1; }
+sb_screen() {   # sb_screen <n> <qmp_screen.py options...>: dump the screen to screen-<n>.txt
+    local n=$1
+    shift
+    python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-$n.bin" --log "$LOG" "$@" > "$OUT/screen-$n.txt" 2>&1
+}
+sb_back() { grep -c '^console: scrolled back: ' "$LOG"; }
+sb_last() { grep '^console: scrolled back: ' "$LOG" | tail -1; }
+IND='^-- scrolled back: line [0-9]+ of [0-9]+ \(Shift\+PgUp/PgDn; any key returns\) --$'
+
+sb_text "x{wait:1}{shift+pgup}"
+sb_screen 0 --wait '^console: scrollback is empty$' 1 --not-row 24 'scrolled back'
+expect "$LOG" "^console: scrollback is empty$"        "[0.9.2] scrollback: Shift+PgUp with nothing kept says so and changes nothing"
+T=""
+for i in $(seq -w 1 40); do T+="echo line$i{ret}"; done
+sb_text "$T{shift+pgup}"
+if sb_screen 1 --wait '^console: scrolled back: ' 1 --row 24 "$IND" --attr 24 0x70; then
+    pass "[0.9.2] scrollback: the VGA screen shows the indicator on row 24, every cell attribute 0x70"
+else
+    fail "[0.9.2] scrollback: indicator not on row 24 in reverse colours (see $OUT/screen-1.txt)"
+fi
+L1=$(sb_last)
+X1=$(sed -E 's/.*line ([0-9]+) of.*/\1/' <<< "$L1"); Y1=$(sed -E 's/.* of ([0-9]+),.*/\1/' <<< "$L1")
+TOP1=$(sed -E "s/.*, top '(.*)'$/\1/" <<< "$L1")
+ROW0=$(sed -n 's/^row 00|\(.*\)|$/\1/p' "$OUT/screen-1.txt" | cut -c1-40)
+echo "      $L1"
+if [ -n "$TOP1" ] && [ "$ROW0" = "$TOP1" ]; then pass "[0.9.2] scrollback: row 0 on the screen is the logged top line ('$TOP1')"
+else fail "[0.9.2] scrollback: row 0 '$ROW0' differs from the logged top '$TOP1'"; fi
+if [ "${X1:-0}" -eq $(( ${Y1:-0} - 48 )) ]; then pass "[0.9.2] scrollback: first page = the 24 lines above the screen (X $X1 = Y $Y1 - 48)"
+else fail "[0.9.2] scrollback: X $X1, Y $Y1 (expected X = Y - 48)"; fi
+SCROLLED=$(awk '/^console: scrolled back: / { exit } /^console: scrolled [0-9]+ lines$/ { s += $3 } END { print s + 0 }' "$LOG")
+if [ "$(( ${Y1:-0} - 25 ))" -eq "$SCROLLED" ]; then pass "[0.9.2] scrollback: every line that scrolled off is kept (Y - 25 = $SCROLLED)"
+else fail "[0.9.2] scrollback: Y - 25 = $(( ${Y1:-0} - 25 )) but $SCROLLED lines scrolled off"; fi
+
+sb_keys "shift+pgup,shift,shift+pgdn"
+sb_screen 2 --wait '^console: scrolled back: ' 3 --row 24 "$IND"
+X2=$(grep '^console: scrolled back: ' "$LOG" | sed -n 2p | sed -E 's/.*line ([0-9]+) of.*/\1/')
+X3=$(grep '^console: scrolled back: ' "$LOG" | sed -n 3p | sed -E 's/.*line ([0-9]+) of.*/\1/')
+if [ "${X2:-0}" -eq $(( ${X1:-0} - 24 )) ]; then pass "[0.9.2] scrollback: a second Shift+PgUp moves 24 lines back (line $X2)"
+else fail "[0.9.2] scrollback: second Shift+PgUp went to line $X2 (from $X1)"; fi
+if [ "${X3:-0}" -eq "${X1:-1}" ] && ! grep -q '^console: back at the bottom$' "$LOG"; then
+    pass "[0.9.2] scrollback: Shift alone stays scrolled back; Shift+PgDn moves 24 lines forward (line $X3)"
+else
+    fail "[0.9.2] scrollback: after Shift and Shift+PgDn: line $X3, back at the bottom $(grep -c 'back at the bottom' "$LOG") times"
+fi
+
+sb_keys "a"
+if sb_screen 3 --wait '^console: back at the bottom$' 1 --not-row 24 'scrolled back' --row 24 '^madire> a$'; then
+    pass "[0.9.2] scrollback: another key returns to the live screen and is typed (row 24: 'madire> a')"
+else
+    fail "[0.9.2] scrollback: not back at the bottom after 'a' (see $OUT/screen-3.txt)"
+fi
+B=$(sb_back)
+sb_keys "backspace,pgup,pgdn"
+sb_text "echo after-pgup{ret}"
+sb_screen 4 --wait '^after-pgup$' 1
+if [ "$(sb_back)" -eq "$B" ] && [ "$(grep -c '^console: scrollback is empty$' "$LOG")" -eq 1 ]; then
+    pass "[0.9.2] scrollback: plain PgUp/PgDn at the bottom do nothing"
+else
+    fail "[0.9.2] scrollback: plain PgUp/PgDn changed the view"
+fi
+
+sb_keys "$(printf 'shift+pgup,%.0s' $(seq 1 45))shift+pgup"
+sb_screen 5 --wait '^console: scrolled back: line 1 of ' 1 --row 24 '^-- scrolled back: line 1 of '
+if grep -q '^console: scrolled back: line 1 of ' "$LOG" && ! grep -q '^console: scrolled back: line 0 ' "$LOG"; then
+    pass "[0.9.2] scrollback: paging back stops at line 1"
+else
+    fail "[0.9.2] scrollback: paging back did not stop at line 1"
+fi
+
+B=$(sb_back)
+sb_text "a{bs}clear{ret}{shift+pgup}"
+sb_screen 6 --wait '^console: scrolled back: ' $((B + 1)) --row 24 "$IND"
+if grep -q '^row [0-9][0-9]|madire> clear|$' "$OUT/screen-6.txt" && grep -q '^row [0-9][0-9]|line40|$' "$OUT/screen-6.txt"; then
+    pass "[0.9.2] clear keeps the screen: Shift+PgUp after clear shows 'madire> clear' and the lines before it"
+else
+    fail "[0.9.2] clear: the lines on screen before clear are not in the scrollback (see $OUT/screen-6.txt)"
+fi
+
+B=$(sb_back)
+sb_text "a{bs}dmesg 9999{ret}dmesg 9999{ret}dmesg 9999{ret}dmesg 9999{ret}{shift+pgup}"
+if sb_screen 7 --wait '^console: scrolled back: ' $((B + 1)) --row 24 ' of 1025 \(' \
+        && [ "$(sb_last | sed -E 's/.* of ([0-9]+),.*/\1/')" = 1025 ]; then
+    pass "[0.9.2] scrollback holds at most 1000 lines: Y = 1025 (1000 + 25) after 4 x 'dmesg 9999'"
+else
+    fail "[0.9.2] scrollback: Y is '$(sb_last | sed -E 's/.* of ([0-9]+),.*/\1/')', expected 1025"
+fi
+sb_text "a{bs}echo end-of-scroll-test{ret}"
+sb_screen 8 --wait '^end-of-scroll-test$' 1
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
+w=$(max_width "$LOG" "^console: started$" "^end-of-scroll-test$")
+if grep -q "^end-of-scroll-test$" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.9.2] scrollback: every console line at most 79 characters (longest $w)"
+else
+    fail "[0.9.2] scrollback: a console line of $w characters (limit 79), or the session did not finish"
+fi
+reject "$LOG" "PANIC|events dropped|Screen output from thread|^key: " \
+                                                      "[0.9.2] scrollback: no panic, dropped key, screen-rule violation or key event"
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 new in 0.9.1)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 new in 0.9.2)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

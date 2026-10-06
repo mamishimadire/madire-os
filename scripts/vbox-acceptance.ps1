@@ -22,7 +22,7 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, commands, reboot, preempt, threadoverflow, pf, diag, memexhaust, module, repeat
+    [string[]]$Only = @(),              # menu, boot, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, memexhaust, module, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$Repeat = 0                    # extra normal boots (self-test result of each)
 )
@@ -201,8 +201,52 @@ if (Want "boot") {
     Start-Sleep -Seconds 1
     Shot "console-mem"
     Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
-        "^  0  running .* kernel$", "^Madire OS v0\.9\.1 \(64-bit x86-64, Multiboot 1\)$",
-        "^Kernel stack: +[0-9]+ bytes at peak, of 16384$")
+        "^  0  running .* kernel$", "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$",
+        "^Kernel stack: +[0-9]+ bytes at peak, of 16384$",
+        "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$")
+    # 0.9.2: keys were typed (the console was opened and used), but key
+    # events are not logged on a normal boot.
+    $log = Join-Path $OutDir "$Prefix-boot-console.serial.log"
+    if (Test-Path $log) {
+        $keys = @(Select-String -Path $log -Pattern '^key: ').Count
+        Note ("{0,-16} {1,-8} /no key event logged although keys were typed: {2} key lines/" -f "boot-console",
+              $(if ($keys -eq 0) { "OK" } else { "MISSING" }), $keys)
+    }
+}
+# 0.9.2: console scrollback. dmesg 60 gives enough lines to page back.
+if (Want "scrollback") {
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    TypeText "dmesg 60"; Enter
+    Start-Sleep -Seconds 2
+    Shot "scroll-bottom"
+    Key 2a e0 49 e0 c9 aa; Start-Sleep -Seconds 1      # Shift+PgUp
+    Shot "scroll-page1"
+    Key 2a e0 49 e0 c9 aa; Start-Sleep -Seconds 1      # Shift+PgUp again
+    Shot "scroll-page2"
+    Key 1e 9e; Start-Sleep -Seconds 1                  # "a": back to the bottom
+    Shot "scroll-back"
+    Stop-Run "scrollback" @("^madire> dmesg 60$",
+        "^console: scrolled back: line [0-9]+ of [0-9]+, top '",
+        "^console: back at the bottom$")
+    $log = Join-Path $OutDir "$Prefix-scrollback.serial.log"
+    if (Test-Path $log) {
+        # The first page shows the 24 lines just above the screen (X = Y - 48);
+        # the second goes 24 lines further back, but never past line 1.
+        $pages = @(Select-String -Path $log -Pattern '^console: scrolled back: line ([0-9]+) of ([0-9]+)')
+        $ok = $false
+        if ($pages.Count -eq 2) {
+            $x1 = [int]$pages[0].Matches[0].Groups[1].Value
+            $y1 = [int]$pages[0].Matches[0].Groups[2].Value
+            $x2 = [int]$pages[1].Matches[0].Groups[1].Value
+            $ok = $x1 -eq $y1 - 48 -and $x2 -eq [Math]::Max(1, $x1 - 24)
+        }
+        $desc = ($pages | ForEach-Object { $_.Matches[0].Groups[1].Value + " of " + $_.Matches[0].Groups[2].Value }) -join ", "
+        Note ("{0,-16} {1,-8} /two pages back: the first = the 24 lines above the screen, the second 24 further (not past line 1): {2}/" -f "scrollback",
+              $(if ($ok) { "OK" } else { "MISSING" }), $desc)
+    }
 }
 # 0.9.1: the shell commands. The guest's "date" is compared with the host's
 # clock (local time and UTC) and the difference is only reported: the VM's
@@ -233,7 +277,7 @@ if (Want "commands") {
     Start-Sleep -Seconds 1
     Shot "reboot-cancelled"
     Stop-Run "commands" @("^mem: Show memory information$", "^Usage: mem$",
-        "^Madire OS madire 0\.9\.1 x86_64$", "^madire$",
+        "^Madire OS madire 0\.9\.2 x86_64$", "^madire$",
         "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$",
         "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  reboot   Restart the computer \(asks first\)$",
         "^Restart Madire OS now\? Type 'yes' to confirm:$", "^yes/no> no$", "^Restart cancelled\.$")

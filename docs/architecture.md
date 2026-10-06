@@ -72,6 +72,8 @@ VirtualBox power-on
                                    thread that never yields, sleep(10),
                                    everything returned (fails → crash screen;
                                    paging off → NOT APPLICABLE)
+      12b. key logging (0.9.2)     "Key events: …" on serial: logged only with the
+                                   boot option keylog or a keyboard diagnostic
       13. diagnostics if requested (test=… on the boot command line)
       14. "System ready. Press any key to open the console."; the stack's
           high-water mark so far goes to serial (0.8)
@@ -124,7 +126,7 @@ kernel/               architecture-independent kernel code
   timer.c             system tick, uptime, bounded waits
   devtest.c           timer / keyboard / IRQ diagnostics
   console/            console: text grid, line editor, screen + serial output,
-                      command history (0.9.1)
+                      command history (0.9.1), scrollback (0.9.2)
   shell/              command parser, shell commands, CPUID decoding
   proc/               kernel threads: scheduler core, thread layer, context
                       switch, preemption-disable count, self-test (0.9)
@@ -488,7 +490,7 @@ GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are res
 
 After "System ready.", `kernel.c` runs the idle loop on thread 0. It sleeps until any interrupt, then handles whatever the interrupt handlers queued or counted. Since 0.9 each pass ends with `thread_idle()` instead of a bare `hlt`: it frees exited detached threads, yields if another thread is ready, and otherwise halts until the next interrupt as before. The loop handles:
 
-- **Key events** are logged to serial, as in 0.4.
+- **Key events** were logged to serial for every key from 0.4 to 0.9.1. Since 0.9.2 they are logged only when key logging is on: with the boot option `keylog` (matched as a whole word on the command line, so `nokeylog` doesn't count) or during `test=keyboard`/`test=kbdflood`. A line at boot says which: `Key events: not logged (boot option 'keylog' logs them; for tests only)`, `Key events: logged (boot option 'keylog')` or `Key events: logged (keyboard diagnostic)`. The keyboard diagnostics in the protected `devtest.c` still log the events they read themselves, by design.
   - While the boot screen shows, a pressed key updates "Last key" and **opens the console** (if it was offered). That key isn't typed.
   - Once the console is active, every key event goes to `console_handle_key()`.
 - **Counters:** new drops and unexpected IRQs are reported to serial.
@@ -513,14 +515,15 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 | `kernel/shell/shell.c` | yes | The seven commands (eight with `ps`, 0.9; fourteen with the 0.9.1 commands), reading values from a read-only `shell_context` and writing through a `shell_output` sink, so every output is unit-tested exactly |
 | `kernel/console/history.c` (0.9.1) | yes | The last 16 submitted lines, numbered since boot, and the Up/Down browsing position |
 | `kernel/logbuf.c` (0.9.1) | yes | A byte ring buffer for the kernel log: copy out a snapshot, find the last *n* lines, fit a line to 79 columns |
+| `kernel/console/scrollback.c` (0.9.2) | yes | The last 1000 lines that left the screen, with their colours; the view while paging back (which line goes in each row), the indicator text, which keys page or return to the bottom |
 | `kernel/rtc_time.c` (0.9.1) | yes | Decodes and checks the RTC's date and time registers (BCD or binary, 12- or 24-hour), formats `YYYY-MM-DD HH:MM:SS` |
 | `kernel/shell/cpuinfo.c` | yes | Decodes raw CPUID values: vendor, family/model/stepping (extended-field rules), feature names, brand string, hypervisor vendor |
 | `kernel/arch/x86/cpuid.c` | no | Checks CPUID exists by toggling EFLAGS bit 21, then runs only the leaves the CPU lists; reads CR0 |
 | `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial (each line with preemption off, 0.9); builds the shell context, including a snapshot of the threads for `ps` (0.9) and, since 0.9.1, the extras (hostname, the RTC date, a snapshot of the kernel log, the history); handles Up/Down and the reboot confirmation (0.9.1); runs the start-up self-test |
 
-- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.9.1`, a hint) and the `madire> ` prompt.
+- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.9.2`, a hint) and the `madire> ` prompt.
   - Colours use only VGA slots the logo doesn't reprogram: grey text, white input, cyan prompt, red errors.
-  - Output scrolls up at the bottom. There's no scrollback yet (planned for 0.9.2).
+  - Output scrolls up at the bottom. Since 0.9.2 the lines that scroll off are kept: see *Scrollback* below.
   - `clear` empties the console's own grid and redraws it; it doesn't use `vga_clear()`.
 - **Cursor:** the VGA hardware cursor, a blinking underline, marks the edit position. The VGA driver gained two additive functions: `vga_cursor_show()` and `vga_cursor_move()`.
 - **Commands:**
@@ -529,7 +532,7 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
   |---|---|
   | `help` | the command list (since 0.9 `ps` follows the seven commands, since 0.9.1 the six new ones follow `ps`); `help <command>` (0.9.1) prints `mem: Show memory information` and `Usage: mem`, or `No help for 'x': unknown command.` |
   | `clear` | clears the screen |
-  | `version` | `Madire OS v0.9.1 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
+  | `version` | `Madire OS v0.9.2 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
   | `uptime` | `Uptime: HH:MM:SS (N ticks at 100 Hz)`. Uses the 32-bit seconds counter with 32-bit division only. The tick count is shown only while it fits in 32 bits, and is never divided. |
   | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. Since 0.7 the paging line is followed by an `NX:` row (`supported, enabled`, `supported, not enabled` or `not supported by this CPU`); since 0.8 it reads `enabled (4-level, 4 KiB, higher-half, NX on)` (or `NX off`; `identity-mapped` in 0.7), and a last row gives the stack's high-water mark, `Kernel stack: 1496 bytes at peak, of 16384` (only when the context has the stack fields; without them the output is unchanged). Every `mem` line fits in 79 columns (checked by a QEMU test and `test_shell_mem08`). |
   | `cpu` | CPUID information, plus the mode line: `64-bit long mode, paging on, 1 CPU in use` when EFER.LMA is set (0.7); otherwise the CR0-based wording. `cpu` and `version` use the same long-mode test. |
@@ -548,6 +551,14 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 - **Self-test (`Console & shell` status line):** exercises the *pure* modules with known input: the line editor, the parser, `echo ok` through the shell, and scrolling in a private grid. It isn't a test of keyboard or VGA hardware; those are proven by the keyboard self-test and by the QEMU and VirtualBox console tests.
 - **When the console is offered:** only if both the console self-test and the keyboard passed. Otherwise the bottom row says why, and the idle loop runs as in 0.4.
 - **Unchanged in 0.5:** the keyboard driver, decoder, queue, IRQ layer, PIC, PIT, timer and memory manager. There's no dynamic allocation: every buffer is static (still true in 0.6; the console doesn't use the heap).
+
+### Scrollback [built: 0.9.2]
+
+- **What is kept:** the last **1000 lines** that left the 80×25 screen, each as 80 cells with their colours (about 156 KiB, static). Every character the console writes to its grid goes through one wrapper: before a character is written on the bottom row, the wrapper copies row 0, and if the grid's scroll counter went up, that row is kept (`textbuf.c` itself is unchanged). `clear` first keeps the screen's used rows, so clearing loses nothing.
+- **Keys:** **Shift+PgUp** pages back 24 lines (the first press shows the 24 lines just above the screen), stopping at line 1; **Shift+PgDn** pages forward and returns to the live screen when it gets there. **While scrolled back**, any other key press returns to the live screen and is then handled as usual (so typing continues); key releases and modifier keys alone (Shift, Ctrl, Alt, GUI, the locks) don't. **Not scrolled back**, plain PgUp/PgDn still do nothing (the line editor ignores them). Only the grey PgUp/PgDn keys work: the keypad's ones decode as `9`/`3` (Num Lock is assumed on). The unchanged decoder delivers `E0 49`/`E0 51` with the Shift flag, also after a real keyboard's fake Shift release.
+- **Screen while scrolled back:** rows 0–23 show the kept lines (and, near the bottom of the list, the top of the live screen); row 24 shows `-- scrolled back: line X of Y (Shift+PgUp/PgDn; any key returns) --` in reverse colours (attribute `0x70`, the whole row), where X is the first line shown and Y all lines (kept + the 25 screen rows, at most 1025); the hardware cursor is hidden.
+- **Serial log:** `console: scrolled back: line X of Y, top 'TEXT'` (TEXT = the top row, up to 40 characters), `console: back at the bottom`, or `console: scrollback is empty`.
+- Everything runs on thread 0, in `console_handle_key`, so the screen rule holds.
 
 ### Restart (`kernel/arch/x86/reset.c`) [built: 0.9.1]
 
@@ -710,7 +721,7 @@ Each logs its details on serial and its result on the boot screen's message line
 - `klogf`: writes to serial only, for diagnostics that shouldn't appear on screen.
 - `ksnprintf`: formats into a buffer.
 
-**Kernel log (0.9.1):** every character `kputc` and `klogf` send to the serial port is also copied into a 32 KiB ring buffer in `kprintf.c` (`klog_buffer()`, pure logic in `kernel/logbuf.c`), inside their existing preemption guard; `dmesg` shows it. Text sent to the serial port directly isn't in it: the boot screen's status lines (`bootscreen.c`, protected) and the console's copy of each command's output. The idle loop logs every key event with `klogf` (since 0.4), so those are in it too; see the security limitation in [PROGRESS.md](PROGRESS.md).
+**Kernel log (0.9.1):** every character `kputc` and `klogf` send to the serial port is also copied into a 32 KiB ring buffer in `kprintf.c` (`klog_buffer()`, pure logic in `kernel/logbuf.c`), inside their existing preemption guard; `dmesg` shows it. Text sent to the serial port directly isn't in it: the boot screen's status lines (`bootscreen.c`, protected) and the console's copy of each command's output. Key events are in it only when key logging is on (since 0.9.2: the boot option `keylog` or a keyboard diagnostic), so a normal boot's log holds no typed keys. Because a boot-screen status line's newline goes to serial only, such a line can appear joined to the next one in the log (a documented gap; a fix through `kernel.c` and a log-only call in `kprintf.c` is proposed in [PROGRESS.md](PROGRESS.md)).
 
 All of them share one formatter. `panicf` builds on it. Since 0.9 each `kputc`, `kputs`, `kprintf` and `klogf` call runs with preemption off, so lines from different threads never interleave (`ksnprintf` writes only to the caller's buffer and needs no guard). `kputc` also enforces the screen rule: if a thread other than 0 writes to the screen, it panics, naming the thread (the crash screen is exempt). Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
 

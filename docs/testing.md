@@ -17,6 +17,7 @@ The pure modules have no hardware access, printing or panics:
 - 0.8: the stack high-water mark `stackpeak.c`
 - 0.9: the scheduler core `sched_core.c` (threads, run queue, slices, sleep, join, stack slots, the turn-order check), and the shell's `ps`
 - 0.9.1: the command history `history.c`, the RTC decoding `rtc_time.c`, the kernel log `logbuf.c`, and the 0.9.1 shell commands
+- 0.9.2: the console scrollback `scrollback.c`, and through it the (unchanged) decoder's Shift+PgUp/PgDn
 
 They're compiled with the host GCC as ordinary 64-bit Linux programs (`-m64 -no-pie`, same warnings-as-errors options), linked at 256 MiB so their static test data lies below 4 GiB (the memory modules take 32-bit physical addresses), and tested with synthetic data: cases real hardware can't produce on demand. Known limitation: `test_reserve` also relies on that data lying above its fake 32 MiB machine, so it depends on the test binary's load address.
 
@@ -51,6 +52,7 @@ They're compiled with the host GCC as ordinary 64-bit Linux programs (`-m64 -no-
 | `test_rtc` (7) | 0.9.1 | BCD and binary values in 24-hour mode (2000-01-01 00:00:00 to 2099-12-31 23:59:59); 12-hour mode in BCD and binary (12 AM = 00, 12 PM = 12, PM adds 12; hours 0 and 13 refused; in 24-hour mode bit 7 isn't a PM flag); every field's range, including 31 April and year 100; BCD nibbles above 9 (all 256 byte values as seconds); leap years (2000 yes, 2100 no) and every day of every month of a leap and a common year; the exact format, with the output unchanged on failure |
 | `test_logbuf` (10) | 0.9.1 | empty and storage-less buffers; the last *n* lines before wrap-around (and fewer when there are fewer); an unfinished last line counts; empty lines count; after wrap-around the cut first line is left out (also when the cut falls mid-line); a buffer holding one endless line shows nothing; a short copy keeps the newest bytes; copy order after wrapping, and "exactly full" isn't wrapped; fitting to 79 columns (exactly 79 kept, 80 or more cut to 76 plus `...`, tabs and control characters replaced, tiny widths never overrun); the real 32 KiB size with 1000 lines |
 | `test_shell_091` (11) | 0.9.1 | **without `extras` nothing changes** (help, `help x` → `Usage: help`, `mem --help` → `Usage: mem`, `echo --help` prints `--help`, the six new names unknown); the exact `help` list (with and without `ps`); `help <command>` for several commands and an unknown name, shortened beyond 40 characters; `help a b` → `Usage: help [command]`; `<command> --help` equal to `help <command>` for all 13 commands, never running the command (`reboot --help`, `clear --help`); `uname`, `uname -a` (`x86_64`, `x86` without long mode), `uname -x`; `hostname`; `date` and the RTC failure message; `dmesg` (default 20, `dmesg 2`, `9999`, every bad argument, empty and wrapped logs); a 200-character log line cut to 79; `history` (empty, numbered, after wrap-around, usage); the reboot question and the confirmation rule (`yes` only, spaces allowed); every line at most 79 columns |
+| `test_scrollback` (11) | 0.9.2 | an empty scrollback (Shift+PgUp says so); order and colours kept; wrap at 1000 (2500 pushed, the last 1000 kept in order, Y = 1025); paging limits (24 lines a page, the first page = the 24 lines above the screen, X = Y − 48, stops at line 1, Shift+PgDn back to the live screen); fewer lines than a page; the view mapping, mixing kept lines and live-screen rows; a full ring dropping its oldest line while scrolled back keeps the same lines in view; the exact indicator text and every position within 79 columns; row text and the used-rows rule for `clear`; which keys page (Shift+PgUp/PgDn, not with Ctrl or Alt), which do nothing (releases, modifiers alone) and which return (every other press, plain PgUp included); **through the unchanged decoder:** `2A E0 49` and a real keyboard's `2A E0 AA E0 49` give Shift+PgUp, `2A E0 51` Shift+PgDn, `E0 49` alone a plain PgUp, and the release does nothing |
 
 `test_pte` is unchanged in 0.9: the slot-507 layout cases that the plan put there are in `test_kstack`, next to the stack-slot code they check.
 
@@ -58,10 +60,19 @@ They're compiled with the host GCC as ordinary 64-bit Linux programs (`-m64 -no-
 
 These boot the kernel headless in QEMU and check the serial output. The kernel copies its screen text to COM1 and logs details there. Each run writes `build/serial-*.log`.
 
-Checks added in 0.4 to 0.9.1 are tagged `[0.4]` to `[0.9.1]`, so the summary line separates them from the 0.3 regression checks:
-`ALL TESTS PASSED (560 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from 0.9 + 32 new in 0.9.1)`.
+Checks added in 0.4 to 0.9.2 are tagged `[0.4]` to `[0.9.2]`, so the summary line separates them from the 0.3 regression checks:
+`ALL TESTS PASSED (585 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from 0.9 + 32 from 0.9.1 + 25 new in 0.9.2)`.
 
 `make test` also runs `make repro` before the QEMU tests; its result becomes 3 of the `[0.8]` checks. The whole suite takes about 15 minutes; run it detached on a hash-verified snapshot (see [development.md](development.md)).
+
+Existing checks updated in 0.9.2 (the count is unchanged, none was weakened or removed):
+
+- **5 version checks**, `0.9.1` → `0.9.2`: the 4 above plus `[0.9.1] uname -a` (`Madire OS madire 0.9.2 x86_64`), a fifth version pin the plan missed (lesson: list every check that contains a version string; the 0.10 plan proposes building them from `kernel/kernel.h`).
+- **36 checks whose boot changed, with every assertion unchanged**, because key events are no longer logged by default:
+  - `[0.4] key typed after boot reaches the kernel`, `[0.4] key release reaches the kernel` and `[0.5] the typed key opened the console` read the log of a **test-only ISO** the script builds: the same kernel, and `grub.cfg` identical except `keylog` on the default entry (a new check proves that this is the only difference). The check lines are byte-for-byte unchanged; `LOG=` lines around them pick the log.
+  - the `[0.9] preempt` group (11 checks) boots with `-append "test=preempt keylog"`;
+  - the `[0.9.1]` console session (22 checks) boots with `-append "keylog"`.
+- `test=keyboard` and `test=kbdflood` turn key logging on themselves, so their checks didn't change at all.
 
 Existing checks updated in 0.9.1: only the version checks (4), `v0.9` → `v0.9.1`; the count is unchanged and none was weakened. The new 32 come with a new tag counter.
 
@@ -96,7 +107,7 @@ Existing checks updated in 0.6:
 | Group | How it boots | What it checks |
 |---|---|---|
 | Multiboot header | (not booted) | `grub-file --is-x86-multiboot` accepts the kernel |
-| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293** (0.8: VGA reached through the physical view); title; version `v0.9.1`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`). |
+| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293** (0.8: VGA reached through the physical view); title; version `v0.9.2`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release; since 0.9.2 read from the keylog test ISO, see above); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`; the order check with the key line also reads the keylog test ISO). |
 | RAM sizes | `-kernel` at `-m 16M`, `32M`, `1G`, `4G` | boots; self-test passes; memory `OK`; panel shows the expected MB above 4 GiB; memory model check with pinned values |
 | Boot module | `-m 32M -kernel … -initrd module.bin` | module range reserved; model check |
 | Exhaustion | `-append "test=memexhaust"` at 16M and 128M | every free page allocated, verified and freed (through the physical-access window since 0.6; the frames held by paging and the heap are left alone and must match the kernel's count exactly); `System ready` afterwards; no panic. **[0.4]** ran with IRQ0/IRQ1 live. |
@@ -146,12 +157,16 @@ Existing checks updated in 0.6:
 | **[0.9] Boot-screen check** (3) | `scripts/check-bootscreen.sh` on the sources and on two altered copies | passes on the sources; rejects a `bootscreen_*` call from another file; rejects an unwrapped call in `kernel.c` outside the boot sequence |
 | **[0.9.1] Console commands** (22) | `-kernel`, then QMP types a 21-command session (`help`, `help mem`, `help nosuch`, `help` with a 45-character name, `mem --help`, `echo --help`, `reboot --help`, the three `uname` forms, `hostname`, `date`, `dmesg 5`, `dmesg 0`, two `echo`s, Up Up Down Enter, `history`, Up Enter, `reboot` then `no`, `history`) | the six new commands listed after `ps`, in order; `help mem` and `mem --help` print the same two lines; the unknown-name message, also shortened; `echo --help` and `reboot --help` print help only (no restart question); `uname`, `uname -a` (`Madire OS madire 0.9.1 x86_64`), `uname -x` (usage); `hostname` → `madire`; `date` in the right format and within 10 minutes of the host's UTC clock (QEMU's RTC is UTC); `dmesg 5` equals the last 5 kernel-log lines, which the script reads back from the serial log; `dmesg 0` usage; Up Up Down re-runs `echo two`; `history` lists exactly entries 3–18, itself last; Up re-runs `history`; `reboot`, `no` → `Restart cancelled.` and the console continues; the answer isn't in the history (19 `history`, 20 `reboot`, 21 `history`); every line at most 79 columns; no panic, dropped key or screen-rule violation |
 | **[0.9.1] Reboot through the keyboard controller** (5) | `-kernel`, QMP types `x`, `reboot`, Enter, `yes`, Enter | question, `yes/no> yes`, `Restarting...`, `console: restart confirmed`; `Restart: keyboard controller reset (0xfe to port 0x64)`; no fallback line; the machine reset (QEMU, run with `-no-reboot`, exits by itself within seconds); no panic |
+| **[0.9.2] Key logging off by default** (11) | the normal boot (real ISO, `x` typed), the keylog test ISO, `-append "nokeylog"` with keys typed, the `test=keyboard` and `test=kbdflood` logs, and a `-kernel` session typing `echo hello` and `dmesg 30` | normal boot: `Key events: not logged (boot option 'keylog' logs them; for tests only)`, **no `key:` line** although `x` was typed, and the key still opened the console; keylog ISO: `Key events: logged (boot option 'keylog')`, and its `grub.cfg` differs from the real one only by `keylog` on one line; `nokeylog`: not logged, no `key:` line (whole-word match); `test=keyboard` and `test=kbdflood`: `Key events: logged (keyboard diagnostic)`; `dmesg 30` on a normal boot shows `madire> echo hello` and **no key event**, and the session's serial log has none either |
+| **[0.9.2] Scrollback** (14) | `-kernel`, QMP types in phases; between them `tests/qmp_screen.py` reads the **VGA text buffer** (QMP `pmemsave` of `0xB8000`) | Shift+PgUp with nothing kept: `console: scrollback is empty`; after 40 `echo` lines, Shift+PgUp: **row 24 of the screen is the indicator with attribute `0x70` on all 80 cells**, row 0 is the logged top line, X = Y − 48, and Y − 25 equals the lines that scrolled off (the sum of `console: scrolled N lines`); a second Shift+PgUp is 24 lines back; Shift alone stays, Shift+PgDn is 24 forward; `a` returns (row 24 shows `madire> a`, no indicator); plain PgUp/PgDn at the bottom do nothing; paging stops at line 1; after `clear`, Shift+PgUp shows `madire> clear` and `line40`; after 4 × `dmesg 9999`, Y = 1025 (the cap); every line at most 79 columns; no panic, dropped key, screen-rule violation or key event |
 | **[0.9.1] Restart fallback** (5) | `test=reboottriple` (QEMU only, no GRUB entry) | `Restart test: forcing a triple fault (no keyboard controller)` then `Restart: forcing a triple fault (empty interrupt table, then int3)`; the keyboard controller not used; QEMU exits by itself (the reset); booted once; no crash screen and no `System ready` |
 | **[0.7] No 64-bit CPU** | `-cpu qemu32`, `qemu-system-i386`, `-cpu 486`, `-cpu qemu64,-lm`, `-cpu qemu64,-pae` | `boot32: start`, then `Madire OS needs a 64-bit (x86-64) CPU: long mode not supported. Halted.` (`PAE not supported` for `-pae`); no mode switch attempted; **QEMU still running at the timeout** (a triple fault would have ended the run under `-no-reboot`) |
 
 **How the console session is checked:** the console copies each submitted line to serial as `madire> <line>`, followed by the command's output lines, so the test reads exactly what was typed and printed. Only the final, edited line is logged, not the individual keystrokes (those still appear as 0.4 `key:` lines). Every key goes QMP → i8042 → IRQ1 → the unchanged 0.4 driver, decoder and queue → idle loop → console: the keyboard driver is never bypassed.
 
 Every QEMU run uses `-no-reboot`. If the CPU triple-faults (an exception that can't be handled, which resets the CPU), QEMU exits, the expected text never appears, and the test fails. A crash can't pass by accident.
+
+**Reading the screen (`tests/qmp_screen.py`, 0.9.2):** connects to QEMU's QMP socket (standard library only), optionally waits until a regex has matched a given number of lines of the serial log, saves the VGA text buffer with `pmemsave` (physical `0xB8000`, 80×25 cells of character and attribute), prints the 25 rows (`row NN|text|`) and checks them: `--row N REGEX`, `--not-row N REGEX`, `--attr N HEX` (every cell of row N). It exits with 1 if a check fails. It runs between `qmp_keys.py` calls, because only one QMP client can be connected at a time.
 
 **Keyboard injection (`tests/qmp_keys.py`):** connects to QEMU's QMP socket using only the Python standard library. It waits until a "ready" line appears in the serial log, then sends each combination with `send-key` (QEMU sends a make and a break for each key, like a real keyboard).
 
@@ -203,12 +218,12 @@ VBoxManage modifyvm MadireOS-Test --uart1 0x3F8 4 --uartmode1 file C:\Users\Mami
 **The serial log is the VirtualBox evidence** (since 0.7): the kernel writes the same lines QEMU's tests read (boot markers, CPU mode, walk-check, self-tests, crash details, the boot-module result). VirtualBox recreates the file at every power-on, so copy it after each test (`scripts/vbox-acceptance.ps1` does this). **It is kept across a guest reboot** (0.9.1): after `reboot` then `yes`, VirtualBox goes on appending to the same file, so the log holds both boots (two `boot32: start` and two `System ready.` lines). Compare it with the QEMU run of the same kernel. The only differences, found in 0.7 and again in 0.8, 0.9 and 0.9.1, and why they are expected:
 
 - the code-segment descriptor shows `0x00af9b…` in VirtualBox and `0x00af9a…` in QEMU: VirtualBox sets the descriptor's "accessed" bit when CS is loaded (L = 1 and D = 0 are identical);
-- boots through GRUB give **26** paging self-test checks and **398** mapped pages, boots with QEMU's `-kernel` give **27** and **399** (0.9: 380/381; 0.8: 364/365; 0.7: 19/20 and 360/361): the two loaders place boot data differently (one more reservation above 1 MiB, which the physical view maps and the self-test checks). VirtualBox and QEMU booting the same ISO through GRUB give identical figures;
+- boots through GRUB give **26** paging self-test checks and **437** mapped pages, boots with QEMU's `-kernel` give **27** and **438** (0.9.1: 398/399; 0.9: 380/381; 0.8: 364/365; 0.7: 19/20 and 360/361): the two loaders place boot data differently (one more reservation above 1 MiB, which the physical view maps and the self-test checks). VirtualBox and QEMU booting the same ISO through GRUB give identical figures;
 - counts that depend on RAM size (free pages, memory-exhaustion pages) differ between the 4 GB VM and QEMU's smaller test machines;
-- timing figures vary a little from run to run: the timer diagnostic (0.9.1: 300 ticks in VirtualBox, 297 in QEMU) and the preempt test's shares (0.9.1: VirtualBox 33.2/33.2/33.5 % of 301 ticks, QEMU 33.3 % each), all inside their bands;
+- timing figures vary a little from run to run: the timer diagnostic (0.9.2: 300 ticks in VirtualBox, 298 in QEMU) and the preempt test's shares (0.9.2: VirtualBox 33.3/33.6/33.0 % with 59 preemptions, QEMU 33.3 % each with 60), all inside their bands;
 - **the real-time clock** (0.9.1, `date`): VirtualBox keeps it on the host's **local time** (on the test host, UTC+2: the guest's `date` was 2 s from the host's local clock and 2 hours ahead of UTC), QEMU on **UTC**. This is a VM setting, which the tests never change; `date` labels its output "time zone not set".
 
-Everything else matches line for line in 0.9.1: the stub markers (including `boot64: running at the higher half, RIP=0xffffffff80101000`), the CPU mode, the walk-check (76 items, 79 with a module), both `lower half empty` lines, the slot-507 lines, every crash test's exception, error code, decoded lines and CR2, the scheduler self-test (9 checks), the stack peak at "System ready." (1512 bytes) and the boot-module result.
+Everything else matches line for line in 0.9.2: the stub markers (including `boot64: running at the higher half, RIP=0xffffffff80101000`), the CPU mode, the walk-check (76 items, 79 with a module), both `lower half empty` lines, the slot-507 lines, every crash test's exception, error code, decoded lines and CR2, the scheduler self-test (9 checks), the `Key events: not logged …` line, the stack peak at "System ready." (1496 bytes) and the boot-module result.
 
 **VirtualBox delivers timer ticks in bursts (0.9).** After the host has delayed the VM (other host load, the VM being descheduled), VirtualBox's emulated PIT can catch up by delivering several timer interrupts almost at once. A 5-tick slice can then run out within microseconds of guest time. This is a known environment behaviour, not a kernel fault, and it is why the scheduler's cooperative order checks count preemptions (option (A); see *Kernel threads and scheduler* in [architecture.md](architecture.md)).
 
@@ -277,7 +292,8 @@ Since 0.9 the tests below are run by a script, on Windows, with the VM powered o
 | `-Only` group | What it checks |
 |---|---|
 | `menu` | screenshots of the GRUB menu, the top of the Diagnostics submenu and its end (entries 14 and 15) |
-| `boot` | the normal boot: `Scheduler self-test: PASS`, `System ready.`, then in the console `ps` (thread 0 `kernel` `running`), `version` (`Madire OS v0.9.1 (64-bit x86-64, Multiboot 1)`) and `mem` (the `Kernel stack:` row) |
+| `boot` | the normal boot: `Scheduler self-test: PASS`, `System ready.`, then in the console `ps` (thread 0 `kernel` `running`), `version` (`Madire OS v0.9.2 (64-bit x86-64, Multiboot 1)`) and `mem` (the `Kernel stack:` row); since 0.9.2 also `Key events: not logged …` and **no `key:` line** although keys were typed |
+| `scrollback` (0.9.2) | `dmesg 60`, then Shift+PgUp (indicator visible), a second Shift+PgUp, then `a` (back at the bottom); four screenshots; the log's pages checked: the first = the 24 lines above the screen (X = Y − 48), the second 24 further back but not past line 1 |
 | `commands` (0.9.1) | the console commands: `help mem`, `uname -a`, `hostname`, `date` (format checked; its difference from the host's local time and from UTC is printed, report only), `dmesg 5`, `echo one` then Up (re-run: 2 runs), `history`, `help` (the full list), `reboot` then `no` (`Restart cancelled.`); three screenshots |
 | `reboot` (0.9.1) | `reboot` then `yes`: `Restarting...`, `console: restart confirmed`, the keyboard-controller reset line, no triple-fault fallback; screenshots right after the reset and of the second boot. Reported only: the VM's state and whether the COM1 log kept both boots (`boot32: start` lines) |
 | `preempt` | Diagnostics entry 14: `Preempt test: fair shares: …: OK` and `Preempt test: PASS` |
@@ -288,19 +304,19 @@ Since 0.9 the tests below are run by a script, on Windows, with the VM powered o
 | `module` | the module ISO: `Boot module 1: test pattern intact (14016 bytes)` |
 | `repeat` (with `-Repeat N`) | N extra normal boots; for each, the self-test result, the preemptions during its ping-pong and the ping-pong verdict |
 
-In 0.9 the full run gave 33 of 33 expected lines, and 20 extra normal boots each gave `self-test PASS; ping-pong preemptions 0; 100 yields, strictly alternating: OK`. In 0.9.1 it gave 49 of 49 (the 33, plus 12 for `commands` and 5 for `reboot`); its reports: the RTC 2 hours ahead of UTC and 2 s from the host's local time; after the guest's reboot the VM was still running and the COM1 log held 2 `boot32: start` and 2 `System ready.` lines. The serial logs are then compared with QEMU's, as described above.
+In 0.9 the full run gave 33 of 33 expected lines, and 20 extra normal boots each gave `self-test PASS; ping-pong preemptions 0; 100 yields, strictly alternating: OK`. In 0.9.1 it gave 49 of 49 (the 33, plus 12 for `commands` and 5 for `reboot`); its reports: the RTC 2 hours ahead of UTC and 2 s from the host's local time; after the guest's reboot the VM was still running and the COM1 log held 2 `boot32: start` and 2 `System ready.` lines. In 0.9.2 every group passed: `boot` with no key line, `scrollback` (`line 19 of 67`, then `line 1 of 67`: with only 42 lines kept, the second page stops at line 1), the `keyboard` diagnostic still logging its key lines. The `scrollback` page check, created in 0.9.2, first expected exactly 24 more lines on the second page; it was corrected to the approved rule and re-run (4 of 4). The serial logs are then compared with QEMU's, as described above.
 
 ### Test A: normal boot
 
-The GRUB menu shows **Madire OS v0.9.1** and **Diagnostics**:
+The GRUB menu shows **Madire OS v0.9.2** and **Diagnostics**:
 
-![GRUB menu (0.9.1)](images/grub-menu-v0.9.1.png)
+![GRUB menu (0.9.2)](images/grub-menu-v0.9.2.png)
 
 After 3 seconds it boots the first entry:
 
-![Madire OS v0.9.1 boot screen](images/boot-screen-v0.9.1.png)
+![Madire OS v0.9.2 boot screen](images/boot-screen-v0.9.2.png)
 
-- The M logo is drawn in the blue-to-cyan gradient; `M A D I R E   O S` and `Madire OS v0.9.1` share one row. The screen's layout is unchanged since 0.8: the scheduler self-test (0.9) reports on the serial log only.
+- The M logo is drawn in the blue-to-cyan gradient; `M A D I R E   O S` and `Madire OS v0.9.2` share one row. The screen's layout is unchanged since 0.8: the scheduler self-test (0.9) reports on the serial log only.
 - Left column: **10 status lines, all `OK`**, including `Paging & kernel heap` (0.6), `Timer (PIT, 100 Hz)`, `Keyboard (PS/2)` and `Console & shell` (a self-test of the console code, not of hardware).
 - Right column: memory figures, then **Uptime**, which counts up every second, and **Last key**, which shows the last key pressed (`none` until then). For `MadireOS-Test` (4096 MB):
 
@@ -311,10 +327,10 @@ After 3 seconds it boots the first entry:
   | RAM above 4 GiB | **512 MB** |
   | Page size | **4096 bytes** |
   | Usable pages | **917391** |
-  | Free pages | **917087** in 0.9.1 (917105 in 0.9, 917121 in 0.8, 917124 in 0.7; usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes, e.g. 0.9.1's 32 KiB kernel log). This is taken before the kernel's page tables and the heap are set up; the console's `mem` then shows 60 fewer (**917027**: 15 page tables, the PML4 and 44 heap pages; 0.9 added the 3 tables of the thread stack area). |
+  | Free pages | **917048** in 0.9.2 (917087 in 0.9.1, 917105 in 0.9, 917121 in 0.8, 917124 in 0.7; usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes, e.g. 0.9.1's 32 KiB kernel log or 0.9.2's 156 KiB scrollback). This is taken before the kernel's page tables and the heap are set up; the console's `mem` then shows 60 fewer (**916988**: 15 page tables, the PML4 and 44 heap pages; 0.9 added the 3 tables of the thread stack area). |
 
 - Bottom row: `System ready. Press any key to open the console.`
-- Serial log: `boot32: start`, `boot32: CPUID ok, long mode and PAE present`, `boot64: entered 64-bit long mode`, `boot64: running at the higher half, RIP=0xffffffff80101000` (0.8), the stack paint line, `CPU mode: … 64-bit long mode active; 64-bit arithmetic PASS`, `NX: supported by the CPU …; EFER.NXE enabled`, `Paging check: lower half empty: PML4[0] not present …: OK` (twice), `Paging check: kernel thread stack area (PML4[507]), empty at boot …: OK` (0.9), `Paging walk-check: PASS (76 items, 0 mismatches)`, both guard pages `unmapped`, `Paging self-test: PASS (26 checks, 0 mismatches)`, `Kernel heap self-test: PASS`, then the scheduler self-test (0.9): `cooperative ping-pong: 100 yields, strictly alternating: OK`, `preemptions during the ping-pong: 0: OK`, the exit lines `Thread 1 'pingA' exited: code 11, stack peak 192 of 16384` and `Thread 2 'pingB' …`, `Scheduler self-test: PASS (9 checks, 0 mismatches)`; and after "System ready." `Kernel stack: 1512 bytes at peak, of 16384` (0.9.1; 1496 in 0.9).
+- Serial log: `boot32: start`, `boot32: CPUID ok, long mode and PAE present`, `boot64: entered 64-bit long mode`, `boot64: running at the higher half, RIP=0xffffffff80101000` (0.8), the stack paint line, `CPU mode: … 64-bit long mode active; 64-bit arithmetic PASS`, `NX: supported by the CPU …; EFER.NXE enabled`, `Paging check: lower half empty: PML4[0] not present …: OK` (twice), `Paging check: kernel thread stack area (PML4[507]), empty at boot …: OK` (0.9), `Paging walk-check: PASS (76 items, 0 mismatches)`, both guard pages `unmapped`, `Paging self-test: PASS (26 checks, 0 mismatches)`, `Kernel heap self-test: PASS`, then the scheduler self-test (0.9): `cooperative ping-pong: 100 yields, strictly alternating: OK`, `preemptions during the ping-pong: 0: OK`, the exit lines `Thread 1 'pingA' exited: code 11, stack peak 192 of 16384` and `Thread 2 'pingB' …`, `Scheduler self-test: PASS (9 checks, 0 mismatches)`; and after "System ready." `Kernel stack: 1496 bytes at peak, of 16384` (0.9.2; 1512 in 0.9.1). Since 0.9.2 the log also says `Key events: not logged (boot option 'keylog' logs them; for tests only)`, and no `key:` line appears when keys are typed.
 
 ### Test F: console and shell
 
@@ -324,10 +340,10 @@ Press any key on the boot screen. That key opens the console and **isn't typed**
 
 | Check | Expected |
 |---|---|
-| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.9.1` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
-| `help`, `version`, `uptime` | the 7-command list, then `ps` (0.9) and the six 0.9.1 commands; `Madire OS v0.9.1 (64-bit x86-64, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
-| `ps` (0.9) | `TID  STATE      TICKS    STACK PEAK    NAME`, then `  0  running   …   1512/16384   kernel` and `1 thread` (only thread 0 exists after boot; no line wraps) |
-| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages, 917027 free, 5 reserved ranges, then `Paging: enabled (4-level, 4 KiB, higher-half, NX on)`, `Mapped pages: 398`, `Page tables: 15`, `NX: supported, enabled`, `Kernel heap: 176 KiB mapped, max 16384 KiB`, `Heap in use: 0 KiB in 0 blocks`, `Heap free: 176 KiB, largest block 175 KiB`, and last `Kernel stack: … bytes at peak, of 16384` (0.9.1: 1544 after `ps` and `version`; no line wraps); CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode `64-bit long mode, paging on, 1 CPU in use`. On this CPU the "Features:" line is longer than 80 columns and wraps (known since 0.5). |
+| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.9.2` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
+| `help`, `version`, `uptime` | the 7-command list, then `ps` (0.9) and the six 0.9.1 commands; `Madire OS v0.9.2 (64-bit x86-64, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
+| `ps` (0.9) | `TID  STATE      TICKS    STACK PEAK    NAME`, then `  0  running   …   1496/16384   kernel` and `1 thread` (only thread 0 exists after boot; no line wraps) |
+| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages, 916988 free, 5 reserved ranges, then `Paging: enabled (4-level, 4 KiB, higher-half, NX on)`, `Mapped pages: 437`, `Page tables: 15`, `NX: supported, enabled`, `Kernel heap: 176 KiB mapped, max 16384 KiB`, `Heap in use: 0 KiB in 0 blocks`, `Heap free: 176 KiB, largest block 175 KiB`, and last `Kernel stack: … bytes at peak, of 16384` (0.9.2: 1496 after `ps` and `version`; no line wraps); CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode `64-bit long mode, paging on, 1 CPU in use`. On this CPU the "Features:" line is longer than 80 columns and wraps (known since 0.5). |
 | Editing | `echo hellx`, Backspace, `o` → `hello`; `echo abXc`, Left, Left, Delete → `abc`; `cho world`, Home, `e`, End, `!` → `world!`; Right and insert → `hello` |
 | Shift, Caps Lock, Tab | `echo   Hello   World!` → `Hello World!`; Caps Lock, `echo abc` → `ECHO ABC` (unknown: names are lowercase); `echo`, Tab, `a`, Tab, Tab, `b` → `a b` |
 | Errors (red) | `foo` → `Unknown command: foo. …`; `version x` → `Usage: version`; `echo 1 2 3 4 5 6 7 8` → `Too many arguments (max 8).` |
@@ -362,7 +378,7 @@ The other two crash entries should show `Invalid Opcode (#UD)` and `General Prot
 
 | Entry | Expected |
 |---|---|
-| **Memory test: allocate every page** | after **about 50–90 seconds** on a 4 GB VM (each page goes through the physical-access window since 0.6; 50 s in the 0.8 run), `Memory exhaustion test: PASS (… pages)` and `System ready.` That is the boot panel's free pages minus the frames paging and the heap already hold (0.9.1: 917027 pages; 0.9: 917045; 60 = 15 page tables + the PML4 + 44 heap pages, which the serial log lists; 0.8: 57; 0.7: 54). Afterwards the console's `mem` shows free pages back at that figure and the heap figures unchanged. |
+| **Memory test: allocate every page** | after **about 50–90 seconds** on a 4 GB VM (each page goes through the physical-access window since 0.6; 50 s in the 0.8 run), `Memory exhaustion test: PASS (… pages)` and `System ready.` That is the boot panel's free pages minus the frames paging and the heap already hold (0.9.2: 916988 pages; 0.9.1: 917027; 0.9: 917045; 60 = 15 page tables + the PML4 + 44 heap pages, which the serial log lists; 0.8: 57; 0.7: 54). Afterwards the console's `mem` shows free pages back at that figure and the heap figures unchanged. |
 | **Memory test: double free** | crash screen: `Double free of physical page 0x…` |
 | **Memory test: free a kernel page** | crash screen: `Attempt to free reserved page 0x00100000` |
 
@@ -392,7 +408,7 @@ Check: Shift+A gives `LSHIFT` and then `'A'` with `flags=0x03`; Up is `UP` with 
 | read from NULL | `0x00000000` | `Page fault: not present, read, kernel mode` / `Address: 0x0000000000000000` | `0x0000000000000000` |
 | read from unmapped address | `0x00000000` | `Page fault: not present, read, kernel mode` / `Address: 0x0000000040000000` | `0x0000000040000000` |
 | write to read-only kernel code | `0x00000003` | `Page fault: protection violation, write, kernel mode` / `Address: 0xffffffff80100000` (0.8; `0x0000000000100000` up to 0.7) | `0xffffffff80100000` |
-| execute from no-execute data (NX) | `0x00000011` | `Page fault: protection violation, read, kernel mode` / `Details: instruction fetch (NX violation)` / `Address:` the data page (0.9.1: `0xffffffff8017b000`; 0.9: `0xffffffff80169000`; 0.8: `0xffffffff8015e000`) | the data page |
+| execute from no-execute data (NX) | `0x00000011` | `Page fault: protection violation, read, kernel mode` / `Details: instruction fetch (NX violation)` / `Address:` the data page (0.9.2: `0xffffffff801a2000`; 0.9.1: `0xffffffff8017b000`; 0.9: `0xffffffff80169000`; 0.8: `0xffffffff8015e000`) | the data page |
 | read the kernel's old low address (0.8) | `0x00000000` | `Page fault: not present, read, kernel mode` / `Address: 0x0000000000100000` | `0x0000000000100000` |
 
 ![Page fault: write to read-only kernel code, at its higher-half address (0.8)](images/pagefault-v0.8.png)
@@ -475,6 +491,28 @@ In the console (the scripted `commands` and `reboot` groups do the same):
 
 ![reboot, then yes: Restarting...](images/reboot-v0.9.1.png)
 
+### Test M: scrollback and key logging (0.9.2)
+
+In the console (the scripted `scrollback` and `boot` groups do the same):
+
+| Check | Expected |
+|---|---|
+| `dmesg 60`, then **Shift+PgUp** | older lines fill rows 0–23 and the bottom row shows, in reverse colours, `-- scrolled back: line 19 of 67 (Shift+PgUp/PgDn; any key returns) --` (the numbers depend on how many lines are kept); the cursor disappears |
+| **Shift+PgUp** again | 24 lines further back, never past line 1 (`line 1 of 67` with only 42 lines kept: the banner and `madire> dmesg 60` at the top) |
+| **Shift+PgDn** | 24 lines forward; past the newest kept line, back to the live screen |
+| Any other key, e.g. `a` | back to the live screen, and the key is typed (`madire> a`); Shift alone does nothing |
+| Not scrolled back: plain PgUp/PgDn | nothing happens |
+| `clear`, then Shift+PgUp | the lines that were on screen before `clear` are there |
+| The serial log | `Key events: not logged (boot option 'keylog' logs them; for tests only)` and no `key:` line, although keys were typed |
+
+![Scrolled back: the indicator on the bottom row (0.9.2)](images/scrollback-page1-v0.9.2.png)
+
+![The second page stops at line 1 (0.9.2)](images/scrollback-page2-v0.9.2.png)
+
+![Any key returns to the live screen (0.9.2)](images/scrollback-back-v0.9.2.png)
+
+In the last screenshot, one `dmesg` line reads `…divisor 11932)Keyboard self-test: …`: two boot-screen lines joined. This is the documented `dmesg` gap (a boot-screen status line's newline goes to the serial port only), not a 0.9.2 change; a fix is proposed in [PROGRESS.md](PROGRESS.md).
+
 ### Troubleshooting by layer
 
 | Symptom | Layer | Check |
@@ -515,7 +553,9 @@ In the console (the scripted `commands` and `reboot` groups do the same):
 | A thread test hangs in QEMU but passes in VirtualBox | Test code (0.9) | A loop that only polls `timer_ticks()` can starve IRQ0 under QEMU's TCG; do real work between the reads (see [development.md](development.md)) |
 | `date` is hours off | VM clock basis (0.9.1) | Expected: VirtualBox keeps the RTC on the host's local time, QEMU on UTC, and `date` has no time zone. Don't change the VM's clock setting without approval |
 | `date` says `Date: unavailable (RTC not responding)` | CMOS RTC | The RTC stayed busy (update in progress) or gave an invalid date; `test_rtc` lists what is refused |
-| `dmesg` lacks the `GDT loaded: OK` … lines | Kernel log (0.9.1) | Expected: the boot screen's status lines and the console's output go to serial directly, not through `klogf` (documented gap); the serial log has everything |
+| `dmesg` lacks the `GDT loaded: OK` … lines, or shows two boot lines joined (`…11932)Keyboard self-test: …`) | Kernel log (0.9.1) | Expected: the boot screen's status lines (and their newlines) and the console's output go to serial directly, not through `klogf` (documented gap, fix proposed in PROGRESS.md); the serial log has everything |
+| No `key:` lines in the serial log | Expected (0.9.2) | Key events are logged only with the boot option `keylog` or during `test=keyboard`/`test=kbdflood`; the log says `Key events: not logged …`. Add `keylog` for a test, never where secrets are typed |
+| Shift+PgUp does nothing | Console (0.9.2) | `console: scrollback is empty` means nothing has scrolled off yet; the keypad's PgUp types `9` (Num Lock is assumed on): use the grey PgUp key |
 | `reboot` then `yes`, but the serial log shows `the keyboard controller did not reset the machine` | Reset (0.9.1) | The keyboard controller ignored `0xFE`; the triple-fault fallback follows and should still reset. If the machine halts instead, report it |
 | `help x` says `No help for 'x': unknown command.` without a hint | Expected (0.9.1) | The message is kept short so every line fits 79 columns; type `help` for the list |
 | `vbox-acceptance.ps1`: `The VM does not match the documented settings; refusing to run` | VM config | The lines above it name each difference. Nothing was changed. Don't change a VM setting without approval; report the difference |

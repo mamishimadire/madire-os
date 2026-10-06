@@ -85,6 +85,53 @@ static int cmdline_has(const char *word)
 }
 
 /*
+ * 0.9.2: true if `word` is a whole word of the command line (separated by
+ * spaces or tabs), so "nokeylog" or "keylog2" don't count. Used for the
+ * security switch "keylog"; cmdline_has() keeps its substring match for
+ * the test= options.
+ */
+static int cmdline_word(const char *word)
+{
+    const char *p = cmdline;
+    while (*p) {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t')
+            p++;
+        size_t len = (size_t)(p - start), i = 0;
+        while (i < len && word[i] && start[i] == word[i])
+            i++;
+        if (len > 0 && i == len && !word[i])
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * 0.9.2: key events are logged (serial, and so dmesg) only for tests and
+ * diagnostics: with the boot option "keylog", or during the keyboard
+ * diagnostics, which show key codes by design (devtest.c logs those
+ * itself). Off by default, so typed text never reaches the logs. No secret
+ * prompt exists yet; one must add secret-input mode (AGENTS.md).
+ */
+static bool key_logging;
+
+static void key_logging_init(void)
+{
+    if (cmdline_word("keylog")) {
+        key_logging = true;
+        klogf("Key events: logged (boot option 'keylog')\n");
+    } else if (cmdline_has("test=keyboard") || cmdline_has("test=kbdflood")) {
+        key_logging = true;
+        klogf("Key events: logged (keyboard diagnostic)\n");
+    } else {
+        key_logging = false;
+        klogf("Key events: not logged (boot option 'keylog' logs them; for tests only)\n");
+    }
+}
+
+/*
  * The boot screen while other threads may exist (0.9). bootscreen.c has no
  * protection of its own (and is protected from change), so every use that
  * can happen once threads exist goes through BOOTSCREEN_SAFE(call): it
@@ -390,7 +437,8 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
     for (;;) {
         struct key_event e;
         while (keyboard_get_event(&e)) {
-            devtest_log_key(&e);
+            if (key_logging)                /* 0.9.2: off by default */
+                devtest_log_key(&e);
             if (console_active()) {
                 console_handle_key(&e);
             } else if (e.flags & KEY_PRESSED) {
@@ -547,6 +595,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         klogf("Scheduler self-test: NOT APPLICABLE (paging is off: no thread stacks)\n");
     }
 
+    key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
     run_diagnostics();
 
     bool console_offered = console_ok && keyboard_ok;

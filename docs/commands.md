@@ -1,6 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.2
+# Madire OS Command Standard (MOCS) v0.3
 
-**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command.
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default.
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -30,7 +30,7 @@ Madire OS provides the foundations that applications need (processes, files, dev
 
 - `hostname` is a fixed name, `madire`, until settings can be stored.
 - `date` shows the real-time clock as it is, with **no time zone** ("time zone not set"): VirtualBox keeps the clock on the host's local time, QEMU on UTC. Years are assumed to be 2000–2099, and the date can't be set.
-- `dmesg` shows only what the kernel wrote through `kprintf`/`klogf` (a 32 KiB log). The boot screen's status lines and the console's command output go to the serial port directly and aren't in it. Every key press is logged too (a known security limitation, to be switched off by default in 0.9.2).
+- `dmesg` shows only what the kernel wrote through `kprintf`/`klogf` (a 32 KiB log). The boot screen's status lines and the console's command output go to the serial port directly and aren't in it (a boot-screen line can therefore appear joined to the next one). Since 0.9.2 key events aren't logged by default, so `dmesg` holds no typed keys (they are logged only with the boot option `keylog`, for tests, or during the keyboard diagnostics).
 - `help <unknown>` prints only `No help for 'X': unknown command.`, without a second sentence, so that every line fits 79 columns (names longer than 40 characters are shortened).
 
 **Today: where the commands run.** Madire OS has no user programs yet, so all 14 implemented commands run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. After 0.10 (user processes), SYSTEM commands are expected to move out into separate user programs; CORE commands stay in the shell.
@@ -333,6 +333,20 @@ These are subcommands of `pkg`, not separate commands. `pkg remove` is the one n
 | `openssl` | Work with encryption and certificates | APPLICATION | APPLICATION |
 
 Each needs at least processes, the filesystem and a C library; the network tools also need the network stack, and `wireshark` graphics. Security tools are only ever run against systems the user owns or may test.
+
+### Console keys (not commands)
+
+Keys the console handles itself. They aren't commands, so they have no level or `--help`; they are listed here so the standard describes everything the user can do at the prompt.
+
+| Keys | What they do | Since |
+|---|---|---|
+| Left, Right, Home, End, Backspace, Delete | edit the input line (at most 71 characters) | 0.5 |
+| Up / Down | recall earlier commands from the history (the last 16); Down past the newest gives an empty line | 0.9.1 |
+| Shift+PgUp / Shift+PgDn | page back and forward through the scrollback (the last 1000 lines that left the screen), 24 lines at a time; a reverse-colour indicator on the bottom row shows the position; paging back stops at line 1 | 0.9.2 |
+| Any other key, **while scrolled back** | returns to the live screen and is then handled as usual (typed, or Enter runs the line); key releases and modifier keys on their own (Shift, Ctrl, Alt, the locks) don't return | 0.9.2 |
+| PgUp / PgDn without Shift, **when not scrolled back** | do nothing | 0.9.2 |
+
+Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, because Num Lock is assumed on. `clear` keeps the screen's lines in the scrollback. The scrollback and the history are lost at restart.
 
 ## 4. One meaning per name
 

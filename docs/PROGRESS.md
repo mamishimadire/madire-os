@@ -20,9 +20,10 @@ Each milestone is one commit on `main`. The hashes are from `git log`; tags exis
 | **0.8** | `f38f4c6` (tag `v0.8`) | 2026-09-30 | Higher-half kernel: kernel at `0xFFFFFFFF80000000` + physical, lower half empty, physical view for the low 1 MiB and boot data, `pflow` diagnostic, stack high-water mark, boot-module result on screen, reproducible build, `.devcontainer/` proven |
 | **0.9** | `e328cc7` (tag `v0.9`) | 2026-10-05 | Kernel threads and a preemptive scheduler: threads with their own guarded stacks (PML4 slot 507), context switches, round robin with a 50 ms slice, sleep and join, a preemption-disable count that makes the kernel safe under preemption, a scheduler self-test at every boot, the `ps` command, the thread diagnostics, `scripts/vbox-acceptance.ps1`, `AGENTS.md` |
 | | `3b01a8a` | 2026-10-06 | Documentation commit: the Madire OS Command Standard, `docs/commands.md` (MOCS v0.1; no code) |
-| **0.9.1** | this milestone's commit (tag `v0.9.1`) | 2026-10-06 | Shell commands: `history` (with Up/Down recall), `uname`, `hostname`, `date` (from the RTC), `dmesg` (a 32 KiB kernel log), `reboot` (with a confirmation; keyboard-controller reset, triple-fault fallback), `help <command>` and `<command> --help` for every command; MOCS v0.2 |
+| **0.9.1** | `1300fb5` (tag `v0.9.1`) | 2026-10-06 | Shell commands: `history` (with Up/Down recall), `uname`, `hostname`, `date` (from the RTC), `dmesg` (a 32 KiB kernel log), `reboot` (with a confirmation; keyboard-controller reset, triple-fault fallback), `help <command>` and `<command> --help` for every command; MOCS v0.2 |
+| **0.9.2** | this milestone's commit (tag `v0.9.2`) | 2026-10-06 | Console scrollback (the last 1000 lines with their colours, Shift+PgUp/PgDn, an indicator on the last row, `clear` keeps the screen) and key-event logging off by default (boot option `keylog` for tests; the keyboard diagnostics turn it on); MOCS v0.3 |
 
-The 0.9.1 commit can't list its own hash; `git log -1 v0.9.1` gives it.
+The 0.9.2 commit can't list its own hash; `git log -1 v0.9.2` gives it.
 
 ## 2. Tests passing at each milestone
 
@@ -38,6 +39,7 @@ The 0.9.1 commit can't list its own hash; `git log -1 v0.9.1` gives it.
 | 0.8 | 21 (+ `stackpeak`, `shell_mem08`; new cases in `mmap` and `pte`) | 389 (150 + 30 + 32 + 49 + 96 + 32 `[0.8]`), plus `make repro` (two clean builds byte-identical) |
 | 0.9 | 24 (+ `sched`, `kstack`, `shell_ps09`; a new case in `kprintf`) | 528 (150 + 30 + 32 + 49 + 96 + 32 + 139 `[0.9]`), plus `make repro` |
 | 0.9.1 | 28 (+ `history`, `rtc`, `logbuf`, `shell_091`) | 560 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 `[0.9.1]`), plus `make repro` |
+| 0.9.2 | 29 (+ `scrollback`) | 585 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 + 25 `[0.9.2]`), plus `make repro` |
 
 Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Test` before it was committed. Since 0.9 that test is scripted (`scripts/vbox-acceptance.ps1`, see [testing.md](testing.md)). In 0.9, 33 of 33 checks passed, plus 20 extra normal boots, each with the scheduler self-test `PASS` and 0 preemptions during its ping-pong.
 
@@ -45,11 +47,15 @@ Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Te
 
 **0.9.1 test details:** the 32 `[0.9.1]` checks are in 3 groups: a scripted console session with every new command (22), `reboot` then `yes` through the keyboard controller (5) and the triple-fault fallback `test=reboottriple` (5). Of the existing 528 checks only the 4 version checks changed (`v0.9` → `v0.9.1`); none was removed or weakened. The new unit suites make 110 checks (`test_history`), 51 (`test_rtc`), 62 (`test_logbuf`) and 164 (`test_shell_091`); `test_shell.c` and `test_shell_ps09.c` are unchanged and still pass, proving that every 0.9 output is the same without the new context field. VirtualBox: 49 of 49 expected lines (the 33 of 0.9 plus 16 for the new commands and the reboot).
 
+**0.9.2 test details:** the 25 `[0.9.2]` checks are in 2 groups: key logging (11: the default line and no key event on a normal boot, in the serial log and in `dmesg`; `nokeylog` doesn't turn it on; `keylog`, `test=keyboard` and `test=kbdflood` do) and scrollback (14, proven on the real VGA screen with the new `tests/qmp_screen.py`). The new unit suite `test_scrollback` makes 174 checks, including the unchanged decoder's Shift+PgUp/PgDn. **Existing checks:** the boots of 36 checks changed and none of their assertions did: the 3 GRUB-boot key checks read a test-only ISO whose `grub.cfg` adds `keylog` to the default entry, and the `[0.9] preempt` group (11) and the `[0.9.1]` console session (22) boot with `keylog`. **5 version checks** changed to `0.9.2`: the 4 listed in the plan and `[0.9.1] uname -a`, a fifth version pin the plan missed (lesson: list every check containing a version string). VirtualBox: every group passes; the `scrollback` page check, created in this milestone, first expected exactly 24 lines on the second page and was corrected to the approved rule ("24 further back, but not past line 1").
+
 **Stack peak baseline (0.8):** the kernel stack's high-water mark is **1480 of 16384 bytes**, the same after booting, after the keyboard flood and after the scripted console session, in QEMU and in VirtualBox. Future milestones can compare against it (processes in 0.9 will add their own stacks).
 
 **Stack peaks (0.9):** the boot stack's peak is **1496 bytes** (1480 in 0.8). It is again the same after booting, after the keyboard flood and after the console session, in QEMU and in VirtualBox. Each kernel thread has its own 16 KiB stack and logs its final peak when it exits. The test threads use 192 to 1000 bytes, except the churn test's deliberately deep thread (8496 bytes).
 
 **Stack peak (0.9.1):** **1512 bytes** at "System ready.", after the keyboard flood and after the scripted console session, in QEMU and VirtualBox alike. A VirtualBox console session with `ps`, `version` and `mem` reached 1544.
+
+**Stack peak and figures (0.9.2):** the peak is **1496 bytes** at "System ready." (and after the console session) in QEMU and VirtualBox alike. On `MadireOS-Test` (4 GB): free pages **917048** at boot and **916988** in `mem`, **437** mapped pages (QEMU `-kernel`: 438), **15** page tables; the 156 KiB scrollback costs 39 pages.
 
 In 0.7 the boot memory self-test reports "35 checks" where 0.6's early logs showed 3104. That comes from a 0.6 change to `memtest.c` (one check counted per page instead of per word, with every word still compared). It isn't lost coverage.
 
@@ -96,13 +102,20 @@ What each milestone left open when it was committed, and where it was resolved.
   - Thread stack peaks have the same limits as the boot stack's: they can read a few bytes too low, never too high.
   - Still open from 0.8: RAM above 4 GiB; no direct map; 4 KiB pages only; every page fault is fatal; the ISO isn't reproducible; `test_reserve` depends on the load address; the `cpu` "Features:" line can wrap; the "no CPUID" path isn't executed.
 - **0.9.1:**
-  - **HIGH PRIORITY (security): every key press is logged.** Since 0.4 the kernel writes each key event (scancode, key and character) to the serial log, and since 0.9.1 that log is also kept in memory and shown by `dmesg`. Once passwords or other secrets can be typed (`passwd`, `sudo`, a login), this would record them. **Key-event logging must be off by default (enabled only for tests and diagnostics) before any password or secret input exists.** It stays as it is in 0.9.1, because existing tests depend on these lines; the fix is planned for 0.9.2, without weakening any existing test.
+  - **HIGH PRIORITY (security): every key press is logged.** Since 0.4 the kernel writes each key event (scancode, key and character) to the serial log, and since 0.9.1 that log is also kept in memory and shown by `dmesg`. Once passwords or other secrets can be typed (`passwd`, `sudo`, a login), this would record them. **Key-event logging must be off by default (enabled only for tests and diagnostics) before any password or secret input exists.** It stays as it is in 0.9.1, because existing tests depend on these lines; the fix is planned for 0.9.2, without weakening any existing test. (**Resolved in 0.9.2:** key events are logged only with the boot option `keylog` or during the keyboard diagnostics; a normal boot logs none, in the serial log or in `dmesg`. Secret input is covered by a binding rule in AGENTS.md.)
   - **The RTC's clock basis differs between machines:** VirtualBox keeps the hardware clock on the host's local time (2 hours ahead of UTC on the test host), QEMU on UTC. `date` shows the RTC as it is, labelled "time zone not set". A future time-zone setting should let the user choose whether the hardware clock holds UTC or local time.
   - `date` assumes the century is 20 (years 2000–2099): the CMOS century register is only found through ACPI, which isn't read yet. The date can't be set.
-  - **`dmesg` shows only what `kprintf`/`klogf` wrote.** The boot screen's status lines (`GDT loaded: OK` …) and the console's command output go to the serial port directly and aren't in it (a documented gap; changing it would mean changing the protected `serial.c`). Because every key press is logged, the newest lines of `dmesg` are usually the keystrokes of the command itself.
+  - **`dmesg` shows only what `kprintf`/`klogf` wrote.** The boot screen's status lines (`GDT loaded: OK` …) and the console's command output go to the serial port directly and aren't in it (a documented gap; changing it would mean changing the protected `serial.c`). Because every key press is logged, the newest lines of `dmesg` are usually the keystrokes of the command itself (no longer since 0.9.2, which stops key logging by default). **Joined lines:** the boot screen writes a status line's newline to the serial port only, so in `dmesg` that line can run into the next one (seen in 0.9.2's VirtualBox screenshot: `…divisor 11932)Keyboard self-test: …`). Proposed fix for a later milestone (not done yet): the boot-sequence calls in `kernel.c` and the `BOOTSCREEN_SAFE()` wrapper also write the line ending into the kernel log, through a log-only call in `kprintf.c`, leaving the protected `bootscreen.c` and `serial.c` unchanged.
   - `hostname` is fixed (`madire`) until settings can be stored; `history` keeps the last 16 lines and is lost at restart.
   - `reboot` needs the keyboard controller (or the triple-fault fallback); there is no ACPI reset, `shutdown` or `poweroff` yet.
-  - The console still has no scrollback: output that scrolls off the top is lost (scrollback is planned for 0.9.2).
+  - The console still has no scrollback: output that scrolls off the top is lost (scrollback is planned for 0.9.2). (Resolved in 0.9.2.)
+- **0.9.2:**
+  - The scrollback keeps the last 1000 lines and is lost at restart; it holds what the console drew, not the serial log.
+  - Shift+PgUp/PgDn work with the grey PgUp/PgDn keys (and laptops' Fn keys that send them); the numeric keypad's PgUp/PgDn type `9`/`3`, because Num Lock is assumed on (a 0.4 limitation).
+  - Key events are still logged during the keyboard diagnostics (`test=keyboard`, `test=kbdflood`) and with `keylog`: by design, for tests. `keylog` must never be used where secrets are typed.
+  - **No secret-input mode exists yet.** No prompt asks for a secret today; the binding rule in AGENTS.md says the first milestone that adds one must implement it (no key logging even with `keylog`, no echo to serial or `dmesg`, no history, `*` on screen).
+  - The `dmesg` joined-lines effect described under 0.9.1 is still there (a fix is proposed above).
+- **Watch item: the 2 MiB boundary.** One page table maps 2 MiB, and the kernel image is loaded at 1 MiB. Measured in 0.9.2, it ends at physical `0x1B8000`: **288 KiB (72 pages) below the 2 MiB boundary**. Future growth will cross it, and the kernel's tables will then need one more page table: the page-table count, the mapped-page and free-page figures and the walk-check's table count will change. The tests recompute these figures from the log, and the docs must expect the change.
 
 ## 4. Roadmap
 
@@ -111,8 +124,8 @@ What each milestone left open when it was committed, and where it was resolved.
 | **0.8** | Higher-half kernel: the kernel runs at `0xFFFFFFFF80000000` + physical (PML4 slot 511) and the lower half is empty | done |
 | **0.9** | Processes, part 1: kernel threads and a preemptive scheduler | done |
 | **0.9.1** | Shell commands needing no new kernel foundations: `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `help <command>`, `<command> --help` | done |
-| **0.9.2** (next) | Console scrollback (the last 1000 lines, Shift+PgUp/PgDn) and key-event logging off by default | planned (scrollback decisions approved; the key-logging approach is decided in its plan) |
-| **0.10** | Processes, part 2: user processes (user mode, one address space per process, system calls, ELF programs) | planned |
+| **0.9.2** | Console scrollback (the last 1000 lines, Shift+PgUp/PgDn) and key-event logging off by default | done |
+| **0.10** (next) | Processes, part 2: user processes (user mode, one address space per process, system calls, ELF programs) | planned |
 | **1.0** | Filesystem: a virtual filesystem layer and an initial RAM disk, then disk filesystems | planned |
 
 ### 0.10 items (decided in principle in the 0.9 plan; 0.10 needs its own plan and approval)
@@ -124,6 +137,7 @@ What each milestone left open when it was committed, and where it was resolved.
 - SMEP and SMAP, considered together with user mode.
 - **The `gpf` diagnostic (condition C of the 0.9 plan):** it loads selector `0x28` as "past the end of the GDT". Once user segments are added, `0x28` becomes a real entry, so the 0.10 plan must re-check the diagnostic and say how it still raises a #GP.
 - **Measure the longer turns under policy (a) again** (the 0.9 limitation above) once user processes run.
+- **Read the version once in the tests (proposal from 0.9.2):** the test harness reads `MADIRE_OS_VERSION` from `kernel/kernel.h` once and builds every version regex from it, so a new version changes no check. It would touch: the title check (`version shown`), `[0.5] version`, the count of 7 identical `version` outputs, `[0.5] clear, then the console keeps working`, `[0.9.1] uname -a`, and the two version pins in `scripts/vbox-acceptance.ps1`.
 - Still excluded from 0.10: the filesystem, signals, threads inside user processes, SMP, fork/exec, priorities.
 
 The candidate items listed for 0.8 were decided in its plan. Delivered in 0.8:
@@ -234,4 +248,11 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 | `date` reads the RTC through the additive `cmos_rtc_read()` (protected `cmos.c/.h`; `cmos_rtc_seconds()` unchanged byte for byte) and the pure `rtc_time.c` | 0.9.1 | No time zone; century 20 |
 | **Deviation:** `help <unknown>` prints only `No help for 'X': unknown command.` instead of also "Type 'help' for a list of commands." | 0.9.1 | Every line must fit 79 columns: names are shown up to 40 characters (37 plus `...` beyond), which makes 72 columns; the second sentence would add 36 |
 | 0.9.2 decisions: scrollback of 1000 lines (about 156 KiB), Shift+PgUp/PgDn, any other key returns to the bottom, a "scrolled back: line X of Y" indicator on the last row; `clear` pushes the screen into scrollback first; a new `tests/qmp_screen.py` reads the VGA text buffer through QMP to check the indicator; no protected file changes | 0.9.1 (planning) | The key-logging fix is decided in the 0.9.2 plan |
+| Console scrollback: a pure `kernel/console/scrollback.c` (1000 lines × 80 cells with colours, about 156 KiB) and `console.c` glue; one write wrapper keeps each line that scrolls off (`textbuf.c` unchanged); Shift+PgUp/PgDn page 24 lines; while scrolled back any other key returns to the live screen (not scrolled back, plain PgUp/PgDn still do nothing); a `-- scrolled back: line X of Y … --` indicator in reverse colours on the last row; `clear` keeps the screen's used rows | 0.9.2 | No protected file changed; the decoder already delivered Shift+PgUp/PgDn |
+| **Key-event logging off by default:** the idle loop in `kernel.c` logs key events only with the boot option `keylog` (matched as a whole word, so `nokeylog` doesn't count) or during `test=keyboard`/`test=kbdflood`; a `Key events: …` line at boot says which | 0.9.2 | Resolves the 0.9.1 HIGH-PRIORITY item; `devtest.c` (protected) unchanged |
+| The 36 existing checks that read key lines keep their assertions: the 3 GRUB-boot checks read a test-only ISO with `keylog` on its default entry, the preempt group and the 0.9.1 console session boot with `keylog` | 0.9.2 | Approved in the plan |
+| **Secret input (binding):** no milestone may add a password or other secret prompt without implementing secret-input mode in the same milestone | 0.9.2 | In AGENTS.md and development.md |
+| A fifth version check (`[0.9.1] uname -a`) was missed in the plan and approved during stage 3; future plans list every check containing a version string, and 0.10's plan proposes building the version regexes from `kernel/kernel.h` | 0.9.2 | |
+| The VirtualBox `scrollback` page check, created in this milestone, was corrected to "24 further back, but not past line 1" | 0.9.2 | A test fix, not a kernel change |
+| `commands.md` MOCS v0.3: a "Console keys" section | 0.9.2 | |
 | **Open decision, HIGH PRIORITY: Madire OS's own licence** (for example MIT, Apache-2.0, GPL-3.0 or proprietary), to be decided before any outside code is included | 0.9.1 | Restates the 0.7-planning rule above as an open decision with high priority |

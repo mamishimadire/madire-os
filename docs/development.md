@@ -24,6 +24,7 @@ kernel/
     textbuf.c/.h          80x25 console character grid, scrolling    (pure)
     lineedit.c/.h         prompt line editor (71 characters)        (pure)
     history.c/.h          command history, Up/Down browsing (0.9.1) (pure)
+    scrollback.c/.h       scrollback: 1000 lines, paging, indicator (0.9.2) (pure)
     console.c/.h          console: VGA drawing, cursor, serial copy, self-test,
                           history keys, reboot confirmation (0.9.1)
   shell/
@@ -99,6 +100,7 @@ tests/
   qemu-tests.sh           automated QEMU tests (`make test`)
   memory_check.py         independent recomputation of the kernel's memory figures
   qmp_keys.py             types scripted keys or text into QEMU over QMP
+  qmp_screen.py           reads QEMU's VGA text screen over QMP and checks rows (0.9.2)
 docs/                     documentation (images/ holds reference screenshots;
                           PROGRESS.md: history and decisions; references.md:
                           external projects, reference only)
@@ -126,6 +128,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `kernel/bootmod.c`, `kernel/stackpeak.c`
 - `kernel/proc/sched_core.c` (0.9)
 - `kernel/console/history.c`, `kernel/rtc_time.c`, `kernel/logbuf.c` (0.9.1)
+- `kernel/console/scrollback.c` (0.9.2)
 - `kernel/arch/x86/pagefault.h` and the inline NX decision in `cpuid.h` (header only)
 - the formatter in `kernel/kprintf.c` (`test_kprintf` includes the file, with the two output drivers stubbed)
 
@@ -138,6 +141,8 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 Commands run in normal context, one at a time, and must return promptly.
 
 Since 0.9.1, new commands go into the `extra_commands[]` table, which exists only when the context has `extras` (the console always sets it; the older unit tests don't, so their output stays pinned). Every command then gets `help <command>` and `<command> --help` automatically from its usage and help text, so keep those short: `help` lists the name padded to 11 columns and the help text, and every line must fit 79 columns (test it in `tests/unit/test_shell_091.c`'s width test). A destructive command asks first, as `reboot` does (the shell returns a result telling the console to ask). Adding, changing or removing a command also updates [commands.md](commands.md) and its MOCS version in the same milestone (see [AGENTS.md](../AGENTS.md)).
+
+**Scrollback (0.9.2):** every character the console writes to its grid must go through `write_screen()` or `grid_putc()` in `console.c`, so that a line scrolling off the top is kept. Writing to the grid directly with `textbuf_putc()` would lose lines from the scrollback. `textbuf_put_at()` (no scrolling) is fine for the input line.
 
 **Screen output after the console starts:** only the console writes to the screen. Use `klogf()` for serial-only diagnostics, and don't use `kprintf()` for screen output once the console is active (the crash screen is the exception). Since 0.9 only thread 0 may write to the screen at all; see *Kernel threads*.
 
@@ -273,9 +278,11 @@ From PowerShell, put the remote command in single quotes (or a script file): ins
 - 64-bit division and modulo are native instructions since 0.7 and fine. 128-bit arithmetic (`__int128`) isn't: it would need `libgcc`, which isn't linked.
 - No `__builtin_popcount` (without a POPCNT target it calls `libgcc`). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Data is never executable: map pages with `paging_nx_flag()` (see *Using memory*). Only kernel code (`.text`) runs.
-- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1); a change that raises it noticeably deserves a look.
+- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1, 1496 at 0.9.2); a change that raises it noticeably deserves a look.
 - Never use a low (physical) address as a pointer: the lower half is empty (0.8). Use `phys_view()` for the low 1 MiB and boot data, the window for other frames, and `kernel_phys()` to turn a kernel symbol into a physical address.
-- Diagnostics that shouldn't appear on screen go to `klogf()` (serial only). Since 0.9.1 everything `klogf` and `kprintf` write is also kept in memory and shown by `dmesg`: never log secrets (and see the key-logging limitation in [PROGRESS.md](PROGRESS.md)).
+- Diagnostics that shouldn't appear on screen go to `klogf()` (serial only). Since 0.9.1 everything `klogf` and `kprintf` write is also kept in memory and shown by `dmesg`: never log secrets.
+- **Key events are not logged by default** (since 0.9.2). Logging them is for tests and diagnostics only: the boot option `keylog` (a whole word on the kernel command line) or `test=keyboard`/`test=kbdflood`. A QEMU check that reads `key:` lines must boot with `keylog` (the GRUB-boot checks use the test-only keylog ISO the test script builds). Don't add another path that logs typed text.
+- **Secret input (binding, see [AGENTS.md](../AGENTS.md)):** No milestone may add a password or other secret prompt without implementing secret-input mode in the same milestone: key events never logged (even with `keylog`), the line not echoed to serial or `dmesg`, not stored in history, and shown as `*` on screen.
 - Never allocate memory before `memory_init()`, and never write to a physical page you didn't get from `memory_alloc_page()`.
 - Kernel code and read-only data are read-only once paging is on (CR0.WP): writing to a `const` object, or to code, is a page fault.
 - Address 0 is never mapped: a NULL dereference is a page fault, not a silent read of the BIOS data area. Since 0.8 the same is true for every address in 0–4 GiB.

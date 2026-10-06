@@ -2,11 +2,15 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.9.1 (Milestone 0.9.1: shell commands)
+**Current version:** 0.9.2 (Milestone 0.9.2: console scrollback and key logging off by default)
 
-![Madire OS v0.9.1 boot screen](docs/images/boot-screen-v0.9.1.png)
+![Madire OS v0.9.2 boot screen](docs/images/boot-screen-v0.9.2.png)
 
-After the boot checks, press any key to open the console. `help` lists the commands; `help <command>` or `<command> --help` explains one:
+After the boot checks, press any key to open the console. Output that scrolls off the top isn't lost: **Shift+PgUp** and **Shift+PgDn** page back through the last 1000 lines (0.9.2), with an indicator on the bottom row; any other key returns:
+
+![Madire OS v0.9.2 console: scrolled back](docs/images/scrollback-page1-v0.9.2.png)
+
+`help` lists the commands; `help <command>` or `<command> --help` explains one:
 
 ![Madire OS v0.9.1 console: help](docs/images/console-help-v0.9.1.png)
 
@@ -31,7 +35,7 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - runs a physical page allocator, which it tests on real RAM at every boot;
 - runs with 4-level paging: the page tables are checked before they are loaded, page 0 is left unmapped so NULL pointers fault, kernel code is read-only, and everything except kernel code is **no-execute (NX)**;
 - has unmapped **guard pages** below its stacks: a kernel stack overflow becomes a double fault, handled on its own stack (IST1), and is reported instead of resetting the machine;
-- measures how deep its stack has ever been used (a **high-water mark**, shown by `mem`: 1512 of 16384 bytes at "System ready." in 0.9.1);
+- measures how deep its stack has ever been used (a **high-water mark**, shown by `mem`: 1496 of 16384 bytes at "System ready." in 0.9.2);
 - runs **kernel threads** (since 0.9), each with its own 16 KiB stack above an unmapped guard, so a thread's stack overflow is caught and the crash screen names the thread;
 - **schedules them preemptively**: round robin with a 50 ms time slice, switching at the end of a timer interrupt, plus sleep, join and exit codes; a thread that never gives up the CPU can't starve the others;
 - keeps itself safe under preemption without locks: the heap, the page allocator, paging and screen/serial output each run with preemption briefly disabled, and only the console thread writes to the screen;
@@ -42,7 +46,8 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - handles hardware interrupts safely: only the timer (IRQ0) and keyboard (IRQ1) are enabled, each only after its handler is ready;
 - keeps time with the PIT at 100 Hz (uptime is shown on screen);
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel;
-- provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End);
+- provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End), and since 0.9.2 a **scrollback** of the last 1000 lines (Shift+PgUp / Shift+PgDn);
+- **doesn't log what you type** (since 0.9.2): key events reach the logs only with the boot option `keylog` (for tests) or during the keyboard diagnostics;
 - runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`, since 0.9 `ps`, and since 0.9.1 `history` (with Up/Down recall), `uname`, `hostname`, `date`, `dmesg` and `reboot` (which asks first); `help <command>` and `<command> --help` explain any command;
 - keeps a 32 KiB kernel log in memory (`dmesg`), reads the date and time from the real-time clock, and restarts the machine through the keyboard controller, with a triple-fault fallback;
 - draws the Madire M logo, built from geometry, in VGA text mode.
@@ -78,17 +83,17 @@ On Linux (Codespace terminal, WSL, CI):
 bash scripts/install-deps.sh   # once (a Codespace from .devcontainer/ runs it for you)
 make            # kernel: build/madire.elf (with symbols) and build/madire.kernel (bootable)
 make iso        # bootable ISO: build/madire-os.iso
-make unit       # host unit tests, 28 suites (memory, 4-level page tables, heap,
+make unit       # host unit tests, 29 suites (memory, 4-level page tables, heap,
                 # keyboard decoder and queue, PIT maths, console text grid, line
                 # editor, parser, shell, CPUID decoding, kprintf, NX and page-fault
                 # decoding, boot modules, stack high-water mark, scheduler, thread
                 # stack slots, ps, command history, RTC decoding, kernel log, the
-                # 0.9.1 commands)
+                # 0.9.1 commands, scrollback)
 make repro      # two clean builds in fresh directories: madire.elf and
                 # madire.kernel must be byte-identical (make test runs it too)
-make test       # unit tests + repro + 560 QEMU checks (150 from 0.3 + 30 from 0.4 +
+make test       # unit tests + repro + 585 QEMU checks (150 from 0.3 + 30 from 0.4 +
                 # 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from
-                # 0.9 + 32 new):
+                # 0.9 + 32 from 0.9.1 + 25 new):
                 # boot, long mode, CPUs without long mode, logo, memory at 5 RAM
                 # sizes, crash tests, timer rate, scripted keyboard input, a scripted
                 # console session, paging and heap self-tests, the higher-half kernel
@@ -96,7 +101,8 @@ make test       # unit tests + repro + 560 QEMU checks (150 from 0.3 + 30 from 0
                 # peak, heap misuse and exhaustion, boot-module integrity, screen
                 # line widths, threads, preemption, sleep and join, the heap and page
                 # allocator under preemption, thread stack overflow, ps, the 0.9.1
-                # commands, reboot through the keyboard controller and by triple fault.
+                # commands, reboot through the keyboard controller and by triple fault,
+                # key logging off by default, scrollback read back from the VGA screen.
                 # About 15 minutes: see docs/development.md for running it detached
 make run        # boot in a QEMU window
 make clean
@@ -125,7 +131,7 @@ The GRUB menu has a **Diagnostics** submenu:
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.9.1)
+## Limitations (v0.9.2)
 
 - 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
 - **Only RAM below 4 GiB is used.** On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
@@ -138,10 +144,11 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - **Console and shell:**
   - Fourteen built-in commands (the full plan is in [docs/commands.md](docs/commands.md)).
   - Commands are lowercase and case-sensitive; at most 8 words per line and 71 characters of input.
-  - `history` keeps only the last 16 lines and forgets them at restart; no tab completion, scrollback (planned for 0.9.2), pipes or scripting.
+  - `history` keeps only the last 16 lines and the scrollback the last 1000 lines; both are lost at restart. No tab completion, pipes or scripting.
+  - Shift+PgUp/PgDn need the grey PgUp/PgDn keys: the numeric keypad's ones type `9`/`3` (Num Lock is assumed on).
   - `hostname` is fixed (`madire`). `date` shows the real-time clock as it is, with no time zone: VirtualBox keeps it on the host's local time, QEMU on UTC. It assumes years 2000–2099 and can't set the date.
-  - `dmesg` shows only what the kernel logged through `kprintf`/`klogf`: the boot screen's status lines and the console's own output aren't in it.
-  - **Every key press is logged** (serial log and `dmesg`). This must be switched off by default before any password can be typed; that is planned for 0.9.2.
+  - `dmesg` shows only what the kernel logged through `kprintf`/`klogf`: the boot screen's status lines and the console's own output aren't in it, and a boot-screen line can appear joined to the next one there.
+  - Key events are logged only with the boot option `keylog` or during the keyboard diagnostics (for tests); never use `keylog` where secrets are typed. There is no password prompt yet; the first one must come with a secret-input mode (see [AGENTS.md](AGENTS.md)).
   - `reboot` uses the keyboard controller (or a triple fault); there is no `shutdown` or `poweroff` yet.
   - Ctrl+key and Alt+key do nothing.
   - Long output lines wrap at column 80, even mid-word (for example `cpu`'s "Features:" line on some CPUs).

@@ -20,6 +20,8 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 
 - Whenever a milestone adds, changes or removes a command, [docs/commands.md](docs/commands.md) (the Madire OS Command Standard, MOCS) is updated **in the same milestone**: status, level, purpose and foundation. The MOCS version goes up by one step each time (v0.1 → v0.2 → …).
 - New commands follow the MOCS rules: one meaning per name, a level (CORE, SYSTEM or APPLICATION), support for `--help`, and a confirmation or a clear warning before any destructive action.
+- **Secret input (binding):** No milestone may add a password or other secret prompt without implementing secret-input mode in the same milestone: key events never logged (even with `keylog`), the line not echoed to serial or `dmesg`, not stored in history, and shown as `*` on screen.
+- **Key logging stays off by default** (since 0.9.2): key events reach the serial log and `dmesg` only with the boot option `keylog` (a whole word) or during the keyboard diagnostics, for tests. Never log secret input, never add another path that logs typed text, and never use `keylog` where secrets are typed.
 
 ## 4. Protected files
 
@@ -29,6 +31,7 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 
 ## 5. Tests
 
+- Every milestone plan must list **every** existing check that contains a version string (not only the named version checks), since a version bump changes them all.
 - Never reduce existing test coverage. Explain every changed check (what it checked before, what it checks now, and why it still proves the same fact). Lists of expected failures are exact and agreed in advance.
 - **Run the full suite detached in the Codespace, on a hash-verified snapshot** (it takes about 15 minutes; a tool's time limit must never cut it off silently). The procedure is in [docs/development.md](docs/development.md): snapshot with SHA-256 of every file, upload, compare the hashes, `nohup make unit test iso`, poll for `MAKE EXIT`, then confirm the working tree still equals the snapshot.
 - Report results by tag (`[0.4]` … and the new milestone's), with the unit suites, `make repro`, the symbol and SSE checks and the protected-file diff.
