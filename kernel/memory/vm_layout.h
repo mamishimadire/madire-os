@@ -14,6 +14,9 @@
  *   slot 256  (0.8) the physical view: VM_PHYS_VIEW_BASE + physical address
  *             for the low 1 MiB and the boot data only (never free RAM,
  *             page 0 or the kernel image); phys_view() below
+ *   slot 507  (0.9) kernel thread stacks: VM_KSTACK_BASE, one 32 KiB slot
+ *             per thread (16 KiB unmapped guard, then the 16 KiB stack);
+ *             kernel/proc/sched_core.h
  *   slot 508  VM_TEST_PAGE (paging self-test), VM_WINDOW (physical access)
  *   slot 509  VM_HEAP_BASE: kernel heap, grows up to VM_HEAP_MAX
  *   slot 510  the recursive mapping: every page table, and the PML4 itself
@@ -29,6 +32,9 @@
 #define VM_NULL_GUARD_END     0x0000000000001000ull
 #define VM_LOW_MAP_START      0x0000000000001000ull
 #define VM_LOW_MAP_END        0x0000000000100000ull
+
+#define VM_KSTACK_INDEX       507u
+#define VM_KSTACK_BASE        0xFFFFFD8000000000ull
 
 #define VM_TEST_PAGE          0xFFFFFE0000000000ull
 #define VM_WINDOW             0xFFFFFE0000001000ull

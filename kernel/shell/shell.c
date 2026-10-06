@@ -322,6 +322,53 @@ static enum shell_result cmd_echo(int argc, char **argv, const struct shell_cont
     return SHELL_OK;
 }
 
+/* 0.9: "ps", only when the context has threads. Columns (at most 54
+ * characters): TID right-aligned in 3, STATE from column 5, TICKS
+ * right-aligned to column 25, STACK PEAK from column 25 ("used/size"),
+ * NAME from column 39; then a count line. */
+static enum shell_result cmd_ps(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    struct line l;
+    (void)argc; (void)argv;
+    l_reset(&l);
+    l_str(&l, "TID");
+    l_pad_to(&l, 5);
+    l_str(&l, "STATE");
+    l_pad_to(&l, 16);
+    l_str(&l, "TICKS");
+    l_pad_to(&l, 25);
+    l_str(&l, "STACK PEAK");
+    l_pad_to(&l, 39);
+    l_str(&l, "NAME");
+    emit(o, &l, SHELL_TEXT);
+    for (uint32_t i = 0; i < c->thread_count; i++) {
+        const struct shell_thread *t = &c->threads[i];
+        l_reset(&l);
+        l_uint(&l, (uint32_t)t->tid, 3, ' ');
+        l_pad_to(&l, 5);
+        l_str(&l, t->state);
+        l_pad_to(&l, 14);
+        /* 32-bit division only: the count is shown while it fits. */
+        if (t->ticks <= 0xFFFFFFFFull)
+            l_uint(&l, (uint32_t)t->ticks, 7, ' ');
+        else
+            l_str(&l, "  large");
+        l_pad_to(&l, 25);
+        l_uint(&l, t->stack_peak, 5, ' ');
+        l_char(&l, '/');
+        l_uint(&l, t->stack_size, 0, ' ');
+        l_pad_to(&l, 39);
+        l_str(&l, t->name);
+        emit(o, &l, SHELL_TEXT);
+    }
+    l_reset(&l);
+    l_uint(&l, c->thread_count, 0, ' ');
+    l_str(&l, c->thread_count == 1 ? " thread" : " threads");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_OK;
+}
+
 static const struct command commands[] = {
     { "help",    "help",          "Show this list",             0, cmd_help },
     { "clear",   "clear",         "Clear the screen",           0, cmd_clear },
@@ -334,20 +381,30 @@ static const struct command commands[] = {
 
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 
+/* 0.9: offered only when the context has threads (see shell.h). */
+static const struct command ps_command =
+    { "ps",      "ps",            "Show threads",               0, cmd_ps };
+
+static void help_row(const struct shell_output *o, const struct command *cmd)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "  ");
+    l_str(&l, cmd->name);
+    l_pad_to(&l, 11);
+    l_str(&l, cmd->help);
+    emit(o, &l, SHELL_TEXT);
+}
+
 static enum shell_result cmd_help(int argc, char **argv, const struct shell_context *c,
                                   const struct shell_output *o)
 {
-    struct line l;
-    (void)argc; (void)argv; (void)c;
+    (void)argc; (void)argv;
     say(o, "Available commands:", SHELL_TEXT);
-    for (uint32_t i = 0; i < COMMAND_COUNT; i++) {
-        l_reset(&l);
-        l_str(&l, "  ");
-        l_str(&l, commands[i].name);
-        l_pad_to(&l, 11);
-        l_str(&l, commands[i].help);
-        emit(o, &l, SHELL_TEXT);
-    }
+    for (uint32_t i = 0; i < COMMAND_COUNT; i++)
+        help_row(o, &commands[i]);
+    if (c->threads)
+        help_row(o, &ps_command);
     return SHELL_OK;
 }
 
@@ -367,18 +424,22 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         break;
     }
 
-    for (uint32_t i = 0; i < COMMAND_COUNT; i++) {
-        if (!str_eq(argv[0], commands[i].name))
-            continue;
-        if (argc - 1 > commands[i].max_args) {
+    const struct command *cmd = 0;
+    for (uint32_t i = 0; i < COMMAND_COUNT && !cmd; i++)
+        if (str_eq(argv[0], commands[i].name))
+            cmd = &commands[i];
+    if (!cmd && c->threads && str_eq(argv[0], ps_command.name))
+        cmd = &ps_command;
+    if (cmd) {
+        if (argc - 1 > cmd->max_args) {
             struct line l;
             l_reset(&l);
             l_str(&l, "Usage: ");
-            l_str(&l, commands[i].usage);
+            l_str(&l, cmd->usage);
             emit(o, &l, SHELL_ERROR);
             return SHELL_BAD_ARGS;
         }
-        return commands[i].run(argc, argv, c, o);
+        return cmd->run(argc, argv, c, o);
     }
 
     struct line l;

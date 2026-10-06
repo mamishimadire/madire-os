@@ -37,6 +37,8 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/memory/vmm_core.h"
+#include "kernel/proc/preempt.h"
+#include "kernel/proc/sched_core.h"
 
 extern char __kernel_start[], __text_start[], __rodata_start[], __rodata_end[], __data_start[];
 extern char __bss_start[], __bss_end[], __kernel_end[];
@@ -274,6 +276,15 @@ static bool build_tables(void)
     enum vmm_result w = vmm_ensure_table(&vm, VM_WINDOW);
     if (w != VMM_OK) {
         klogf("Paging build: window page table: %s\n", vmm_result_str(w));
+        return false;
+    }
+    /* 0.9: the kernel thread stack area (slot 507, 2 MiB) has one page
+     * table, made now: creating a thread then never needs a table frame
+     * (so thread churn returns every frame), and the slot exists before
+     * anything could copy the kernel half of the PML4 (0.10). */
+    enum vmm_result k = vmm_ensure_table(&vm, VM_KSTACK_BASE);
+    if (k != VMM_OK) {
+        klogf("Paging build: kernel thread stack page table: %s\n", vmm_result_str(k));
         return false;
     }
 
@@ -634,6 +645,13 @@ static void walk_check(void)
 
     check_fact("window page table present", VM_WINDOW, VM_WINDOW + VM_PAGE_SIZE,
                "PML4, PDPT and PD entries present", pte_present(phys_entry(VM_WINDOW, 2)));
+    /* 0.9: the kernel thread stack area: its table exists, nothing in it is
+     * mapped yet (each thread maps its own stack; the guards never are). */
+    check_range("kernel thread stack area (PML4[507]), empty at boot", SPACE_IDENTITY,
+                VM_KSTACK_BASE, VM_KSTACK_BASE + KSTACK_AREA_SIZE, EXPECT_UNMAPPED);
+    check_fact("kernel thread stack page table present", VM_KSTACK_BASE,
+               VM_KSTACK_BASE + KSTACK_AREA_SIZE - 1, "PML4, PDPT and PD entries present",
+               pte_present(phys_entry(VM_KSTACK_BASE, 2)));
     uint64_t rec = table_at(pml4_phys)[VM_RECURSIVE_INDEX];
     check_fact("recursive entry (PML4[510])", VM_RECURSIVE_BASE, VM_PML4 + VM_PAGE_SIZE - 1,
                stats.nx ? "points to the PML4, rw nx" : "points to the PML4, rw",
@@ -919,32 +937,48 @@ static void require_enabled(const char *what)
         panicf("%s called while the kernel's page tables are not loaded.", what);
 }
 
+/* 0.9: the tables (reached through the recursive mapping) and the counts in
+ * `vm` and `stats` have no locking; each call runs with preemption off
+ * (kernel/proc/preempt.h). */
 enum vmm_result paging_map(uint64_t va, uint64_t phys, uint64_t flags)
 {
     require_enabled("paging_map");
+    preempt_disable();
     enum vmm_result r = vmm_map(&vm, va, phys, flags);
     stats.page_tables = vm.page_tables;
+    preempt_enable();
     return r;
 }
 
 enum vmm_result paging_unmap(uint64_t va, uint64_t *phys_out)
 {
     require_enabled("paging_unmap");
-    return vmm_unmap(&vm, va, phys_out);
+    preempt_disable();
+    enum vmm_result r = vmm_unmap(&vm, va, phys_out);
+    preempt_enable();
+    return r;
 }
 
 bool paging_translate(uint64_t va, uint64_t *phys_out, uint64_t *flags_out)
 {
-    return stats.enabled && vmm_translate(&vm, va, phys_out, flags_out);
+    preempt_disable();
+    bool r = stats.enabled && vmm_translate(&vm, va, phys_out, flags_out);
+    preempt_enable();
+    return r;
 }
 
 /* The window's page table was created at build time, so mapping it never
- * needs a frame (it works even when physical memory is exhausted). */
+ * needs a frame (it works even when physical memory is exhausted).
+ *
+ * 0.9: there is one window, so its user keeps preemption off from
+ * vmm_window_map() to vmm_window_unmap(): no other thread can map it in
+ * between, and yielding while holding it panics (kernel/proc/thread.c). */
 static bool window_mapped;
 
 volatile void *vmm_window_map(uint64_t phys)
 {
     require_enabled("vmm_window_map");
+    preempt_disable();                  /* until vmm_window_unmap() */
     if (window_mapped)
         panic("vmm_window_map: window already in use (missing vmm_window_unmap).");
     enum vmm_result r = vmm_map(&vm, VM_WINDOW, phys, PTE_WRITE | pte_nx_flag(stats.nx));
@@ -965,6 +999,7 @@ void vmm_window_unmap(void)
     if (r != VMM_OK || vmm_translate(&vm, VM_WINDOW, 0, 0))
         panicf("vmm_window_unmap: %s.", r != VMM_OK ? vmm_result_str(r) : "window still mapped");
     window_mapped = false;
+    preempt_enable();                   /* taken in vmm_window_map() */
 }
 
 const struct paging_stats *paging_stats(void)

@@ -15,6 +15,7 @@ The pure modules have no hardware access, printing or panics:
 - console and shell: `textbuf.c`, `lineedit.c`, `parser.c`, `shell.c`, `cpuinfo.c`
 - 0.7: the boot-module check `bootmod.c`; the NX decision in `cpuid.h` and the page-fault decoding in `pagefault.h`; the formatter in `kprintf.c`
 - 0.8: the stack high-water mark `stackpeak.c`
+- 0.9: the scheduler core `sched_core.c` (threads, run queue, slices, sleep, join, stack slots, the turn-order check), and the shell's `ps`
 
 They're compiled with the host GCC as ordinary 64-bit Linux programs (`-m64 -no-pie`, same warnings-as-errors options), linked at 256 MiB so their static test data lies below 4 GiB (the memory modules take 32-bit physical addresses), and tested with synthetic data: cases real hardware can't produce on demand. Known limitation: `test_reserve` also relies on that data lying above its fake 32 MiB machine, so it depends on the test binary's load address.
 
@@ -36,20 +37,27 @@ They're compiled with the host GCC as ordinary 64-bit Linux programs (`-m64 -no-
 | `test_heap` (25) | 0.6 | init and bad parameters; basic alloc/free; **16-byte alignment for every size 1–4,096**; `alloc(0)`; 1,000 small blocks packed and intact; whole arena without growth; growth (page-sized, at least 16 KiB), refused growth, cap reached (never beyond); **repeated exhaustion → NULL, no corruption**; fragmentation then merging; merge with next, previous and both; split threshold (16 left → no split, 32 → split); **double free** (also after a merge); **invalid pointers** (outside, header, inside a block, misaligned); **corruption** (magic, check value, `prev_size`, size, payload overrun) caught by `heap_check`, `free` and `alloc`; `calloc` zeroes and refuses overflow; statistics consistent; **10,000 pseudo-random steps** with tagged payloads and overlap checks |
 | `test_shell_mem06` (5) | 0.6 | `mem` without the 0.6 pointers is exactly the 0.5 output and a prefix of the extended one; exact paging and heap lines (0.8: `enabled (4-level, 4 KiB, higher-half, NX on/off)`, `identity-mapped` in 0.7; and the `NX:` row: supported/enabled, supported/not enabled, not supported); paging-disabled and heap-disabled wording; singular `block`, a heap at the 16 MiB cap |
 | `test_bootmod` (5) | 0.7 | FNV-1a against published test vectors; an intact test module; every single changed byte detected; truncated modules and modules without the header; status strings |
-| `test_kprintf` (6) | 0.7 | the existing formats unchanged; `%llx`/`%llu`/`%lld` and `%lx`/`%lu` up to the full 64-bit range; `%p` at 16 digits; every power of ten; truncation to the buffer size |
+| `test_kprintf` (7) | 0.7 | the existing formats unchanged; `%llx`/`%llu`/`%lld` and `%lx`/`%lu` up to the full 64-bit range; `%p` at 16 digits; every power of ten; truncation to the buffer size. 0.9: every output call leaves the preemption-disable count as it found it, also when nested inside a guarded section (`ksnprintf` doesn't touch it) |
 | `test_nx` (3) | 0.7 | NX capability decision from CPUID (no extended leaf, bit clear, bit set); the NX page-table flag (bit 63, or 0 without NX); page-fault error-code decoding, including the NX-violation case |
 | `test_shell_cpu07` (8) | 0.7 | `cpu` mode line `64-bit long mode` only when EFER.LMA is set (LME alone is not enough; no EFER keeps the 32-bit wording); `version` says `64-bit x86-64` exactly when `cpu` says long mode; `version x` still gives its usage |
 | `test_stackpeak` (5) | 0.8 | a freshly painted 16 KiB stack reports 0 and every byte holds the pattern; used 100 bytes deep, then 5000 (the peak grows), then 40 (the peak stays at 5000); a fully used stack, also when only the bottom byte changed; written bytes equal to the pattern at the deepest point make it read 2 bytes low, never high; length 0 and 1, an unaligned start and length, bytes outside the range ignored |
 | `test_shell_mem08` (4) | 0.8 | without the stack fields `mem` has no stack row (the 0.5/0.6 output unchanged); the exact row `Kernel stack:            5120 bytes at peak, of 16384`, and it is the last line; peaks of 0, 16384 and 123456 (wider than the column) formatted exactly; every `mem` line at most 79 characters |
+| `test_sched` (17) | 0.9 | initial state (thread 0 running, nothing else); allocation up to the 64-thread limit and the lowest free tid; round-robin order; yield alone and with others; the slice: `need_resched` only after 5 ticks **and** only when another thread is ready; preemption disabled blocks every switch and nests; yield, sleep and join refused with preemption off, changing nothing; sleepers wake at exactly their tick, in tick order, at the tail of the queue, also across a tick-counter wrap; thread 0 never blocks or exits (it gets "poll" instead); join on a zombie and on a live thread, with the refusals (self, detached, second joiner); exit codes including −1, `INT32_MIN` and `INT32_MAX`; detached threads reaped by thread 0; the full table filled and emptied repeatedly; **the turn-order check** (strict order, also when preemptions didn't change it; relaxed only when every break comes right after a preemption, including a shifted rotation of three threads and a first turn after a preemption; a break without a preemption, a repeated or skipped turn, too few turns and an unknown thread all rejected); every state and result string |
+| `test_kstack` (4) | 0.9 | stack slots: lowest free first, all 64, then exhaustion, freeing out of range or twice refused; the sizes (16 KiB stack, 16 KiB guard, 32 KiB slot, 2 MiB area); the layout: every slot inside PML4 slot 507, canonical and page-aligned, the guard directly below its stack, no gap and no overlap, one page table for the whole area, apart from slots 508–511; looking up the slot from an address in a guard or a stack (and nothing for addresses outside) |
+| `test_shell_ps09` (5) | 0.9 | without the thread fields every command and `help` is exactly as before and `ps` is unknown; with them `help` lists `ps` last; the exact `ps` output (header, rows, `1 thread` / `N threads`); edge cases (tid 63, a 10-digit tick count, a 16384/16384 peak, a 15-character name, a tick count beyond 32 bits shown as `large`, an empty table, `ps x` → `Usage: ps`); every line at most 79 characters |
+
+`test_pte` is unchanged in 0.9: the slot-507 layout cases that the plan put there are in `test_kstack`, next to the stack-slot code they check.
 
 ### 1b. QEMU tests (`tests/qemu-tests.sh`)
 
 These boot the kernel headless in QEMU and check the serial output. The kernel copies its screen text to COM1 and logs details there. Each run writes `build/serial-*.log`.
 
-Checks added in 0.4, 0.5, 0.6, 0.7 and 0.8 are tagged `[0.4]` to `[0.8]`, so the summary line separates them from the 0.3 regression checks:
-`ALL TESTS PASSED (389 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 new in 0.8)`.
+Checks added in 0.4 to 0.9 are tagged `[0.4]` to `[0.9]`, so the summary line separates them from the 0.3 regression checks:
+`ALL TESTS PASSED (528 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 new in 0.9)`.
 
-`make test` also runs `make repro` before the QEMU tests; its result becomes 3 of the `[0.8]` checks.
+`make test` also runs `make repro` before the QEMU tests; its result becomes 3 of the `[0.8]` checks. The whole suite takes about 15 minutes; run it detached on a hash-verified snapshot (see [development.md](development.md)).
+
+Existing checks updated in 0.9: only the version checks (4), `v0.8` → `v0.9`. The count of existing checks is unchanged and none was weakened. The extra boot-time page tables 0.9 adds needed no change either: the exhaustion checks recompute their page counts from the log, and the walk-check and `mem` checks accept any count.
 
 Existing checks updated in 0.8 (the count of existing checks is unchanged; each still proves the same fact, at the new address or in the new wording):
 
@@ -80,7 +88,7 @@ Existing checks updated in 0.6:
 | Group | How it boots | What it checks |
 |---|---|---|
 | Multiboot header | (not booted) | `grub-file --is-x86-multiboot` accepts the kernel |
-| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293** (0.8: VGA reached through the physical view); title; version `v0.8`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`). |
+| Normal boot | the real ISO, through GRUB (128 MB), and QMP types `x` after "System ready." | logo lit-pixel count = **293** (0.8: VGA reached through the physical view); title; version `v0.9`; `GDT`, `IDT`, `Interrupt controller`, `Exception handling`, `Memory initialization`, `Display` all `OK`; `Memory self-test: PASS`; every memory panel line; no `PENDING`, `FAILED` or `PANIC`; memory model check. **[0.4]** Timer and keyboard self-tests `PASS` and status `OK`; `IRQ mask: 0xfffc`; `uptime: 5 s`; the typed key arrives (press and release); no unexpected IRQs or dropped keys. **[0.5]** Console self-test `PASS`, `Console & shell: OK`, `System ready. Press any key to open the console.`, and the typed `x` opens the console (`console: started`). |
 | RAM sizes | `-kernel` at `-m 16M`, `32M`, `1G`, `4G` | boots; self-test passes; memory `OK`; panel shows the expected MB above 4 GiB; memory model check with pinned values |
 | Boot module | `-m 32M -kernel … -initrd module.bin` | module range reserved; model check |
 | Exhaustion | `-append "test=memexhaust"` at 16M and 128M | every free page allocated, verified and freed (through the physical-access window since 0.6; the frames held by paging and the heap are left alone and must match the kernel's count exactly); `System ready` afterwards; no panic. **[0.4]** ran with IRQ0/IRQ1 live. |
@@ -108,9 +116,26 @@ Existing checks updated in 0.6:
 | **[0.7] Screen width** | the crash logs and the console session | every crash-screen line (divzero, ud, gpf, doublefree, freereserved, pfnull, pfunmapped, pfreadonly, pfnx, stackoverflow, heapdouble, heapinvalid, heapcorrupt) and every `mem` line is at most **79** characters (an 80-character line would leave a blank line on the crash screen) |
 | **[0.8] Higher-half kernel and physical view** | the normal-boot log (and the no-NX log) | `boot64: running at the higher half, RIP=0xffffffff80…`; PML4[511] maps the kernel image and PML4[256] the physical view; **lower half empty**: `PML4[0] not present` in the walk-check and the self-test (2 lines); `0x0`, `0x100000`, `0xB8000`, `0xFFFFF000` and the Multiboot info's physical address all unmapped (10 lines: both checks); **no kernel-image page in the physical view** (2 lines); page 0 not in the view (2 lines); a free-RAM frame (the PML4's) not in the view; VGA and the Multiboot info reached through the view (`phys-view rw nx`); the no-NX run also has an empty lower half |
 | **[0.8] `pflow`** | `test=pflow` (32M) | `Page-fault test: read at 0x0000000000100000 (paging on; not mapped)`; exception 14, error code `0x00000000`; `Page fault: not present, read, kernel mode`, then `Address: 0x0000000000100000`, in order; CR2 `0x0000000000100000`; halted; booted once (no reset); the read really faulted (no `System ready`); crash-screen lines at most 79 characters |
-| **[0.8] Stack high-water mark** | the boot, keyboard-flood and console logs | the stack was painted 256 bytes below RSP (`live frames untouched`); the peak is between 0 and 16384 bytes at "System ready.", after the keyboard flood and after the console session (1480 in each, printed by the script); `mem`'s last row is `Kernel stack: … bytes at peak, of 16384` |
+| **[0.8] Stack high-water mark** | the boot, keyboard-flood and console logs | the stack was painted 256 bytes below RSP (`live frames untouched`); the peak is between 0 and 16384 bytes at "System ready.", after the keyboard flood and after the console session (1480 in each in 0.8, 1496 in 0.9, printed by the script); `mem`'s last row is `Kernel stack: … bytes at peak, of 16384` |
 | **[0.8] Boot module on screen** | the QEMU module, GRUB module and corrupted-module logs, and the normal boot | `Boot module 1: test pattern intact (14016 bytes)` on the message line through QEMU and through GRUB; `… test pattern CORRUPTED (14016 bytes)` for the corrupted module; **no** module message on a normal boot (screen unchanged) |
 | **[0.8] Reproducible build** | `make repro` (its `sha256.txt`) | `madire.elf` and `madire.kernel` byte-identical in two clean builds (one listing files in reverse order); the kernel under test is that same reproducible binary |
+| **[0.9] Scheduler self-test, thread stack area** (11) | the normal-boot and no-NX logs | `Scheduler self-test: PASS`; the ping-pong strictly alternating; frames, stack slots and threads all returned; the preemptions during the ping-pong logged; a thread that never yields preempted at least 3 times in 30 ticks; `sleep(10)` after 10 or 11 ticks; the walk-check finds PML4[507] empty at boot and its page table present; no screen-rule violation; PASS without NX too; longest turn and highest stack peak logged |
+| **[0.9] Cooperative switches** (11) | `test=threads` (32M; each thread diagnostic below boots `-m 32M -kernel … -append "test=…"`) | 8 threads created; 800 turns in strict round-robin order; `rbx`, `rbp`, `r12`–`r15` preserved across every switch; each thread's stack contents intact; IF=1 after every switch; everything returned; preemptions during the cooperative phase logged; PASS; plus the 3 checks every thread diagnostic gets: no panic or mismatch, System ready afterwards, longest turn and highest stack peak logged |
+| **[0.9] Turn order, relaxed branch** (8) | `test=pingpongpreempt` | one turn deliberately runs past its slice, so a preemption lands mid-ping-pong: the order differs only right after it; accepted through the relaxed branch; both threads finish (codes 11 and 22); everything returned; PASS; the 3 common checks |
+| **[0.9] Turn order, negative test** (7) | `test=pingpongbad` | a skipped turn without a preemption is rejected (`out of order without a preemption`) and a repeated one too (`wrong number of turns`); everything returned; PASS; the 3 common checks |
+| **[0.9] Join** (8) | `test=join` | 6 exit codes exact (0, 1, 255, `0x7fffffff`, −1, `INT32_MIN`); a thread other than 0 blocks in a join and is woken; a detached thread reaped by thread 0; everything returned; PASS; the 3 common checks |
+| **[0.9] Interrupt flag** (9) | `test=ifstate` | a new thread starts with IF=1; yield with IF=1 resumes with IF=1; yield with IF=0 resumes with IF=0 while another thread ran with IF=1 and took a tick; thread 0 keeps IF=1; a preempted thread resumes through `iretq` with its own flags (AC set in one thread, never in the others); PASS; the 3 common checks |
+| **[0.9] Blocking with preemption disabled** (3 × 5) | `test=preemptyield`, `preemptjoin`, `preemptsleep` | the crash screen names the call, the count and the thread (`thread_yield: called with preemption disabled (count 1, thread 0 'kernel').`); halted; booted once; the call never returned; crash-screen lines at most 79 characters |
+| **[0.9] Preemption** (11) | `test=preempt`, with QMP typing 8 keys during the test | 3 threads that never yield, 300 ticks: each gets 25–42 % of the CPU; 40–80 preemptions (one per 5-tick slice); every thread made progress; the timer kept ticking; everything returned; PASS; the 8 keys all arrive, in order (IRQ1 isn't starved); no key dropped; the 3 common checks |
+| **[0.9] Deferred switch** (8) | `test=preemptoff` | no switch while preemption is held for 20 ticks; the request stays pending; the other thread runs at most one tick after the release; everything returned; PASS; the 3 common checks |
+| **[0.9] Sleep** (10) | `test=sleep` | `sleep(1)`, `sleep(10)`, `sleep(100)` each wake after n or n+1 ticks; the spinning thread gets at least 95 % while the other sleeps; thread 0 sleeps 10 ticks by polling; everything returned; PASS; the 3 common checks |
+| **[0.9] Heap under preemption** (8) | `test=heapthreads` | 4 threads, hundreds of thousands of `kmalloc`/`kfree` operations, preempted meanwhile; every tagged payload intact; `heap_check` OK and nothing left in use; free pages = before − heap growth − new tables, exactly; PASS; the 3 common checks |
+| **[0.9] Frames and the window under preemption** (7) | `test=framethreads` | 4 threads, hundreds of thousands of allocations, preempted meanwhile; no frame handed out twice (every tag intact); free pages restored exactly; PASS; the 3 common checks |
+| **[0.9] Thread churn and stack peaks** (11) | `test=threadleak` | a thread more than 8 KiB deep reports a peak of 8192–16383 bytes, and its exit line shows it; 2000 threads created, run and freed (joined and detached); every exit code right, never over the limits; heap use unchanged; free pages, stack slots and threads exactly as before; no exit line per churn thread (logging off); PASS; the 3 common checks |
+| **[0.9] Exit lines** (1) | every thread-diagnostic log | every `Thread N '…' exited` line has a stack peak with 0 < peak < 16384 |
+| **[0.9] Thread stack overflow** (7) | `test=threadoverflow` | exception 8 (#DF); `Double fault: kernel thread stack overflow (thread N 'overflow')`; RSP inside that thread's guard in slot 507 (checked numerically); halted; booted once (no reset); the thread never returned; crash-screen lines at most 79 characters |
+| **[0.9] Console `ps`** (4) | a short console session (`x`, `ps`, `help`) | `ps` prints the header, thread 0 `kernel` `running` and the count; `help` lists `ps` after the seven commands; every line at most 79 characters; no panic and no screen-rule violation |
+| **[0.9] Boot-screen check** (3) | `scripts/check-bootscreen.sh` on the sources and on two altered copies | passes on the sources; rejects a `bootscreen_*` call from another file; rejects an unwrapped call in `kernel.c` outside the boot sequence |
 | **[0.7] No 64-bit CPU** | `-cpu qemu32`, `qemu-system-i386`, `-cpu 486`, `-cpu qemu64,-lm`, `-cpu qemu64,-pae` | `boot32: start`, then `Madire OS needs a 64-bit (x86-64) CPU: long mode not supported. Halted.` (`PAE not supported` for `-pae`); no mode switch attempted; **QEMU still running at the timeout** (a triple fault would have ended the run under `-no-reboot`) |
 
 **How the console session is checked:** the console copies each submitted line to serial as `madire> <line>`, followed by the command's output lines, so the test reads exactly what was typed and printed. Only the final, edited line is logged, not the individual keystrokes (those still appear as 0.4 `key:` lines). Every key goes QMP → i8042 → IRQ1 → the unchanged 0.4 driver, decoder and queue → idle loop → console: the keyboard driver is never bypassed.
@@ -164,17 +189,22 @@ VBoxManage modifyvm MadireOS-Test --ostype Other_64                      # 0.7
 VBoxManage modifyvm MadireOS-Test --uart1 0x3F8 4 --uartmode1 file C:\Users\Mamishi.Madire\Desktop\madire-os\build\vbox-serial.log   # 0.7
 ```
 
-**The serial log is the VirtualBox evidence** (since 0.7): the kernel writes the same lines QEMU's tests read (boot markers, CPU mode, walk-check, self-tests, crash details, the boot-module result). VirtualBox recreates the file at every power-on, so copy it after each test. Compare it with the QEMU run of the same kernel. The only differences, found in 0.7 and again in 0.8, and why they are expected:
+**The serial log is the VirtualBox evidence** (since 0.7): the kernel writes the same lines QEMU's tests read (boot markers, CPU mode, walk-check, self-tests, crash details, the boot-module result). VirtualBox recreates the file at every power-on, so copy it after each test (`scripts/vbox-acceptance.ps1` does this). Compare it with the QEMU run of the same kernel. The only differences, found in 0.7 and again in 0.8 and 0.9, and why they are expected:
 
 - the code-segment descriptor shows `0x00af9b…` in VirtualBox and `0x00af9a…` in QEMU: VirtualBox sets the descriptor's "accessed" bit when CS is loaded (L = 1 and D = 0 are identical);
-- boots through GRUB give **26** paging self-test checks and **364** mapped pages, boots with QEMU's `-kernel` give **27** and **365** (0.7: 19/20 and 360/361): the two loaders place boot data differently (one more reservation above 1 MiB, which the physical view maps and the self-test checks). VirtualBox and QEMU booting the same ISO through GRUB give identical figures;
-- counts that depend on RAM size (free pages, memory-exhaustion pages) differ between the 4 GB VM and QEMU's smaller test machines.
+- boots through GRUB give **26** paging self-test checks and **380** mapped pages, boots with QEMU's `-kernel` give **27** and **381** (0.8: 364/365; 0.7: 19/20 and 360/361): the two loaders place boot data differently (one more reservation above 1 MiB, which the physical view maps and the self-test checks). VirtualBox and QEMU booting the same ISO through GRUB give identical figures;
+- counts that depend on RAM size (free pages, memory-exhaustion pages) differ between the 4 GB VM and QEMU's smaller test machines;
+- timing figures vary a little from run to run: the timer diagnostic (300 ticks in VirtualBox, 299 in QEMU in the 0.9 run) and the preempt test's shares (VirtualBox 33.3/33.6/33.0 % with 59 preemptions, QEMU 33.3 % each with 60), all inside their bands.
 
-Everything else matches line for line in 0.8: the stub markers (including `boot64: running at the higher half, RIP=0xffffffff80101000`), the CPU mode, the walk-check (68 items, 71 with a module), both `lower half empty` lines, every crash test's exception, error code, decoded lines and CR2, the stack peak (1480 bytes) and the boot-module result.
+Everything else matches line for line in 0.9: the stub markers (including `boot64: running at the higher half, RIP=0xffffffff80101000`), the CPU mode, the walk-check (76 items, 79 with a module), both `lower half empty` lines, the slot-507 lines, every crash test's exception, error code, decoded lines and CR2, the scheduler self-test (9 checks), the stack peak (1496 bytes) and the boot-module result.
 
-### Diagnostics menu positions (0.8)
+**VirtualBox delivers timer ticks in bursts (0.9).** After the host has delayed the VM (other host load, the VM being descheduled), VirtualBox's emulated PIT can catch up by delivering several timer interrupts almost at once. A 5-tick slice can then run out within microseconds of guest time. This is a known environment behaviour, not a kernel fault, and it is why the scheduler's cooperative order checks count preemptions (option (A); see *Kernel threads and scheduler* in [architecture.md](architecture.md)).
 
-`pflow` was inserted after `pfnx` in 0.8, which moved the entries after it down by one. To reach an entry by keyboard (as the scripted VirtualBox tests do): on the main menu press ↓ once (Diagnostics) and Enter, then press ↓ the number of times shown, then Enter.
+**Correction of a stage-3 statement (0.9).** During stage 3 the claim was made that a thread's slice "never runs out mid-turn" in the cooperative ping-pong, because each turn is far shorter than a slice. That holds in QEMU, but **not in VirtualBox**: in the first stage-8 run, 1 boot in 14 failed the self-test because a tick burst preempted a thread in the middle of the ping-pong (154 switches instead of 153). The kernel was correct; the test's assumption was wrong. After the option (A) fix, all 34 VirtualBox boots of the final acceptance run passed, each with **0 preemptions** during its ping-pong. So the relaxed branch is proven in QEMU (`test=pingpongpreempt`) but hasn't been observed in VirtualBox yet.
+
+### Diagnostics menu positions (0.9)
+
+`pflow` was inserted after `pfnx` in 0.8, which moved the entries after it down by one. The two 0.9 entries were appended at the end, so no position moved in 0.9. To reach an entry by keyboard (as the scripted VirtualBox tests do): on the main menu press ↓ once (Diagnostics) and Enter, then press ↓ the number of times shown, then Enter.
 
 | ↓ presses | Entry | `test=` |
 |---|---|---|
@@ -192,6 +222,10 @@ Everything else matches line for line in 0.8: the stub markers (including `boot6
 | 11 | Memory test: free a kernel page (was 10) | `freereserved` |
 | 12 | Timer test: measure against RTC (was 11) | `timer` |
 | 13 | Keyboard test: show key codes (was 12) | `keyboard` |
+| **14** | **Thread test: preemption** (new in 0.9) | `preempt` |
+| **15** | **Crash test: kernel thread stack overflow** (new in 0.9) | `threadoverflow` |
+
+![GRUB Diagnostics submenu scrolled to the end, with the two 0.9 entries (0.9)](images/grub-diagnostics-v0.9.png)
 
 ![GRUB Diagnostics submenu with pflow highlighted (0.8)](images/grub-diagnostics-v0.8.png)
 
@@ -214,17 +248,45 @@ Keys can be typed into the VM from the host, through VirtualBox's PS/2 keyboard 
 
 **Wait about 3 seconds after power-on before sending keys.** Keys that arrive while the BIOS is still starting make it stop with `FATAL: Keyboard error:995`, before GRUB even loads.
 
+### Scripted acceptance test: `scripts/vbox-acceptance.ps1` (0.9)
+
+Since 0.9 the tests below are run by a script, on Windows, with the VM powered off:
+
+```powershell
+.\scripts\vbox-acceptance.ps1                          # every test
+.\scripts\vbox-acceptance.ps1 -Only boot,preempt       # some tests
+.\scripts\vbox-acceptance.ps1 -Only repeat -Repeat 20  # 20 extra normal boots
+```
+
+**It checks the VM and refuses to change it.** Before anything else it reads the VM's settings (`VBoxManage showvminfo`) and compares them with the configuration above: OS type `Other_64`, BIOS firmware, 4096 MB, PAE off, DVD first in the boot order, COM1 at `0x3F8` IRQ 4 writing to `build\vbox-serial.log`, and the VM powered off. On any difference it lists what differs and **stops without changing anything**. It never changes a VM setting; the only change it makes is attaching the ISO under test to the optical drive (as `scripts\run.ps1` does), and it reads the attachment back to verify it. Report a difference rather than "fixing" it; a settings change needs approval.
+
+**What it does:** it prints the SHA-256 of the ISOs it tests (`build\madire-os.iso`, and `build\madire-os-module.iso` for the module test, built as described in Test I), then boots the VM headless once per test, sends keys through VirtualBox's emulated PS/2 keyboard no sooner than 3.5 s after power-on (`-KeyDelayMs`), waits for the line that ends each test in the serial log, takes a screenshot, powers off, keeps a copy of the serial log and checks it for each expected line. Everything goes to `build\vbox-acceptance\` (`-OutDir`), with a summary file; the script exits with 1 if any expected line is missing.
+
+| `-Only` group | What it checks |
+|---|---|
+| `menu` | screenshots of the GRUB menu, the top of the Diagnostics submenu and its end (entries 14 and 15) |
+| `boot` | the normal boot: `Scheduler self-test: PASS`, `System ready.`, then in the console `ps` (thread 0 `kernel` `running`), `version` (`Madire OS v0.9 (64-bit x86-64, Multiboot 1)`) and `mem` (the `Kernel stack:` row) |
+| `preempt` | Diagnostics entry 14: `Preempt test: fair shares: …: OK` and `Preempt test: PASS` |
+| `threadoverflow` | entry 15: `Double fault: kernel thread stack overflow (thread N 'overflow')`, halted |
+| `pf` | the five page-fault entries and the kernel stack overflow: each one's address, NX or double-fault line, halted |
+| `diag` | divide by zero (`#DE`), the timer diagnostic (`Timer diagnostic: PASS`) and the keyboard diagnostic (`a`, `Shift+A` with `flags=0x03`, Up) |
+| `memexhaust` | `Memory exhaustion test: PASS`, then `mem` in the console |
+| `module` | the module ISO: `Boot module 1: test pattern intact (14016 bytes)` |
+| `repeat` (with `-Repeat N`) | N extra normal boots; for each, the self-test result, the preemptions during its ping-pong and the ping-pong verdict |
+
+In 0.9 the full run gave 33 of 33 expected lines, and 20 extra normal boots each gave `self-test PASS; ping-pong preemptions 0; 100 yields, strictly alternating: OK`. The serial logs are then compared with QEMU's, as described above.
+
 ### Test A: normal boot
 
-The GRUB menu shows **Madire OS v0.8** and **Diagnostics**:
+The GRUB menu shows **Madire OS v0.9** and **Diagnostics**:
 
-![GRUB menu (0.8)](images/grub-menu-v0.8.png)
+![GRUB menu (0.9)](images/grub-menu-v0.9.png)
 
 After 3 seconds it boots the first entry:
 
-![Madire OS v0.8 boot screen](images/boot-screen-v0.8.png)
+![Madire OS v0.9 boot screen](images/boot-screen-v0.9.png)
 
-- The M logo is drawn in the blue-to-cyan gradient; `M A D I R E   O S` and `Madire OS v0.8` share one row.
+- The M logo is drawn in the blue-to-cyan gradient; `M A D I R E   O S` and `Madire OS v0.9` share one row. The screen's layout is unchanged in 0.9: the scheduler self-test reports on the serial log only.
 - Left column: **10 status lines, all `OK`**, including `Paging & kernel heap` (0.6), `Timer (PIT, 100 Hz)`, `Keyboard (PS/2)` and `Console & shell` (a self-test of the console code, not of hardware).
 - Right column: memory figures, then **Uptime**, which counts up every second, and **Last key**, which shows the last key pressed (`none` until then). For `MadireOS-Test` (4096 MB):
 
@@ -235,10 +297,10 @@ After 3 seconds it boots the first entry:
   | RAM above 4 GiB | **512 MB** |
   | Page size | **4096 bytes** |
   | Usable pages | **917391** |
-  | Free pages | **917121** in 0.8 (917124 in 0.7; usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes). This is taken before the kernel's page tables and the heap are set up; the console's `mem` then shows 57 fewer (**917064**: 12 page tables, the PML4 and 44 heap pages). |
+  | Free pages | **917105** in 0.9 (917121 in 0.8, 917124 in 0.7; usable minus the low 1 MiB, the kernel and GRUB's boot data; changes when the kernel's size changes). This is taken before the kernel's page tables and the heap are set up; the console's `mem` then shows 60 fewer (**917045**: 15 page tables, the PML4 and 44 heap pages; 0.9 adds the 3 tables of the thread stack area). |
 
 - Bottom row: `System ready. Press any key to open the console.`
-- Serial log: `boot32: start`, `boot32: CPUID ok, long mode and PAE present`, `boot64: entered 64-bit long mode`, `boot64: running at the higher half, RIP=0xffffffff80101000` (0.8), the stack paint line, `CPU mode: … 64-bit long mode active; 64-bit arithmetic PASS`, `NX: supported by the CPU …; EFER.NXE enabled`, `Paging check: lower half empty: PML4[0] not present …: OK` (twice), `Paging walk-check: PASS (68 items, 0 mismatches)`, both guard pages `unmapped`, `Paging self-test: PASS (26 checks, 0 mismatches)`, `Kernel heap self-test: PASS`, and after "System ready." `Kernel stack: 1480 bytes at peak, of 16384`.
+- Serial log: `boot32: start`, `boot32: CPUID ok, long mode and PAE present`, `boot64: entered 64-bit long mode`, `boot64: running at the higher half, RIP=0xffffffff80101000` (0.8), the stack paint line, `CPU mode: … 64-bit long mode active; 64-bit arithmetic PASS`, `NX: supported by the CPU …; EFER.NXE enabled`, `Paging check: lower half empty: PML4[0] not present …: OK` (twice), `Paging check: kernel thread stack area (PML4[507]), empty at boot …: OK` (0.9), `Paging walk-check: PASS (76 items, 0 mismatches)`, both guard pages `unmapped`, `Paging self-test: PASS (26 checks, 0 mismatches)`, `Kernel heap self-test: PASS`, then the scheduler self-test (0.9): `cooperative ping-pong: 100 yields, strictly alternating: OK`, `preemptions during the ping-pong: 0: OK`, the exit lines `Thread 1 'pingA' exited: code 11, stack peak 192 of 16384` and `Thread 2 'pingB' …`, `Scheduler self-test: PASS (9 checks, 0 mismatches)`; and after "System ready." `Kernel stack: 1496 bytes at peak, of 16384`.
 
 ### Test F: console and shell
 
@@ -248,9 +310,10 @@ Press any key on the boot screen. That key opens the console and **isn't typed**
 
 | Check | Expected |
 |---|---|
-| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.8` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
-| `help`, `version`, `uptime` | the 7-command list; `Madire OS v0.8 (64-bit x86-64, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
-| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages, 917064 free, 5 reserved ranges, then `Paging: enabled (4-level, 4 KiB, higher-half, NX on)`, `Mapped pages: 364`, `Page tables: 12`, `NX: supported, enabled`, `Kernel heap: 176 KiB mapped, max 16384 KiB`, `Heap in use: 0 KiB in 0 blocks`, `Heap free: 176 KiB, largest block 175 KiB`, and last `Kernel stack: 1480 bytes at peak, of 16384` (0.8; no line wraps); CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode `64-bit long mode, paging on, 1 CPU in use`. On this CPU the "Features:" line is longer than 80 columns and wraps (known since 0.5). |
+| Console opens | Banner `M A D I R E   O S` / `Madire OS v0.9` / `Type 'help' …`, then `madire>` with a **blinking underline cursor** |
+| `help`, `version`, `uptime` | the 7-command list, then `ps` (0.9); `Madire OS v0.9 (64-bit x86-64, Multiboot 1)`; `Uptime: HH:MM:SS (N ticks at 100 Hz)`, advancing |
+| `ps` (0.9) | `TID  STATE      TICKS    STACK PEAK    NAME`, then `  0  running   …   1496/16384   kernel` and `1 thread` (only thread 0 exists after boot; no line wraps) |
+| `mem`, `cpu` | 4096 / 3584 / 512 MB, 917391 usable pages, 917045 free, 5 reserved ranges, then `Paging: enabled (4-level, 4 KiB, higher-half, NX on)`, `Mapped pages: 380`, `Page tables: 15`, `NX: supported, enabled`, `Kernel heap: 176 KiB mapped, max 16384 KiB`, `Heap in use: 0 KiB in 0 blocks`, `Heap free: 176 KiB, largest block 175 KiB`, and last `Kernel stack: 1496 bytes at peak, of 16384` (0.9; no line wraps); CPUID vendor, brand (VirtualBox shows the host CPU, e.g. `13th Gen Intel(R) Core(TM) i5-1335U`), family/model, features, mode `64-bit long mode, paging on, 1 CPU in use`. On this CPU the "Features:" line is longer than 80 columns and wraps (known since 0.5). |
 | Editing | `echo hellx`, Backspace, `o` → `hello`; `echo abXc`, Left, Left, Delete → `abc`; `cho world`, Home, `e`, End, `!` → `world!`; Right and insert → `hello` |
 | Shift, Caps Lock, Tab | `echo   Hello   World!` → `Hello World!`; Caps Lock, `echo abc` → `ECHO ABC` (unknown: names are lowercase); `echo`, Tab, `a`, Tab, Tab, `b` → `a b` |
 | Errors (red) | `foo` → `Unknown command: foo. …`; `version x` → `Usage: version`; `echo 1 2 3 4 5 6 7 8` → `Too many arguments (max 8).` |
@@ -260,7 +323,9 @@ Press any key on the boot screen. That key opens the console and **isn't typed**
 
 ![help, version and uptime (0.8)](images/console-v0.8.png)
 
-![mem with the higher-half kernel, NX and the stack peak (0.8)](images/console-mem-v0.8.png)
+![ps and version (0.9)](images/console-ps-v0.9.png)
+
+![mem with the higher-half kernel, NX and the stack peak (0.9)](images/console-mem-v0.9.png)
 
 ![cpu and echo (0.7)](images/console-cpu-v0.7.png)
 
@@ -283,7 +348,7 @@ The other two crash entries should show `Invalid Opcode (#UD)` and `General Prot
 
 | Entry | Expected |
 |---|---|
-| **Memory test: allocate every page** | after **about 50–90 seconds** on a 4 GB VM (each page goes through the physical-access window since 0.6; 50 s in the 0.8 run), `Memory exhaustion test: PASS (… pages)` and `System ready.` That is the boot panel's free pages minus the frames paging and the heap already hold (0.8: 917064 pages; 57 = 12 page tables + the PML4 + 44 heap pages, which the serial log lists; 0.7: 54). Afterwards the console's `mem` shows free pages back at that figure and the heap figures unchanged. |
+| **Memory test: allocate every page** | after **about 50–90 seconds** on a 4 GB VM (each page goes through the physical-access window since 0.6; 50 s in the 0.8 run), `Memory exhaustion test: PASS (… pages)` and `System ready.` That is the boot panel's free pages minus the frames paging and the heap already hold (0.9: 917045 pages; 60 = 15 page tables + the PML4 + 44 heap pages, which the serial log lists; 0.8: 57; 0.7: 54). Afterwards the console's `mem` shows free pages back at that figure and the heap figures unchanged. |
 | **Memory test: double free** | crash screen: `Double free of physical page 0x…` |
 | **Memory test: free a kernel page** | crash screen: `Attempt to free reserved page 0x00100000` |
 
@@ -313,7 +378,7 @@ Check: Shift+A gives `LSHIFT` and then `'A'` with `flags=0x03`; Up is `UP` with 
 | read from NULL | `0x00000000` | `Page fault: not present, read, kernel mode` / `Address: 0x0000000000000000` | `0x0000000000000000` |
 | read from unmapped address | `0x00000000` | `Page fault: not present, read, kernel mode` / `Address: 0x0000000040000000` | `0x0000000040000000` |
 | write to read-only kernel code | `0x00000003` | `Page fault: protection violation, write, kernel mode` / `Address: 0xffffffff80100000` (0.8; `0x0000000000100000` up to 0.7) | `0xffffffff80100000` |
-| execute from no-execute data (NX) | `0x00000011` | `Page fault: protection violation, read, kernel mode` / `Details: instruction fetch (NX violation)` / `Address:` the data page (0.8: `0xffffffff8015e000`) | the data page |
+| execute from no-execute data (NX) | `0x00000011` | `Page fault: protection violation, read, kernel mode` / `Details: instruction fetch (NX violation)` / `Address:` the data page (0.9: `0xffffffff80169000`; 0.8: `0xffffffff8015e000`) | the data page |
 | read the kernel's old low address (0.8) | `0x00000000` | `Page fault: not present, read, kernel mode` / `Address: 0x0000000000100000` | `0x0000000000100000` |
 
 ![Page fault: write to read-only kernel code, at its higher-half address (0.8)](images/pagefault-v0.8.png)
@@ -346,6 +411,32 @@ The normal ISO loads no module, so this uses a scratch ISO built exactly like th
 
 ![Boot module result on the message line (0.8)](images/module-v0.8.png)
 
+### Test J: preemption (0.9)
+
+**Diagnostics → Thread test: preemption** (entry 14). Three kernel threads that never yield spin for 300 ticks (3 seconds), and the scheduler must share the CPU between them by preemption alone. The boot screen's message line shows `Preempt test: 3 threads that never yield, for 3 seconds...`, then `Preempt test: PASS`, and the boot finishes normally (`System ready.`):
+
+![Preempt test: PASS on the message line (0.9)](images/preempt-v0.9.png)
+
+The serial log has the figures. From the 0.9 run:
+
+- `Preempt test: fair shares: spin0 33.3% (100 ticks), spin1 33.6% (101), spin2 33.0% (99) of 300 (each 25-42%): OK`
+- `Preempt test: preemptions: 59 preemptions in 300 ticks (about 60 expected: one per 5-tick slice): OK`
+- every thread made progress, the timer kept ticking (311 ticks elapsed), and everything returned (free pages, stack slots, live threads);
+- `Preempt test: longest turn: 5 ticks (slice 5)`, then `Preempt test: PASS (6 checks, 0 mismatches)`.
+
+The exact shares and counts vary slightly from run to run; each share must stay within 25–42 %.
+
+### Test K: kernel thread stack overflow (0.9)
+
+**Diagnostics → Crash test: kernel thread stack overflow** (entry 15). A kernel thread named `overflow` recurses until its stack runs into the unmapped 16 KiB guard below it:
+
+![Kernel thread stack overflow: double fault naming the thread (0.9)](images/threadoverflow-v0.9.png)
+
+- `CPU exception 8: Double Fault (#DF)`, error code `0x00000000`;
+- `Double fault: kernel thread stack overflow (thread 1 'overflow')`, then `RSP=0xfffffd8000003ff0  guard 0xfffffd8000000000-0xfffffd8000003fff`: the RSP lies inside that thread's guard, in slot 507;
+- the full register dump (the handler ran on IST1), then `System halted.`;
+- the VM **doesn't reset**: the serial log shows `boot32: start` once.
+
 ### Troubleshooting by layer
 
 | Symptom | Layer | Check |
@@ -377,6 +468,14 @@ The normal ISO loads no module, so this uses a scratch ISO built exactly like th
 | Crash screen: exception 8, `Double fault: kernel stack overflow …` outside the stack test | A kernel bug | The kernel stack (16 KiB) ran into its guard page: too-deep recursion or a large local buffer |
 | Crash screen: `Heap: …` | Kernel heap misuse | Double free, invalid free or a corrupted block: a kernel bug; the message gives the pointer |
 | Crash screen: `kmalloc: called with interrupts disabled` | Kernel heap | `kmalloc`/`kcalloc`/`kfree` called from an IRQ/exception handler or with interrupts off |
+| Crash screen: `Scheduler self-test failed (details on the serial log).` | Scheduler (0.9) | The `Scheduler self-test:` lines name the failing check. If it's the ping-pong order, check the line `preemptions during the ping-pong`: a reordering right after a preemption is accepted (option (A)); one without a preemption is a real fault |
+| Crash screen: `… called with preemption disabled (count N, thread T '…').` outside the `preempt*` tests | A kernel bug (0.9) | A thread yielded, slept, joined or exited inside a `preempt_disable()` section (or while holding the window). The message names the call and the thread |
+| Crash screen: `Screen output from thread N '…': only thread 0 writes to the screen` | A kernel bug (0.9) | A thread other than 0 used `kprintf`/`kputs`; it must use `klogf` |
+| Crash screen: `Boot screen used from thread N '…'` | A kernel bug (0.9) | A boot-screen call outside thread 0; every such call must go through `BOOTSCREEN_SAFE()` on thread 0 |
+| Crash screen: `Double fault: kernel thread stack overflow (thread N '…')` outside Test K | A kernel bug (0.9) | That thread used more than its 16 KiB stack: too-deep recursion or a large local buffer. Exit lines (`Thread N '…' exited: …, stack peak P of 16384`) show how close other threads came |
+| `make iso` stops with `error: … calls bootscreen_*()` | Build check (0.9) | `scripts/check-bootscreen.sh`: a boot-screen call outside the boot sequence; use `BOOTSCREEN_SAFE()` in `kernel/kernel.c` |
+| A thread test hangs in QEMU but passes in VirtualBox | Test code (0.9) | A loop that only polls `timer_ticks()` can starve IRQ0 under QEMU's TCG; do real work between the reads (see [development.md](development.md)) |
+| `vbox-acceptance.ps1`: `The VM does not match the documented settings; refusing to run` | VM config | The lines above it name each difference. Nothing was changed. Don't change a VM setting without approval; report the difference |
 | Panel shows less usable RAM than the VM has | Expected | RAM above 4 GiB isn't used yet, and firmware-reserved areas never are |
 | `build\vbox-serial.log` is empty or missing | VM config | COM1 must be set to file mode (see the VM configuration above); the file is recreated at every power-on |
 | `build.ps1`: `open local "build/madire-os.iso": Broken pipe` | VM running | Power off `MadireOS-Test`, then build again |

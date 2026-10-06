@@ -17,9 +17,10 @@ Each milestone is one commit on `main`. The hashes are from `git log`; tags exis
 | **0.5** | `f73a0ea` | 2026-09-28 | Kernel console and command shell (`help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`) |
 | **0.6** | `77ae5c1` (tag `v0.6`) | 2026-09-28 | Paging (identity-mapped, walk-checked before it is enabled) and the kernel heap |
 | **0.7** | `1044dd7` (tag `v0.7`) | 2026-09-29 | 64-bit long mode: 4-level paging, NX, TSS with an IST1 double-fault stack, stack guard pages |
-| **0.8** | this milestone's commit (tag `v0.8`) | 2026-09-30 | Higher-half kernel: kernel at `0xFFFFFFFF80000000` + physical, lower half empty, physical view for the low 1 MiB and boot data, `pflow` diagnostic, stack high-water mark, boot-module result on screen, reproducible build, `.devcontainer/` proven |
+| **0.8** | `f38f4c6` (tag `v0.8`) | 2026-09-30 | Higher-half kernel: kernel at `0xFFFFFFFF80000000` + physical, lower half empty, physical view for the low 1 MiB and boot data, `pflow` diagnostic, stack high-water mark, boot-module result on screen, reproducible build, `.devcontainer/` proven |
+| **0.9** | this milestone's commit (tag `v0.9`) | 2026-10-05 | Kernel threads and a preemptive scheduler: threads with their own guarded stacks (PML4 slot 507), context switches, round robin with a 50 ms slice, sleep and join, a preemption-disable count that makes the kernel safe under preemption, a scheduler self-test at every boot, the `ps` command, the thread diagnostics, `scripts/vbox-acceptance.ps1`, `AGENTS.md` |
 
-The 0.8 commit can't list its own hash; `git log -1 v0.8` gives it.
+The 0.9 commit can't list its own hash; `git log -1 v0.9` gives it.
 
 ## 2. Tests passing at each milestone
 
@@ -33,10 +34,15 @@ The 0.8 commit can't list its own hash; `git log -1 v0.8` gives it.
 | 0.6 | 15 (+ `pte`, `vmm`, `heap`, `shell_mem06`) | 261 (+ 49 `[0.6]`) |
 | 0.7 | 19 (+ `bootmod`, `kprintf`, `nx`, `shell_cpu07`; `pte` and `vmm` rewritten for 4 levels) | 357 (150 + 30 + 32 + 49 + 96 `[0.7]`) |
 | 0.8 | 21 (+ `stackpeak`, `shell_mem08`; new cases in `mmap` and `pte`) | 389 (150 + 30 + 32 + 49 + 96 + 32 `[0.8]`), plus `make repro` (two clean builds byte-identical) |
+| 0.9 | 24 (+ `sched`, `kstack`, `shell_ps09`; a new case in `kprintf`) | 528 (150 + 30 + 32 + 49 + 96 + 32 + 139 `[0.9]`), plus `make repro` |
 
-Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Test` before it was committed.
+Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Test` before it was committed. Since 0.9 that test is scripted (`scripts/vbox-acceptance.ps1`, see [testing.md](testing.md)). In 0.9, 33 of 33 checks passed, plus 20 extra normal boots, each with the scheduler self-test `PASS` and 0 preemptions during its ping-pong.
+
+**0.9 test details:** the 139 `[0.9]` checks are in 19 groups (listed in [testing.md](testing.md)). Of the existing 389 checks only the 4 version checks changed (`v0.8` → `v0.9`); none was removed or weakened. The new unit suites make 32,782 checks (`test_sched`), 1,190 (`test_kstack`) and 23 (`test_shell_ps09`). The full suite takes about 15 minutes, so it runs detached in the Codespace (see [development.md](development.md)).
 
 **Stack peak baseline (0.8):** the kernel stack's high-water mark is **1480 of 16384 bytes**, the same after booting, after the keyboard flood and after the scripted console session, in QEMU and in VirtualBox. Future milestones can compare against it (processes in 0.9 will add their own stacks).
+
+**Stack peaks (0.9):** the boot stack's peak is **1496 bytes** (1480 in 0.8). It is again the same after booting, after the keyboard flood and after the console session, in QEMU and in VirtualBox. Each kernel thread has its own 16 KiB stack and logs its final peak when it exits. The test threads use 192 to 1000 bytes, except the churn test's deliberately deep thread (8496 bytes).
 
 In 0.7 the boot memory self-test reports "35 checks" where 0.6's early logs showed 3104. That comes from a 0.6 change to `memtest.c` (one check counted per page instead of per word, with every word still compared). It isn't lost coverage.
 
@@ -70,14 +76,39 @@ What each milestone left open when it was committed, and where it was resolved.
   - The ISO isn't reproducible (`grub-mkrescue` records timestamps); `make repro` covers `madire.elf` and `madire.kernel` only.
   - `test_reserve` still depends on the host test binary's load address (deferred).
   - The `cpu` "Features:" line can still wrap, and the stub's "no CPUID" path is still reviewed but not executed.
+- **0.9:**
+  - **Longer turns inside guarded sections (deferred switch, policy (a)).** A switch that falls due while preemption is disabled waits for the next interrupt after the count is back at 0. A thread that spends almost all its time inside guarded sections (for example allocating frames in a loop) can therefore run longer than the 5-tick slice. Correctness and progress are unaffected. Every scheduler diagnostic logs its longest turn: `framethreads` measured up to **77 ticks** during the stages (30 in the final regression run), `heapthreads` 14, and `preemptoff` 21 (it holds the guard for 20 ticks on purpose). To be measured again in 0.10.
+  - **VirtualBox delivers timer ticks in bursts** after the host has delayed the VM, so a 5-tick slice can run out within microseconds of guest time, even in the middle of a short cooperative turn. This is how the emulated PIT behaves, not a kernel fault. The boot self-test and `test=threads` allow for it (decision "option (A)" in the decision log). In all 34 VirtualBox boots of the final acceptance run the ping-pong saw 0 preemptions, so the relaxed branch is proven in QEMU (`test=pingpongpreempt`) but not yet observed in VirtualBox.
+  - **The full test suite takes about 15 minutes** and must be run detached in the Codespace, on a hash-verified snapshot (see [development.md](development.md)), so that a tool's time limit can't cut it off.
+  - Kernel threads only: no user mode, per-process address spaces or system calls yet (0.10).
+  - One CPU only: the preemption-disable count can replace locks only because nothing else runs at the same time. There is no SMP support.
+  - Round robin only, no priorities; a fixed 50 ms slice; at most 64 threads (thread 0 plus 63), each with a 16 KiB stack.
+  - Thread 0 (the console and idle loop) never blocks: it waits by polling (yield, or `hlt` when nothing else can run).
+  - Only thread 0 writes to the screen; other threads log to serial with `klogf` (a breach panics).
+  - The heap is still not interrupt-safe (it is now safe between threads).
+  - Thread stack peaks have the same limits as the boot stack's: they can read a few bytes too low, never too high.
+  - Still open from 0.8: RAM above 4 GiB; no direct map; 4 KiB pages only; every page fault is fatal; the ISO isn't reproducible; `test_reserve` depends on the load address; the `cpu` "Features:" line can wrap; the "no CPUID" path isn't executed.
 
 ## 4. Roadmap
 
 | Milestone | Goal | Status |
 |---|---|---|
 | **0.8** | Higher-half kernel: the kernel runs at `0xFFFFFFFF80000000` + physical (PML4 slot 511) and the lower half is empty | done |
-| **0.9** (next) | Processes: tasks and a scheduler, user mode, system calls, a first user program | planned |
+| **0.9** | Processes, part 1: kernel threads and a preemptive scheduler | done |
+| **0.9.1** (next) | Shell commands needing no new kernel foundations: `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `help <command>`, `<command> --help` | planned (decisions approved; starts after 0.9 and the command standard `docs/commands.md`) |
+| **0.10** | Processes, part 2: user processes (user mode, one address space per process, system calls, ELF programs) | planned |
 | **1.0** | Filesystem: a virtual filesystem layer and an initial RAM disk, then disk filesystems | planned |
+
+### 0.10 items (decided in principle in the 0.9 plan; 0.10 needs its own plan and approval)
+
+- User mode (ring 3): user code and data segments in the GDT, and the TSS's RSP0 set for each thread when it is switched in.
+- One PML4 per process, sharing the kernel half: entries 256–511 copied from the kernel's PML4, except slot 510 (the recursive mapping), which points to the process's own PML4. Slot 507 (the thread stacks) exists from boot, so it is shared too.
+- `SYSCALL`/`SYSRET` with a subset of the Linux x86-64 system-call numbers and conventions: `write` (1), `sched_yield` (24), `nanosleep` (35), `getpid` (39), `exit` (60), `exit_group` (231); every other number returns `-ENOSYS`.
+- An ELF loader for programs delivered as boot modules; shell commands to run and kill programs; `ps` showing processes.
+- SMEP and SMAP, considered together with user mode.
+- **The `gpf` diagnostic (condition C of the 0.9 plan):** it loads selector `0x28` as "past the end of the GDT". Once user segments are added, `0x28` becomes a real entry, so the 0.10 plan must re-check the diagnostic and say how it still raises a #GP.
+- **Measure the longer turns under policy (a) again** (the 0.9 limitation above) once user processes run.
+- Still excluded from 0.10: the filesystem, signals, threads inside user processes, SMP, fork/exec, priorities.
 
 The candidate items listed for 0.8 were decided in its plan. Delivered in 0.8:
 
@@ -87,7 +118,9 @@ The candidate items listed for 0.8 were decided in its plan. Delivered in 0.8:
 
 Deferred: making `test_reserve` independent of the host test binary's load address.
 
-**0.9 planning must consider Linux/POSIX-compatible system calls**, so that Chromium, Linux applications and Wine could be ported later.
+The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning asked: 0.10 uses the Linux x86-64 system-call numbers and conventions (above), so that Chromium, Linux applications and Wine could be ported later.
+
+**Modernisation track:** the legacy hardware paths Madire OS uses today (BIOS, the 8259 PIC, the PIT, one CPU, VGA text mode, PS/2, RAM below 4 GiB) and their modern replacements, the goals that will make it feel modern to users, and the open decision on Rust for drivers are listed in [roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet). All planned, not yet committed to milestones.
 
 ### Future phases (direction only; planned, not committed)
 
@@ -151,3 +184,25 @@ Deferred: making `test_reserve` independent of the host test binary's load addre
 | Protected memory modules changed in 0.8, each justified in the plan: `memory.c`, `mmap.c`/`mmap.h`/`test_mmap.c`, `memtest.c`, one line of `vga_text.c`; `reserve.c` and `pmm.c` unchanged | 0.8 | Boot data and VGA are reached through the physical view |
 | Reproducible kernel build (sorted link order, `make repro`); the ISO is excluded | 0.8 | `grub-mkrescue` records timestamps |
 | Kernel stack high-water mark and the boot-module result on screen included; `test_reserve` independence deferred | 0.8 | |
+| Milestone split: **0.9** kernel threads and a preemptive scheduler; **0.10** user mode, one PML4 per process, `SYSCALL` with a Linux x86-64 subset, ELF programs from boot modules; 1.0 stays the filesystem | 0.9 planning | Each half can be tested on its own; 0.9 is built in the shape 0.10 needs |
+| Preemptive round robin with the slice `SCHED_SLICE_TICKS` = 5 ticks (50 ms) as a named constant; at most 64 threads; thread 0 is `kernel_main`'s flow (boot, console, idle) and never blocks or exits | 0.9 | |
+| **No locks: a preemption-disable count.** The heap, the frame allocator, paging and the window, `kprintf`/`klogf` and the console's serial copy run each operation with preemption off; the scheduler's own state is changed with interrupts off | 0.9 | Enough on one CPU; interrupt handlers still never use these subsystems |
+| The protected `memory.c` gets only a mechanical guard in `memory_alloc_page` and `memory_free_page` | 0.9 | Approved in the plan; the only protected file changed in 0.9 |
+| One switch point: the end of an IRQ, after `irq_dispatch` (so after the EOI), in `interrupts.c`; `timer.c` and `irq.c` unchanged; exceptions never switch | 0.9 | |
+| **Deferred switch, policy (a):** a switch requested while preemption is off stays pending and happens at the first interrupt after the count is back at 0 (at most one tick later); `preempt_enable()` itself never switches | 0.9, stage 3 | `test=preemptoff` measures the bound (1 tick) |
+| Kernel thread stacks in PML4 slot 507 (`0xFFFFFD8000000000`): 64 slots of 32 KiB, each a 16 KiB stack above a 16 KiB unmapped guard; the area's page table is made at boot | 0.9 | Creating a thread never needs a table frame, and slot 507 exists before 0.10 copies the kernel half |
+| F1: the console's per-line serial copy runs with preemption off | 0.9, stage 2 | So a thread's `klogf` line can't land inside a console line |
+| F2: the protected `bootscreen.c` stays unchanged; every boot-screen call that can happen while other threads exist goes through `BOOTSCREEN_SAFE()` in `kernel.c` (thread 0 only, preemption off); `scripts/check-bootscreen.sh` fails the ISO build on any other call (the boot sequence and the boot-only `devtest.c` excepted) | 0.9, stages 2–3 | |
+| F3: `kputc` panics when a thread other than 0 writes to the screen; the crash screen is exempt (`panic_active`) | 0.9, stages 2–3 | Other threads use `klogf` |
+| **F4: `switch_to` saves and restores RFLAGS**; a new thread starts with RFLAGS `0x2`, then `sti` | 0.9, stage 4 | An accepted design correction found by an approved test: the `iretq` IF-state test caught a flag leaking from one thread to the next. It was implemented before being raised; the rule stays that design changes are raised first |
+| F5: policy (a) kept; its longer turns are a documented limitation, and every scheduler diagnostic logs the longest turn | 0.9, stage 4 | To be measured again in 0.10 |
+| F6: test threads do real work between `timer_ticks()` reads | 0.9, stage 4 | QEMU's TCG delivers interrupts only between translated blocks, so a tight polling loop starved IRQ0 |
+| The scheduler self-test runs at every boot (serial only; the boot screen is unchanged), and a failure is fatal | 0.9 | So it must never fail on a correct kernel (see option (A)) |
+| **Option (A): the cooperative order checks count preemptions.** With no preemption the order must be strict, exactly as before. With any preemption every thread must still have its full number of turns, and the order may differ only right after a preemption. `test=pingpongpreempt` forces the relaxed branch in QEMU; `test=pingpongbad` proves that a wrong order without a preemption still fails | 0.9, stage 8 | Found when 1 VirtualBox boot in 14 failed the self-test after a timer-tick burst. A test-only change: the kernel was correct |
+| The full regression runs detached in the Codespace, on a hash-verified snapshot | 0.9, stage 3 | It takes about 15 minutes; see [development.md](development.md) |
+| `scripts/vbox-acceptance.ps1`: a scripted VirtualBox acceptance test. It checks the VM's settings and refuses to run on any difference; attaching the ISO is the only change it makes | 0.9, stage 8 | |
+| Two Diagnostics entries appended at positions 14 and 15, so no existing position moves | 0.9 | |
+| `ps` comes through an optional shell-context field, so `test_shell.c` and every existing command's output stay unchanged | 0.9 | |
+| `AGENTS.md` holds the working rules for every coding agent; `CLAUDE.md` is the single import line `@AGENTS.md` | 0.9 | |
+| **0.9.1**, a separate small milestone for shell commands; its plan's decisions: an additive `cmos_rtc_read()` in the protected `cmos.c/.h` (`cmos_rtc_seconds()` unchanged byte for byte); `dmesg` captures `kprintf`/`klogf` only, with the serial-only lines documented as a gap; `<command> --help` for every command; the triple-fault reset test in QEMU only | after 0.9 (planning) | Order: 0.9 commit and tag, then `docs/commands.md`, then 0.9.1 |
+| Modernisation track recorded; legacy hardware paths (BIOS, PIC, PIT, single CPU, VGA text, PS/2, <4 GiB RAM) are temporary by design | 0.9 | See [roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet); Rust for new drivers is an open decision for the drivers phase |

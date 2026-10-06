@@ -13,6 +13,8 @@
 #include "kernel/arch/x86/pagefault.h"
 #include "kernel/kprintf.h"
 #include "kernel/panic.h"
+#include "kernel/proc/sched_core.h"
+#include "kernel/proc/thread.h"
 
 static const char *const exception_names[32] = {
     "Divide Error", "Debug", "Non-Maskable Interrupt", "Breakpoint",
@@ -32,9 +34,12 @@ static const char *const exception_mnemonics[32] = {
     "-", "-", "-", "-", "#HV", "#VC", "#SX", "-",
 };
 
+volatile bool panic_active;
+
 static void panic_begin(void)
 {
     __asm__ volatile ("cli");
+    panic_active = true;            /* 0.9: exempt from the thread-0 screen rule */
     vga_set_color(VGA_WHITE, VGA_RED);
     vga_clear();
     kputs("\n *** MADIRE OS - KERNEL PANIC ***\n\n");
@@ -109,6 +114,16 @@ static void print_double_fault(uint64_t rsp, uint64_t cr2)
         kputs(" Double fault: kernel stack overflow (the stack reached its guard page)\n");
         kprintf(" CR2=0x%016llx  guard page 0x%016llx-0x%016llx\n", (ull)cr2, (ull)g,
                 (ull)(g + 4095));
+    } else if (kstack_guard_slot(rsp) >= 0 || kstack_guard_slot(cr2) >= 0) {
+        /* 0.9: a kernel thread's stack (slot 507) ran into its guard. */
+        bool by_rsp = kstack_guard_slot(rsp) >= 0;
+        int slot = by_rsp ? kstack_guard_slot(rsp) : kstack_guard_slot(cr2);
+        int32_t tid = thread_slot_owner(slot);
+        kprintf(" Double fault: kernel thread stack overflow (thread %d '%s')\n", (int)tid,
+                tid >= 0 ? thread_name(tid) : "?");
+        kprintf(" %s=0x%016llx  guard 0x%016llx-0x%016llx\n", by_rsp ? "RSP" : "CR2",
+                (ull)(by_rsp ? rsp : cr2), (ull)kstack_slot_base(slot),
+                (ull)(kstack_bottom(slot) - 1));
     } else if (in_page(rsp, ist1_guard) || in_page(cr2, ist1_guard)) {
         kputs(" Double fault: IST1 stack overflow (it reached its guard page)\n");
     } else {

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define MADIRE_OS_NAME    "Madire OS"
-#define MADIRE_OS_VERSION "0.8"
+#define MADIRE_OS_VERSION "0.9"
 
 void kernel_main(uint32_t magic, uint32_t mb_info);
 

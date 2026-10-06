@@ -7,6 +7,15 @@
 
 void vga_putc(char c) { (void)c; }
 void serial_putc(char c) { (void)c; }
+/* 0.9: the preemption-disable count kprintf.c uses (kernel/proc/thread.c). */
+volatile uint32_t preempt_count_value;
+void preempt_underflow(void) { printf("    FAIL: preempt_enable() underflow\n"); unit_failures++; }
+/* 0.9: kputc's thread-0 screen check (kernel/proc/thread.c). */
+#include <stdbool.h>
+#include <stdlib.h>
+#include "kernel/proc/thread.h"
+bool thread_screen_allowed(void) { return true; }
+void thread_screen_violation(void) { printf("    FAIL: screen violation\n"); exit(1); }
 
 #include "kernel/kprintf.c"
 
@@ -93,6 +102,29 @@ static void test_truncation(void)
     CHECK(strcmp(small, "12345") == 0);
 }
 
+/* 0.9: every output call disables preemption and enables it again; the
+ * count is back where it was afterwards, also when nested. */
+static void test_preemption_guard_balanced(void)
+{
+    char buf[16];
+    preempt_count_value = 0;
+    kputc('a');
+    CHECK_EQ(preempt_count_value, 0);
+    kputs("line\n");
+    CHECK_EQ(preempt_count_value, 0);
+    kprintf("%s %llx %d\n", "x", 0x123456789ull, -5);
+    CHECK_EQ(preempt_count_value, 0);
+    klogf("%u\n", 7u);
+    CHECK_EQ(preempt_count_value, 0);
+    ksnprintf(buf, sizeof(buf), "%u", 42u);     /* no guard, nothing changed */
+    CHECK_EQ(preempt_count_value, 0);
+    preempt_count_value = 3;                    /* inside someone's section */
+    kprintf("nested\n");
+    klogf("nested\n");
+    CHECK_EQ(preempt_count_value, 3);
+    preempt_count_value = 0;
+}
+
 int main(void)
 {
     printf("kprintf unit tests\n");
@@ -102,5 +134,6 @@ int main(void)
     RUN(test_pointer_width);
     RUN(test_every_power_of_ten);
     RUN(test_truncation);
+    RUN(test_preemption_guard_balanced);
     return unit_report("kprintf");
 }

@@ -16,11 +16,42 @@ The licences below are as understood when this list was written, **to be verifie
 
 | Project | Link | Could be useful for | Licence (to be verified) |
 |---|---|---|---|
+| xv6 (MIT's teaching kernel; the current version targets RISC-V, the older `xv6-public` 32-bit x86) | https://github.com/mit-pdos/xv6-riscv | A small Unix-like teaching kernel: processes, context switching, a round-robin scheduler, sleep and wakeup, system calls; short enough to read in full | MIT |
 | SerenityOS | https://github.com/SerenityOS/serenity | A complete hobby OS written from scratch: kernel, userland, GUI, a POSIX-like system-call layer | BSD-2-Clause |
 | ToaruOS | https://github.com/klange/toaruos | A small from-scratch x86-64 OS: bootloader, kernel, compositor, userland | NCSA (University of Illinois/NCSA) |
-| ReactOS | https://github.com/reactos/reactos | Windows-compatible kernel and driver model; running Windows applications | GPL-2.0 (some parts LGPL) |
+| ReactOS | https://github.com/reactos/reactos | Windows-compatible kernel and driver model; running Windows applications. A reference for Windows compatibility (system interfaces, the driver model); no code copied | GPL-2.0 (some parts LGPL) |
 | Linux | https://github.com/torvalds/linux | Drivers, the POSIX/Linux system-call interface, x86-64 boot and memory management | GPL-2.0 with the system-call exception |
 | Apple open source (apple-oss-distributions) | https://github.com/apple-oss-distributions | XNU kernel and system components, for how a desktop/laptop OS is structured | Mixed (APSL 2.0, BSD and others, per repository) |
+
+### Study references for kernel threads and scheduling (0.9)
+
+For 0.9 and the coming user processes (0.10), three of the projects above are listed as **study-only** references: places to read how other kernels structure threads, context switches, scheduling and the path to user mode:
+
+| Project | Worth reading for | Licence (to be verified) |
+|---|---|---|
+| xv6 | the structure of a minimal context switch, a run queue, sleep/wakeup and the kernel/user boundary | MIT |
+| ToaruOS | an x86-64 kernel's thread and process structures, its scheduler and user-mode entry | NCSA |
+| SerenityOS | a larger kernel's threads, scheduler and POSIX-like system calls | BSD-2-Clause |
+
+No code, text or assets from them are in Madire OS: the 0.9 scheduler, context switch and tests were written for this project. The licences are as understood now and must be checked against each project before any use, under the rules above.
+
+## Shells
+
+| Project | Link | Could be useful for | Licence (to be verified) |
+|---|---|---|---|
+| GNU Bash (a mirror of GNU Bash) | https://github.com/bminor/bash | Shell-language design: variables, `if` and loops, pipes, redirection, quoting, job control. Possibly a future installable APPLICATION (a separate program, with the GPL's source obligations). No code may be copied into Madire OS | GPL-3.0 |
+| PowerShell | https://github.com/PowerShell/PowerShell | Design inspiration: pipelines of structured objects, consistent verb-noun naming, built-in help for every command. It needs .NET, so it isn't a porting target for now | MIT |
+
+## Terminal, desktop and app-platform references (Windows)
+
+These are Windows-specific technologies: none of them can run on Madire OS. They are read for ideas only, for later phases. Microsoft names and logos are trademarks; Madire's equivalents get their own names under the naming rule.
+
+| Project | Link | Could be useful for | Phase | Licence (to be verified) |
+|---|---|---|---|---|
+| Windows Terminal | https://github.com/microsoft/terminal | A future Madire terminal app: parsing terminal control codes, fast text rendering, tabs, themes | GUI | MIT |
+| PowerToys | https://github.com/microsoft/PowerToys | Feature ideas for the Madire desktop: window snapping, a quick launcher, a colour picker, keyboard remapping, extracting text from the screen | Desktop | MIT |
+| WinUI | https://github.com/microsoft/microsoft-ui-xaml | Designing Madire's own UI toolkit: controls, layout, theming, accessibility | GUI toolkit | MIT |
+| Windows universal samples | https://github.com/microsoft/Windows-universal-samples | A checklist of the app capabilities a modern OS provides (sensors, Bluetooth, camera, notifications, permissions), for Madire's app interface and permission model | Apps | MIT |
 
 ## Browser engines
 

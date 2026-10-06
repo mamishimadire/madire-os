@@ -54,7 +54,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/console/textbuf.c kernel/console/lineedit.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
-                            kernel/stackpeak.c)
+                            kernel/stackpeak.c kernel/proc/sched_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit repro clean
@@ -83,7 +83,9 @@ $(KERNEL): $(ELF)
 
 iso: $(ISO)
 
+# The ISO build also runs the source checks (0.9: boot screen usage).
 $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
+	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
 	mkdir -p $(BUILD)/isodir/boot/grub
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
@@ -93,7 +95,8 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
                  kernel/bootmod.h kernel/stackpeak.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
-                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h)
+                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
+                 $(wildcard kernel/proc/*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
 

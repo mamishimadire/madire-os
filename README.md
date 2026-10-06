@@ -2,13 +2,15 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.8 (Milestone 0.8: higher-half kernel)
+**Current version:** 0.9 (Milestone 0.9: kernel threads and a preemptive scheduler)
 
-![Madire OS v0.8 boot screen](docs/images/boot-screen-v0.8.png)
+![Madire OS v0.9 boot screen](docs/images/boot-screen-v0.9.png)
 
-After the boot checks, press any key to open the console. `mem` shows the higher-half kernel, NX and the kernel stack's high-water mark:
+After the boot checks, press any key to open the console. `ps` lists the kernel threads (after boot only thread 0, the console itself, is left), and `mem` shows the higher-half kernel, NX and the kernel stack's high-water mark:
 
-![Madire OS v0.8 console: mem](docs/images/console-mem-v0.8.png)
+![Madire OS v0.9 console: ps and version](docs/images/console-ps-v0.9.png)
+
+![Madire OS v0.9 console: mem](docs/images/console-mem-v0.9.png)
 
 It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So far the kernel:
 
@@ -21,7 +23,11 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - runs a physical page allocator, which it tests on real RAM at every boot;
 - runs with 4-level paging: the page tables are checked before they are loaded, page 0 is left unmapped so NULL pointers fault, kernel code is read-only, and everything except kernel code is **no-execute (NX)**;
 - has unmapped **guard pages** below its stacks: a kernel stack overflow becomes a double fault, handled on its own stack (IST1), and is reported instead of resetting the machine;
-- measures how deep its stack has ever been used (a **high-water mark**, shown by `mem`: 1480 of 16384 bytes so far);
+- measures how deep its stack has ever been used (a **high-water mark**, shown by `mem`: 1496 of 16384 bytes so far);
+- runs **kernel threads** (since 0.9), each with its own 16 KiB stack above an unmapped guard, so a thread's stack overflow is caught and the crash screen names the thread;
+- **schedules them preemptively**: round robin with a 50 ms time slice, switching at the end of a timer interrupt, plus sleep, join and exit codes; a thread that never gives up the CPU can't starve the others;
+- keeps itself safe under preemption without locks: the heap, the page allocator, paging and screen/serial output each run with preemption briefly disabled, and only the console thread writes to the screen;
+- tests its scheduler at every boot (two threads taking turns, preemption, sleep, everything freed afterwards);
 - has a kernel heap (`kmalloc`, `kcalloc`, `kfree`) that catches double frees, invalid frees and corrupted blocks;
 - explains page faults on the crash screen (what kind of access, and the faulting address);
 - checks that boot modules loaded by GRUB arrive intact, and shows the result on the screen as well as the serial log;
@@ -29,7 +35,7 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - keeps time with the PIT at 100 Hz (uptime is shown on screen);
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel;
 - provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End);
-- runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu` and `echo`;
+- runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo` and, since 0.9, `ps`;
 - draws the Madire M logo, built from geometry, in VGA text mode.
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
@@ -63,19 +69,23 @@ On Linux (Codespace terminal, WSL, CI):
 bash scripts/install-deps.sh   # once (a Codespace from .devcontainer/ runs it for you)
 make            # kernel: build/madire.elf (with symbols) and build/madire.kernel (bootable)
 make iso        # bootable ISO: build/madire-os.iso
-make unit       # host unit tests, 21 suites (memory, 4-level page tables, heap,
+make unit       # host unit tests, 24 suites (memory, 4-level page tables, heap,
                 # keyboard decoder and queue, PIT maths, console text grid, line
                 # editor, parser, shell, CPUID decoding, kprintf, NX and page-fault
-                # decoding, boot modules, stack high-water mark)
+                # decoding, boot modules, stack high-water mark, scheduler, thread
+                # stack slots, ps)
 make repro      # two clean builds in fresh directories: madire.elf and
                 # madire.kernel must be byte-identical (make test runs it too)
-make test       # unit tests + repro + 389 QEMU checks (150 from 0.3 + 30 from 0.4 +
-                # 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 new): boot, long mode,
-                # CPUs without long mode, logo, memory at 5 RAM sizes, crash tests,
-                # timer rate, scripted keyboard input, a scripted console session,
-                # paging and heap self-tests, the higher-half kernel and empty lower
-                # half, page faults, NX, stack overflow and stack peak, heap misuse
-                # and exhaustion, boot-module integrity, screen line widths
+make test       # unit tests + repro + 528 QEMU checks (150 from 0.3 + 30 from 0.4 +
+                # 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 new):
+                # boot, long mode, CPUs without long mode, logo, memory at 5 RAM
+                # sizes, crash tests, timer rate, scripted keyboard input, a scripted
+                # console session, paging and heap self-tests, the higher-half kernel
+                # and empty lower half, page faults, NX, stack overflow and stack
+                # peak, heap misuse and exhaustion, boot-module integrity, screen
+                # line widths, threads, preemption, sleep and join, the heap and page
+                # allocator under preemption, thread stack overflow, ps.
+                # About 15 minutes: see docs/development.md for running it detached
 make run        # boot in a QEMU window
 make clean
 ```
@@ -85,6 +95,9 @@ make clean
 ```powershell
 .\scripts\run.ps1                       # attach ISO, boot MadireOS-Test in a window
 .\scripts\run.ps1 -Headless -Screenshot # boot without a window, save build\boot-screen.png
+.\scripts\vbox-acceptance.ps1           # the scripted acceptance test (0.9): checks the
+                                        # VM settings (never changes them), boots each
+                                        # test, keeps screenshots and serial logs
 ```
 
 When the boot screen says `System ready. Press any key to open the console.`, press a key. That key only opens the console; it isn't typed. Type `help` for the list of commands.
@@ -96,27 +109,29 @@ The GRUB menu has a **Diagnostics** submenu:
 - **Memory tests:** allocate every page, double free, free a kernel page.
 - **Timer test:** measures the tick rate against the real-time clock.
 - **Keyboard test:** shows the code of every key pressed.
+- **Thread tests (0.9):** three threads that never yield share the CPU by preemption; a kernel thread's stack overflow is caught by its guard and the crash screen names the thread.
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.8)
+## Limitations (v0.9)
 
 - 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
 - **Only RAM below 4 GiB is used.** On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
 - The whole low 1 MiB is reserved on purpose, and ACPI-reclaimable memory isn't reclaimed yet.
 - **Paging:** 4 KiB pages; one address space, kernel mode only. There is no direct map of physical memory: the physical view covers only the low 1 MiB and the boot data, and other frames are reached one page at a time through the physical-access window. Every page fault is fatal (nothing is loaded on demand).
-- **Stacks:** the high-water mark covers the kernel stack only (not the double-fault stack). It can read a few bytes too low, never too high, and it always counts the top 736 bytes (the boot frames and a safety margin, which are never painted) as used.
-- **Kernel heap:** one heap, at most 16 MiB, never shrinks. Not interrupt-safe: `kmalloc`/`kcalloc`/`kfree` refuse to run with interrupts disabled (so never from an IRQ or exception handler). `kfree` checks the whole heap every time, which gets slower as the heap fills.
+- **Stacks:** the high-water mark covers the kernel stack and each thread's stack (not the double-fault stack). It can read a few bytes too low, never too high, and it always counts the top 736 bytes (the boot frames and a safety margin, which are never painted) as used.
+- **Kernel heap:** one heap, at most 16 MiB, never shrinks. Safe between threads, but not interrupt-safe: `kmalloc`/`kcalloc`/`kfree` refuse to run with interrupts disabled (so never from an IRQ or exception handler). `kfree` checks the whole heap every time, which gets slower as the heap fills.
 - **Boot modules:** the screen has one message line, so with several modules only the last result stays visible; the serial log has them all.
 - **Keyboard:** PS/2 only (USB keyboards need firmware legacy emulation), US layout only, no LEDs (Caps Lock state is tracked in software only), keypad assumes Num Lock on.
 - **Console and shell:**
-  - Seven built-in commands only.
+  - Eight built-in commands only (`history`, `date`, `dmesg` and others are planned for 0.9.1).
   - Commands are lowercase and case-sensitive; at most 8 words per line and 71 characters of input.
   - No command history, tab completion, scrollback, pipes or scripting.
   - Ctrl+key and Alt+key do nothing.
   - Long output lines wrap at column 80, even mid-word (for example `cpu`'s "Features:" line on some CPUs).
 - **Interrupts:** only IRQ0 and IRQ1 are enabled, through the legacy 8259 PIC (no APIC). The timer runs at a fixed 100 Hz (10 ms resolution).
-- No filesystem, processes or scheduler. Only one CPU is used.
+- **Threads and scheduling (0.9):** kernel threads only; user programs, separate address spaces and system calls come in 0.10. At most 64 threads with 16 KiB stacks; round robin with a fixed 50 ms slice, no priorities. A thread that spends almost all its time with preemption disabled can run longer than its slice (correctness is unaffected). Only one CPU is used.
+- No filesystem yet (planned for 1.0).
 - The logo is blocky: text mode gives 80×50 pixels, each 9×8 screen pixels in size.
 - Building needs a Linux environment; there is no native Windows toolchain yet. The kernel build is reproducible (byte-identical), but the ISO isn't (`grub-mkrescue` records timestamps).
 
@@ -128,3 +143,4 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - [docs/roadmap.md](docs/roadmap.md): milestones
 - [docs/PROGRESS.md](docs/PROGRESS.md): history, tests per milestone, decisions, future direction
 - [docs/references.md](docs/references.md): external projects used as references only
+- [AGENTS.md](AGENTS.md): the working rules for anyone, person or coding agent, changing the repository

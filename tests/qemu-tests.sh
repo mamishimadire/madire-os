@@ -17,7 +17,8 @@ passes_new=0         # checks added in 0.4, tagged "[0.4]"
 passes_05=0          # checks added in 0.5, tagged "[0.5]"
 passes_06=0          # checks added in 0.6, tagged "[0.6]"
 passes_07=0          # checks added in 0.7, tagged "[0.7]"
-passes_08=0          # checks added in 0.8, tagged "[0.8]"; the rest are 0.3 regression
+passes_08=0          # checks added in 0.8, tagged "[0.8]"
+passes_09=0          # checks added in 0.9, tagged "[0.9]"; the rest are 0.3 regression
 
 pass() {
     echo "PASS: $1"
@@ -28,6 +29,7 @@ pass() {
     "[0.6]"*) passes_06=$((passes_06 + 1)) ;;
     "[0.7]"*) passes_07=$((passes_07 + 1)) ;;
     "[0.8]"*) passes_08=$((passes_08 + 1)) ;;
+    "[0.9]"*) passes_09=$((passes_09 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -147,7 +149,7 @@ LOG=$OUT/serial-boot.log
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.8"                       "version shown"
+expect "$LOG" "Madire OS v0\.9"                       "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -456,7 +458,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.8 \(64-bit x86-64, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9 \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -495,12 +497,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.8 (64-bit x86-64, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c '^Madire OS v0\.9 (64-bit x86-64, Multiboot 1)$' "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.8"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -955,9 +957,305 @@ same_sum "[0.8] madire.elf byte-identical in two clean builds" a/build/madire.el
 same_sum "[0.8] madire.kernel byte-identical in two clean builds" a/build/madire.kernel b/build/madire.kernel
 same_sum "[0.8] the kernel under test is the reproducible one" a/build/madire.kernel ../madire.kernel
 
+# ---- 0.9: kernel threads ----
+
+echo "== [0.9] Scheduler self-test and the thread stack area (normal boot)"
+LOG=$OUT/serial-boot.log
+expect "$LOG" "^Scheduler self-test: PASS \([0-9]+ checks, 0 mismatches\)$" \
+                                                      "[0.9] scheduler self-test: PASS"
+expect "$LOG" "^Scheduler self-test: cooperative ping-pong: 100 yields, strictly alternating: OK$" \
+                                                      "[0.9] self-test: two threads alternate strictly through yield"
+expect "$LOG" "^Scheduler self-test: everything returned: .*: OK$" \
+                                                      "[0.9] self-test: frames, stack slots and threads all returned"
+expect "$LOG" "^Scheduler self-test: preemptions during the ping-pong: [0-9]+: OK$" \
+                                                      "[0.9] self-test: preemptions during the ping-pong logged"
+expect "$LOG" "^Scheduler self-test: preemption: a thread that never yields was preempted [0-9]+ times in 30 ticks: OK$" \
+                                                      "[0.9] self-test: a thread that never yields is preempted (at least 3 times in 30 ticks)"
+expect "$LOG" "^Scheduler self-test: sleep: sleep\(10\) woke after 1[01] ticks \(10 or 11 expected\): OK$" \
+                                                      "[0.9] self-test: sleep(10) wakes after 10 or 11 ticks"
+expect "$LOG" "^Paging check: kernel thread stack area \(PML4\[507\]\), empty at boot 0xfffffd8000000000-0xfffffd8000200000: expected unmapped, actual unmapped \(512 pages\): OK$" \
+                                                      "[0.9] walk-check: thread stack area (PML4[507]) empty at boot"
+expect "$LOG" "^Paging check: kernel thread stack page table present .*: OK$" \
+                                                      "[0.9] walk-check: thread stack page table made at boot"
+reject "$LOG" "Screen output from thread|Boot screen used from thread" \
+                                                      "[0.9] normal boot: no screen-rule violation"
+expect "$OUT/serial-nonx.log" "^Scheduler self-test: PASS " "[0.9] no NX: scheduler self-test PASS"
+expect "$LOG" "^Scheduler self-test: longest turn: [0-9]+ ticks \(slice 5\); highest thread stack peak: [0-9]+ of 16384 bytes$" \
+                                                      "[0.9] self-test: longest turn and highest stack peak logged"
+
+# thread_diag <name> <seconds>: boots test=<name> into serial-<name>.log.
+thread_diag() {
+    LOG=$OUT/serial-$1.log
+    boot "$LOG" "$2" -m 32M -kernel "$KERNEL" -append "test=$1"
+}
+# diag_clean <label>: no panic, no mismatch, System ready afterwards, and the
+# longest-turn metric (0.9 known limitation of the deferred switch) logged.
+diag_clean() {
+    reject "$LOG" "PANIC|MISMATCH"                    "[0.9] $1: no panic, no mismatch"
+    expect "$LOG" "System ready\."                     "[0.9] $1: System ready afterwards"
+    expect "$LOG" ": longest turn: [0-9]+ ticks \(slice 5\); highest thread stack peak: [0-9]+ of 16384 bytes$" \
+                                                      "[0.9] $1: longest turn and highest stack peak logged"
+    grep -E ": longest turn: " "$LOG" | tail -1 | sed 's/^/      /'
+}
+
+echo "== [0.9] Cooperative context switches (test=threads)"
+thread_diag threads 15
+expect "$LOG" "^Thread test: create: 8 threads: OK$"  "[0.9] threads: 8 threads created"
+expect "$LOG" "^Thread test: order: 800 turns, strict round robin \(w0\.\.w7, 100 rounds\): OK$" \
+                                                      "[0.9] threads: 800 turns in strict round-robin order"
+expect "$LOG" "^Thread test: callee-saved registers preserved: 800 switches checked, 0 with a changed register: OK$" \
+                                                      "[0.9] threads: rbx, rbp, r12-r15 preserved across every switch"
+expect "$LOG" "^Thread test: stack contents preserved: 0 mismatches: OK$" \
+                                                      "[0.9] threads: each thread's stack contents intact"
+expect "$LOG" "^Thread test: interrupt flag 1 after every switch: 0 checks with IF=0: OK$" \
+                                                      "[0.9] threads: IF=1 after every switch"
+expect "$LOG" "^Thread test: everything returned: .*: OK$" \
+                                                      "[0.9] threads: frames, stack slots and threads all returned"
+expect "$LOG" "^Thread test: preemptions during the cooperative phase: [0-9]+: OK$" \
+                                                      "[0.9] threads: preemptions during the cooperative phase logged"
+expect "$LOG" "^Thread test: PASS \("                 "[0.9] threads: PASS"
+diag_clean threads
+
+echo "== [0.9] Turn order: a forced preemption takes the relaxed branch (test=pingpongpreempt)"
+thread_diag pingpongpreempt 12
+grep -E "^Ping-pong preemption test: (cooperative ping-pong|preemptions during|forced)" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Ping-pong preemption test: cooperative ping-pong: 100 yields, order differs at [1-9][0-9]* point\(s\), each right after a preemption: OK$" \
+                                                      "[0.9] pingpongpreempt: the order differs only right after the preemption"
+expect "$LOG" "^Ping-pong preemption test: forced preemption accepted by the relaxed branch: .*: OK$" \
+                                                      "[0.9] pingpongpreempt: accepted through the relaxed branch"
+expect "$LOG" "^Ping-pong preemption test: join: exit codes 11 and 22: OK$" \
+                                                      "[0.9] pingpongpreempt: both threads completed (codes 11, 22)"
+expect "$LOG" "^Ping-pong preemption test: everything returned: .*: OK$" \
+                                                      "[0.9] pingpongpreempt: frames, stack slots and threads all returned"
+expect "$LOG" "^Ping-pong preemption test: PASS \("   "[0.9] pingpongpreempt: PASS"
+diag_clean pingpongpreempt
+
+echo "== [0.9] Turn order: a wrong order without preemption still fails (test=pingpongbad)"
+thread_diag pingpongbad 12
+grep -E "^Ping-pong order test: a " "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Ping-pong order test: a skipped turn without preemption: detected: out of order without a preemption \(100 turns, 0 preemptions\): OK$" \
+                                                      "[0.9] pingpongbad: a skipped turn is rejected (out of order)"
+expect "$LOG" "^Ping-pong order test: a repeated turn without preemption: detected: wrong number of turns \(101 turns, 0 preemptions\): OK$" \
+                                                      "[0.9] pingpongbad: a repeated turn is rejected (wrong count)"
+expect "$LOG" "^Ping-pong order test: everything returned: .*: OK$" \
+                                                      "[0.9] pingpongbad: frames, stack slots and threads all returned"
+expect "$LOG" "^Ping-pong order test: PASS \("        "[0.9] pingpongbad: PASS"
+diag_clean pingpongbad
+
+echo "== [0.9] Join, exit codes, detached threads (test=join)"
+thread_diag join 15
+expect "$LOG" "^Join test: exit codes: 6 of 6 exact .*: OK$" \
+                                                      "[0.9] join: exit codes 0, 1, 255, 0x7fffffff, -1, INT32_MIN exact"
+expect "$LOG" "^Join test: join by a thread other than 0 \(blocked, then woken\): .*: code 78: OK$" \
+                                                      "[0.9] join: a thread other than 0 blocks in join and is woken"
+expect "$LOG" "^Join test: detached thread: .*: OK$"  "[0.9] join: detached thread reaped by thread 0"
+expect "$LOG" "^Join test: everything returned: .*: OK$" \
+                                                      "[0.9] join: frames, stack slots and threads all returned"
+expect "$LOG" "^Join test: PASS \("                   "[0.9] join: PASS"
+diag_clean join
+
+echo "== [0.9] Interrupt flag across switches (test=ifstate)"
+thread_diag ifstate 15
+expect "$LOG" "^IF-state test: new thread starts with IF=1 \(trampoline\): IF=1 at the first instruction of a new thread: OK$" \
+                                                      "[0.9] ifstate: a new thread starts with IF=1"
+expect "$LOG" "^IF-state test: yield with IF=1 resumes with IF=1: 10 yields, 0 resumed with IF=0: OK$" \
+                                                      "[0.9] ifstate: yield with IF=1 resumes with IF=1"
+expect "$LOG" "^IF-state test: yield with IF=0 resumes with IF=0: resumed with IF=0; meanwhile another thread ran with IF=1 and received a timer tick: OK$" \
+                                                      "[0.9] ifstate: yield with IF=0 resumes with IF=0 (own flags)"
+expect "$LOG" "^IF-state test: thread 0 keeps IF=1: IF=1 after joining: OK$" \
+                                                      "[0.9] ifstate: thread 0 keeps IF=1"
+expect "$LOG" "^IF-state test: preempted thread resumes through iretq with its own flags: AC=1 IF=1 after [1-9][0-9]* preemptions; other thread AC=0, thread 0 AC=0: OK$" \
+                                                      "[0.9] ifstate: a preempted thread resumes through iretq with its own flags (no leak)"
+expect "$LOG" "^IF-state test: PASS \("               "[0.9] ifstate: PASS"
+diag_clean ifstate
+
+# preempt_panic <name> <function>: blocking with preemption disabled is a
+# kernel bug: crash screen naming the call, the count and the thread.
+preempt_panic() {
+    echo "== [0.9] $2 with preemption disabled (test=$1)"
+    thread_diag "$1" 8
+    expect "$LOG" "$2: called with preemption disabled \(count 1, thread 0 'kernel'\)\." \
+                                                      "[0.9] $1: panics naming the call, the count and the thread"
+    expect "$LOG" "System halted\. Power off the machine\." "[0.9] $1: halted"
+    count_lines "$LOG" "^boot32: start$" 1            "[0.9] $1: no reset (booted once)"
+    reject "$LOG" "returned \(WRONG\)|System ready"   "[0.9] $1: the call never returned"
+    w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+    if [ "$w" -le 79 ]; then pass "[0.9] $1: crash screen lines at most 79 characters (longest $w)"
+    else fail "[0.9] $1: crash screen line of $w characters (limit 79)"; fi
+}
+preempt_panic preemptyield thread_yield
+preempt_panic preemptjoin thread_join
+preempt_panic preemptsleep thread_sleep
+
+echo "== [0.9] Preemption: three threads that never yield (test=preempt, keys typed meanwhile)"
+LOG=$OUT/serial-preempt.log
+boot_keys "$LOG" 14 "Preempt test: 3 threads spinning" "a,b,c,d,e,f,g,h" 0.15 \
+    -m 32M -kernel "$KERNEL" -append "test=preempt"
+grep -E "^Preempt test: (fair shares|preemptions)" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Preempt test: fair shares: .* \(each 25-42%\): OK$" \
+                                                      "[0.9] preempt: each thread got 25-42% of the CPU"
+expect "$LOG" "^Preempt test: preemptions: [0-9]+ preemptions in 300 ticks .*: OK$" \
+                                                      "[0.9] preempt: one preemption per 5-tick slice (40-80 in 300 ticks)"
+expect "$LOG" "^Preempt test: every thread made progress: .*: OK$" \
+                                                      "[0.9] preempt: every thread made progress"
+expect "$LOG" "^Preempt test: timer kept ticking: .*: OK$" "[0.9] preempt: the timer kept ticking"
+expect "$LOG" "^Preempt test: everything returned: .*: OK$" \
+                                                      "[0.9] preempt: frames, stack slots and threads all returned"
+expect "$LOG" "^Preempt test: PASS \("                "[0.9] preempt: PASS"
+expect_in_order "$LOG" "[0.9] preempt: keys typed during the test all arrive, in order (IRQ1 not starved)" \
+    "^key: press .*ascii='a'" "^key: press .*ascii='b'" "^key: press .*ascii='c'" "^key: press .*ascii='d'" \
+    "^key: press .*ascii='e'" "^key: press .*ascii='f'" "^key: press .*ascii='g'" "^key: press .*ascii='h'"
+reject "$LOG" "events dropped"                       "[0.9] preempt: no key events dropped"
+diag_clean preempt
+
+echo "== [0.9] Deferred switch while preemption is disabled (test=preemptoff)"
+thread_diag preemptoff 10
+grep -E "^Preemptoff test: switch within" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Preemptoff test: no switch while the guard is held: preemption off for [0-9]+ ticks: no switch, the other thread did not run: OK$" \
+                                                      "[0.9] preemptoff: no switch while the guard is held (20 ticks)"
+expect "$LOG" "^Preemptoff test: switch request kept pending \(need_resched\) while held: yes: OK$" \
+                                                      "[0.9] preemptoff: the switch request stays pending"
+expect "$LOG" "^Preemptoff test: switch within one tick after the release: .*: OK$" \
+                                                      "[0.9] preemptoff: the other thread runs at most one tick after the release"
+expect "$LOG" "^Preemptoff test: everything returned: .*: OK$" \
+                                                      "[0.9] preemptoff: frames, stack slots and threads all returned"
+expect "$LOG" "^Preemptoff test: PASS \("             "[0.9] preemptoff: PASS"
+diag_clean preemptoff
+
+echo "== [0.9] Sleep next to a spinning thread (test=sleep)"
+thread_diag sleep 10
+for n in 1 10 100; do
+    expect "$LOG" "^Sleep test: sleep\($n\): woke after ($n|$((n + 1))) ticks .*: OK$" \
+                                                      "[0.9] sleep: sleep($n) wakes after $n or $((n + 1)) ticks"
+done
+expect "$LOG" "^Sleep test: a sleeping thread uses no CPU: .*: OK$" \
+                                                      "[0.9] sleep: the spinner gets at least 95% while the other sleeps"
+expect "$LOG" "^Sleep test: thread 0 sleeps by polling: .*: OK$" \
+                                                      "[0.9] sleep: thread 0 sleeps 10 ticks by polling (10 or 11)"
+expect "$LOG" "^Sleep test: everything returned: .*: OK$" \
+                                                      "[0.9] sleep: frames, stack slots and threads all returned"
+expect "$LOG" "^Sleep test: PASS \("                  "[0.9] sleep: PASS"
+diag_clean sleep
+
+echo "== [0.9] The heap under preemption (test=heapthreads)"
+thread_diag heapthreads 12
+grep -E "^Heap threads test: concurrent" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Heap threads test: concurrent use under preemption: .*: OK$" \
+                                                      "[0.9] heapthreads: 4 threads, thousands of kmalloc/kfree, preempted meanwhile"
+expect "$LOG" "^Heap threads test: every payload intact: 0 damaged blocks: OK$" \
+                                                      "[0.9] heapthreads: every tagged payload intact"
+expect "$LOG" "^Heap threads test: heap consistent and empty again: heap_check OK; .*: OK$" \
+                                                      "[0.9] heapthreads: heap_check OK, nothing left in use"
+expect "$LOG" "^Heap threads test: frames accounted for exactly .*: OK$" \
+                                                      "[0.9] heapthreads: free pages = before - heap growth - new tables, exactly"
+expect "$LOG" "^Heap threads test: PASS \("           "[0.9] heapthreads: PASS"
+diag_clean heapthreads
+
+echo "== [0.9] The frame allocator and the window under preemption (test=framethreads)"
+thread_diag framethreads 12
+grep -E "^Frame threads test: concurrent" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Frame threads test: concurrent use under preemption: .*: OK$" \
+                                                      "[0.9] framethreads: 4 threads, thousands of allocations, preempted meanwhile"
+expect "$LOG" "^Frame threads test: every frame tag intact: 0 frames lost their tag .*: OK$" \
+                                                      "[0.9] framethreads: no frame handed out twice (every tag intact)"
+expect "$LOG" "^Frame threads test: everything returned: free pages ([0-9]+) -> \1, .*: OK$" \
+                                                      "[0.9] framethreads: free pages restored exactly"
+expect "$LOG" "^Frame threads test: PASS \("          "[0.9] framethreads: PASS"
+diag_clean framethreads
+
+echo "== [0.9] 2000 threads created and freed; per-thread stack peaks (test=threadleak)"
+thread_diag threadleak 40
+grep -E "^Thread churn test: (stack peak|2000 threads|exit codes)" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Thread churn test: stack peak reported per thread: .*: OK$" \
+                                                      "[0.9] threadleak: a thread over 8 KiB deep reports a peak of 8192..16383 bytes"
+expect "$LOG" "^Thread 1 'deep' exited: code [0-9]+, stack peak (8[2-9][0-9]{2}|9[0-9]{3}|1[0-5][0-9]{3}|16[0-2][0-9]{2}|163[0-7][0-9]|1638[0-3]) of 16384$" \
+                                                      "[0.9] threadleak: its exit line shows that peak"
+expect "$LOG" "^Thread churn test: 2000 threads created and freed: 2000 created \([0-9]+ joined, [0-9]+ detached reaped\), 0 create failures: OK$" \
+                                                      "[0.9] threadleak: 2000 threads created, run and freed (joined and detached)"
+expect "$LOG" "^Thread churn test: exit codes and limits: 0 wrong exit codes; .*: OK$" \
+                                                      "[0.9] threadleak: every exit code right, never over the limits"
+expect "$LOG" "^Thread churn test: heap unchanged: .*: OK$" "[0.9] threadleak: heap use unchanged"
+expect "$LOG" "^Thread churn test: everything returned: free pages ([0-9]+) -> \1, stack slots in use 0, live threads 1: OK$" \
+                                                      "[0.9] threadleak: free pages, stack slots and threads exactly as before"
+count_lines "$LOG" "^Thread [0-9]+ 'churn' exited" 0  "[0.9] threadleak: no exit line per churn thread (logging off)"
+expect "$LOG" "^Thread churn test: PASS \("           "[0.9] threadleak: PASS"
+diag_clean threadleak
+
+echo "== [0.9] Every thread's exit line has a stack peak below the stack size"
+peaks_ok=0; peaks_bad=0
+for l in boot threads join ifstate preempt preemptoff sleep heapthreads framethreads threadleak \
+         pingpongpreempt pingpongbad; do
+    while read -r p; do
+        if [ "$p" -gt 0 ] && [ "$p" -lt 16384 ]; then peaks_ok=$((peaks_ok + 1)); else peaks_bad=$((peaks_bad + 1)); fi
+    done < <(grep -oE "^Thread [0-9]+ '[^']*' exited: code -?[0-9]+, stack peak [0-9]+ of 16384$" "$OUT/serial-$l.log" |
+             grep -oE 'stack peak [0-9]+' | grep -oE '[0-9]+')
+done
+echo "      $peaks_ok exit lines in range, $peaks_bad out of range"
+if [ "$peaks_ok" -ge 30 ] && [ "$peaks_bad" -eq 0 ]; then
+    pass "[0.9] every exit line: 0 < stack peak < 16384 ($peaks_ok threads)"
+else
+    fail "[0.9] exit-line stack peaks: $peaks_ok in range, $peaks_bad out of range"
+fi
+
+echo "== [0.9] Kernel thread stack overflow (test=threadoverflow)"
+thread_diag threadoverflow 10
+expect "$LOG" "CPU exception 8: Double Fault \(#DF\)" "[0.9] threadoverflow: exception 8 (#DF)"
+expect "$LOG" "Double fault: kernel thread stack overflow \(thread [0-9]+ 'overflow'\)" \
+                                                      "[0.9] threadoverflow: diagnosed by name"
+# The RSP printed with the diagnosis must lie inside the guard range it names.
+GL=$(grep -oE "RSP=0x[0-9a-f]{16}  guard 0x[0-9a-f]{16}-0x[0-9a-f]{16}" "$LOG" | head -1)
+GR=$(grep -oE '0x[0-9a-f]{16}' <<< "$GL" | sed -n 1p); GS=$(grep -oE '0x[0-9a-f]{16}' <<< "$GL" | sed -n 2p)
+GE=$(grep -oE '0x[0-9a-f]{16}' <<< "$GL" | sed -n 3p)
+if [ -n "$GR" ] && [[ "$GS" == 0xfffffd80* ]] && [[ ! "$GR" < "$GS" ]] && [[ ! "$GR" > "$GE" ]]; then
+    pass "[0.9] threadoverflow: RSP $GR inside the thread's guard $GS-$GE (slot 507)"
+else
+    fail "[0.9] threadoverflow: RSP ${GR:-?} not inside guard ${GS:-?}-${GE:-?}"
+fi
+expect "$LOG" "System halted\. Power off the machine\." "[0.9] threadoverflow: halted"
+count_lines "$LOG" "^boot32: start$" 1                "[0.9] threadoverflow: no reset (booted once)"
+reject "$LOG" "the thread returned \(WRONG\)|System ready" "[0.9] threadoverflow: the thread never returned"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if [ "$w" -le 79 ]; then pass "[0.9] threadoverflow: crash screen lines at most 79 characters (longest $w)"
+else fail "[0.9] threadoverflow: crash screen line of $w characters (limit 79)"; fi
+
+echo "== [0.9] Console: ps"
+LOG=$OUT/serial-ps.log
+boot_text "$LOG" 60 "System ready." "x{ret}ps{ret}help{ret}echo end-of-ps-test{ret}" 0.05 \
+    $'\nend-of-ps-test\n' -kernel "$KERNEL"
+expect_in_order "$LOG" "[0.9] ps: header, thread 0 'kernel' running, count" \
+    "^madire> ps$" "^TID  STATE      TICKS    STACK PEAK    NAME$" \
+    "^  0  running +[0-9]+ +[0-9]+/16384   kernel$" "^1 thread$"
+expect_in_order "$LOG" "[0.9] help: ps listed after the seven commands" \
+    "^madire> help$" "^  echo     Print text: echo <text>$" "^  ps       Show threads$"
+w=$(max_width "$LOG" "^madire> ps$" "^madire> help$")
+if grep -q "^madire> ps$" "$LOG" && [ "$w" -le 79 ]; then pass "[0.9] ps: every line at most 79 characters (longest $w)"
+else fail "[0.9] ps: a line of $w characters (limit 79)"; fi
+reject "$LOG" "PANIC|Screen output from thread"      "[0.9] ps: no panic, no screen-rule violation"
+
+# The boot screen rule (0.9): the checker passes on the real sources and
+# rejects a violation, both from another file and from non-boot code in
+# kernel.c (scratch trees under build/).
+echo "== [0.9] Boot screen used only by the boot sequence and BOOTSCREEN_SAFE()"
+CHECK=$(dirname "$0")/../scripts/check-bootscreen.sh
+if sh "$CHECK" >/dev/null; then pass "[0.9] boot screen check passes on the sources"
+else fail "[0.9] boot screen check fails on the sources"; fi
+bs_tree() {   # bs_tree <dir>: a scratch tree with the checker and an allowed kernel.c
+    rm -rf "$1" && mkdir -p "$1/scripts" "$1/kernel" "$1/drivers"
+    cp "$CHECK" "$1/scripts/"
+    printf 'void kernel_main(void)\n{\n    bootscreen_ready("x");\n}\n' > "$1/kernel/kernel.c"
+}
+T=$OUT/bscheck-a; bs_tree "$T"
+printf 'void f(void)\n{\n    bootscreen_message("x");\n}\n' > "$T/kernel/other.c"
+if sh "$T/scripts/check-bootscreen.sh" >/dev/null; then fail "[0.9] boot screen check missed a call from another file"
+else pass "[0.9] boot screen check rejects a call from another file"; fi
+T=$OUT/bscheck-b; bs_tree "$T"
+printf 'static void idle_loop(void)\n{\n    bootscreen_uptime(1);\n}\n' >> "$T/kernel/kernel.c"
+if sh "$T/scripts/check-bootscreen.sh" >/dev/null; then fail "[0.9] boot screen check missed an unwrapped call in kernel.c"
+else pass "[0.9] boot screen check rejects an unwrapped call outside the boot sequence"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 new in 0.8)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 new in 0.9)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

@@ -3,7 +3,8 @@
 
 /*
  * Command shell core: parses a line and runs one of the built-in commands
- * (help, clear, version, uptime, mem, cpu, echo).
+ * (help, clear, version, uptime, mem, cpu, echo; ps when the context has
+ * threads, 0.9).
  *
  * Pure module: every value it prints comes from a read-only shell_context
  * filled in by the caller, and all output goes through a shell_output
@@ -17,6 +18,16 @@
 #include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
 #include "kernel/shell/cpuinfo.h"
+
+/* 0.9: one row of "ps" (a kernel thread). */
+struct shell_thread {
+    int32_t tid;
+    const char *state;                      /* "running", "ready", "blocked", ... */
+    uint64_t ticks;                         /* timer ticks it has run */
+    uint32_t stack_peak;                    /* bytes, high-water mark */
+    uint32_t stack_size;
+    const char *name;
+};
 
 struct shell_context {
     const char *version;                    /* e.g. "0.5" */
@@ -40,6 +51,11 @@ struct shell_context {
      * high-water mark (bytes used at the deepest point so far). */
     uint32_t stack_size;
     uint32_t stack_peak;
+    /* 0.9, optional: when `threads` is set, "help" also lists "ps", which
+     * shows these threads. NULL leaves every command's output (and "help")
+     * exactly as before, and "ps" is then an unknown command. */
+    const struct shell_thread *threads;
+    uint32_t thread_count;
 };
 
 enum shell_text {

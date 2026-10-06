@@ -17,6 +17,7 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/preempt.h"
 
 #define ADDR_LIMIT 0x100000000ull
 
@@ -166,14 +167,21 @@ void memory_init(const struct multiboot_info *mbi, struct memory_stats *st)
         panic("Memory: no free pages left after reserving the kernel and boot data.");
 }
 
+/* 0.9: the allocator has no locking; preemption is off while it runs. */
 uint32_t memory_alloc_page(void)
 {
-    return pmm_alloc_page();
+    preempt_disable();
+    uint32_t page = pmm_alloc_page();
+    preempt_enable();
+    return page;
 }
 
 void memory_free_page(uint32_t addr)
 {
-    switch (pmm_free_page(addr)) {
+    preempt_disable();
+    enum pmm_result r = pmm_free_page(addr);
+    preempt_enable();
+    switch (r) {
     case PMM_OK:
         return;
     case PMM_ERR_UNALIGNED:

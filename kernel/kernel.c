@@ -33,6 +33,9 @@
 #include "kernel/memory/vmtest.h"
 #include "kernel/multiboot.h"
 #include "kernel/panic.h"
+#include "kernel/proc/preempt.h"
+#include "kernel/proc/schedtest.h"
+#include "kernel/proc/thread.h"
 #include "kernel/stackpeak.h"
 #include "kernel/timer.h"
 
@@ -78,6 +81,35 @@ static int cmdline_has(const char *word)
             return 1;
     }
     return 0;
+}
+
+/*
+ * The boot screen while other threads may exist (0.9). bootscreen.c has no
+ * protection of its own (and is protected from change), so every use that
+ * can happen once threads exist goes through BOOTSCREEN_SAFE(call): it
+ * panics unless the caller is thread 0, and runs the call with preemption
+ * off. Only the boot sequence (kernel_main, start_devices,
+ * check_boot_modules) and devtest.c call the boot screen directly;
+ * scripts/check-bootscreen.sh fails the build otherwise.
+ */
+static void screen_guard_enter(const char *call)
+{
+    if (thread_current() != 0)
+        panicf("Boot screen used from thread %d '%s' (%s): only thread 0 may.",
+               (int)thread_current(), thread_name(thread_current()), call);
+    preempt_disable();
+}
+
+#define BOOTSCREEN_SAFE(call)          \
+    do {                               \
+        screen_guard_enter(#call);     \
+        call;                          \
+        preempt_enable();              \
+    } while (0)
+
+static void diag_message(const char *text)
+{
+    BOOTSCREEN_SAFE(bootscreen_message(text));
 }
 
 /*
@@ -153,7 +185,61 @@ static void check_boot_modules(const struct multiboot_info *mbi)
  * to deliberately trigger a CPU exception or run a memory test. */
 static void run_diagnostics(void)
 {
-    if (cmdline_has("test=timer")) {
+    /* 0.9 thread diagnostics. The longer names come first: cmdline_has
+     * matches prefixes, and "test=preempt" (stage 4) is one of these. */
+    if (cmdline_has("test=preemptyield")) {
+        diag_message("Thread test: yield with preemption disabled (must panic)");
+        schedtest_preempt_yield();
+    } else if (cmdline_has("test=preemptjoin")) {
+        diag_message("Thread test: join with preemption disabled (must panic)");
+        schedtest_preempt_join();
+    } else if (cmdline_has("test=preemptsleep")) {
+        diag_message("Thread test: sleep with preemption disabled (must panic)");
+        schedtest_preempt_sleep();
+    } else if (cmdline_has("test=preemptoff")) {
+        diag_message("Preemptoff test: switch deferred while preemption is disabled...");
+        diag_message(schedtest_preemptoff() ? "Preemptoff test: PASS"
+                                            : "Preemptoff test: FAIL (see serial log)");
+    } else if (cmdline_has("test=preempt")) {
+        diag_message("Preempt test: 3 threads that never yield, for 3 seconds...");
+        diag_message(schedtest_preempt() ? "Preempt test: PASS" : "Preempt test: FAIL (see serial log)");
+    } else if (cmdline_has("test=sleep")) {
+        diag_message("Sleep test: 1, 10 and 100 ticks next to a spinning thread...");
+        diag_message(schedtest_sleep() ? "Sleep test: PASS" : "Sleep test: FAIL (see serial log)");
+    } else if (cmdline_has("test=heapthreads")) {
+        diag_message("Heap threads test: 4 threads using the heap for 2 seconds...");
+        diag_message(schedtest_heapthreads() ? "Heap threads test: PASS"
+                                             : "Heap threads test: FAIL (see serial log)");
+    } else if (cmdline_has("test=framethreads")) {
+        diag_message("Frame threads test: 4 threads allocating frames for 2 seconds...");
+        diag_message(schedtest_framethreads() ? "Frame threads test: PASS"
+                                              : "Frame threads test: FAIL (see serial log)");
+    } else if (cmdline_has("test=pingpongpreempt")) {
+        diag_message("Ping-pong preemption test: one turn runs past its slice...");
+        diag_message(schedtest_pingpong_preempt() ? "Ping-pong preemption test: PASS"
+                                                  : "Ping-pong preemption test: FAIL (see serial log)");
+    } else if (cmdline_has("test=pingpongbad")) {
+        diag_message("Ping-pong order test: a skipped and a repeated turn...");
+        diag_message(schedtest_pingpong_bad() ? "Ping-pong order test: PASS"
+                                              : "Ping-pong order test: FAIL (see serial log)");
+    } else if (cmdline_has("test=threadleak")) {
+        diag_message("Thread churn test: 2000 threads created and freed...");
+        diag_message(schedtest_threadleak() ? "Thread churn test: PASS"
+                                            : "Thread churn test: FAIL (see serial log)");
+    } else if (cmdline_has("test=threadoverflow")) {
+        diag_message("Crash test: kernel thread stack overflow into its guard");
+        schedtest_threadoverflow();
+    } else if (cmdline_has("test=threads")) {
+        diag_message("Thread test: 8 threads x 100 yields...");
+        diag_message(schedtest_threads() ? "Thread test: PASS" : "Thread test: FAIL (see serial log)");
+    } else if (cmdline_has("test=join")) {
+        diag_message("Join test: exit codes, a blocked joiner, a detached thread...");
+        diag_message(schedtest_join() ? "Join test: PASS" : "Join test: FAIL (see serial log)");
+    } else if (cmdline_has("test=ifstate")) {
+        diag_message("IF-state test: interrupt flag across thread switches...");
+        diag_message(schedtest_ifstate() ? "IF-state test: PASS"
+                                         : "IF-state test: FAIL (see serial log)");
+    } else if (cmdline_has("test=timer")) {
         devtest_timer();
     } else if (cmdline_has("test=keyboard")) {
         devtest_keyboard();                         /* does not return */
@@ -162,7 +248,7 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=irqunexpected")) {
         devtest_irq_unexpected();
     } else if (cmdline_has("test=memexhaust")) {
-        bootscreen_message("Memory test: allocating every free page...");
+        diag_message("Memory test: allocating every free page...");
         /* Frames other owners hold before the test (the test leaves them
          * alone and must count exactly this many). */
         uint32_t tables = paging_enabled() ? paging_stats()->page_tables : 0;
@@ -172,57 +258,57 @@ static void run_diagnostics(void)
               " + %u heap pages = %u\n", tables, dirs, heap_pages, tables + dirs + heap_pages);
         char line[80];
         ksnprintf(line, sizeof(line), "Memory exhaustion test: PASS (%u pages)", memtest_exhaust());
-        bootscreen_message(line);
+        diag_message(line);
     } else if (cmdline_has("test=doublefree")) {
-        bootscreen_message("Memory test: double free");
+        diag_message("Memory test: double free");
         memtest_double_free();
     } else if (cmdline_has("test=freereserved")) {
-        bootscreen_message("Memory test: free a kernel page");
+        diag_message("Memory test: free a kernel page");
         memtest_free_reserved();
     } else if (cmdline_has("test=heapdouble")) {
-        bootscreen_message("Heap test: double free");
+        diag_message("Heap test: double free");
         vmtest_heap_double();
     } else if (cmdline_has("test=heapinvalid")) {
-        bootscreen_message("Heap test: free a stack address");
+        diag_message("Heap test: free a stack address");
         vmtest_heap_invalid();
     } else if (cmdline_has("test=heapcorrupt")) {
-        bootscreen_message("Heap test: corrupted block header");
+        diag_message("Heap test: corrupted block header");
         vmtest_heap_corrupt();
     } else if (cmdline_has("test=heapexhaust")) {
-        bootscreen_message("Heap test: allocating until the heap is full...");
-        bootscreen_message(vmtest_heap_exhaust() ? "Heap exhaustion test: PASS"
+        diag_message("Heap test: allocating until the heap is full...");
+        diag_message(vmtest_heap_exhaust() ? "Heap exhaustion test: PASS"
                                                  : "Heap exhaustion test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
-        bootscreen_message("Page-fault test: read from NULL");
+        diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();
     } else if (cmdline_has("test=pfunmapped")) {
-        bootscreen_message("Page-fault test: read from unmapped 0x40000000");
+        diag_message("Page-fault test: read from unmapped 0x40000000");
         vmtest_pf_unmapped();
     } else if (cmdline_has("test=pfnx")) {
-        bootscreen_message("Page-fault test: execute from a no-execute data page");
+        diag_message("Page-fault test: execute from a no-execute data page");
         vmtest_pf_nx();                             /* returns only without NX */
-        bootscreen_message("NX test: NOT APPLICABLE (NX not supported by this CPU)");
+        diag_message("NX test: NOT APPLICABLE (NX not supported by this CPU)");
     } else if (cmdline_has("test=pflow")) {
-        bootscreen_message("Page-fault test: read the kernel's old low address 0x100000");
+        diag_message("Page-fault test: read the kernel's old low address 0x100000");
         vmtest_pf_low();
     } else if (cmdline_has("test=stackoverflow")) {
-        bootscreen_message("Crash test: kernel stack overflow into the guard page");
+        diag_message("Crash test: kernel stack overflow into the guard page");
         vmtest_stack_overflow();                    /* returns only without paging */
-        bootscreen_message("Stack test: NOT APPLICABLE (paging is off, no guard page)");
+        diag_message("Stack test: NOT APPLICABLE (paging is off, no guard page)");
     } else if (cmdline_has("test=pfreadonly")) {
-        bootscreen_message("Page-fault test: write to read-only kernel code");
+        diag_message("Page-fault test: write to read-only kernel code");
         vmtest_pf_readonly();
     } else if (cmdline_has("test=divzero")) {
-        bootscreen_message("Crash test: divide by zero");
+        diag_message("Crash test: divide by zero");
         __asm__ volatile ("mov $10, %%eax\n\t"
                           "xor %%edx, %%edx\n\t"
                           "xor %%ecx, %%ecx\n\t"
                           "div %%ecx" ::: "eax", "ecx", "edx", "cc");
     } else if (cmdline_has("test=ud")) {
-        bootscreen_message("Crash test: invalid opcode");
+        diag_message("Crash test: invalid opcode");
         __asm__ volatile ("ud2");
     } else if (cmdline_has("test=gpf")) {
-        bootscreen_message("Crash test: general protection fault");
+        diag_message("Crash test: general protection fault");
         /* Selector 0x28 = GDT entry 5, beyond the end of our 3-entry GDT. */
         __asm__ volatile ("mov $0x28, %%ax\n\t"
                           "mov %%ax, %%ds" ::: "eax");
@@ -302,7 +388,7 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
             if (console_active()) {
                 console_handle_key(&e);
             } else if (e.flags & KEY_PRESSED) {
-                bootscreen_last_key(&e);
+                BOOTSCREEN_SAFE(bootscreen_last_key(&e));
                 if (console_offered)
                     console_start(mem);
             }
@@ -323,12 +409,14 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
         if (seconds != shown_seconds) {
             shown_seconds = seconds;
             if (!console_active())
-                bootscreen_uptime(seconds);
+                BOOTSCREEN_SAFE(bootscreen_uptime(seconds));
             if (seconds && seconds % 5 == 0)
                 klogf("uptime: %u s\n", seconds);
         }
 
-        __asm__ volatile ("hlt");
+        /* 0.9: free exited detached threads, then let another thread run
+         * or wait for the next interrupt (hlt, as before 0.9). */
+        thread_idle();
     }
 }
 
@@ -427,6 +515,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
                            "Paging enabled:", "paging", paging_on ? BOOT_OK : BOOT_FAILED, paging_note,
                            "Kernel heap:", "heap", heap_ok ? BOOT_OK : BOOT_FAILED, heap_note);
 
+    /* 0.9: kernel_main becomes thread 0 ("kernel"). Other threads get their
+     * stacks from slot 507, so they exist only with paging on. */
+    thread_init();
+
     check_boot_modules(mbi);
 
     bool keyboard_ok = start_devices();
@@ -439,6 +531,15 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bool console_ok = console_selftest();
     bootscreen_status("Console & shell:", console_ok ? BOOT_OK : BOOT_FAILED,
                       "pure self-test of line editor, parser, shell, text grid; not a hardware test");
+
+    /* 0.9: scheduler self-test (serial only; the boot screen's rows are
+     * fixed). A failure is fatal, as for the paging self-test. */
+    if (paging_on) {
+        if (!schedtest_boot())
+            panic("Scheduler self-test failed (details on the serial log).");
+    } else {
+        klogf("Scheduler self-test: NOT APPLICABLE (paging is off: no thread stacks)\n");
+    }
 
     run_diagnostics();
 

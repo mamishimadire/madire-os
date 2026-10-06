@@ -1,0 +1,305 @@
+# VirtualBox acceptance test for Madire OS (0.9; see docs/testing.md).
+#
+# Boots the given ISO in the test VM once per test, sends keys through
+# VirtualBox's emulated PS/2 keyboard, saves a screenshot and a copy of the
+# serial log (COM1) of every run, and checks each log for the line that
+# proves the test passed. The results are compared with QEMU afterwards.
+#
+# The VM's settings are CHECKED, never changed: if the OS type, firmware,
+# memory, PAE, boot order or COM1 port/file differ from the documented
+# values, the script refuses to run. Attaching the given ISO to the
+# optical drive for the run is the only change it makes (as scripts\run.ps1
+# does), and it verifies the attachment.
+#
+#   .\scripts\vbox-acceptance.ps1                      # every test
+#   .\scripts\vbox-acceptance.ps1 -Only boot,preempt   # some tests
+#   .\scripts\vbox-acceptance.ps1 -Only repeat -Repeat 20   # 20 normal boots
+#   .\scripts\vbox-acceptance.ps1 -VBoxManage "D:\VirtualBox\VBoxManage.exe"
+param(
+    [string]$VM = "MadireOS-Test",
+    [string]$VBoxManage = "",
+    [string]$Iso = "",                  # default: build\madire-os.iso
+    [string]$ModuleIso = "",            # default: build\madire-os-module.iso
+    [string]$OutDir = "",               # default: build\vbox-acceptance
+    [string]$Prefix = "vbox",
+    [string[]]$Only = @(),              # menu, boot, preempt, threadoverflow, pf, diag, memexhaust, module, repeat
+    [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
+    [int]$Repeat = 0                    # extra normal boots (self-test result of each)
+)
+$ErrorActionPreference = "Stop"
+$root = (Get-Item (Split-Path $PSScriptRoot -Parent)).FullName
+$build = Join-Path $root "build"
+if (-not $Iso) { $Iso = Join-Path $build "madire-os.iso" }
+if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
+if (-not $OutDir) { $OutDir = Join-Path $build "vbox-acceptance" }
+$serial = Join-Path $build "vbox-serial.log"    # the documented COM1 file
+
+# ---- VBoxManage ----
+function Find-VBoxManage {
+    if ($VBoxManage) { return $VBoxManage }
+    $dirs = @()
+    if ($env:VBOX_MSI_INSTALL_PATH) { $dirs += $env:VBOX_MSI_INSTALL_PATH }
+    try { $dirs += (Get-ItemProperty "HKLM:\SOFTWARE\Oracle\VirtualBox" -ErrorAction Stop).InstallDir } catch {}
+    if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "Oracle\VirtualBox") }
+    if (${env:ProgramFiles(x86)}) { $dirs += (Join-Path ${env:ProgramFiles(x86)} "Oracle\VirtualBox") }
+    foreach ($d in $dirs) {
+        $exe = Join-Path $d "VBoxManage.exe"
+        if (Test-Path $exe) { return $exe }
+    }
+    throw "VBoxManage.exe not found (set VBOX_MSI_INSTALL_PATH or pass -VBoxManage)."
+}
+$vbox = Find-VBoxManage
+
+# VBoxManage reports progress ("0%...100%") on stderr. Windows PowerShell
+# 5.1 turns native stderr into error records, which would stop the script
+# under "Stop", so errors are non-terminating here and the exit code decides.
+function VBox {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { $out = & $script:vbox @args 2>&1 } finally { $ErrorActionPreference = $old }
+    $lines = @($out | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0) { throw "VBoxManage $($args -join ' ') failed: $($lines -join ' ')" }
+    return $lines
+}
+
+function Get-VMInfo {
+    $info = @{}
+    foreach ($line in (VBox showvminfo $VM --machinereadable)) {
+        if ($line -match '^"?([^"=]+)"?="?(.*?)"?$') { $info[$Matches[1]] = $Matches[2] }
+    }
+    return $info
+}
+
+function Test-SamePath([string]$a, [string]$b) {
+    $na = [IO.Path]::GetFullPath($a.Replace('\\', '\')).TrimEnd('\')
+    $nb = [IO.Path]::GetFullPath($b.Replace('\\', '\')).TrimEnd('\')
+    return [string]::Equals($na, $nb, [StringComparison]::OrdinalIgnoreCase)
+}
+
+# ---- the VM must be as documented (docs/testing.md); never changed here ----
+$info = Get-VMInfo
+$problems = @()
+if ($info["ostype"] -notin @("Other/Unknown (64-bit)", "Other_64")) { $problems += "OS type is '$($info['ostype'])' (expected Other_64)" }
+if ($info["firmware"] -ne "BIOS") { $problems += "firmware is '$($info['firmware'])' (expected BIOS)" }
+if ($info["memory"] -ne "4096") { $problems += "memory is $($info['memory']) MB (expected 4096)" }
+if ($info["pae"] -ne "off") { $problems += "PAE is '$($info['pae'])' (expected off, the default)" }
+if ($info["boot1"] -ne "dvd") { $problems += "first boot device is '$($info['boot1'])' (expected dvd)" }
+if ($info["uart1"] -ne "0x03f8,4") { $problems += "COM1 is '$($info['uart1'])' (expected 0x03f8,4)" }
+$mode = $info["uartmode1"]
+if (-not ($mode -like "file,*") -or -not (Test-SamePath $mode.Substring(5) $serial)) {
+    $problems += "COM1 output is '$mode' (expected file,$serial)"
+}
+if ($info["VMState"] -notin @("poweroff", "aborted")) {
+    $problems += "the VM is '$($info['VMState'])'; power it off first (nothing is discarded here)"
+}
+if ($problems.Count) {
+    $problems | ForEach-Object { Write-Host "VM check: $_" }
+    throw "The VM does not match the documented settings; refusing to run (no setting was changed)."
+}
+foreach ($f in @($Iso, $ModuleIso)) { if (-not (Test-Path $f)) { throw "Not found: $f" } }
+$Iso = (Get-Item $Iso).FullName
+$ModuleIso = (Get-Item $ModuleIso).FullName
+New-Item -ItemType Directory -Force $OutDir | Out-Null
+$summary = Join-Path $OutDir "$Prefix-summary.txt"
+$results = New-Object System.Collections.Generic.List[string]
+function Note([string]$s) { Write-Host $s; $script:results.Add($s) }
+
+Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log)"
+foreach ($f in @($Iso, $ModuleIso)) {
+    Note ("ISO: {0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf))
+}
+
+# ---- keys and screenshots ----
+function Key { VBox controlvm $VM keyboardputscancode @args | Out-Null; Start-Sleep -Milliseconds 150 }
+function TypeText([string]$s) { VBox controlvm $VM keyboardputstring $s | Out-Null; Start-Sleep -Milliseconds 400 }
+function Enter { Key 1c 9c; Start-Sleep -Milliseconds 400 }
+function Down { Key e0 50 e0 d0 }
+function Shot([string]$name) {
+    VBox controlvm $VM screenshotpng (Join-Path $OutDir "$Prefix-$name.png") | Out-Null
+}
+
+function Attach([string]$file) {
+    VBox storageattach $VM --storagectl SATA --port 1 --device 0 --type dvddrive --medium $file | Out-Null
+    $now = (Get-VMInfo)["SATA-1-0"]
+    if (-not (Test-SamePath $now $file)) { throw "Optical drive holds '$now', expected '$file'." }
+}
+
+function Start-Run {
+    if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
+    VBox startvm $VM --type headless | Out-Null
+    Start-Sleep -Milliseconds $KeyDelayMs
+}
+
+# Waits until the serial log matches `pattern` (true) or the timeout passes.
+function Wait-Serial([string]$pattern, [int]$seconds) {
+    for ($i = 0; $i -lt $seconds * 2; $i++) {
+        if ((Test-Path $serial) -and (Select-String -Path $serial -Pattern $pattern -Quiet)) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+# Powers off, keeps the serial log as <Prefix>-<name>.serial.log, and checks
+# it for each expected pattern.
+function Stop-Run([string]$name, [string[]]$expect) {
+    VBox controlvm $VM poweroff | Out-Null
+    Start-Sleep -Seconds 2
+    $copy = Join-Path $OutDir "$Prefix-$name.serial.log"
+    if (Test-Path $serial) { Copy-Item $serial $copy -Force } else { Note "${name}: NO SERIAL LOG"; return }
+    foreach ($p in $expect) {
+        $ok = Select-String -Path $copy -Pattern $p -Quiet
+        Note ("{0,-16} {1,-8} /{2}/" -f $name, $(if ($ok) { "OK" } else { "MISSING" }), $p)
+    }
+}
+
+# GRUB Diagnostics positions (0.9): presses of the down arrow from the
+# first entry of the submenu.
+$Diag = [ordered]@{
+    divzero = 0; ud = 1; gpf = 2; pfnull = 3; pfunmapped = 4; pfreadonly = 5; pfnx = 6;
+    pflow = 7; stackoverflow = 8; memexhaust = 9; doublefree = 10; freereserved = 11;
+    timer = 12; keyboard = 13; preempt = 14; threadoverflow = 15
+}
+
+# Boots a Diagnostics entry: down to "Diagnostics", Enter, down to the entry, Enter.
+function Start-Diag([string]$test) {
+    Start-Run
+    Down; Start-Sleep -Milliseconds 500
+    Enter; Start-Sleep -Milliseconds 500
+    for ($i = 0; $i -lt $Diag[$test]; $i++) { Down }
+    Start-Sleep -Milliseconds 300
+    Enter
+}
+
+function Want([string]$group) { return ($Only.Count -eq 0) -or ($Only -contains $group) }
+
+$halted = "System halted\. Power off the machine\."
+Attach $Iso
+
+if (Want "menu") {
+    Start-Run
+    Down; Start-Sleep -Milliseconds 500
+    Shot "grub-menu"
+    Enter; Start-Sleep -Milliseconds 500
+    Shot "grub-diagnostics-top"
+    for ($i = 0; $i -lt 15; $i++) { Down }
+    Start-Sleep -Milliseconds 300
+    Shot "grub-diagnostics-end"             # entries 14 and 15 at the bottom
+    Stop-Run "menu" @()
+}
+if (Want "boot") {
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Shot "boot"
+    Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    TypeText "ps"; Enter
+    TypeText "version"; Enter
+    Start-Sleep -Seconds 1
+    Shot "console-ps-version"
+    TypeText "clear"; Enter
+    TypeText "mem"; Enter
+    Start-Sleep -Seconds 1
+    Shot "console-mem"
+    Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
+        "^  0  running .* kernel$", "^Madire OS v0\.9 \(64-bit x86-64, Multiboot 1\)$",
+        "^Kernel stack: +[0-9]+ bytes at peak, of 16384$")
+}
+if (Want "preempt") {
+    Start-Diag "preempt"
+    Wait-Serial "^Preempt test: (PASS|FAIL)$" 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Shot "preempt"
+    Stop-Run "preempt" @("^Preempt test: fair shares: .*: OK$", "^Preempt test: PASS \(")
+}
+if (Want "threadoverflow") {
+    Start-Diag "threadoverflow"
+    Wait-Serial $halted 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Shot "threadoverflow"
+    Stop-Run "threadoverflow" @("Double fault: kernel thread stack overflow \(thread [0-9]+ 'overflow'\)", $halted)
+}
+if (Want "pf") {
+    $pf = [ordered]@{
+        pfnull = "Address: 0x0000000000000000"; pfunmapped = "Address: 0x0000000040000000";
+        pfreadonly = "Address: 0xffffffff80100000"; pfnx = "Details: instruction fetch \(NX violation\)";
+        pflow = "Address: 0x0000000000100000"; stackoverflow = "Double fault: kernel stack overflow"
+    }
+    foreach ($t in $pf.Keys) {
+        Start-Diag $t
+        Wait-Serial $halted 40 | Out-Null
+        Start-Sleep -Seconds 1
+        Shot $t
+        Stop-Run $t @($pf[$t], $halted)
+    }
+}
+if (Want "diag") {
+    Start-Diag "divzero"
+    Wait-Serial $halted 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Shot "divzero"
+    Stop-Run "divzero" @("CPU exception 0: Divide Error \(#DE\)", $halted)
+
+    Start-Diag "timer"
+    Wait-Serial "^Timer diagnostic: (PASS|FAIL)" 40 | Out-Null    # the result, not "measuring..."
+    Start-Sleep -Seconds 1
+    Shot "timer"
+    Stop-Run "timer" @("^Timer diagnostic: PASS")
+
+    Start-Diag "keyboard"
+    Wait-Serial "^Keyboard test: ready" 40 | Out-Null
+    TypeText "ab"; Key 2a 1e 9e aa; Key e0 48 e0 c8      # a, b, Shift+A, Up
+    Start-Sleep -Seconds 1
+    Shot "keyboard"
+    Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP")
+}
+if (Want "memexhaust") {
+    Start-Diag "memexhaust"
+    Wait-Serial "^System ready\." 300 | Out-Null
+    Start-Sleep -Seconds 2
+    Shot "memexhaust"
+    Key 39 b9; Start-Sleep -Seconds 1
+    TypeText "mem"; Enter
+    Start-Sleep -Seconds 2
+    Shot "memexhaust-mem"
+    Stop-Run "memexhaust" @("^Memory exhaustion test: PASS", "^madire> mem$")
+}
+if (Want "module") {
+    Attach $ModuleIso
+    Start-Run
+    Wait-Serial "^System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Shot "module"
+    Stop-Run "module" @("^Boot module 1: .*test pattern intact", "^Boot module 1: test pattern intact \(14016 bytes\)$")
+    Attach $Iso
+}
+# Repeated normal boots (-Repeat N): the scheduler self-test runs at every
+# boot; each boot's result, ping-pong verdict and the preemptions during
+# the ping-pong are recorded (VirtualBox can deliver timer ticks in bursts).
+if ($Repeat -gt 0 -and ((Want "repeat") -or $Only.Count -eq 0)) {
+    for ($n = 1; $n -le $Repeat; $n++) {
+        $name = "repeat-{0:D2}" -f $n
+        Start-Run
+        Wait-Serial "^Scheduler self-test: (PASS|FAIL)" 60 | Out-Null
+        Wait-Serial "^System ready\.|System halted" 20 | Out-Null
+        VBox controlvm $VM poweroff | Out-Null
+        Start-Sleep -Seconds 2
+        $copy = Join-Path $OutDir "$Prefix-$name.serial.log"
+        if (-not (Test-Path $serial)) { Note "${name}: NO SERIAL LOG"; continue }
+        Copy-Item $serial $copy -Force
+        $res = (Select-String -Path $copy -Pattern '^Scheduler self-test: (PASS|FAIL)' | Select-Object -First 1)
+        $pre = (Select-String -Path $copy -Pattern '^Scheduler self-test: preemptions during the ping-pong: ([0-9]+)' | Select-Object -First 1)
+        $pp = (Select-String -Path $copy -Pattern '^Scheduler self-test: cooperative ping-pong: (.*)$' | Select-Object -First 1)
+        $ok = $res -and $res.Matches[0].Groups[1].Value -eq "PASS"
+        Note ("{0,-16} {1,-8} /self-test {2}; ping-pong preemptions {3}; {4}/" -f $name,
+              $(if ($ok) { "OK" } else { "MISSING" }),
+              $(if ($res) { $res.Matches[0].Groups[1].Value } else { "no result" }),
+              $(if ($pre) { $pre.Matches[0].Groups[1].Value } else { "?" }),
+              $(if ($pp) { $pp.Matches[0].Groups[1].Value } else { "?" }))
+    }
+}
+
+$results | Set-Content -Path $summary -Encoding ascii
+$missing = @($results | Where-Object { $_ -match ' MISSING ' -or $_ -match 'NO SERIAL LOG' }).Count
+Write-Host ""
+Write-Host "Summary: $summary ($missing missing)"
+if ($missing) { exit 1 }

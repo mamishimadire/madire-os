@@ -53,6 +53,9 @@ VirtualBox power-on
                                    growth, no leak (fails → kmalloc returns NULL)
            status                  "Paging & kernel heap: OK" (one screen line,
                                    two serial lines)
+      10b'. thread_init (0.9)      kernel_main becomes thread 0 ("kernel");
+                                   other threads can be created from now on
+                                   (their stacks need paging)
       10c. check_boot_modules      a test module must be intact (serial log;
                                    since 0.8 also the screen's message line)
       11. start_devices:
@@ -64,13 +67,22 @@ VirtualBox power-on
             keyboard_selftest      echo reply through IRQ1, decoder, queue
             PIC mask check         must be exactly 0xFFFC (only IRQ0/IRQ1)
       12. console_selftest         pure console/shell code (not hardware)
+      12a. schedtest_boot (0.9)    scheduler self-test, serial only: two threads
+                                   ping-pong through yield, preemption of a
+                                   thread that never yields, sleep(10),
+                                   everything returned (fails → crash screen;
+                                   paging off → NOT APPLICABLE)
       13. diagnostics if requested (test=… on the boot command line)
       14. "System ready. Press any key to open the console."; the stack's
           high-water mark so far goes to serial (0.8)
-      15. idle loop                hlt → handle queued keys, uptime, counters;
-                                   first key press → console; then keys → shell
+      15. idle loop                handle queued keys, uptime, counters;
+                                   first key press → console; then keys → shell;
+                                   then thread_idle (0.9): free exited
+                                   detached threads, yield if another thread
+                                   is ready, else hlt
   any CPU exception → isr.asm stub → interrupt_dispatch → panic → crash screen
   IRQ0/IRQ1 → isr.asm stub → interrupt_dispatch → irq_dispatch → driver handler → EOI
+            → (0.9) thread_tick (IRQ0 only) → thread_preempt_point (may switch threads)
 ```
 
 **Why memory comes after the CPU set-up (steps 4–7):** if reading bootloader data hits a bad address, the IDT turns the fault into the crash screen rather than a silent reset. Nothing allocates memory before step 8, so the bootloader's structures can't be overwritten before they're reserved.
@@ -85,7 +97,7 @@ VirtualBox power-on
 
 | Stage | File | Responsibility |
 |---|---|---|
-| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer and keyboard tests) |
+| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer, keyboard and, since 0.9, thread tests) |
 | Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags (page-aligned modules, memory map, a.out kludge), checksum, then the physical load addresses: `load_addr = __kernel_phys_start`, `load_end_addr = __data_end_phys`, `bss_end_addr = __kernel_end_phys`, `entry_addr = _start`; must be within the first 8 KiB of the file |
 | Entry point | `boot/boot.asm` (`_start`, `.boot32`) | 32-bit stub: CPU checks, temporary tables, switch to long mode, jump to the higher half; passes `eax` (magic) and `ebx` (info pointer) to C as the first two arguments |
 | Memory layout | `linker/linker.ld` | 64-bit ELF, loaded at 1 MiB; since 0.8 linked and run at `0xFFFFFFFF80000000` + physical (`.boot` alone is linked at its load address); `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; `.bss` ends with the boot tables and the stacks; exports `__kernel_start/end` and per-section start/end symbols (virtual), plus the `*_phys` symbols the loader and the stub need |
@@ -112,6 +124,8 @@ kernel/               architecture-independent kernel code
   devtest.c           timer / keyboard / IRQ diagnostics
   console/            console: text grid, line editor, screen + serial output
   shell/              command parser, shell commands, CPUID decoding
+  proc/               kernel threads: scheduler core, thread layer, context
+                      switch, preemption-disable count, self-test (0.9)
 drivers/              hardware drivers
   vga/  serial/  pit/  keyboard/
 ```
@@ -146,7 +160,7 @@ In long mode segmentation does no translation; protection comes from paging. `gd
 - **Policy:**
   - Breakpoint (`int3`) is counted and execution resumes. The boot self-test relies on this.
   - Any other exception (vectors 0–31) is fatal and goes to the crash screen. This behaviour is unchanged since 0.2.
-  - Vectors 32–47 (hardware IRQs) go to `irq_dispatch` (below).
+  - Vectors 32–47 (hardware IRQs) go to `irq_dispatch` (below). Since 0.9, after `irq_dispatch` returns (the EOI is already sent), IRQ0 charges the tick to the scheduler, and every IRQ ends at the preemption point, which may switch to another thread (see *Kernel threads and scheduler*). Exceptions never switch threads.
 - All gates are interrupt gates, so interrupts are disabled while a handler runs.
 
 ### Interrupt controller (`pic.c`)
@@ -187,17 +201,18 @@ The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptio
   ```
 
   `Details:` appears only when the reserved-bit or instruction-fetch bits are set. Error-code bits: 0 not present / protection violation, 1 read / write, 2 kernel / user mode, 3 reserved bit set, 4 instruction fetch; a protection violation on an instruction fetch is an **NX violation**. The address is CR2. Every page fault is fatal: nothing is loaded on demand.
-- For a double fault (exception 8) it says why, when it can tell: `Double fault: kernel stack overflow (RSP is in the stack guard page)` with the RSP and the guard page's range; or that the stack reached its guard page (CR2 in the guard); or that the IST1 stack overflowed; otherwise that it was handled on its own stack and RSP is not in the guard page.
+- For a double fault (exception 8) it says why, when it can tell: `Double fault: kernel stack overflow (RSP is in the stack guard page)` with the RSP and the guard page's range; or that the stack reached its guard page (CR2 in the guard); since 0.9, that a kernel thread's stack overflowed, naming the thread (`Double fault: kernel thread stack overflow (thread 1 'overflow')`, then the RSP or CR2 and that thread's guard range); or that the IST1 stack overflowed; otherwise that it was handled on its own stack and RSP is not in the guard page.
 - `panic(message)` and `panicf(format, ...)` show a text message instead, for fatal start-up errors and memory misuse (e.g. `Double free of physical page 0x0014c000`).
-- Both copy everything to serial, then halt with `cli; hlt`.
+- Both copy everything to serial, then halt with `cli; hlt`. Since 0.9 the crash screen first sets `panic_active`, which exempts it from the rule that only thread 0 writes to the screen: whichever thread crashed, the screen shows it.
 - **Line width:** every crash-screen line is at most 79 characters. The VGA driver moves to the next row after column 79, so an 80-character line would leave a blank line. A QEMU test checks every crash screen.
 
 **Stack overflow (0.7):** the kernel stack (16 KiB) and the IST1 stack (8 KiB) each have an unmapped guard page directly below them. When the kernel stack runs into its guard page, the CPU can't push the page-fault frame there and raises a double fault instead, which runs on IST1 and reaches the crash screen. Before 0.7 this reset the machine.
 
 **Stack high-water mark (0.8, `kernel/stackpeak.c`):** the guard page catches an overflow, but not how close the stack comes to one. So the very first thing `kernel_main` does is paint the unused part of the kernel stack with `0xA5`: from the stack's bottom up to 256 bytes below the current RSP. Interrupts are still off at that point (the stub cleared RFLAGS), so no interrupt frame can land in the painted area, and the 256-byte margin keeps the paint clear of the live frames (`stack_paint` is a leaf call that touches only its return address). Later, `stack_peak` finds the lowest byte that no longer holds the pattern; everything above it counts as used.
 
-- The result goes to serial at "System ready." (`Kernel stack: 1480 bytes at peak, of 16384`) and is the last row of `mem`. The paint itself is logged too (`painted 0x…-0x…, 256 bytes below RSP 0x…`).
-- The 0.8 baseline is **1480 of 16384 bytes** after booting, after the keyboard flood and after the console session, in QEMU and VirtualBox alike.
+- The result goes to serial at "System ready." (`Kernel stack: 1496 bytes at peak, of 16384` in 0.9) and is the last row of `mem`. The paint itself is logged too (`painted 0x…-0x…, 256 bytes below RSP 0x…`).
+- The 0.8 baseline is **1480 of 16384 bytes** after booting, after the keyboard flood and after the console session, in QEMU and VirtualBox alike; in 0.9 it is **1496**.
+- Since 0.9 every kernel thread's stack is painted the same way when the thread is created, and the thread's final peak is logged when it exits (see *Kernel threads and scheduler*).
 - It can read a few bytes too low (if the deepest byte ever written happened to equal `0xA5`), never too high. The top 736 bytes (the stub's frames plus the margin) are never painted and always count as used, so 736 is the smallest value it can report.
 - It covers the kernel stack only; the IST1 stack isn't painted.
 - `stackpeak.c` is pure and unit-tested (`test_stackpeak`).
@@ -340,7 +355,7 @@ The following end on the crash screen with a specific message:
 - any self-test failure;
 - any misuse of `memory_free_page`.
 
-The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live. In 0.6 only `memtest.c` changed (the window, and leaving pre-existing pages alone); `mmap.c`, `reserve.c`, `pmm.c` and `memory.c` are unchanged. In 0.7 none of these files changed; they are built as 64-bit code, and their unit tests run as 64-bit programs. In 0.8, `mmap.c`/`mmap.h` (the separate read view), `memory.c` (its call sites and the stale "(32-bit, no PAE)" serial text) and `memtest.c` (kernel symbols converted to physical) changed, each approved in the 0.8 plan; `reserve.c` and `pmm.c` are unchanged.
+The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and IRQ1 live. In 0.6 only `memtest.c` changed (the window, and leaving pre-existing pages alone); `mmap.c`, `reserve.c`, `pmm.c` and `memory.c` are unchanged. In 0.7 none of these files changed; they are built as 64-bit code, and their unit tests run as 64-bit programs. In 0.8, `mmap.c`/`mmap.h` (the separate read view), `memory.c` (its call sites and the stale "(32-bit, no PAE)" serial text) and `memtest.c` (kernel symbols converted to physical) changed, each approved in the 0.8 plan; `reserve.c` and `pmm.c` are unchanged. In 0.9 only `memory.c` changed: `memory_alloc_page` and `memory_free_page` run with preemption off (a mechanical guard, approved in the 0.9 plan), so threads can allocate frames safely.
 
 ## Virtual memory and kernel heap [built: 0.6, 4-level since 0.7, higher half since 0.8]
 
@@ -362,6 +377,7 @@ The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and I
 | `0xFFFF800000001000–0xFFFF8000000FFFFF` | 256 | physical `0x1000–0xFFFFF` (pages 1–255) | physical view: read/write, no-execute (VGA text buffer at `0xFFFF8000000B8000`, EBDA, ROM, GRUB data) |
 | `0xFFFF800000000000` + each boot-data reservation | 256 | that reservation | physical view: read/write, no-execute (Multiboot info, memory map, command line, module table, modules, module names) |
 | rest of slot 256 | 256 | – | unmapped: page 0 (`0xFFFF800000000000`), **free RAM** and the **kernel image** are deliberately not in the view |
+| `0xFFFFFD8000000000–0xFFFFFD80001FFFFF` (0.9) | 507 | thread stack frames | kernel thread stacks: 64 slots of 32 KiB; in each, a 16 KiB **unmapped guard**, then a 16 KiB stack (read/write, no-execute) mapped while its thread exists. Empty at boot; its page table is made at boot |
 | `0xFFFFFE0000000000` | 508 | – | page used by the paging self-test |
 | `0xFFFFFE0000001000` | 508 | any frame | physical-access window (one page) |
 | `0xFFFFFE8000000000` → heap end | 509 | heap frames | read/write, no-execute; 64 KiB at start, at most 16 MiB; unmapped above the end |
@@ -393,10 +409,11 @@ There is still no direct map of all physical memory.
 - `.bss` (with the allocator bitmaps), and every reservation in the physical view;
 - page 0, the table frames themselves, the heap area, the self-test page and the window must be unmapped; the window's page table must exist;
 - 0.8: PML4[511] maps the kernel image and PML4[256] the physical view; the lower half is empty (PML4[0] not present, and the five low addresses above unmapped); the kernel image, page 0 and a free-RAM frame (the PML4's own frame and the page-table frames) are not in the physical view;
+- 0.9: the kernel thread stack area (PML4[507]) is empty at boot and its page table exists;
 - the recursive entry must point to the PML4 (read/write, no-execute);
 - the table and page counts are recomputed independently.
 
-On `MadireOS-Test` and in QEMU this is 68 items (71 with one boot module).
+On `MadireOS-Test` and in QEMU this is 76 items (79 with one boot module); it was 68 (71) in 0.8. The 8 new items are the two slot-507 facts above, plus "unmapped" and "not in the physical view" for each of the area's three new table frames.
 
 Any mismatch frees the frames and leaves the temporary tables in place (`Paging & kernel heap: FAILED (paging)`, boot continues). Otherwise CR3 is loaded, and from then on the tables are reached only through the recursive mapping.
 
@@ -428,6 +445,8 @@ Any mismatch frees the frames and leaves the temporary tables in place (`Paging 
 | `heapinvalid` | (QEMU only) | `Heap: invalid free of 0x… (pointer not from the heap).` (a stack address) |
 | `heapcorrupt` | (QEMU only) | `Heap: corrupted block at 0xfffffe80000… (freeing 0xfffffe80000…).` after overwriting a header |
 | `heapexhaust` | (QEMU only) | allocate until `NULL` (the 16 MiB cap, or physical memory), check, free everything; the pages used must be exactly the heap's growth plus its page tables |
+
+**Under preemption (0.9):** `paging_map`, `paging_unmap`, `paging_translate`, `kmalloc`, `kcalloc`, `kfree` and `kheap_stats` each run with preemption off. The window is held with preemption off from `vmm_window_map` to `vmm_window_unmap`, so no other thread can map it in between, and yielding while holding it panics. The heap is still not interrupt-safe; the context rule above is unchanged.
 
 **Known limits:** no direct map (the physical view covers only the low 1 MiB and the boot data); 4 KiB pages only, also for the kernel image; one address space, kernel mode only; until `paging_init` loads the kernel's tables the boot tables still map 0–4 GiB at 0, and if the walk-check fails the kernel stays on them; the heap never shrinks and isn't interrupt-safe; `kfree` validates the whole heap, which costs O(number of blocks) per free.
 
@@ -465,7 +484,7 @@ GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are res
 
 ## Idle loop [built: 0.4, console added 0.5]
 
-After "System ready.", `kernel.c` runs the idle loop. It isn't a scheduler: it sleeps with `hlt` until any interrupt, then handles whatever the interrupt handlers queued or counted:
+After "System ready.", `kernel.c` runs the idle loop on thread 0. It sleeps until any interrupt, then handles whatever the interrupt handlers queued or counted. Since 0.9 each pass ends with `thread_idle()` instead of a bare `hlt`: it frees exited detached threads, yields if another thread is ready, and otherwise halts until the next interrupt as before. The loop handles:
 
 - **Key events** are logged to serial, as in 0.4.
   - While the boot screen shows, a pressed key updates "Last key" and **opens the console** (if it was offered). That key isn't typed.
@@ -473,7 +492,7 @@ After "System ready.", `kernel.c` runs the idle loop. It isn't a scheduler: it s
 - **Counters:** new drops and unexpected IRQs are reported to serial.
 - **Uptime:** when the seconds counter changes, "Uptime" is redrawn while the boot screen shows, and every 5 s `uptime: N s` goes to serial.
 
-All screen and serial output happens here, never in interrupt context. The shell runs here too, one command at a time. A key arriving just before `hlt` waits at most one timer tick (10 ms).
+All screen output happens here, on thread 0, and no output at all happens in interrupt context. The shell runs here too, one command at a time. A key arriving just before `hlt` waits at most one timer tick (10 ms).
 
 ## Console and shell [built: 0.5]
 
@@ -489,12 +508,12 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 | `kernel/console/textbuf.c` | yes | The console's own 80×25 grid (character plus colour per cell): writing, newline, wrap at column 80, scrolling, clear |
 | `kernel/console/lineedit.c` | yes | Input line: insert at cursor, Backspace, Delete, Left/Right/Home/End, Enter. At most **71 characters** (8-character prompt + 71 = one row). Presses only; any key with Ctrl or Alt held is ignored; no history. |
 | `kernel/shell/parser.c` | yes | Splits the line in place: spaces and tabs separate, repeats collapse, leading/trailing ignored; at most **8 words** |
-| `kernel/shell/shell.c` | yes | The seven commands, reading values from a read-only `shell_context` and writing through a `shell_output` sink, so every output is unit-tested exactly |
+| `kernel/shell/shell.c` | yes | The seven commands (eight with `ps`, 0.9), reading values from a read-only `shell_context` and writing through a `shell_output` sink, so every output is unit-tested exactly |
 | `kernel/shell/cpuinfo.c` | yes | Decodes raw CPUID values: vendor, family/model/stepping (extended-field rules), feature names, brand string, hypervisor vendor |
 | `kernel/arch/x86/cpuid.c` | no | Checks CPUID exists by toggling EFLAGS bit 21, then runs only the leaves the CPU lists; reads CR0 |
-| `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial; builds the shell context; runs the start-up self-test |
+| `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial (each line with preemption off, 0.9); builds the shell context, including a snapshot of the threads for `ps` (0.9); runs the start-up self-test |
 
-- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.8`, a hint) and the `madire> ` prompt.
+- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.9`, a hint) and the `madire> ` prompt.
   - Colours use only VGA slots the logo doesn't reprogram: grey text, white input, cyan prompt, red errors.
   - Output scrolls up at the bottom. There's no scrollback.
   - `clear` empties the console's own grid and redraws it; it doesn't use `vga_clear()`.
@@ -503,18 +522,144 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 
   | Command | Output |
   |---|---|
-  | `help` | the command list |
+  | `help` | the command list (since 0.9 `ps` follows the seven commands) |
   | `clear` | clears the screen |
-  | `version` | `Madire OS v0.8 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
+  | `version` | `Madire OS v0.9 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
   | `uptime` | `Uptime: HH:MM:SS (N ticks at 100 Hz)`. Uses the 32-bit seconds counter with 32-bit division only. The tick count is shown only while it fits in 32 bits, and is never divided. |
-  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. Since 0.7 the paging line is followed by an `NX:` row (`supported, enabled`, `supported, not enabled` or `not supported by this CPU`); since 0.8 it reads `enabled (4-level, 4 KiB, higher-half, NX on)` (or `NX off`; `identity-mapped` in 0.7), and a last row gives the stack's high-water mark, `Kernel stack: 1480 bytes at peak, of 16384` (only when the context has the stack fields; without them the output is unchanged). Every `mem` line fits in 79 columns (checked by a QEMU test and `test_shell_mem08`). |
+  | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. Since 0.7 the paging line is followed by an `NX:` row (`supported, enabled`, `supported, not enabled` or `not supported by this CPU`); since 0.8 it reads `enabled (4-level, 4 KiB, higher-half, NX on)` (or `NX off`; `identity-mapped` in 0.7), and a last row gives the stack's high-water mark, `Kernel stack: 1496 bytes at peak, of 16384` (only when the context has the stack fields; without them the output is unchanged). Every `mem` line fits in 79 columns (checked by a QEMU test and `test_shell_mem08`). |
   | `cpu` | CPUID information, plus the mode line: `64-bit long mode, paging on, 1 CPU in use` when EFER.LMA is set (0.7); otherwise the CR0-based wording. `cpu` and `version` use the same long-mode test. |
   | `echo <text>` | the words joined by single spaces |
+  | `ps` (0.9) | one row per live thread: `TID`, `STATE` (`running`, `ready`, `blocked`, …), `TICKS` (timer ticks it has run; `large` once the count no longer fits in 32 bits), `STACK PEAK` (`used/size` in bytes) and `NAME`, then a count line, e.g. `  0  running      338     1496/16384   kernel` and `1 thread`. A snapshot taken when the command runs. It comes from an optional `shell_context` field: without it, `ps` is an unknown command and `help` is exactly the 0.8 output |
 
   An unknown name gives `Unknown command: …`. Extra arguments give `Usage: …`, and more than 8 words gives `Too many arguments (max 8).`
 - **Self-test (`Console & shell` status line):** exercises the *pure* modules with known input: the line editor, the parser, `echo ok` through the shell, and scrolling in a private grid. It isn't a test of keyboard or VGA hardware; those are proven by the keyboard self-test and by the QEMU and VirtualBox console tests.
 - **When the console is offered:** only if both the console self-test and the keyboard passed. Otherwise the bottom row says why, and the idle loop runs as in 0.4.
 - **Unchanged in 0.5:** the keyboard driver, decoder, queue, IRQ layer, PIC, PIT, timer and memory manager. There's no dynamic allocation: every buffer is static (still true in 0.6; the console doesn't use the heap).
+
+## Kernel threads and scheduler [built: 0.9]
+
+0.9 is the kernel side of processes: several flows of control inside the kernel, each with its own stack, switched by a preemptive scheduler. User mode, per-process address spaces and system calls come in 0.10.
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/proc/sched_core.c` | yes | The bookkeeping: thread states, the run queue, slice accounting, sleep and join, exit and reaping, the stack-slot bitmap, the turn-order check used by the tests. No hardware, printing or panics, so it is unit-tested (`test_sched`, `test_kstack`) |
+| `kernel/proc/thread.c` | no | Owns the stacks, does the switches, turns scheduler errors into panics; `thread_create`, `thread_yield`, `thread_sleep`, `thread_join`, `thread_exit`, the idle step, the tick and preemption hooks |
+| `kernel/proc/switch.asm` | no | `switch_to` (the context switch) and `thread_trampoline` (a new thread's first instruction) |
+| `kernel/proc/preempt.h` | – | The preemption-disable count |
+| `kernel/proc/schedtest.c` | no | The boot self-test and the thread diagnostics |
+
+### Threads
+
+- **Thread 0** is `kernel_main`'s own flow: the boot sequence, then the console and idle loop. It exists from `thread_init()` on, runs on the boot stack, and **never blocks or exits**, so there is always a thread that can run. When it has to wait (joining, sleeping) it polls: it yields if another thread is ready, else halts until the next interrupt.
+- **Other threads** (at most 63) are created with `thread_create(name, fn, arg, detached)` and run `fn(arg)`; its return value is the exit code. Threads exist only with paging on (their stacks need it).
+- **States:** `FREE`, `NEW` (being set up), `READY` (on the run queue), `RUNNING` (exactly one), `BLOCKED` (sleeping until a tick, or waiting in a join), `ZOMBIE` (exited, exit code kept until it is reaped).
+- **Joining and reaping:** a joinable thread is freed by the thread that joins it; a detached thread is freed by thread 0's idle step. A thread never frees its own stack. Joining yourself, joining a detached thread, two joiners, and blocking or exiting thread 0 are refused.
+- **Sleeping:** `thread_sleep(n)` blocks until the first tick at or after now + n; a woken sleeper goes to the tail of the run queue and asks for a switch.
+
+### Scheduling
+
+- **Round robin, preemptive.** A thread runs at most `SCHED_SLICE_TICKS` = 5 ticks (50 ms at 100 Hz) while another thread is ready; then a switch is requested (`need_resched`). Yielding, sleeping, joining or exiting takes the thread off the CPU at once. No priorities.
+- **One switch point for preemption:** at the end of an interrupt, in `interrupt_dispatch`, after `irq_dispatch` has returned. The EOI has already been sent, so the PIC can deliver the next IRQ0 to whichever thread runs next. IRQ0 first charges the tick (`thread_tick`: slice accounting, waking sleepers); then `thread_preempt_point` switches if a switch is due and preemption is enabled. `timer.c` and `irq.c` are unchanged, and exceptions never switch.
+- **Scheduler state** (`struct sched`, the stack-slot bitmap) is changed only with interrupts off, because the tick updates it from IRQ context.
+
+```
+IRQ0 → isr.asm → interrupt_dispatch → irq_dispatch (handler + EOI)        [unchanged]
+                                    → thread_tick (slice, wake sleepers)
+                                    → thread_preempt_point: need_resched and count 0?
+                                          → switch_to(current, next)
+thread_create → stack slot + frames → paint → initial frame → READY
+new thread: switch_to "returns" into thread_trampoline → sti → fn(arg) → thread_exit(code)
+thread_exit → ZOMBIE → joiner woken (or thread 0 reaps it) → stack and frames freed
+```
+
+### The context switch (`switch_to`)
+
+`switch_to(&old_rsp, new_rsp)` pushes **RFLAGS** and the callee-saved registers (`rbx`, `rbp`, `r12`–`r15`) on the current stack, saves RSP, loads the other thread's RSP, pops its registers and RFLAGS, and returns on its stack. The System V ABI lets a called function clobber every other general register, so nothing else needs saving (the kernel uses no SSE or x87 state).
+
+- **RFLAGS is part of the switch (0.9 correction F4).** The `iretq` IF-state test found a flag leaking from one thread to the next when only the general registers were switched. Now no flag (DF, AC, …) crosses threads on any path.
+- **The interrupt flag on every path:** every switch happens with interrupts off. A thread that yielded restores its own IF through `irq_restore`; a preempted thread returns through `isr_common`'s `iretq`, which restores its own RFLAGS; a new thread starts with RFLAGS `0x2` (every flag clear) and `thread_start` executes `sti`, so it always starts with IF=1. `test=ifstate` proves each path.
+- A new thread's stack is built by `thread_create` so that the first `switch_to` "returns" into `thread_trampoline` with `r12` = the function and `r13` = its argument, RSP 16-byte aligned.
+
+### Thread stacks (PML4 slot 507)
+
+| Item | Value |
+|---|---|
+| Area | `0xFFFFFD8000000000`, PML4 slot 507, 2 MiB |
+| Slots | 64 × 32 KiB; slot *i* at `0xFFFFFD8000000000 + i × 32 KiB` |
+| In each slot | the lower 16 KiB are **never mapped** (the guard), the upper 16 KiB are the stack (4 frames, read/write, no-execute), growing down towards the guard |
+| Page table | made at boot by `paging_init`, so creating a thread never needs a table frame (and thread churn returns every frame) and the slot exists before 0.10 copies the kernel half of the PML4; the walk-check proves the area empty and its table present |
+| Life cycle | frames mapped when the thread is created (all or nothing), the stack painted for the high-water mark, frames unmapped and freed when the thread is reaped |
+
+A thread that overflows its stack writes into its guard and faults; the CPU can't push the page-fault frame there, so the double fault runs on IST1. The crash screen recognises the guard of slot 507 and names the thread: `Double fault: kernel thread stack overflow (thread 1 'overflow')`, then RSP (or CR2) and the guard's range (`test=threadoverflow`). Each exiting thread logs its final stack peak: `Thread N 'name' exited: code C, stack peak P of 16384`.
+
+### Preemption-disable count (`preempt.h`)
+
+The kernel has **no locks**. Shared kernel state without locking is instead changed with preemption disabled: `preempt_disable()` raises a count, `preempt_enable()` lowers it, and while it is above zero the scheduler never switches. Interrupts keep running (it isn't `cli`): the timer, keyboard and uptime are unaffected. On one CPU this is enough, because no other thread can run inside the section and interrupt handlers never use these subsystems. The count nests, and an underflow panics.
+
+Guarded: every heap operation (`kmalloc`, `kcalloc`, `kfree`, `kheap_stats`), the frame allocator (`memory_alloc_page`, `memory_free_page`), `paging_map`/`unmap`/`translate`, the window (held from map to unmap), every `kputc`/`kputs`/`kprintf`/`klogf` call, the console's serial copy of each line, and every boot-screen call made through `BOOTSCREEN_SAFE()`.
+
+**Blocking with preemption disabled is a bug:** `thread_yield`, `thread_sleep`, `thread_join` and `thread_exit` panic at once if the count is above zero: `thread_yield: called with preemption disabled (count 1, thread 0 'kernel').` (`test=preemptyield`, `preemptjoin`, `preemptsleep`).
+
+**Deferred switch, policy (a):** when a tick asks for a switch while the count is above zero, the request stays pending (`need_resched`) and `preempt_enable()` does **not** switch. The switch happens at the end of the first interrupt after the count is back at zero: at most one tick (10 ms) later, sooner if another interrupt comes first. There stays a single switch point (the end of an IRQ), and `preempt_enable()` is safe anywhere, even with interrupts off. `test=preemptoff` holds the count for 20 ticks and proves that no switch happens meanwhile and that the other thread runs within one tick of the release.
+
+**Known limitation:** a thread that spends almost all its time inside guarded sections gets turns longer than the slice (`framethreads` has measured up to 77 ticks). Correctness and progress are unaffected; every scheduler diagnostic logs its longest turn.
+
+### Concurrency audit (summary)
+
+Before the first switch was written, every mutable file-scope variable in `kernel/`, `drivers/` and `boot/` was listed with its protection under preemption (31 rows, in the stage-2 report). In summary:
+
+| Protection | Structures |
+|---|---|
+| **Preemption off** for each operation | kernel heap; frame allocator; paging, `vmm` and the recursive mapping; the physical-access window (held from map to unmap); `kprintf`/`klogf` output (VGA cursor, serial port); the console's serial copy (F1); boot-screen calls through `BOOTSCREEN_SAFE()` (F2) |
+| **Interrupts off** | the scheduler's queues and thread records (the tick changes them from IRQ context) |
+| **Already IRQ-safe** (unchanged) | the key queue (popped with interrupts off, one consumer: thread 0); the timer counters (64-bit read with `irq_save`, 32-bit reads atomic); the IRQ counters |
+| **Thread 0 only** | the console (grid, line editor, shell), the boot screen, the logo, VGA writes outside `kprintf`; enforced by `kputc` (F3) and `BOOTSCREEN_SAFE()` |
+| **Boot only**, read-only afterwards | memory map and reservations, page-table build and walk-check state, the self-test page, GDT/IDT/TSS, PIC masks, CPU information, the command line and Multiboot data, the existing diagnostics' state, the boot stack's paint data |
+| **Single aligned reads** | the free-page count and paging figures read by `mem` (at most one operation stale) |
+| Crash screen | `cli` first, then halts: no switch can happen during it |
+
+### Who may write to the screen
+
+- **Only thread 0** writes to the screen. `kputc` checks it and panics, naming the thread, if another thread writes (F3); other threads log to serial with `klogf`. The crash screen is exempt (`panic_active`).
+- **The boot screen:** `bootscreen.c` is protected and unchanged, with no protection of its own. Every call that can happen while other threads exist (the idle loop's uptime and last-key updates, the diagnostics' result messages) goes through **one wrapper**, `BOOTSCREEN_SAFE(call)` in `kernel.c`: it panics unless the caller is thread 0, and runs the call with preemption off (F2). Direct calls are allowed only in the boot sequence (`kernel_main`, `start_devices`, `check_boot_modules`) and in `devtest.c`, whose diagnostics run at boot before any other thread exists. `scripts/check-bootscreen.sh` enforces this: the ISO build fails on any other call.
+
+### Scheduler self-test (every boot)
+
+Runs after the console self-test, with paging on (`NOT APPLICABLE` without paging, since there are no thread stacks). Serial only; a failure is fatal (`Scheduler self-test failed (details on the serial log).` on the crash screen). 9 checks:
+
+1. two threads are created;
+2. **cooperative ping-pong:** they alternate 100 times through `thread_yield`. The order check counts the preemptions during the ping-pong: with none (the normal case), the alternation must be strict (`100 yields, strictly alternating`); with any, each thread must still have its full number of turns and the order may differ only right after a preemption (option (A), because VirtualBox can deliver timer ticks in bursts). Anything else fails;
+3. the number of preemptions during the ping-pong is logged;
+4. both are joined with their exit codes (11 and 22);
+5. IF was 1 in the threads at every check, and thread 0 keeps IF=1;
+6. the context-switch count;
+7. a thread that never yields is preempted (at least 3 times in 30 ticks);
+8. `sleep(10)` wakes after 10 or 11 ticks;
+9. everything returned: free pages, stack slots and live threads exactly as before.
+
+It also logs the longest turn and the highest thread stack peak.
+
+### Thread diagnostics (`test=…`)
+
+Each logs its details on serial and its result on the boot screen's message line, and ends with "everything returned" (free pages, stack slots and threads as before) and its longest turn. GRUB entries exist for the two meant for real hardware; the rest run in QEMU.
+
+| `test=` | GRUB entry | Proves |
+|---|---|---|
+| `threads` | – | 8 threads × 100 yields: strict round robin (or option (A) after a preemption); `rbx`, `rbp`, `r12`–`r15` and stack contents preserved across 800 switches; IF=1 after every switch |
+| `join` | – | exact exit codes (0, 1, 255, `0x7fffffff`, −1, `INT32_MIN`); a thread other than 0 blocks in a join and is woken; a detached thread reaped by thread 0 |
+| `ifstate` | – | the IF state on every path: a new thread starts with IF=1; yield with IF=1 and with IF=0 each resume with their own IF; a preempted thread resumes through `iretq` with its own flags (AC set in one thread never leaks into another) |
+| `preempt` | **14: Thread test: preemption** | 3 threads that never yield, for 300 ticks: each gets 25–42 % of the CPU, about one preemption per slice (40–80), all make progress, the timer keeps ticking, keys typed meanwhile all arrive |
+| `preemptoff` | – | the deferred switch: no switch while the count is held (20 ticks), the request stays pending, the other thread runs within one tick of the release |
+| `sleep` | – | `sleep(1)`, `sleep(10)`, `sleep(100)` wake after n or n+1 ticks; a sleeping thread uses no CPU; thread 0 sleeps by polling |
+| `heapthreads` | – | 4 threads using the heap under preemption: every tagged payload intact, `heap_check` OK, free pages exactly accounted for |
+| `framethreads` | – | 4 threads allocating frames (through the window) under preemption: no frame handed out twice, free pages restored exactly |
+| `threadleak` | – | 2000 threads created, run and freed (joined and detached): heap, free pages, stack slots and threads exactly as before; a deliberately deep thread reports a stack peak between 8 and 16 KiB |
+| `pingpongpreempt` | – | forces one preemption in the middle of a ping-pong: accepted only through the relaxed branch, the order differing only right after it |
+| `pingpongbad` | – | a skipped turn and a repeated turn without a preemption are both rejected (`out of order without a preemption`, `wrong number of turns`) |
+| `threadoverflow` | **15: Crash test: kernel thread stack overflow** | a thread recurses into its guard: double fault on IST1, the thread named, RSP inside its guard, no reset |
+| `preemptyield`, `preemptjoin`, `preemptsleep` | – | yield, join or sleep with preemption disabled panics, naming the call, the count and the thread |
+
+**Known limits (0.9):** one CPU; no priorities; a fixed 50 ms slice; at most 64 threads with 16 KiB stacks; kernel threads only; thread 0 never blocks; longer turns inside guarded sections (policy (a)).
 
 ## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
 
@@ -542,9 +687,9 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 - `klogf`: writes to serial only, for diagnostics that shouldn't appear on screen.
 - `ksnprintf`: formats into a buffer.
 
-All of them share one formatter. `panicf` builds on it. Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
+All of them share one formatter. `panicf` builds on it. Since 0.9 each `kputc`, `kputs`, `kprintf` and `klogf` call runs with preemption off, so lines from different threads never interleave (`ksnprintf` writes only to the caller's buffer and needs no guard). `kputc` also enforces the screen rule: if a thread other than 0 writes to the screen, it panics, naming the thread (the crash screen is exempt). Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
 
-## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6; unchanged in 0.7 and 0.8]
+## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6; unchanged in 0.7, 0.8 and 0.9]
 
 The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 
@@ -561,6 +706,8 @@ The screen and the serial log are written separately. The screen shows only the 
 `Paging & kernel heap:` is one screen line for two checks: `OK`, or `FAILED (paging)` / `FAILED (heap)` naming the part that failed (paging first, since the heap needs it). The serial log keeps them as two lines, `Paging enabled:` and `Kernel heap:`, each with its own status and note.
 
 Once the console starts it owns the whole screen (see *Console and shell*). The boot results stay in the serial log.
+
+**The boot screen and threads (0.9):** `bootscreen.c` is unchanged and has no protection of its own. Once other threads can exist, every call goes through `BOOTSCREEN_SAFE()` in `kernel.c` (see *Kernel threads and scheduler*). The scheduler self-test adds no screen line: its result is on the serial log only, and a failure ends on the crash screen.
 
 **Logo (`kernel/logo.c`):** a geometric M made of four rounded strokes. It's defined as geometry, not stored as an image:
 
@@ -579,7 +726,7 @@ This will be the only layer that touches port I/O, MMIO and CPU-specific instruc
 
 ## Security [planned]
 
-Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). Designing these needs process isolation (user mode) first. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7), an empty lower half and no writable alias of kernel code in the physical view (0.8).
+Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). Designing these needs process isolation (user mode, planned for 0.10) first. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7), an empty lower half and no writable alias of kernel code in the physical view (0.8), and an unmapped 16 KiB guard below every kernel thread's stack (0.9).
 
 ## Filesystem [planned]
 
@@ -587,8 +734,8 @@ A virtual filesystem (VFS) layer first, then an initial RAM disk loaded by GRUB 
 
 ## System services [planned]
 
-User-mode services (init, logging, device manager) once user mode and system calls exist.
+User-mode services (init, logging, device manager) once user mode and system calls exist (user processes are planned for 0.10, on top of the 0.9 threads and scheduler).
 
 ## User interface [planned]
 
-A text console with a small built-in command shell exists since 0.5 (see *Console and shell*). Command history, more commands and running programs come with later milestones. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.
+A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history, more commands and running programs (0.10) come with later milestones. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.

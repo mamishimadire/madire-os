@@ -3,17 +3,31 @@
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/kprintf.h"
+#include "kernel/proc/preempt.h"
+#include "kernel/proc/thread.h"
 
+/* 0.9: the VGA cursor and the serial port are shared, unlocked state. Each
+ * call (a character, a string, a whole formatted line) runs with
+ * preemption off, so lines from different threads never interleave.
+ * ksnprintf only writes to the caller's buffer and needs no guard.
+ * Only thread 0 writes to the screen (other threads use klogf); a breach
+ * panics, except on the crash screen itself. */
 void kputc(char c)
 {
+    if (!thread_screen_allowed())
+        thread_screen_violation();
+    preempt_disable();
     vga_putc(c);
     serial_putc(c);
+    preempt_enable();
 }
 
 void kputs(const char *s)
 {
+    preempt_disable();
     while (*s)
         kputc(*s++);
+    preempt_enable();
 }
 
 /* Output target for the formatter. */
@@ -184,7 +198,9 @@ static void format(struct sink *out, const char *fmt, va_list ap)
 void kvprintf(const char *fmt, va_list ap)
 {
     struct sink out = { SINK_CONSOLE, NULL, 0, 0 };
+    preempt_disable();
     format(&out, fmt, ap);
+    preempt_enable();
 }
 
 void klogf(const char *fmt, ...)
@@ -192,7 +208,9 @@ void klogf(const char *fmt, ...)
     struct sink out = { SINK_SERIAL, NULL, 0, 0 };
     va_list ap;
     va_start(ap, fmt);
+    preempt_disable();
     format(&out, fmt, ap);
+    preempt_enable();
     va_end(ap);
 }
 

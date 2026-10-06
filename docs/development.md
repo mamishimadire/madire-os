@@ -4,6 +4,8 @@
 
 ```
 Makefile                  build rules (Linux)
+AGENTS.md                 working rules for every coding agent (0.9)
+CLAUDE.md                 "@AGENTS.md": Claude Code loads AGENTS.md (0.9)
 .devcontainer/            Codespace / Dev Container definition (runs install-deps.sh)
 boot/boot.asm             Multiboot header (a.out kludge) + 32-bit stub: CPU checks,
                           temporary page tables, switch to 64-bit long mode, jump
@@ -11,7 +13,7 @@ boot/boot.asm             Multiboot header (a.out kludge) + 32-bit stub: CPU che
                           stacks with guard pages
 kernel/
   kernel.c/.h             start-up sequence, stack paint, device start-up, idle
-                          loop, version
+                          loop, version; BOOTSCREEN_SAFE() (0.9)
   stackpeak.c/.h          stack high-water mark: paint and measure     (pure)
   multiboot.h             Multiboot 1 structures
   bootmod.c/.h            boot-module integrity check (test modules)  (pure)
@@ -22,7 +24,7 @@ kernel/
     console.c/.h          console: VGA drawing, cursor, serial copy, self-test
   shell/
     parser.c/.h           command-line splitter (max 8 words)       (pure)
-    shell.c/.h            the seven shell commands                  (pure)
+    shell.c/.h            the shell commands (seven, plus ps in 0.9) (pure)
     cpuinfo.c/.h          CPUID register decoding                   (pure)
   timer.c/.h              system tick (IRQ0), uptime, bounded waits, timer self-test
   devtest.c/.h            timer / keyboard / IRQ diagnostics (test=...)
@@ -31,6 +33,14 @@ kernel/
   logo.c/.h               Madire M logo (stroke geometry + drawing)
   kprintf.c/.h            kprintf (screen + serial), klogf (serial), ksnprintf
   panic.c/.h              crash screen (panic, panicf, panic_exception)
+  proc/                   kernel threads (0.9)
+    sched_core.c/.h       states, run queue, slices, sleep/join/exit, stack
+                          slots, turn-order check                     (pure)
+    thread.c/.h           thread API, stacks in slot 507, switches, tick and
+                          preemption hooks, screen rule
+    switch.asm            switch_to (RFLAGS + callee-saved), trampoline
+    preempt.h             preemption-disable count, deferred switch (a)
+    schedtest.c/.h        boot self-test and thread diagnostics (test=...)
   memory/
     mmap.c/.h             memory map validation + iteration      (pure)
     reserve.c/.h          memory that must never be allocated    (pure)
@@ -73,6 +83,8 @@ scripts/
   install-deps.sh         installs the toolchain on Ubuntu (run by .devcontainer/)
   build.ps1               Windows: build + test inside the GitHub Codespace
   run.ps1                 Windows: boot the ISO in VirtualBox
+  vbox-acceptance.ps1     Windows: scripted VirtualBox acceptance test (0.9)
+  check-bootscreen.sh     build check: boot screen only via BOOTSCREEN_SAFE() (0.9)
   logo-preview.py         reference model + PNG preview of the logo
 tests/
   unit/                   host unit tests for the pure modules (`make unit`)
@@ -104,6 +116,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `kernel/console/textbuf.c`, `lineedit.c`
 - `kernel/shell/parser.c`, `shell.c`, `cpuinfo.c`
 - `kernel/bootmod.c`, `kernel/stackpeak.c`
+- `kernel/proc/sched_core.c` (0.9)
 - `kernel/arch/x86/pagefault.h` and the inline NX decision in `cpuid.h` (header only)
 - the formatter in `kernel/kprintf.c` (`test_kprintf` includes the file, with the two output drivers stubbed)
 
@@ -115,7 +128,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 
 Commands run in normal context, one at a time, and must return promptly.
 
-**Screen output after the console starts:** only the console writes to the screen. Use `klogf()` for serial-only diagnostics, and don't use `kprintf()` for screen output once the console is active (the crash screen is the exception).
+**Screen output after the console starts:** only the console writes to the screen. Use `klogf()` for serial-only diagnostics, and don't use `kprintf()` for screen output once the console is active (the crash screen is the exception). Since 0.9 only thread 0 may write to the screen at all; see *Kernel threads*.
 
 To add one:
 
@@ -168,7 +181,18 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 **Waiting.**
 
 - `timer_wait_ticks(n)` sleeps with `hlt`. It returns `false` at once if the timer isn't verified or interrupts are off, so it can't hang.
+- `thread_sleep(n)` (0.9) blocks the current thread for n ticks and lets others run; thread 0 waits by polling instead.
 - Device polling loops must always have a fixed bound (see `ps2kbd.c`).
+- **Don't busy-poll `timer_ticks()` without real work between the reads** (0.9). QEMU's TCG (the emulator used by the tests) delivers interrupts only between translated blocks of guest code, so a tight loop that only reads the tick counter (with its brief `cli`/`sti`) can starve IRQ0 and hang the test. A test thread that spins until a tick must do some real work in each pass (as the `schedtest.c` spinners do).
+
+**Kernel threads (0.9).** The API is in `kernel/proc/thread.h`: `thread_create(name, fn, arg, detached)` returns the tid (or −1 when no thread slot, stack slot or memory is free); `fn`'s return value is the exit code. A joinable thread must be joined (`thread_join`), which frees it; a detached thread is freed by thread 0. Rules:
+
+- Shared kernel state without its own locking is changed only with preemption off: `preempt_disable()` … `preempt_enable()` (`kernel/proc/preempt.h`). The heap, the frame allocator, paging, the window and the output functions already do this inside; new shared state needs the same.
+- Never yield, sleep, join or exit with preemption off: each panics at once. Keep guarded sections short. While the count is above zero no switch happens, and the deferred switch comes at the next interrupt after it is back at zero.
+- Only thread 0 writes to the screen (`kputc` panics otherwise). Other threads log with `klogf()`.
+- The boot screen (`bootscreen_*`) is used only by thread 0, through `BOOTSCREEN_SAFE(call)` in `kernel.c`. Direct calls are allowed only in the boot sequence (`kernel_main`, `start_devices`, `check_boot_modules`) and in `devtest.c`. `scripts/check-bootscreen.sh` runs in every `make iso` and fails the build on any other call; QEMU tests check that it passes on the sources and rejects both kinds of violation.
+- A thread's stack is 16 KiB with an unmapped 16 KiB guard below it. An overflow ends on the crash screen, naming the thread. Each exiting thread logs its stack peak.
+- Scheduler state is changed only with interrupts off (`irq_save`/`irq_restore`), because the timer tick changes it from IRQ context.
 
 ## Toolchain
 
@@ -196,6 +220,26 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 2. **WSL2 Ubuntu:** `wsl --install -d Ubuntu` (admin, reboot), then `bash scripts/install-deps.sh` and `make`.
 3. **Any Ubuntu machine or CI:** same as WSL.
 
+## Running the full test suite (detached, on a hash-verified snapshot)
+
+Since 0.9 the full suite (`make unit test iso`: 24 unit suites, `make repro`, 528 QEMU checks) takes about **15 minutes**. That is longer than the time limit of many terminals and coding tools, and a run cut off by such a limit can look like a hang or a pass. So the default procedure, for people and agents alike, is to run it **detached** inside the Codespace and to prove which sources it tested:
+
+1. **Snapshot:** copy the files under test (`Makefile`, `boot/`, `kernel/`, `drivers/`, `linker/`, `iso/`, `scripts/`, `tests/`) to a snapshot folder outside the repository, and record the SHA-256 of every file.
+2. **Upload** the snapshot to the Codespace, to a fresh `/tmp/madire-os-build` (`gh codespace cp -e -r …`, as `scripts/build.ps1` does).
+3. **Verify:** list the SHA-256 of every file in the Codespace copy (`find . -type f | sort | xargs sha256sum`) and compare it with the snapshot's list. Any difference, missing or extra file means the run wouldn't test the snapshot: upload again.
+4. **Start detached**, so the run doesn't depend on the session that started it:
+
+   ```sh
+   cd /tmp/madire-os-build && (nohup bash -c 'make unit test iso > /tmp/regression.txt 2>&1; echo "MAKE EXIT $?" >> /tmp/regression.txt' >/dev/null 2>&1 &)
+   ```
+
+5. **Poll** the log until its last line is `MAKE EXIT <code>` (a few short checks, not one long blocking command), then download it. The run passed only if the code is 0, the summary says `ALL TESTS PASSED (528 checks: …)` with the expected count per tag, and every unit suite says `PASS`.
+6. Before trusting the result, confirm that the working tree still equals the snapshot (same hashes). A file changed since the snapshot means the run didn't test it.
+
+From PowerShell, put the remote command in single quotes (or a script file): inside double quotes PowerShell expands `$?` locally before the command reaches the Codespace.
+
+`scripts/build.ps1` still runs `make iso test` in the foreground. That's fine when nothing can cut it off, but its result is not the evidence for a stage or a milestone.
+
 ## Compiler flags
 
 | Flag | Reason |
@@ -218,7 +262,7 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 - 64-bit division and modulo are native instructions since 0.7 and fine. 128-bit arithmetic (`__int128`) isn't: it would need `libgcc`, which isn't linked.
 - No `__builtin_popcount` (without a POPCNT target it calls `libgcc`). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Data is never executable: map pages with `paging_nx_flag()` (see *Using memory*). Only kernel code (`.text`) runs.
-- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8); a change that raises it noticeably deserves a look.
+- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9); a change that raises it noticeably deserves a look.
 - Never use a low (physical) address as a pointer: the lower half is empty (0.8). Use `phys_view()` for the low 1 MiB and boot data, the window for other frames, and `kernel_phys()` to turn a kernel symbol into a physical address.
 - Diagnostics that shouldn't appear on screen go to `klogf()` (serial only).
 - Never allocate memory before `memory_init()`, and never write to a physical page you didn't get from `memory_alloc_page()`.
@@ -227,12 +271,13 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 - `kmalloc`, `kcalloc` and `kfree` only in normal context with interrupts enabled.
 - The kernel owns VGA palette slots 1, 5, 6, 8, 9 and 13 for the logo. Don't use those colours for text.
 - Hardware access goes through `kernel/arch/x86/io.h`, not inline `in`/`out` instructions.
-- Screen and serial output only from normal context, never from an interrupt handler.
+- Screen and serial output only from normal context, never from an interrupt handler. Screen output only from thread 0 (0.9).
 - Only IRQ0 (timer) and IRQ1 (keyboard) may be unmasked; see `IRQ_ALLOWED_MASK`.
+- Shared state without locking is changed only with preemption disabled, and never yield, sleep, join or exit inside such a section (0.9; see *Kernel threads*).
 
 ## Conventions
 
-- Every milestone must build, pass `make test`, boot in VirtualBox, and update these docs before it counts as done.
+- Every milestone must build, pass `make test`, boot in VirtualBox, and update these docs before it counts as done. The working rules for the process (stages, approvals, backups, commits) are in [AGENTS.md](../AGENTS.md).
 - Architecture changes are explained in the docs before they are made.
 - Kernel code prefixes output helpers with `k` (`kputs`) so they aren't confused with C library functions.
 - Baseline ISOs of each finished milestone are kept outside the repo in `Desktop\madire-os-baseline\`, for regression comparison.

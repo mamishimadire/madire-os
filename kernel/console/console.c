@@ -9,6 +9,8 @@
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/proc/preempt.h"
+#include "kernel/proc/thread.h"
 #include "kernel/shell/parser.h"
 #include "kernel/shell/shell.h"
 #include "kernel/timer.h"
@@ -84,11 +86,16 @@ static void show_prompt(void)
 
 /* ---- Shell glue ---- */
 
+/* The shell hands over one complete line per call. Its serial copy runs
+ * with preemption off (0.9), so another thread's klogf line never lands in
+ * the middle of it. The screen belongs to thread 0 (the console). */
 static void shell_sink(void *ctx, const char *text, enum shell_text kind)
 {
     (void)ctx;
     write_screen(text, kind == SHELL_ERROR ? ATTR_ERROR : ATTR_TEXT);
+    preempt_disable();
     serial_write(text);
+    preempt_enable();
 }
 
 static const struct shell_output sink = { shell_sink, 0 };
@@ -110,6 +117,24 @@ static void build_context(struct shell_context *c)
     c->heap = kheap_stats();            /* runs a full heap_check first */
     c->stack_size = kernel_stack_size();
     c->stack_peak = kernel_stack_peak();
+
+    /* 0.9: the threads for "ps" (a snapshot; the console is thread 0). */
+    static struct shell_thread rows[SCHED_MAX_THREADS];
+    uint32_t n = 0;
+    for (int32_t tid = 0; tid < SCHED_MAX_THREADS; tid++) {
+        enum sched_state st = thread_state(tid);
+        if (st == SCHED_FREE)
+            continue;
+        rows[n].tid = tid;
+        rows[n].state = sched_state_str(st);
+        rows[n].ticks = thread_ticks_run(tid);
+        rows[n].stack_peak = thread_stack_peak(tid);
+        rows[n].stack_size = thread_stack_size(tid);
+        rows[n].name = thread_name(tid);
+        n++;
+    }
+    c->threads = rows;
+    c->thread_count = n;
 }
 
 static void submit(void)

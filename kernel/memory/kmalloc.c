@@ -8,7 +8,11 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/preempt.h"
 
+/* 0.9: the heap has no locking. Every operation runs with preemption off
+ * (kernel/proc/preempt.h), so another thread never sees it half-changed.
+ * Interrupt handlers still never use it (require_normal_context). */
 static struct heap heap;
 static bool ready;
 static struct heap_stats current;
@@ -81,15 +85,22 @@ static void require_normal_context(const char *fn)
 void *kmalloc(uint32_t size)
 {
     require_normal_context("kmalloc");
-    return ready ? heap_alloc(&heap, size) : 0;
+    preempt_disable();
+    void *p = ready ? heap_alloc(&heap, size) : 0;
+    preempt_enable();
+    return p;
 }
 
 void *kcalloc(uint32_t n, uint32_t size)
 {
     require_normal_context("kcalloc");
-    return ready ? heap_calloc(&heap, n, size) : 0;
+    preempt_disable();
+    void *p = ready ? heap_calloc(&heap, n, size) : 0;
+    preempt_enable();
+    return p;
 }
 
+/* The panics below never return, so they may leave preemption disabled. */
 void kfree(void *p)
 {
     require_normal_context("kfree");
@@ -98,9 +109,11 @@ void kfree(void *p)
     ull a = (uintptr_t)p;
     if (!ready)
         panicf("Heap: invalid free of 0x%016llx (the kernel heap is disabled).", a);
+    preempt_disable();
     enum heap_error e = heap_free(&heap, p);
     switch (e) {
     case HEAP_OK:
+        preempt_enable();
         return;
     case HEAP_ERR_DOUBLE_FREE:
         panicf("Heap: double free of 0x%016llx.", a);
@@ -116,8 +129,11 @@ void kfree(void *p)
     panicf("Heap: free of 0x%016llx failed (%s).", a, heap_error_str(e));
 }
 
+/* The returned snapshot is one static copy: only the console thread
+ * (thread 0, for `mem`) asks for it. */
 const struct heap_stats *kheap_stats(void)
 {
+    preempt_disable();
     if (ready) {
         uintptr_t bad = 0;
         if (heap_check(&heap, &bad) != HEAP_OK)
@@ -127,6 +143,7 @@ const struct heap_stats *kheap_stats(void)
         struct heap_stats none = { 0 };
         current = none;
     }
+    preempt_enable();
     return &current;
 }
 
