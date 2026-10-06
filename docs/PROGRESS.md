@@ -120,6 +120,8 @@ Deferred: making `test_reserve` independent of the host test binary's load addre
 
 The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning asked: 0.10 uses the Linux x86-64 system-call numbers and conventions (above), so that Chromium, Linux applications and Wine could be ported later.
 
+**Commands:** the Madire OS Command Standard (MOCS), with every implemented and planned command, its level and status, is in [commands.md](commands.md).
+
 **Modernisation track:** the legacy hardware paths Madire OS uses today (BIOS, the 8259 PIC, the PIT, one CPU, VGA text mode, PS/2, RAM below 4 GiB) and their modern replacements, the goals that will make it feel modern to users, and the open decision on Rust for drivers are listed in [roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet). All planned, not yet committed to milestones.
 
 ### Future phases (direction only; planned, not committed)

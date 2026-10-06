@@ -141,6 +141,7 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - [docs/development.md](docs/development.md): layout, toolchain, rules for kernel code
 - [docs/testing.md](docs/testing.md): automated and VirtualBox test procedures
 - [docs/roadmap.md](docs/roadmap.md): milestones
+- [docs/commands.md](docs/commands.md): the Madire OS Command Standard: every command, implemented and planned
 - [docs/PROGRESS.md](docs/PROGRESS.md): history, tests per milestone, decisions, future direction
 - [docs/references.md](docs/references.md): external projects used as references only
 - [AGENTS.md](AGENTS.md): the working rules for anyone, person or coding agent, changing the repository
