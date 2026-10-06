@@ -1,4 +1,5 @@
 /* Kernel threads (see thread.h). */
+#include "kernel/arch/x86/gdt.h"
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/kernel.h"
@@ -46,6 +47,7 @@ static volatile uint32_t peak_max;      /* highest final stack peak since reset 
 #define STACK_PAGES (KSTACK_SIZE / VM_PAGE_SIZE)
 
 extern void switch_to(uint64_t *save_rsp, uint64_t new_rsp);
+extern char stack_top[];                    /* boot/boot.asm: thread 0's stack */
 extern char thread_trampoline[];
 
 static void copy_name(char *dst, const char *src)
@@ -116,8 +118,21 @@ bool thread_need_resched(void)
     return sched.need_resched;
 }
 
+uint64_t thread_kstack_top(int32_t tid)
+{
+    if (tid == 0)
+        return (uint64_t)(uintptr_t)stack_top;
+    if (tid < 0 || tid >= SCHED_MAX_THREADS || threads[tid].slot < 0)
+        return 0;
+    return kstack_bottom(threads[tid].slot) + KSTACK_SIZE;
+}
+
 /* Interrupts are off. Returns once `prev` runs again (never, after exit).
- * Also measures turns: how many ticks `prev` ran since it got the CPU. */
+ * Also measures turns: how many ticks `prev` ran since it got the CPU.
+ * 0.10: every switch, from every path (yield, sleep, join, exit,
+ * preemption), comes through here, and sets the TSS's RSP0 to the next
+ * thread's kernel stack top: an interrupt or exception from ring 3 then
+ * always lands on the stack of the thread that was running. */
 static void switch_threads(int32_t prev, int32_t next)
 {
     if (next == prev)
@@ -126,6 +141,7 @@ static void switch_threads(int32_t prev, int32_t next)
     if (prev != 0 && now - threads[prev].turn_start > turn_max)
         turn_max = now - threads[prev].turn_start;
     threads[next].turn_start = now;
+    gdt_set_rsp0(thread_kstack_top(next));
     switch_to(&threads[prev].rsp, threads[next].rsp);
 }
 

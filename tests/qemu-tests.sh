@@ -22,6 +22,17 @@ passes_08=0          # checks added in 0.8, tagged "[0.8]"
 passes_09=0          # checks added in 0.9, tagged "[0.9]"
 passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"
 passes_092=0         # checks added in 0.9.2, tagged "[0.9.2]"; the rest are 0.3 regression
+passes_010=0         # checks added in 0.10, tagged "[0.10]"
+
+# 0.10: the version is read once, from kernel/kernel.h, and every check that
+# contains the version builds its regex from VRE, so a new version changes no
+# check. A missing or malformed version stops the run (an empty VRE would
+# make those checks match any version).
+VERSION=$(sed -n 's/^#define MADIRE_OS_VERSION "\([0-9][0-9.]*\)"$/\1/p' "$(dirname "$0")/../kernel/kernel.h")
+case "$VERSION" in
+""|*[!0-9.]*|.*|*.|*..*) echo "FATAL: cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1 ;;
+esac
+VRE=$(printf '%s' "$VERSION" | sed 's/\./\\./g')    # 0.9.2 -> 0\.9\.2 (sed: same in every bash version)
 
 pass() {
     echo "PASS: $1"
@@ -35,6 +46,7 @@ pass() {
     "[0.9]"*) passes_09=$((passes_09 + 1)) ;;
     "[0.9.1]"*) passes_091=$((passes_091 + 1)) ;;
     "[0.9.2]"*) passes_092=$((passes_092 + 1)) ;;
+    "[0.10]"*) passes_010=$((passes_010 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -165,7 +177,7 @@ grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
 boot_keys "$KLOG" 15 "System ready." "x" 0.15 -cdrom "$KISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.9\.2"                   "version shown"
+expect "$LOG" "Madire OS v$VRE"                      "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -478,7 +490,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -517,12 +529,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.9\.2 (64-bit x86-64, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c "^Madire OS v$VRE (64-bit x86-64, Multiboot 1)\$" "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9\.2"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v$VRE"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -1337,7 +1349,7 @@ expect_lines "$LOG" "[0.9.1] reboot --help: help only, no restart question" \
     "^madire> reboot --help$" "^reboot: Restart the computer \(asks first\)$" "^Usage: reboot$" "^(console: |madire> )"
 expect_lines "$LOG" "[0.9.1] uname" "^madire> uname$" "^Madire OS$"
 expect_lines "$LOG" "[0.9.1] uname -a: name, host, version, architecture" \
-    "^madire> uname -a$" "^Madire OS madire 0\.9\.2 x86_64$"
+    "^madire> uname -a$" "^Madire OS madire $VRE x86_64$"
 expect_lines "$LOG" "[0.9.1] uname -x: usage" "^madire> uname -x$" "^Usage: uname \[-a\]$"
 expect_lines "$LOG" "[0.9.1] hostname: the fixed name" "^madire> hostname$" "^madire$"
 expect_lines "$LOG" "[0.9.1] date: YYYY-MM-DD HH:MM:SS from the RTC, no time zone" \
@@ -1558,9 +1570,144 @@ fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|^key: " \
                                                       "[0.9.2] scrollback: no panic, dropped key, screen-rule violation or key event"
 
+# ---- 0.10: user mode, part 1 (CPU set-up; no program runs yet) ----
+
+echo "== [0.10] Version read once by the test harness"
+if [ -n "$VERSION" ]; then pass "[0.10] version read from kernel/kernel.h: $VERSION (every version check uses it)"
+else fail "[0.10] no version read from kernel/kernel.h"; fi
+TITLE=$(grep -m1 -E '^menuentry "' "$(dirname "$0")/../iso/boot/grub/grub.cfg")
+if [ "$TITLE" = "menuentry \"Madire OS v$VERSION\" {" ]; then
+    pass "[0.10] GRUB default entry is titled 'Madire OS v$VERSION'"
+else
+    fail "[0.10] GRUB default entry: '$TITLE', expected 'Madire OS v$VERSION'"
+fi
+
+# The descriptor checks decode the logged values here, independently of the
+# kernel's own decoding (bit 47 present, 45-46 DPL, 44 S, 43 code, 41 R/W,
+# 53 L, 54 D).
+echo "== [0.10] GDT, IDT and TSS for user mode (normal boot)"
+LOG=$OUT/serial-boot.log
+GDTL=$(grep -m1 -E '^GDT: [0-9]+ entries' "$LOG")
+echo "      ${GDTL:-no GDT line}"
+read -r GP GD GC <<< "$(grep -oE '=0x[0-9a-f]{16}' <<< "$GDTL" | cut -c2- | tr '\n' ' ')"
+if grep -qE '^GDT: 8 entries \(limit 0x003f\);' <<< "$GDTL"; then
+    pass "[0.10] GDT: 8 entries, limit 0x3F (read back with sgdt)"
+else
+    fail "[0.10] GDT size: ${GDTL:-missing}"
+fi
+if [ -n "${GP:-}" ] && [ $(( GP )) -eq 0 ]; then pass "[0.10] GDT entry 5 (0x28) is all zero"
+else fail "[0.10] GDT entry 5 (0x28): ${GP:-missing}"; fi
+if [ -n "${GD:-}" ] && [ $(( (GD >> 47) & 1 )) -eq 1 ] && [ $(( (GD >> 45) & 3 )) -eq 3 ] &&
+   [ $(( (GD >> 44) & 1 )) -eq 1 ] && [ $(( (GD >> 43) & 1 )) -eq 0 ] && [ $(( (GD >> 41) & 1 )) -eq 1 ]; then
+    pass "[0.10] GDT 0x30: user data segment (present, DPL 3, writable data) $GD"
+else
+    fail "[0.10] GDT 0x30 not a ring-3 data segment (${GD:-missing})"
+fi
+if [ -n "${GC:-}" ] && [ $(( (GC >> 47) & 1 )) -eq 1 ] && [ $(( (GC >> 45) & 3 )) -eq 3 ] &&
+   [ $(( (GC >> 43) & 1 )) -eq 1 ] && [ $(( (GC >> 53) & 1 )) -eq 1 ] && [ $(( (GC >> 54) & 1 )) -eq 0 ]; then
+    pass "[0.10] GDT 0x38: user code segment (present, DPL 3, code, L=1 D=0) $GC"
+else
+    fail "[0.10] GDT 0x38 not a ring-3 64-bit code segment (${GC:-missing})"
+fi
+expect "$LOG" "^IDT: IST1 on vector 8; IST2 on vectors 2, 18; 0 other vectors on an IST; the rest on the current stack$" \
+                                                      "[0.10] IDT: double fault on IST1, NMI and machine check on IST2, nothing else (read back with sidt)"
+TSSL=$(grep -m1 -E '^TSS: RSP0=' "$LOG")
+read -r R0 I1 I2 <<< "$(grep -oE '=0x[0-9a-f]{16}' <<< "$TSSL" | cut -c2- | tr '\n' ' ')"
+STOP=$(grep -m1 -oE '^Kernel stack: 0x[0-9a-f]{16}-0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}$')
+if [ -n "${I2:-}" ] && [ $(( I1 )) -ne 0 ] && [ $(( I2 )) -ne 0 ] && [ "$I1" != "$I2" ] &&
+   [ $(( I1 & 15 )) -eq 0 ] && [ $(( I2 & 15 )) -eq 0 ]; then
+    pass "[0.10] TSS: IST1 and IST2 are two different 16-byte-aligned stacks ($I1, $I2)"
+else
+    fail "[0.10] TSS IST stacks: ${TSSL:-missing}"
+fi
+if [ -n "${R0:-}" ] && [ -n "$STOP" ] && [ $(( R0 )) -eq $(( STOP )) ]; then
+    pass "[0.10] TSS: RSP0 at boot is thread 0's stack top ($R0, as the stack line reports)"
+else
+    fail "[0.10] TSS RSP0 ${R0:-missing}, boot stack top ${STOP:-missing}"
+fi
+
+echo "== [0.10] SMEP, SMAP, CR0.EM and the freeze (default QEMU CPU: no SMEP/SMAP)"
+expect "$LOG" "^SMEP: NOT APPLICABLE \(not supported by this CPU\)$" "[0.10] default CPU: SMEP not applicable"
+expect "$LOG" "^SMAP: NOT APPLICABLE \(not supported by this CPU\)$" "[0.10] default CPU: SMAP not applicable"
+expect "$LOG" "^CR0.EM: set: x87, MMX and SSE instructions fault \(the kernel uses none\)$" "[0.10] CR0.EM reported set"
+UCPU=$(grep -m1 -E '^User-mode CPU set-up: CR0=0x[0-9a-f]{8} CR4=0x[0-9a-f]{16}$' "$LOG")
+read -r UC0 UC4 <<< "$(grep -oE '=0x[0-9a-f]+' <<< "$UCPU" | cut -c2- | tr '\n' ' ')"
+if [ -n "${UC4:-}" ] && [ $(( UC0 & 0x4 )) -ne 0 ] && [ $(( UC4 & (3 << 20) )) -eq 0 ]; then
+    pass "[0.10] default CPU: CR0.EM set, CR4.SMEP and CR4.SMAP clear (bits checked by the script)"
+else
+    fail "[0.10] default CPU control registers: ${UCPU:-missing}"
+fi
+expect "$LOG" "^Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 \(6 entries\); every process shares them, a new one now panics$" \
+                                                      "[0.10] kernel half frozen at boot: slots 256, 507-511"
+
+LOG=$OUT/serial-clac.log
+boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=clac"
+expect "$LOG" "^clac test: SMAP off; [0-9]+ interrupts taken with AC=1 in the interrupted code; AC=1 seen by the handler [0-9]+ times; clac executed 0 times$" \
+                                                      "[0.10] default CPU: clac never executed (no #UD without SMAP)"
+expect "$LOG" "^clac test: PASS$"                     "[0.10] default CPU: clac test PASS"
+reject "$LOG" "PANIC|Invalid Opcode"                  "[0.10] default CPU: clac test without a panic or #UD"
+
+echo "== [0.10] SMEP and SMAP on (-cpu qemu64,+smep,+smap)"
+LOG=$OUT/serial-smap.log
+boot "$LOG" 15 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL"
+expect "$LOG" "^SMEP: enabled \(CR4.SMEP=1\): the kernel cannot execute user pages$" "[0.10] SMEP CPU: SMEP enabled"
+expect "$LOG" "^SMAP: enabled \(CR4.SMAP=1\): clac on every kernel entry$" "[0.10] SMAP CPU: SMAP enabled"
+UCPU=$(grep -m1 -E '^User-mode CPU set-up: CR0=0x[0-9a-f]{8} CR4=0x[0-9a-f]{16}$' "$LOG")
+read -r UC0 UC4 <<< "$(grep -oE '=0x[0-9a-f]+' <<< "$UCPU" | cut -c2- | tr '\n' ' ')"
+if [ -n "${UC4:-}" ] && [ $(( UC0 & 0x4 )) -ne 0 ] && [ $(( UC4 & (3 << 20) )) -eq $(( 3 << 20 )) ]; then
+    pass "[0.10] SMEP/SMAP CPU: CR0.EM, CR4.SMEP and CR4.SMAP set (bits checked by the script)"
+else
+    fail "[0.10] SMEP/SMAP CPU control registers: ${UCPU:-missing}"
+fi
+expect "$LOG" "^Scheduler self-test: PASS"            "[0.10] SMEP/SMAP CPU: scheduler self-test PASS (interrupts and switches with clac)"
+expect "$LOG" "System ready\."                        "[0.10] SMEP/SMAP CPU: System ready"
+reject "$LOG" "PANIC"                                 "[0.10] SMEP/SMAP CPU: no panic"
+LOG=$OUT/serial-smap-clac.log
+boot "$LOG" 15 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=clac"
+CL=$(grep -m1 -E '^clac test: SMAP on; ' "$LOG")
+echo "      ${CL:-no clac line}"
+if grep -qE '^clac test: SMAP on; [0-9]+ interrupts taken with AC=1 in the interrupted code; AC=1 seen by the handler 0 times; clac executed [1-9][0-9]* times$' <<< "$CL"; then
+    pass "[0.10] SMAP CPU: every handler ran with AC=0 and clac was executed"
+else
+    fail "[0.10] SMAP CPU: clac evidence missing (${CL:-no line})"
+fi
+expect "$LOG" "^clac test: PASS$"                     "[0.10] SMAP CPU: clac test PASS"
+
+echo "== [0.10] RSP0 follows every thread switch (test=rsp0)"
+thread_diag rsp0 15
+RL=$(grep -m1 -E '^RSP0 test: [0-9]+ checks' "$LOG")
+echo "      ${RL:-no RSP0 line}"
+expect "$LOG" "^RSP0 test: [1-9][0-9]* checks in 4 threads after [0-9]+ switches \([0-9]+ preemptions\), 4 distinct RSP0 values, 0 mismatches$" \
+                                                      "[0.10] rsp0: every check after a switch saw the running thread's own stack top"
+expect "$LOG" "^RSP0 test: PASS$"                     "[0.10] rsp0: PASS (preempted and yielding threads)"
+reject "$LOG" "PANIC"                                 "[0.10] rsp0: no panic"
+
+echo "== [0.10] GDT selector past the end (test=gpflimit)"
+LOG=$OUT/serial-gpflimit.log
+boot "$LOG" 8 -kernel "$KERNEL" -append "test=gpflimit"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] gpflimit: crash screen shown"
+expect "$LOG" "CPU exception 13: General Protection Fault" "[0.10] gpflimit: reports vector 13"
+expect "$LOG" "Error code: 0x00000040"                "[0.10] gpflimit: error code 0x00000040 (selector 0x40, past the limit 0x3F)"
+expect "$LOG" "RIP=0x[0-9a-f]{16}  CS=0x0008"         "[0.10] gpflimit: registers dumped, CS is our GDT code segment"
+reject "$LOG" "System ready"                          "[0.10] gpflimit: halted instead of continuing"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.10] gpflimit: crash screen lines at most 79 characters (longest $w)"
+else
+    fail "[0.10] gpflimit: crash screen line of $w characters (limit 79), or no crash screen"
+fi
+
+echo "== [0.10] The freeze: a new kernel-half PML4 entry panics (test=freezeviolation)"
+LOG=$OUT/serial-freezeviolation.log
+boot "$LOG" 8 -kernel "$KERNEL" -append "test=freezeviolation"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] freezeviolation: crash screen shown"
+expect "$LOG" "Kernel-half PML4 entry created after the freeze: 0xffff808000000000 \(PML4 slot 257\)\." \
+                                                      "[0.10] freezeviolation: reported with the address and slot"
+reject "$LOG" "Freeze test: FAIL|System ready"        "[0.10] freezeviolation: the entry was not created, halted"
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 new in 0.9.2)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 new in 0.10)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

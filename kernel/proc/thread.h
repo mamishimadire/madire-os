@@ -81,6 +81,10 @@ uint64_t thread_preemptions(void);      /* switches made at the preemption point
 uint64_t thread_ticks_run(int32_t tid); /* timer ticks charged to the thread */
 bool thread_need_resched(void);         /* a switch is pending */
 
+/* 0.10: the top of a live thread's kernel stack (thread 0: the boot stack),
+ * the value the TSS's RSP0 holds while it runs; 0 for no such thread. */
+uint64_t thread_kstack_top(int32_t tid);
+
 /* The thread using stack slot `slot`, or -1 (double-fault diagnosis). */
 int32_t thread_slot_owner(int slot);
 

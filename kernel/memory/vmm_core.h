@@ -19,7 +19,12 @@
  *   - missing tables are created all or nothing: if a frame for a deeper
  *     table can't be had, the ones just taken are given back;
  *   - unmap flushes the TLB entry for that page, exactly once;
- *   - tables, once created, are never freed.
+ *   - tables, once created, are never freed;
+ *   - 0.10: after vmm_freeze_upper(), no new upper-half PML4 entry is made
+ *     (VMM_ERR_FROZEN): every process's PML4 copies the kernel half's PML4
+ *     entries once, at creation, so an entry added later would exist in
+ *     the kernel's PML4 only. Tables below existing entries are shared
+ *     and may still be created.
  */
 
 #include <stdbool.h>
@@ -44,6 +49,7 @@ struct vmm {
     uint64_t root;                  /* PML4 frame */
     uint32_t mapped_pages;          /* leaf entries created through this vmm */
     uint32_t page_tables;           /* PDPTs + PDs + PTs created through this vmm */
+    bool upper_frozen;              /* 0.10: vmm_freeze_upper() was called */
 };
 
 enum vmm_result {
@@ -55,9 +61,13 @@ enum vmm_result {
     VMM_ERR_RESERVED_VA,           /* page 0 or the recursive slot */
     VMM_ERR_FLAGS,                 /* flags other than PTE_WRITE / PTE_NX */
     VMM_ERR_NONCANONICAL,          /* bits 63..47 not all equal */
+    VMM_ERR_FROZEN,                /* 0.10: a new upper-half PML4 entry after the freeze */
 };
 
 void vmm_init(struct vmm *vm, const struct vmm_ops *ops, uint64_t root);
+
+/* 0.10: from now on, refuse to create upper-half PML4 entries (see above). */
+void vmm_freeze_upper(struct vmm *vm);
 
 /* Creates the PDPT, PD and PT covering va where missing. */
 enum vmm_result vmm_ensure_table(struct vmm *vm, uint64_t va);

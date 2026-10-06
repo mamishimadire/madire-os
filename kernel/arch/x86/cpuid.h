@@ -26,9 +26,12 @@ uint64_t cpu_read_cr4(void);
 uint64_t cpu_read_efer(void);
 
 #define CR0_PE 0x00000001u      /* protected mode */
+#define CR0_EM 0x00000004u      /* 0.10: x87/MMX/SSE instructions fault (#NM / #UD) */
 #define CR0_WP 0x00010000u      /* write protect (supervisor writes obey read-only) */
 #define CR0_PG 0x80000000u      /* paging */
 #define CR4_PAE 0x00000020u     /* physical address extension (required by long mode) */
+#define CR4_SMEP (1u << 20)     /* 0.10: the kernel cannot execute user pages */
+#define CR4_SMAP (1u << 21)     /* 0.10: the kernel cannot touch user pages unless AC=1 */
 
 #define MSR_EFER  0xC0000080u
 #define EFER_LME  (1u << 8)     /* long mode enable */
@@ -51,6 +54,26 @@ static inline bool cpuid_nx_supported(uint32_t ext_max, uint32_t ext_features_ed
         return false;
     return (ext_features_edx & CPUID_EXT_EDX_NX) != 0;
 }
+
+#define CPUID_STRUCT_FEATURES 7u               /* leaf 7, subleaf 0 */
+#define CPUID_7_EBX_SMEP      (1u << 7)
+#define CPUID_7_EBX_SMAP      (1u << 20)
+
+/*
+ * 0.10: SMEP / SMAP from raw CPUID values (pure; tests/unit/test_cpuprot010.c):
+ * the CPU must list leaf 7 (max_basic = CPUID 0 EAX) and leaf 7's EBX must
+ * have the bit.
+ */
+static inline bool cpuid_leaf7_has(uint32_t max_basic, uint32_t leaf7_ebx, uint32_t bit)
+{
+    return max_basic >= CPUID_STRUCT_FEATURES && (leaf7_ebx & bit) != 0;
+}
+
+/* CPUID 0 EAX and leaf 7's EBX (0 if the CPU lists no leaf 7). */
+void cpu_leaf7(uint32_t *max_basic, uint32_t *leaf7_ebx);
+
+void cpu_write_cr0(uint32_t cr0);
+void cpu_write_cr4(uint64_t cr4);
 
 /* CPUID says the CPU supports no-execute pages (never runs a leaf the CPU
  * doesn't list). */

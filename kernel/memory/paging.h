@@ -56,4 +56,10 @@ void vmm_window_unmap(void);
 
 const struct paging_stats *paging_stats(void);
 
+/* 0.10: no new kernel-half PML4 entry from now on (vmm_freeze_upper): every
+ * process's PML4 will copy entries 256-511 once, so one added later would
+ * be missing there. Logs the slots in use. A paging_map that would create
+ * one panics. Called once at boot, before the first process. */
+void paging_freeze_kernel_half(void);
+
 #endif
