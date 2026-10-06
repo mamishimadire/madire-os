@@ -18,9 +18,11 @@ Each milestone is one commit on `main`. The hashes are from `git log`; tags exis
 | **0.6** | `77ae5c1` (tag `v0.6`) | 2026-09-28 | Paging (identity-mapped, walk-checked before it is enabled) and the kernel heap |
 | **0.7** | `1044dd7` (tag `v0.7`) | 2026-09-29 | 64-bit long mode: 4-level paging, NX, TSS with an IST1 double-fault stack, stack guard pages |
 | **0.8** | `f38f4c6` (tag `v0.8`) | 2026-09-30 | Higher-half kernel: kernel at `0xFFFFFFFF80000000` + physical, lower half empty, physical view for the low 1 MiB and boot data, `pflow` diagnostic, stack high-water mark, boot-module result on screen, reproducible build, `.devcontainer/` proven |
-| **0.9** | this milestone's commit (tag `v0.9`) | 2026-10-05 | Kernel threads and a preemptive scheduler: threads with their own guarded stacks (PML4 slot 507), context switches, round robin with a 50 ms slice, sleep and join, a preemption-disable count that makes the kernel safe under preemption, a scheduler self-test at every boot, the `ps` command, the thread diagnostics, `scripts/vbox-acceptance.ps1`, `AGENTS.md` |
+| **0.9** | `e328cc7` (tag `v0.9`) | 2026-10-05 | Kernel threads and a preemptive scheduler: threads with their own guarded stacks (PML4 slot 507), context switches, round robin with a 50 ms slice, sleep and join, a preemption-disable count that makes the kernel safe under preemption, a scheduler self-test at every boot, the `ps` command, the thread diagnostics, `scripts/vbox-acceptance.ps1`, `AGENTS.md` |
+| | `3b01a8a` | 2026-10-06 | Documentation commit: the Madire OS Command Standard, `docs/commands.md` (MOCS v0.1; no code) |
+| **0.9.1** | this milestone's commit (tag `v0.9.1`) | 2026-10-06 | Shell commands: `history` (with Up/Down recall), `uname`, `hostname`, `date` (from the RTC), `dmesg` (a 32 KiB kernel log), `reboot` (with a confirmation; keyboard-controller reset, triple-fault fallback), `help <command>` and `<command> --help` for every command; MOCS v0.2 |
 
-The 0.9 commit can't list its own hash; `git log -1 v0.9` gives it.
+The 0.9.1 commit can't list its own hash; `git log -1 v0.9.1` gives it.
 
 ## 2. Tests passing at each milestone
 
@@ -35,14 +37,19 @@ The 0.9 commit can't list its own hash; `git log -1 v0.9` gives it.
 | 0.7 | 19 (+ `bootmod`, `kprintf`, `nx`, `shell_cpu07`; `pte` and `vmm` rewritten for 4 levels) | 357 (150 + 30 + 32 + 49 + 96 `[0.7]`) |
 | 0.8 | 21 (+ `stackpeak`, `shell_mem08`; new cases in `mmap` and `pte`) | 389 (150 + 30 + 32 + 49 + 96 + 32 `[0.8]`), plus `make repro` (two clean builds byte-identical) |
 | 0.9 | 24 (+ `sched`, `kstack`, `shell_ps09`; a new case in `kprintf`) | 528 (150 + 30 + 32 + 49 + 96 + 32 + 139 `[0.9]`), plus `make repro` |
+| 0.9.1 | 28 (+ `history`, `rtc`, `logbuf`, `shell_091`) | 560 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 `[0.9.1]`), plus `make repro` |
 
 Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Test` before it was committed. Since 0.9 that test is scripted (`scripts/vbox-acceptance.ps1`, see [testing.md](testing.md)). In 0.9, 33 of 33 checks passed, plus 20 extra normal boots, each with the scheduler self-test `PASS` and 0 preemptions during its ping-pong.
 
 **0.9 test details:** the 139 `[0.9]` checks are in 19 groups (listed in [testing.md](testing.md)). Of the existing 389 checks only the 4 version checks changed (`v0.8` → `v0.9`); none was removed or weakened. The new unit suites make 32,782 checks (`test_sched`), 1,190 (`test_kstack`) and 23 (`test_shell_ps09`). The full suite takes about 15 minutes, so it runs detached in the Codespace (see [development.md](development.md)).
 
+**0.9.1 test details:** the 32 `[0.9.1]` checks are in 3 groups: a scripted console session with every new command (22), `reboot` then `yes` through the keyboard controller (5) and the triple-fault fallback `test=reboottriple` (5). Of the existing 528 checks only the 4 version checks changed (`v0.9` → `v0.9.1`); none was removed or weakened. The new unit suites make 110 checks (`test_history`), 51 (`test_rtc`), 62 (`test_logbuf`) and 164 (`test_shell_091`); `test_shell.c` and `test_shell_ps09.c` are unchanged and still pass, proving that every 0.9 output is the same without the new context field. VirtualBox: 49 of 49 expected lines (the 33 of 0.9 plus 16 for the new commands and the reboot).
+
 **Stack peak baseline (0.8):** the kernel stack's high-water mark is **1480 of 16384 bytes**, the same after booting, after the keyboard flood and after the scripted console session, in QEMU and in VirtualBox. Future milestones can compare against it (processes in 0.9 will add their own stacks).
 
 **Stack peaks (0.9):** the boot stack's peak is **1496 bytes** (1480 in 0.8). It is again the same after booting, after the keyboard flood and after the console session, in QEMU and in VirtualBox. Each kernel thread has its own 16 KiB stack and logs its final peak when it exits. The test threads use 192 to 1000 bytes, except the churn test's deliberately deep thread (8496 bytes).
+
+**Stack peak (0.9.1):** **1512 bytes** at "System ready.", after the keyboard flood and after the scripted console session, in QEMU and VirtualBox alike. A VirtualBox console session with `ps`, `version` and `mem` reached 1544.
 
 In 0.7 the boot memory self-test reports "35 checks" where 0.6's early logs showed 3104. That comes from a 0.6 change to `memtest.c` (one check counted per page instead of per word, with every word still compared). It isn't lost coverage.
 
@@ -88,6 +95,14 @@ What each milestone left open when it was committed, and where it was resolved.
   - The heap is still not interrupt-safe (it is now safe between threads).
   - Thread stack peaks have the same limits as the boot stack's: they can read a few bytes too low, never too high.
   - Still open from 0.8: RAM above 4 GiB; no direct map; 4 KiB pages only; every page fault is fatal; the ISO isn't reproducible; `test_reserve` depends on the load address; the `cpu` "Features:" line can wrap; the "no CPUID" path isn't executed.
+- **0.9.1:**
+  - **HIGH PRIORITY (security): every key press is logged.** Since 0.4 the kernel writes each key event (scancode, key and character) to the serial log, and since 0.9.1 that log is also kept in memory and shown by `dmesg`. Once passwords or other secrets can be typed (`passwd`, `sudo`, a login), this would record them. **Key-event logging must be off by default (enabled only for tests and diagnostics) before any password or secret input exists.** It stays as it is in 0.9.1, because existing tests depend on these lines; the fix is planned for 0.9.2, without weakening any existing test.
+  - **The RTC's clock basis differs between machines:** VirtualBox keeps the hardware clock on the host's local time (2 hours ahead of UTC on the test host), QEMU on UTC. `date` shows the RTC as it is, labelled "time zone not set". A future time-zone setting should let the user choose whether the hardware clock holds UTC or local time.
+  - `date` assumes the century is 20 (years 2000–2099): the CMOS century register is only found through ACPI, which isn't read yet. The date can't be set.
+  - **`dmesg` shows only what `kprintf`/`klogf` wrote.** The boot screen's status lines (`GDT loaded: OK` …) and the console's command output go to the serial port directly and aren't in it (a documented gap; changing it would mean changing the protected `serial.c`). Because every key press is logged, the newest lines of `dmesg` are usually the keystrokes of the command itself.
+  - `hostname` is fixed (`madire`) until settings can be stored; `history` keeps the last 16 lines and is lost at restart.
+  - `reboot` needs the keyboard controller (or the triple-fault fallback); there is no ACPI reset, `shutdown` or `poweroff` yet.
+  - The console still has no scrollback: output that scrolls off the top is lost (scrollback is planned for 0.9.2).
 
 ## 4. Roadmap
 
@@ -95,7 +110,8 @@ What each milestone left open when it was committed, and where it was resolved.
 |---|---|---|
 | **0.8** | Higher-half kernel: the kernel runs at `0xFFFFFFFF80000000` + physical (PML4 slot 511) and the lower half is empty | done |
 | **0.9** | Processes, part 1: kernel threads and a preemptive scheduler | done |
-| **0.9.1** (next) | Shell commands needing no new kernel foundations: `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `help <command>`, `<command> --help` | planned (decisions approved; starts after 0.9 and the command standard `docs/commands.md`) |
+| **0.9.1** | Shell commands needing no new kernel foundations: `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `help <command>`, `<command> --help` | done |
+| **0.9.2** (next) | Console scrollback (the last 1000 lines, Shift+PgUp/PgDn) and key-event logging off by default | planned (scrollback decisions approved; the key-logging approach is decided in its plan) |
 | **0.10** | Processes, part 2: user processes (user mode, one address space per process, system calls, ELF programs) | planned |
 | **1.0** | Filesystem: a virtual filesystem layer and an initial RAM disk, then disk filesystems | planned |
 
@@ -123,6 +139,8 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 **Commands:** the Madire OS Command Standard (MOCS), with every implemented and planned command, its level and status, is in [commands.md](commands.md).
 
 **Modernisation track:** the legacy hardware paths Madire OS uses today (BIOS, the 8259 PIC, the PIT, one CPU, VGA text mode, PS/2, RAM below 4 GiB) and their modern replacements, the goals that will make it feel modern to users, and the open decision on Rust for drivers are listed in [roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet). All planned, not yet committed to milestones.
+
+**Applications and compatibility strategy:** how Madire OS is to run most applications users need (Windows programs through a Wine port, Linux programs through the Linux system-call interface, virtual machines, web apps, plus its own and native apps), where apps come from over time, the open-source policy, licences for commercial software, and the **high-priority open decision on Madire OS's own licence** are in [roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet). Planned, not tied to milestones yet.
 
 ### Future phases (direction only; planned, not committed)
 
@@ -208,3 +226,12 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 | `AGENTS.md` holds the working rules for every coding agent; `CLAUDE.md` is the single import line `@AGENTS.md` | 0.9 | |
 | **0.9.1**, a separate small milestone for shell commands; its plan's decisions: an additive `cmos_rtc_read()` in the protected `cmos.c/.h` (`cmos_rtc_seconds()` unchanged byte for byte); `dmesg` captures `kprintf`/`klogf` only, with the serial-only lines documented as a gap; `<command> --help` for every command; the triple-fault reset test in QEMU only | after 0.9 (planning) | Order: 0.9 commit and tag, then `docs/commands.md`, then 0.9.1 |
 | Modernisation track recorded; legacy hardware paths (BIOS, PIC, PIT, single CPU, VGA text, PS/2, <4 GiB RAM) are temporary by design | 0.9 | See [roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet); Rust for new drivers is an open decision for the drivers phase |
+| Applications and compatibility strategy recorded: four compatibility layers (Windows programs through a Wine port, Linux programs through the 0.10 system-call interface, virtualisation, web apps) plus Madire's own and native apps; macOS-only apps are a known exception; later milestones must not block these layers (a conflict is raised before implementation); app sources grow from own, open-source and web apps to compatibility and commercial apps; every included open-source project needs a licence check and approval; users bring their own licences for commercial software, and proprietary apps are never redistributed without the vendor's agreement | 0.9.1 | See [roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet) |
+| The 0.9.1 commands come through one optional shell-context field (`extras`): without it every 0.9 output, `help` and every usage error are unchanged, so `test_shell.c` and `test_shell_ps09.c` stay as they are | 0.9.1 | The same pattern as `ps` in 0.9 |
+| `history`: the console keeps the last 16 lines (numbered since boot) and handles Up/Down itself, filling the input line through the line editor, which is unchanged | 0.9.1 | `lineedit.c` and `test_lineedit.c` (protected) still ignore Up/Down |
+| `dmesg`: `kputc` and `klogf` also copy every character into a 32 KiB ring buffer in `kprintf.c`; the console reads a snapshot with preemption off | 0.9.1 | Serial-only lines (boot screen, console output) are a documented gap |
+| `reboot` asks for confirmation with a `yes/no> ` prompt; only exactly `yes` restarts. The reset pulses the CPU reset line through the keyboard controller, then forces a triple fault if that didn't work; `test=reboottriple` tests the fallback in QEMU only | 0.9.1 | |
+| `date` reads the RTC through the additive `cmos_rtc_read()` (protected `cmos.c/.h`; `cmos_rtc_seconds()` unchanged byte for byte) and the pure `rtc_time.c` | 0.9.1 | No time zone; century 20 |
+| **Deviation:** `help <unknown>` prints only `No help for 'X': unknown command.` instead of also "Type 'help' for a list of commands." | 0.9.1 | Every line must fit 79 columns: names are shown up to 40 characters (37 plus `...` beyond), which makes 72 columns; the second sentence would add 36 |
+| 0.9.2 decisions: scrollback of 1000 lines (about 156 KiB), Shift+PgUp/PgDn, any other key returns to the bottom, a "scrolled back: line X of Y" indicator on the last row; `clear` pushes the screen into scrollback first; a new `tests/qmp_screen.py` reads the VGA text buffer through QMP to check the indicator; no protected file changes | 0.9.1 (planning) | The key-logging fix is decided in the 0.9.2 plan |
+| **Open decision, HIGH PRIORITY: Madire OS's own licence** (for example MIT, Apache-2.0, GPL-3.0 or proprietary), to be decided before any outside code is included | 0.9.1 | Restates the 0.7-planning rule above as an open decision with high priority |

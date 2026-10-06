@@ -18,7 +18,8 @@ passes_05=0          # checks added in 0.5, tagged "[0.5]"
 passes_06=0          # checks added in 0.6, tagged "[0.6]"
 passes_07=0          # checks added in 0.7, tagged "[0.7]"
 passes_08=0          # checks added in 0.8, tagged "[0.8]"
-passes_09=0          # checks added in 0.9, tagged "[0.9]"; the rest are 0.3 regression
+passes_09=0          # checks added in 0.9, tagged "[0.9]"
+passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"; the rest are 0.3 regression
 
 pass() {
     echo "PASS: $1"
@@ -30,6 +31,7 @@ pass() {
     "[0.7]"*) passes_07=$((passes_07 + 1)) ;;
     "[0.8]"*) passes_08=$((passes_08 + 1)) ;;
     "[0.9]"*) passes_09=$((passes_09 + 1)) ;;
+    "[0.9.1]"*) passes_091=$((passes_091 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -149,7 +151,7 @@ LOG=$OUT/serial-boot.log
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.9"                       "version shown"
+expect "$LOG" "Madire OS v0\.9\.1"                   "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -458,7 +460,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9 \(64-bit x86-64, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9\.1 \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -497,12 +499,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.9 (64-bit x86-64, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c '^Madire OS v0\.9\.1 (64-bit x86-64, Multiboot 1)$' "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9\.1"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -1253,9 +1255,150 @@ printf 'static void idle_loop(void)\n{\n    bootscreen_uptime(1);\n}\n' >> "$T/k
 if sh "$T/scripts/check-bootscreen.sh" >/dev/null; then fail "[0.9] boot screen check missed an unwrapped call in kernel.c"
 else pass "[0.9] boot screen check rejects an unwrapped call outside the boot sequence"; fi
 
+# ---- 0.9.1: shell commands ----
+
+# expect_lines <log> <description> <start regex> <regex>...: the lines right
+# after the first line matching <start>, ignoring "key:" event lines, must
+# match the regexes one by one. (The regexes go through the environment, so
+# awk does not process their backslashes.)
+expect_lines() {
+    local log=$1 desc=$2 start=$3
+    shift 3
+    if START="$start" PATS="$(printf '%s\034' "$@")" awk '
+            BEGIN { n = split(ENVIRON["PATS"], p, "\034") - 1 }
+            on && !/^key: / { i++; if ($0 !~ p[i]) exit; if (i == n) { ok = 1; exit } }
+            !on && $0 ~ ENVIRON["START"] { on = 1 }
+            END { exit !ok }' "$log"; then
+        pass "$desc"
+    else
+        fail "$desc (the lines after /$start/ in $log do not match)"
+    fi
+}
+
+echo "== [0.9.1] Console: help <command>, --help, uname, hostname, date, dmesg, history, reboot"
+LOG=$OUT/serial-cmds091.log
+A45=$(printf 'a%.0s' $(seq 1 45))
+S="x{wait:1}"
+S+="help{ret}"                                       # 1
+S+="help mem{ret}"                                   # 2
+S+="help nosuch{ret}"                                # 3
+S+="help ${A45}{ret}"                                # 4  a long unknown name
+S+="mem --help{ret}"                                 # 5
+S+="echo --help{ret}"                                # 6
+S+="reboot --help{ret}"                              # 7  help only: no question
+S+="uname{ret}uname -a{ret}uname -x{ret}"            # 8, 9, 10
+S+="hostname{ret}"                                   # 11
+S+="date{ret}"                                       # 12
+S+="dmesg 5{ret}"                                    # 13
+S+="dmesg 0{ret}"                                    # 14
+S+="echo one{ret}echo two{ret}"                      # 15, 16
+S+="{up}{up}{down}{ret}"                             # 17 recalls "echo two"
+S+="history{ret}"                                    # 18: lists 3..18
+S+="{up}{ret}"                                       # 19 recalls "history"
+S+="reboot{ret}no{ret}"                              # 20; "no" is an answer, not a command
+S+="history{ret}"                                    # 21: lists 6..21
+S+="echo end-of-091-test{ret}"
+boot_text "$LOG" 120 "System ready." "$S" 0.03 $'\nend-of-091-test\n' -kernel "$KERNEL"
+
+expect_in_order "$LOG" "[0.9.1] help lists the six new commands after ps, in order" \
+    "^madire> help$" "^  ps       Show threads$" \
+    "^  history  Show previous commands \(Up/Down recall\)$" "^  uname    Show the system name: uname \[-a\]$" \
+    "^  hostname Show the computer's name$" "^  date     Show the date and time \(RTC\)$" \
+    "^  dmesg    Show kernel messages: dmesg \[lines\]$" "^  reboot   Restart the computer \(asks first\)$"
+expect_lines "$LOG" "[0.9.1] help mem: purpose and usage" \
+    "^madire> help mem$" "^mem: Show memory information$" "^Usage: mem$"
+expect_lines "$LOG" "[0.9.1] help nosuch: unknown command" \
+    "^madire> help nosuch$" "^No help for 'nosuch': unknown command\.$"
+expect_lines "$LOG" "[0.9.1] help with a 45-character name: shortened to fit" \
+    "^madire> help ${A45}$" "^No help for 'a{37}\.\.\.': unknown command\.$"
+expect_lines "$LOG" "[0.9.1] mem --help: the same as help mem" \
+    "^madire> mem --help$" "^mem: Show memory information$" "^Usage: mem$"
+expect_lines "$LOG" "[0.9.1] echo --help: echo's help, not the text" \
+    "^madire> echo --help$" "^echo: Print text: echo <text>$" "^Usage: echo <text>$"
+expect_lines "$LOG" "[0.9.1] reboot --help: help only, no restart question" \
+    "^madire> reboot --help$" "^reboot: Restart the computer \(asks first\)$" "^Usage: reboot$" "^(console: |madire> )"
+expect_lines "$LOG" "[0.9.1] uname" "^madire> uname$" "^Madire OS$"
+expect_lines "$LOG" "[0.9.1] uname -a: name, host, version, architecture" \
+    "^madire> uname -a$" "^Madire OS madire 0\.9\.1 x86_64$"
+expect_lines "$LOG" "[0.9.1] uname -x: usage" "^madire> uname -x$" "^Usage: uname \[-a\]$"
+expect_lines "$LOG" "[0.9.1] hostname: the fixed name" "^madire> hostname$" "^madire$"
+expect_lines "$LOG" "[0.9.1] date: YYYY-MM-DD HH:MM:SS from the RTC, no time zone" \
+    "^madire> date$" "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$"
+D=$(grep -aA1 '^madire> date$' "$LOG" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}')
+DIFF=$(( $(date -u +%s) - $(date -u -d "${D:-1970-01-01 00:00:00}" +%s) ))
+if [ -n "$D" ] && [ "${DIFF#-}" -le 600 ]; then
+    pass "[0.9.1] date: within 10 minutes of the host's UTC clock (QEMU's RTC is UTC; ${DIFF} s)"
+else
+    fail "[0.9.1] date: '${D}' is ${DIFF} s from the host's UTC clock"
+fi
+# dmesg 5: its 5 lines are the last 5 kernel-log lines, which are also the 5
+# serial lines just before the command's own log line (the keys typed are
+# logged too), and the newest is that line itself.
+if awk '
+        /^madire> dmesg 5$/ && !seen { seen = 1; for (i = 1; i <= 4; i++) want[i] = prev[5 - i]; want[5] = $0; n = 0; next }
+        !seen { for (i = 4; i > 1; i--) prev[i] = prev[i - 1]; prev[1] = $0; next }
+        seen && n < 5 { n++; if ($0 != want[n]) bad = 1; next }
+        END { exit !(seen && n == 5 && !bad) }' "$LOG"; then
+    pass "[0.9.1] dmesg 5: the last 5 kernel-log lines, the newest being the command itself"
+else
+    fail "[0.9.1] dmesg 5: output does not match the kernel log"
+fi
+expect_lines "$LOG" "[0.9.1] dmesg 0: usage" "^madire> dmesg 0$" "^Usage: dmesg \[lines\]$"
+count_lines "$LOG" "^madire> echo two$" 2           "[0.9.1] Up, Up, Down recalls and runs 'echo two' again"
+expect_lines "$LOG" "[0.9.1] history: the last 16 lines, numbered since boot, itself last" \
+    "^madire> history$" "^    3  help nosuch$" "^    4  help a{45}$" "^    5  mem --help$" \
+    "^    6  echo --help$" "^    7  reboot --help$" "^    8  uname$" "^    9  uname -a$" \
+    "^   10  uname -x$" "^   11  hostname$" "^   12  date$" "^   13  dmesg 5$" "^   14  dmesg 0$" \
+    "^   15  echo one$" "^   16  echo two$" "^   17  echo two$" "^   18  history$" "^(console: |madire> )"
+count_lines "$LOG" "^madire> history$" 3            "[0.9.1] Up recalls 'history' and runs it again"
+expect_in_order "$LOG" "[0.9.1] reboot, then 'no': cancelled, the console continues" \
+    "^madire> reboot$" "^Restart Madire OS now\? Type 'yes' to confirm:$" "^yes/no> no$" \
+    "^Restart cancelled\.$" "^madire> history$"
+expect_in_order "$LOG" "[0.9.1] the answer is not kept in the history" \
+    "^yes/no> no$" "^madire> history$" "^    6  echo --help$" "^   19  history$" "^   20  reboot$" \
+    "^   21  history$"
+w=$(max_width "$LOG" "^console: started$" "^end-of-091-test$")
+if grep -q "^end-of-091-test$" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.9.1] every console line at most 79 characters (longest $w)"
+else
+    fail "[0.9.1] a console line of $w characters (limit 79)"
+fi
+reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
+                                                      "[0.9.1] no panic, dropped key or screen-rule violation"
+
+echo "== [0.9.1] reboot, then 'yes': restart through the keyboard controller"
+LOG=$OUT/serial-reboot.log
+T0=$(date +%s)
+boot_keys "$LOG" 40 "System ready." "x,r,e,b,o,o,t,ret,y,e,s,ret" 0.15 -m 32M -kernel "$KERNEL"
+T1=$(date +%s)
+expect_in_order "$LOG" "[0.9.1] reboot: question, yes, Restarting..." \
+    "^madire> reboot$" "^Restart Madire OS now\? Type 'yes' to confirm:$" "^yes/no> yes$" \
+    "^Restarting\.\.\.$" "^console: restart confirmed$"
+expect "$LOG" "^Restart: keyboard controller reset \(0xfe to port 0x64\)$" \
+                                                      "[0.9.1] reboot: reset through the keyboard controller"
+reject "$LOG" "did not reset the machine|forcing a triple fault" \
+                                                      "[0.9.1] reboot: the keyboard controller reset worked (no fallback)"
+if [ $((T1 - T0)) -lt 35 ]; then pass "[0.9.1] reboot: the machine reset (QEMU -no-reboot exited after $((T1 - T0)) s)"
+else fail "[0.9.1] reboot: QEMU still running at the timeout ($((T1 - T0)) s)"; fi
+reject "$LOG" "PANIC"                                 "[0.9.1] reboot: no panic"
+
+echo "== [0.9.1] Restart fallback: triple fault (test=reboottriple, QEMU only)"
+LOG=$OUT/serial-reboottriple.log
+T0=$(date +%s)
+boot "$LOG" 20 -m 32M -kernel "$KERNEL" -append "test=reboottriple"
+T1=$(date +%s)
+expect_in_order "$LOG" "[0.9.1] reboottriple: the fallback without the keyboard controller" \
+    "^Restart test: forcing a triple fault \(no keyboard controller\)$" \
+    "^Restart: forcing a triple fault \(empty interrupt table, then int3\)$"
+reject "$LOG" "keyboard controller reset \(0xfe"    "[0.9.1] reboottriple: the keyboard controller was not used"
+if [ $((T1 - T0)) -lt 15 ]; then pass "[0.9.1] reboottriple: the machine reset (QEMU -no-reboot exited after $((T1 - T0)) s)"
+else fail "[0.9.1] reboottriple: QEMU still running at the timeout ($((T1 - T0)) s)"; fi
+count_lines "$LOG" "^boot32: start$" 1                "[0.9.1] reboottriple: booted once"
+reject "$LOG" "KERNEL PANIC|System ready"             "[0.9.1] reboottriple: no crash screen, never reached System ready"
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 new in 0.9)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 new in 0.9.1)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

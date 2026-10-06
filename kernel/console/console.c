@@ -1,12 +1,17 @@
 /* Interactive console (see console.h). */
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
+#include "kernel/arch/x86/cmos.h"
 #include "kernel/arch/x86/cpuid.h"
+#include "kernel/arch/x86/reset.h"
 #include "kernel/console/console.h"
+#include "kernel/console/history.h"
 #include "kernel/console/lineedit.h"
 #include "kernel/console/textbuf.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
+#include "kernel/logbuf.h"
+#include "kernel/rtc_time.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/proc/preempt.h"
@@ -17,6 +22,7 @@
 
 #define PROMPT       "madire> "
 #define PROMPT_LEN   8
+#define CONFIRM_PROMPT "yes/no> "   /* 0.9.1: answering "reboot"; also 8 wide */
 
 /* Colours: only VGA slots the boot logo does not reprogram. */
 #define ATTR_TEXT    0x07       /* light grey */
@@ -31,6 +37,9 @@ static bool active;
 static uint8_t prompt_row;
 static const struct memory_stats *boot_mem;
 static struct cpu_info cpu;
+static struct history hist;             /* 0.9.1 */
+static bool confirming;                 /* 0.9.1: the next line answers "reboot" */
+static const char *prompt = PROMPT;
 
 /* ---- Drawing (grid -> VGA) ---- */
 
@@ -78,7 +87,8 @@ static void show_prompt(void)
 {
     if (screen.col != 0)
         textbuf_putc(&screen, '\n');
-    write_screen(PROMPT, ATTR_PROMPT);
+    prompt = confirming ? CONFIRM_PROMPT : PROMPT;
+    write_screen(prompt, ATTR_PROMPT);
     prompt_row = screen.row;
     lineedit_reset(&input);
     draw_input();
@@ -135,6 +145,38 @@ static void build_context(struct shell_context *c)
     }
     c->threads = rows;
     c->thread_count = n;
+
+    /* 0.9.1: the extra commands' data. The kernel log is copied with
+     * preemption off, so no other thread's klogf changes it mid-copy; the
+     * copy ends with this command's own "madire> ..." line. */
+    static struct shell_extras extras;
+    static char log_copy[LOGBUF_KERNEL_SIZE];
+    extras.hostname = MADIRE_HOSTNAME;
+    struct rtc_raw raw;
+    struct rtc_time now;
+    extras.rtc_ok = cmos_rtc_read(&raw) && rtc_decode(&raw, &now);
+    if (extras.rtc_ok)
+        rtc_format(&now, extras.date_text);
+    preempt_disable();
+    extras.log_len = logbuf_copy(klog_buffer(), log_copy, sizeof(log_copy));
+    extras.log_wrapped = logbuf_wrapped(klog_buffer());
+    preempt_enable();
+    extras.log = log_copy;
+    extras.history = &hist;
+    c->extras = &extras;
+}
+
+/* 0.9.1: the answer to "reboot". Only exactly "yes" restarts. */
+static void answer_reboot(const char *answer)
+{
+    if (shell_reboot_confirmed(answer)) {
+        shell_sink(0, SHELL_REBOOT_STARTING "\n", SHELL_TEXT);
+        render_all();
+        place_cursor();
+        klogf("console: restart confirmed\n");
+        reset_machine(true);                /* does not return */
+    }
+    shell_sink(0, SHELL_REBOOT_CANCELLED "\n", SHELL_TEXT);
 }
 
 static void submit(void)
@@ -144,13 +186,22 @@ static void submit(void)
     for (uint8_t i = 0; i <= input.len; i++)
         line[i] = input.buf[i];
 
-    klogf("%s%s\n", PROMPT, input.buf);
+    klogf("%s%s\n", prompt, input.buf);
     textbuf_set_cursor(&screen, prompt_row, (uint8_t)(PROMPT_LEN + input.len));
     textbuf_putc(&screen, '\n');
 
-    struct shell_context ctx;
-    build_context(&ctx);
-    if (shell_execute(line, &ctx, &sink) == SHELL_CLEAR) {
+    enum shell_result r = SHELL_OK;
+    if (confirming) {
+        confirming = false;                 /* not a command: not in the history */
+        answer_reboot(line);
+    } else {
+        history_add(&hist, line);           /* before it runs: "history" lists itself */
+        struct shell_context ctx;
+        build_context(&ctx);
+        r = shell_execute(line, &ctx, &sink);
+        confirming = r == SHELL_REBOOT;
+    }
+    if (r == SHELL_CLEAR) {
         textbuf_clear(&screen);
         klogf("console: cleared\n");
     } else if (screen.scrolls != scrolls_before) {
@@ -160,6 +211,18 @@ static void submit(void)
     show_prompt();
     render_all();
     place_cursor();
+}
+
+/* 0.9.1: Up/Down recall a line from the history into the input line,
+ * through the line editor (lineedit.c itself still ignores these keys). */
+static void recall(const char *text)
+{
+    lineedit_reset(&input);
+    for (const char *p = text; *p; p++) {
+        struct key_event e = { *p == '\t' ? KEY_TAB : KEY_CHAR, *p, KEY_PRESSED, 0 };
+        lineedit_key(&input, &e);
+    }
+    draw_input();
 }
 
 /* ---- Public ---- */
@@ -177,6 +240,8 @@ void console_start(const struct memory_stats *mem)
     write_screen("Type 'help' for a list of commands.\n\n", ATTR_TEXT);
 
     vga_cursor_show(true);
+    history_init(&hist);
+    confirming = false;
     active = true;
     show_prompt();
     render_all();
@@ -193,6 +258,13 @@ void console_handle_key(const struct key_event *e)
 {
     if (!active)
         return;
+    if ((e->keycode == KEY_UP || e->keycode == KEY_DOWN) && (e->flags & KEY_PRESSED)
+        && !(e->flags & (KEY_CTRL | KEY_ALT)) && !confirming) {
+        const char *text = e->keycode == KEY_UP ? history_up(&hist) : history_down(&hist);
+        if (text)
+            recall(text);
+        return;
+    }
     switch (lineedit_key(&input, e)) {
     case LE_CHANGED:
         draw_input();

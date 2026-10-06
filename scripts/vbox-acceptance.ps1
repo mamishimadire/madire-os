@@ -22,7 +22,7 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, preempt, threadoverflow, pf, diag, memexhaust, module, repeat
+    [string[]]$Only = @(),              # menu, boot, commands, reboot, preempt, threadoverflow, pf, diag, memexhaust, module, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$Repeat = 0                    # extra normal boots (self-test result of each)
 )
@@ -201,8 +201,89 @@ if (Want "boot") {
     Start-Sleep -Seconds 1
     Shot "console-mem"
     Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
-        "^  0  running .* kernel$", "^Madire OS v0\.9 \(64-bit x86-64, Multiboot 1\)$",
+        "^  0  running .* kernel$", "^Madire OS v0\.9\.1 \(64-bit x86-64, Multiboot 1\)$",
         "^Kernel stack: +[0-9]+ bytes at peak, of 16384$")
+}
+# 0.9.1: the shell commands. The guest's "date" is compared with the host's
+# clock (local time and UTC) and the difference is only reported: the VM's
+# RTC setting is never changed here.
+if (Want "commands") {
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    TypeText "help mem"; Enter
+    TypeText "uname -a"; Enter
+    TypeText "hostname"; Enter
+    $hostLocal = Get-Date
+    TypeText "date"; Enter
+    TypeText "dmesg 5"; Enter
+    TypeText "echo one"; Enter
+    Key e0 48 e0 c8; Enter                 # Up recalls "echo one"
+    TypeText "history"; Enter
+    Start-Sleep -Seconds 1
+    Shot "commands"
+    TypeText "clear"; Enter
+    TypeText "help"; Enter
+    Start-Sleep -Seconds 1
+    Shot "commands-help"
+    TypeText "clear"; Enter
+    TypeText "reboot"; Enter
+    TypeText "no"; Enter
+    Start-Sleep -Seconds 1
+    Shot "reboot-cancelled"
+    Stop-Run "commands" @("^mem: Show memory information$", "^Usage: mem$",
+        "^Madire OS madire 0\.9\.1 x86_64$", "^madire$",
+        "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$",
+        "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  reboot   Restart the computer \(asks first\)$",
+        "^Restart Madire OS now\? Type 'yes' to confirm:$", "^yes/no> no$", "^Restart cancelled\.$")
+    $log = Join-Path $OutDir "$Prefix-commands.serial.log"
+    if (Test-Path $log) {
+        $recalled = @(Select-String -Path $log -Pattern '^madire> echo one$').Count
+        Note ("{0,-16} {1,-8} /Up recalled 'echo one': {2} runs (2 expected)/" -f "commands",
+              $(if ($recalled -eq 2) { "OK" } else { "MISSING" }), $recalled)
+        $d = Select-String -Path $log -Pattern '^([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) \(RTC' |
+             Select-Object -First 1
+        if ($d) {
+            $rtc = [datetime]::ParseExact($d.Matches[0].Groups[1].Value, "yyyy-MM-dd HH:mm:ss",
+                                          [Globalization.CultureInfo]::InvariantCulture)
+            $vsLocal = [int]($rtc - $hostLocal).TotalSeconds
+            $vsUtc = [int]($rtc - $hostLocal.ToUniversalTime()).TotalSeconds
+            Write-Host ("date (report only): guest RTC {0}; host local {1:yyyy-MM-dd HH:mm:ss}, UTC {2:yyyy-MM-dd HH:mm:ss}; RTC - local = {3} s, RTC - UTC = {4} s" -f
+                        $rtc.ToString("yyyy-MM-dd HH:mm:ss"), $hostLocal, $hostLocal.ToUniversalTime(), $vsLocal, $vsUtc)
+            $script:results.Add(("date report: RTC - local = {0} s, RTC - UTC = {1} s" -f $vsLocal, $vsUtc))
+        }
+    }
+}
+# 0.9.1: "reboot", then "yes": the guest resets the VM through the keyboard
+# controller and boots again from the ISO. Reported only: whether VirtualBox
+# keeps the COM1 file across the guest's reset (two "boot32: start" lines).
+if (Want "reboot") {
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Key 39 b9; Start-Sleep -Seconds 1
+    TypeText "reboot"; Enter
+    TypeText "yes"; Enter
+    Start-Sleep -Seconds 3
+    Shot "reboot-after-reset"
+    Start-Sleep -Seconds 15                 # GRUB's 3 s, then the second boot
+    Shot "reboot-second-boot"
+    $state = (Get-VMInfo)["VMState"]
+    Stop-Run "reboot" @("^yes/no> yes$", "^Restarting\.\.\.$", "^console: restart confirmed$",
+        "^Restart: keyboard controller reset \(0xfe to port 0x64\)$")
+    $log = Join-Path $OutDir "$Prefix-reboot.serial.log"
+    if (Test-Path $log) {
+        $fallback = @(Select-String -Path $log -Pattern 'did not reset the machine|forcing a triple fault').Count
+        Note ("{0,-16} {1,-8} /no fallback to the triple fault: {2} fallback lines/" -f "reboot",
+              $(if ($fallback -eq 0) { "OK" } else { "MISSING" }), $fallback)
+        $boots = @(Select-String -Path $log -Pattern '^boot32: start$').Count
+        $ready = @(Select-String -Path $log -Pattern '^System ready\.').Count
+        Write-Host ("reboot (report only): VM state before power-off '{0}'; COM1 log has {1} 'boot32: start' and {2} 'System ready.' lines ({3})" -f
+                    $state, $boots, $ready,
+                    $(if ($boots -ge 2) { "the log survived the guest reset" } else { "the log did not keep the first boot, or the second boot did not start" }))
+        $script:results.Add(("reboot report: VM state '{0}', boot32 lines {1}, System ready lines {2}" -f $state, $boots, $ready))
+    }
 }
 if (Want "preempt") {
     Start-Diag "preempt"

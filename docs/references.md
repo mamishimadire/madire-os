@@ -35,6 +35,15 @@ For 0.9 and the coming user processes (0.10), three of the projects above are li
 
 No code, text or assets from them are in Madire OS: the 0.9 scheduler, context switch and tests were written for this project. The licences are as understood now and must be checked against each project before any use, under the rules above.
 
+## Windows compatibility layer (study-only)
+
+References for the Windows-compatibility layer of the applications and compatibility strategy ([roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet)). Study-only: nothing is copied; porting either project would need the owner's approval, a licence check and the Linux/POSIX compatibility it depends on.
+
+| Project | Link | Could be useful for | Licence (to be verified) |
+|---|---|---|---|
+| Wine | https://gitlab.winehq.org/wine/wine | Running Windows programs on a POSIX-like system: the Windows API implemented on top of it, the PE loader, the registry, graphics and audio translation | LGPL (to be verified) |
+| Proton | https://github.com/ValveSoftware/Proton | Wine with improvements for games (graphics translation, controller and performance work) and how it is packaged and tested | Valve's code and each bundled component have their own licences, all to be verified |
+
 ## Shells
 
 | Project | Link | Could be useful for | Licence (to be verified) |

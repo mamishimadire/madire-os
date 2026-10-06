@@ -54,7 +54,8 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/console/textbuf.c kernel/console/lineedit.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
-                            kernel/stackpeak.c kernel/proc/sched_core.c)
+                            kernel/stackpeak.c kernel/proc/sched_core.c \
+                            kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test unit repro clean
@@ -94,7 +95,7 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 	@echo "ISO ready: $@"
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
-                 kernel/bootmod.h kernel/stackpeak.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
+                 kernel/bootmod.h kernel/stackpeak.h kernel/rtc_time.h kernel/logbuf.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
                  $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard kernel/proc/*.h)
 	@mkdir -p $(dir $@)

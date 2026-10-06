@@ -48,3 +48,46 @@ bool cmos_rtc_seconds(uint8_t *seconds)
     *seconds = value;
     return true;
 }
+
+/* 0.9.1: the date and time registers (see cmos.h). */
+#define RTC_MINUTES         0x02
+#define RTC_HOURS           0x04
+#define RTC_DAY             0x07
+#define RTC_MONTH           0x08
+#define RTC_YEAR            0x09
+
+static bool read_all(struct rtc_raw *r)
+{
+    if (!wait_not_updating())
+        return false;
+    r->second = cmos_read(RTC_SECONDS);
+    r->minute = cmos_read(RTC_MINUTES);
+    r->hour = cmos_read(RTC_HOURS);
+    r->day = cmos_read(RTC_DAY);
+    r->month = cmos_read(RTC_MONTH);
+    r->year = cmos_read(RTC_YEAR);
+    return true;
+}
+
+static bool same(const struct rtc_raw *a, const struct rtc_raw *b)
+{
+    return a->second == b->second && a->minute == b->minute && a->hour == b->hour
+        && a->day == b->day && a->month == b->month && a->year == b->year;
+}
+
+bool cmos_rtc_read(struct rtc_raw *raw)
+{
+    /* Read until two complete reads agree, so an update between the
+     * registers cannot give a torn date (e.g. 23:59:59 on the next day). */
+    struct rtc_raw a, b;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (!read_all(&a) || !read_all(&b))
+            return false;
+        if (same(&a, &b)) {
+            a.status_b = cmos_read(RTC_STATUS_B);
+            *raw = a;
+            return true;
+        }
+    }
+    return false;
+}

@@ -19,6 +19,7 @@
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pic.h"
+#include "kernel/arch/x86/reset.h"
 #include "kernel/bootmod.h"
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
@@ -187,7 +188,12 @@ static void run_diagnostics(void)
 {
     /* 0.9 thread diagnostics. The longer names come first: cmdline_has
      * matches prefixes, and "test=preempt" (stage 4) is one of these. */
-    if (cmdline_has("test=preemptyield")) {
+    if (cmdline_has("test=reboottriple")) {
+        /* 0.9.1, QEMU only: the reboot fallback, without the keyboard
+         * controller. QEMU (-no-reboot) exits when the machine resets. */
+        diag_message("Restart test: forcing a triple fault (no keyboard controller)");
+        reset_machine(false);
+    } else if (cmdline_has("test=preemptyield")) {
         diag_message("Thread test: yield with preemption disabled (must panic)");
         schedtest_preempt_yield();
     } else if (cmdline_has("test=preemptjoin")) {

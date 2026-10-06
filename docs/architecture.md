@@ -116,13 +116,15 @@ VirtualBox power-on
 ```
 boot/                 entry point: 32-bit stub, switch to long mode (assembly)
 kernel/               architecture-independent kernel code
-  arch/x86/           everything specific to the x86 CPU (incl. IRQ layer, CMOS)
+  arch/x86/           everything specific to the x86 CPU (incl. IRQ layer, CMOS,
+                      restart (0.9.1))
   memory/             memory map, reservations, page allocator, paging,
                       kernel heap, self-tests and diagnostics
   input/              key-event queue
   timer.c             system tick, uptime, bounded waits
   devtest.c           timer / keyboard / IRQ diagnostics
-  console/            console: text grid, line editor, screen + serial output
+  console/            console: text grid, line editor, screen + serial output,
+                      command history (0.9.1)
   shell/              command parser, shell commands, CPUID decoding
   proc/               kernel threads: scheduler core, thread layer, context
                       switch, preemption-disable count, self-test (0.9)
@@ -468,7 +470,7 @@ GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are res
 | Order | Register the handler, program the PIT, unmask IRQ0, verify the mask (`timer_init`) |
 | Self-test | Two latched counter reads prove the PIT is counting. A **bounded busy-wait** (no `hlt`, so a dead timer can't hang the boot) must then see 3 ticks. The failure message tells "PIT not counting" apart from "counting but no IRQ0". |
 | Waiting | `timer_wait_ticks(n)` uses `hlt`, but refuses immediately if the timer isn't verified or interrupts are off, so it can never hang |
-| Reference clock | `kernel/arch/x86/cmos.c`: **read-only** RTC seconds, used only by the timer diagnostic. It waits out update-in-progress (bounded), reads until two reads agree, and handles BCD. No RTC interrupts. |
+| Reference clock | `kernel/arch/x86/cmos.c`: **read-only** RTC seconds, used only by the timer diagnostic. It waits out update-in-progress (bounded), reads until two reads agree, and handles BCD. No RTC interrupts. Since 0.9.1 an additive `cmos_rtc_read()` reads the raw date and time registers (seconds to year, plus status B) the same way, until two complete reads agree, for `date`; the pure `kernel/rtc_time.c` decodes them. `cmos_rtc_seconds()` is unchanged. |
 
 ## Keyboard [built: 0.4]
 
@@ -506,35 +508,56 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 | Module | Pure? | Responsibility |
 |---|---|---|
 | `kernel/console/textbuf.c` | yes | The console's own 80×25 grid (character plus colour per cell): writing, newline, wrap at column 80, scrolling, clear |
-| `kernel/console/lineedit.c` | yes | Input line: insert at cursor, Backspace, Delete, Left/Right/Home/End, Enter. At most **71 characters** (8-character prompt + 71 = one row). Presses only; any key with Ctrl or Alt held is ignored; no history. |
+| `kernel/console/lineedit.c` | yes | Input line: insert at cursor, Backspace, Delete, Left/Right/Home/End, Enter. At most **71 characters** (8-character prompt + 71 = one row). Presses only; any key with Ctrl or Alt held is ignored; no history (since 0.9.1 the console handles Up/Down itself, so this module is unchanged). |
 | `kernel/shell/parser.c` | yes | Splits the line in place: spaces and tabs separate, repeats collapse, leading/trailing ignored; at most **8 words** |
-| `kernel/shell/shell.c` | yes | The seven commands (eight with `ps`, 0.9), reading values from a read-only `shell_context` and writing through a `shell_output` sink, so every output is unit-tested exactly |
+| `kernel/shell/shell.c` | yes | The seven commands (eight with `ps`, 0.9; fourteen with the 0.9.1 commands), reading values from a read-only `shell_context` and writing through a `shell_output` sink, so every output is unit-tested exactly |
+| `kernel/console/history.c` (0.9.1) | yes | The last 16 submitted lines, numbered since boot, and the Up/Down browsing position |
+| `kernel/logbuf.c` (0.9.1) | yes | A byte ring buffer for the kernel log: copy out a snapshot, find the last *n* lines, fit a line to 79 columns |
+| `kernel/rtc_time.c` (0.9.1) | yes | Decodes and checks the RTC's date and time registers (BCD or binary, 12- or 24-hour), formats `YYYY-MM-DD HH:MM:SS` |
 | `kernel/shell/cpuinfo.c` | yes | Decodes raw CPUID values: vendor, family/model/stepping (extended-field rules), feature names, brand string, hypervisor vendor |
 | `kernel/arch/x86/cpuid.c` | no | Checks CPUID exists by toggling EFLAGS bit 21, then runs only the leaves the CPU lists; reads CR0 |
-| `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial (each line with preemption off, 0.9); builds the shell context, including a snapshot of the threads for `ps` (0.9); runs the start-up self-test |
+| `kernel/console/console.c` | no | Owns the grid and draws it to VGA (`vga_put_cell`); moves the hardware cursor; copies submitted lines (`madire> …`) and output to serial (each line with preemption off, 0.9); builds the shell context, including a snapshot of the threads for `ps` (0.9) and, since 0.9.1, the extras (hostname, the RTC date, a snapshot of the kernel log, the history); handles Up/Down and the reboot confirmation (0.9.1); runs the start-up self-test |
 
-- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.9`, a hint) and the `madire> ` prompt.
+- **Screen:** the console takes over the whole 80×25 screen when it starts. It shows a banner (`M A D I R E   O S`, `Madire OS v0.9.1`, a hint) and the `madire> ` prompt.
   - Colours use only VGA slots the logo doesn't reprogram: grey text, white input, cyan prompt, red errors.
-  - Output scrolls up at the bottom. There's no scrollback.
+  - Output scrolls up at the bottom. There's no scrollback yet (planned for 0.9.2).
   - `clear` empties the console's own grid and redraws it; it doesn't use `vga_clear()`.
 - **Cursor:** the VGA hardware cursor, a blinking underline, marks the edit position. The VGA driver gained two additive functions: `vga_cursor_show()` and `vga_cursor_move()`.
 - **Commands:**
 
   | Command | Output |
   |---|---|
-  | `help` | the command list (since 0.9 `ps` follows the seven commands) |
+  | `help` | the command list (since 0.9 `ps` follows the seven commands, since 0.9.1 the six new ones follow `ps`); `help <command>` (0.9.1) prints `mem: Show memory information` and `Usage: mem`, or `No help for 'x': unknown command.` |
   | `clear` | clears the screen |
-  | `version` | `Madire OS v0.9 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
+  | `version` | `Madire OS v0.9.1 (64-bit x86-64, Multiboot 1)` when EFER.LMA is set (since 0.7); a context without EFER (the host unit tests) keeps the old `(32-bit x86, Multiboot 1)` wording |
   | `uptime` | `Uptime: HH:MM:SS (N ticks at 100 Hz)`. Uses the 32-bit seconds counter with 32-bit division only. The tick count is shown only while it fits in 32 bits, and is never divided. |
   | `mem` | the 0.3 boot figures, plus the live `pmm_free_pages()`; since 0.6 also `Paging` (enabled/disabled), `Mapped pages` (the kernel's own mapping made at boot), `Page tables` (now), `Kernel heap` (KiB mapped, max), `Heap in use` (KiB, blocks), `Heap free` (KiB, largest block). The two 0.6 sections come from optional `shell_context` pointers; without them the output is exactly the 0.5 one. Since 0.7 the paging line is followed by an `NX:` row (`supported, enabled`, `supported, not enabled` or `not supported by this CPU`); since 0.8 it reads `enabled (4-level, 4 KiB, higher-half, NX on)` (or `NX off`; `identity-mapped` in 0.7), and a last row gives the stack's high-water mark, `Kernel stack: 1496 bytes at peak, of 16384` (only when the context has the stack fields; without them the output is unchanged). Every `mem` line fits in 79 columns (checked by a QEMU test and `test_shell_mem08`). |
   | `cpu` | CPUID information, plus the mode line: `64-bit long mode, paging on, 1 CPU in use` when EFER.LMA is set (0.7); otherwise the CR0-based wording. `cpu` and `version` use the same long-mode test. |
   | `echo <text>` | the words joined by single spaces |
   | `ps` (0.9) | one row per live thread: `TID`, `STATE` (`running`, `ready`, `blocked`, …), `TICKS` (timer ticks it has run; `large` once the count no longer fits in 32 bits), `STACK PEAK` (`used/size` in bytes) and `NAME`, then a count line, e.g. `  0  running      338     1496/16384   kernel` and `1 thread`. A snapshot taken when the command runs. It comes from an optional `shell_context` field: without it, `ps` is an unknown command and `help` is exactly the 0.8 output |
+  | `history` (0.9.1) | the last 16 lines, numbered since boot, newest last, `   12  mem` (number right-aligned in 5 columns); the line is added before it runs, so `history` lists itself. **Up/Down** recall lines into the input line: Up starts at the newest and stops at the oldest, Down past the newest gives an empty line. Empty lines and the answer to `reboot` aren't kept |
+  | `uname [-a]` (0.9.1) | `Madire OS`; with `-a`: `Madire OS madire 0.9.1 x86_64` (name, host, version, architecture; `x86` without long mode) |
+  | `hostname` (0.9.1) | `madire` (a fixed name until settings can be stored) |
+  | `date` (0.9.1) | `2026-10-06 09:59:27 (RTC; time zone not set)`, read from the CMOS real-time clock at each call (`cmos_rtc_read`, decoded by `rtc_time.c`); `Date: unavailable (RTC not responding)` if the RTC stays busy or gives an invalid value. Years are assumed 2000–2099 |
+  | `dmesg [lines]` (0.9.1) | the last *n* lines of the kernel log (default 20, 1–9999), each cut to 79 columns with `...` if longer; `(the kernel log is empty)` when there is nothing. Once the log has wrapped, its oldest, cut line is left out |
+  | `reboot` (0.9.1) | prints `Restart Madire OS now? Type 'yes' to confirm:` and the console switches to a `yes/no> ` prompt. Exactly `yes` (spaces around it allowed) prints `Restarting...` and restarts the machine; anything else prints `Restart cancelled.` |
 
   An unknown name gives `Unknown command: …`. Extra arguments give `Usage: …`, and more than 8 words gives `Too many arguments (max 8).`
+
+  **0.9.1: help for every command, through `extras`.** The 0.9.1 commands, `help <command>` and `<command> --help` come from one optional `shell_context` field, `extras`. `<command> --help` (the option alone after a command name) prints the same two lines as `help <command>`, for every command; it never runs the command (so `reboot --help` doesn't ask, `echo --help` doesn't print `--help`). Without `extras` every 0.9 output, `help` and every usage error are exactly as before (`help x` → `Usage: help`), which `test_shell.c` and `test_shell_ps09.c` (unchanged) prove. An unknown name in `help <command>` is shown up to 40 characters (37 and `...` beyond), so the line fits 79 columns.
 - **Self-test (`Console & shell` status line):** exercises the *pure* modules with known input: the line editor, the parser, `echo ok` through the shell, and scrolling in a private grid. It isn't a test of keyboard or VGA hardware; those are proven by the keyboard self-test and by the QEMU and VirtualBox console tests.
 - **When the console is offered:** only if both the console self-test and the keyboard passed. Otherwise the bottom row says why, and the idle loop runs as in 0.4.
 - **Unchanged in 0.5:** the keyboard driver, decoder, queue, IRQ layer, PIC, PIT, timer and memory manager. There's no dynamic allocation: every buffer is static (still true in 0.6; the console doesn't use the heap).
+
+### Restart (`kernel/arch/x86/reset.c`) [built: 0.9.1]
+
+`reset_machine()` runs with interrupts off and logs each step to serial first:
+
+1. **Keyboard controller:** wait (bounded) until the i8042's input buffer is empty, send command `0xFE` to port `0x64` (pulse the CPU reset line), then wait about 100 ms (`io_wait` loops). The protected keyboard driver isn't changed or used: this one-way command needs nothing from it.
+2. **Fallback, a triple fault:** if the machine is still running, load an empty interrupt table (limit 0) and execute `int3`. The CPU can't deliver it (#GP, then #DF, then shutdown), and a shutdown resets the machine. No crash screen appears, because no handler can run.
+3. If even that returns, it halts.
+
+`test=reboottriple` (QEMU only, no GRUB entry) skips step 1 to test the fallback. In QEMU (`-no-reboot`) and VirtualBox the keyboard-controller reset works; the fallback is proven in QEMU.
 
 ## Kernel threads and scheduler [built: 0.9]
 
@@ -686,6 +709,8 @@ Each logs its details on serial and its result on the boot screen's message line
 - `kputc`, `kputs`, `kprintf`: write to both drivers.
 - `klogf`: writes to serial only, for diagnostics that shouldn't appear on screen.
 - `ksnprintf`: formats into a buffer.
+
+**Kernel log (0.9.1):** every character `kputc` and `klogf` send to the serial port is also copied into a 32 KiB ring buffer in `kprintf.c` (`klog_buffer()`, pure logic in `kernel/logbuf.c`), inside their existing preemption guard; `dmesg` shows it. Text sent to the serial port directly isn't in it: the boot screen's status lines (`bootscreen.c`, protected) and the console's copy of each command's output. The idle loop logs every key event with `klogf` (since 0.4), so those are in it too; see the security limitation in [PROGRESS.md](PROGRESS.md).
 
 All of them share one formatter. `panicf` builds on it. Since 0.9 each `kputc`, `kputs`, `kprintf` and `klogf` call runs with preemption off, so lines from different threads never interleave (`ksnprintf` writes only to the caller's buffer and needs no guard). `kputc` also enforces the screen rule: if a thread other than 0 writes to the screen, it panics, naming the thread (the crash screen is exempt). Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
 

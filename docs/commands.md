@@ -1,4 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.1
+# Madire OS Command Standard (MOCS) v0.2
+
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command.
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -18,23 +20,25 @@ Madire OS provides the foundations that applications need (processes, files, dev
 
 | Status | Meaning |
 |---|---|
-| **IMPLEMENTED** | Exists today and is tested |
-| **PLANNED 0.9.1** | Planned for milestone 0.9.1 (its decisions are approved) |
+| **IMPLEMENTED** | Exists today and is tested (with the Madire OS version that added it) |
 | **PLANNED** | Planned; the entry names the foundation it needs first |
 | **APPLICATION** | An installable application, not part of Madire OS |
 
-**Implemented today (v0.9):** `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu`, `ps`. `ps` lists the kernel threads; it becomes the process list in 0.10.
+**Implemented today (Madire OS 0.9.1):** 14 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9), and `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1). `ps` lists the kernel threads; it becomes the process list in 0.10. Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
 
-**Planned for 0.9.1:** `history`, `uname`, `hostname` (a fixed name), `date`, `dmesg`, `reboot`, and two help features for every command: `help <command>` and `<command> --help`.
+**Notes on the 0.9.1 commands:**
 
-**Today: where the commands run.** Madire OS has no user programs yet, so the 8 implemented commands and the 0.9.1 ones all run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. After 0.10 (user processes), SYSTEM commands are expected to move out into separate user programs; CORE commands stay in the shell.
+- `hostname` is a fixed name, `madire`, until settings can be stored.
+- `date` shows the real-time clock as it is, with **no time zone** ("time zone not set"): VirtualBox keeps the clock on the host's local time, QEMU on UTC. Years are assumed to be 2000–2099, and the date can't be set.
+- `dmesg` shows only what the kernel wrote through `kprintf`/`klogf` (a 32 KiB log). The boot screen's status lines and the console's command output go to the serial port directly and aren't in it. Every key press is logged too (a known security limitation, to be switched off by default in 0.9.2).
+- `help <unknown>` prints only `No help for 'X': unknown command.`, without a second sentence, so that every line fits 79 columns (names longer than 40 characters are shortened).
+
+**Today: where the commands run.** Madire OS has no user programs yet, so all 14 implemented commands run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. After 0.10 (user processes), SYSTEM commands are expected to move out into separate user programs; CORE commands stay in the shell.
 
 | Command | Level | Today |
 |---|---|---|
-| `help`, `echo` | CORE | in the kernel console (IMPLEMENTED); stays in the shell |
-| `history` | CORE | in the kernel console (PLANNED 0.9.1); stays in the shell |
-| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps` | SYSTEM | in the kernel console (IMPLEMENTED); expected to become separate programs after 0.10 |
-| `uname`, `hostname`, `date`, `dmesg`, `reboot` | SYSTEM | in the kernel console (PLANNED 0.9.1); expected to become separate programs after 0.10 |
+| `help`, `echo`, `history` | CORE | in the kernel console; stays in the shell |
+| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot` | SYSTEM | in the kernel console; expected to become separate programs after 0.10 |
 
 **Foundations** named below: processes (0.10), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
 
@@ -46,10 +50,10 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `help` | List the commands; `help <command>` shows one command's purpose and usage | CORE | IMPLEMENTED (`help <command>`: PLANNED 0.9.1) |
+| `help` | List the commands; `help <command>` shows one command's purpose and usage | CORE | IMPLEMENTED (0.5; `help <command>` and `<command> --help`: 0.9.1) |
 | `clear` | Clear the screen | SYSTEM | IMPLEMENTED |
 | `echo` | Print text | CORE | IMPLEMENTED |
-| `history` | Show the commands entered since boot; Up/Down recall them | CORE | PLANNED 0.9.1 |
+| `history` | Show the commands entered since boot (the last 16, numbered); Up/Down recall them | CORE | IMPLEMENTED (0.9.1; kept across restarts once the filesystem exists) |
 | `alias` | Create a short name for a command | CORE | PLANNED (shell language; kept across restarts once the filesystem exists) |
 | `unalias` | Remove a short name | CORE | PLANNED (shell language) |
 | `which` | Show which program a command name runs | CORE | PLANNED (filesystem) |
@@ -71,9 +75,9 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `uptime` | Show how long the system has been running | SYSTEM | IMPLEMENTED |
 | `mem` | Show the full memory report (RAM, pages, paging, heap, stack) | SYSTEM | IMPLEMENTED (the alias `memory`: PLANNED) |
 | `cpu` | Show processor information | SYSTEM | IMPLEMENTED |
-| `uname` | Print a short, script-friendly identification of the system (`uname -a`: name, host, version, architecture) | SYSTEM | PLANNED 0.9.1 |
-| `hostname` | Show the computer's name (a fixed name, `madire`, in 0.9.1) | SYSTEM | PLANNED 0.9.1 (changing it: settings storage) |
-| `date` | Show the date and time | SYSTEM | PLANNED 0.9.1 (time zones: settings storage) |
+| `uname` | Print a short, script-friendly identification of the system (`uname -a`: name, host, version, architecture) | SYSTEM | IMPLEMENTED (0.9.1) |
+| `hostname` | Show the computer's name (a fixed name, `madire`, for now) | SYSTEM | IMPLEMENTED (0.9.1; changing it: PLANNED, settings storage) |
+| `date` | Show the date and time (from the real-time clock; no time zone yet) | SYSTEM | IMPLEMENTED (0.9.1; time zones and setting the date: PLANNED, settings storage) |
 | `system` | Show a readable summary of the whole system: OS, version, CPU, memory, disks, devices, uptime | SYSTEM | PLANNED (disk and hardware drivers) |
 | `disk` | Show disks and how they are used | SYSTEM | PLANNED (disk drivers) |
 | `devices` | Show connected hardware | SYSTEM | PLANNED (hardware drivers) |
@@ -252,7 +256,7 @@ These are subcommands of `pkg`, not separate commands. `pkg remove` is the one n
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `reboot` ⚠ | Restart the computer, after confirmation | SYSTEM | PLANNED 0.9.1 |
+| `reboot` ⚠ | Restart the computer, after confirmation (type `yes`) | SYSTEM | IMPLEMENTED (0.9.1) |
 | `shutdown` ⚠ | Shut down in an orderly way: warn, stop services, save data, then power off (optionally after a delay) | SYSTEM | PLANNED (power management, service manager) |
 | `poweroff` ⚠ | Power off now (after saving data), with no delay or warning period | SYSTEM | PLANNED (power management) |
 | `suspend` | Sleep: keep the session in memory, use very little power | SYSTEM | PLANNED (power management) |
@@ -263,7 +267,7 @@ These are subcommands of `pkg`, not separate commands. `pkg remove` is the one n
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `dmesg` | Show recent kernel messages (the kernel's log buffer) | SYSTEM | PLANNED 0.9.1 |
+| `dmesg` | Show recent kernel messages (the kernel's log buffer): `dmesg [lines]` | SYSTEM | IMPLEMENTED (0.9.1; boot-screen and console output aren't in the log) |
 | `logs` | Show the system log (all services and the kernel, kept on disk) | SYSTEM | PLANNED (filesystem, service manager) |
 | `diagnose` | Find the likely cause of a problem in one area (e.g. `diagnose network`) | SYSTEM | PLANNED (system utilities) |
 | `health` | Check the overall health of the system (disks, memory, temperatures, updates) | SYSTEM | PLANNED (system utilities) |
@@ -364,9 +368,10 @@ These are features of the shell, not commands:
 ## 6. Rules
 
 - **Design principles:** simple, predictable, safe, scriptable, documented, consistent.
-- **Help everywhere:** every official command eventually supports `command --help` and `man command`. Both document the purpose, syntax, options, examples, exit status and the permissions required. `<command> --help` and `help <command>` come for every command in 0.9.1; `man` needs the filesystem.
+- **Help everywhere:** every official command eventually supports `command --help` and `man command`. Both document the purpose, syntax, options, examples, exit status and the permissions required. Since 0.9.1 every implemented command answers `<command> --help` and `help <command>` (its purpose and usage, so far); `man` needs the filesystem.
 - **Destructive commands** (marked ⚠: for example `rm`, `format`, `partition`, `userdel`, `reboot`) require confirmation or show a clear warning first.
 - **Madire AI** never changes the system without informing the user first.
+- **Keeping this standard current:** whenever a milestone adds, changes or removes a command, this file is updated in the same milestone (status, level, purpose, foundation) and the MOCS version goes up by one step (v0.1 → v0.2 → …). New commands follow these rules: one meaning per name, a level (CORE, SYSTEM or APPLICATION), `--help`, and a confirmation or a clear warning before destructive actions. The same rule is in [AGENTS.md](../AGENTS.md).
 - **Licences:** porting a command toolkit (for example BusyBox, GPL-2.0, or toybox, 0BSD) requires the owner's approval and a licence check first. Madire OS has no licence of its own yet; see [references.md](references.md).
 
 ## 7. Priority order
@@ -381,4 +386,4 @@ These are features of the shell, not commands:
 8. Applications.
 9. Madire AI.
 
-The small 0.9.1 (shell commands that need no new foundation) comes between 0.9 and 0.10; see [roadmap.md](roadmap.md).
+The small 0.9.1 (shell commands that need no new foundation, done) and 0.9.2 (console scrollback, key logging off by default) come between 0.9 and 0.10; see [roadmap.md](roadmap.md).

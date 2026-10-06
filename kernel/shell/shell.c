@@ -5,6 +5,7 @@
  * kernel's ksnprintf is not usable here: this module must stay pure).
  * Only 32-bit division is used; the 64-bit tick count is never divided.
  */
+#include "kernel/logbuf.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/shell/parser.h"
 #include "kernel/shell/shell.h"
@@ -369,6 +370,148 @@ static enum shell_result cmd_ps(int argc, char **argv, const struct shell_contex
     return SHELL_OK;
 }
 
+/* ---- 0.9.1: the extra commands (only when the context has extras) ---- */
+
+static enum shell_result usage_error(const struct shell_output *o, const char *usage)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "Usage: ");
+    l_str(&l, usage);
+    emit(o, &l, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
+/* "   12  mem": the number right-aligned in 5 columns, two spaces, the line
+ * (at most 71 characters, so at most 78 columns). */
+static enum shell_result cmd_history(int argc, char **argv, const struct shell_context *c,
+                                     const struct shell_output *o)
+{
+    const struct history *h = c->extras->history;
+    struct line l;
+    (void)argc; (void)argv;
+    if (!h || history_size(h) == 0)
+        return SHELL_OK;
+    for (uint32_t n = history_first(h); n <= h->count; n++) {
+        l_reset(&l);
+        l_uint(&l, n, 5, ' ');
+        l_str(&l, "  ");
+        l_str(&l, history_get(h, n));
+        emit(o, &l, SHELL_TEXT);
+    }
+    return SHELL_OK;
+}
+
+/* "uname": the system's name; "uname -a": name, host, version, architecture. */
+static enum shell_result cmd_uname(int argc, char **argv, const struct shell_context *c,
+                                   const struct shell_output *o)
+{
+    struct line l;
+    if (argc == 2 && !str_eq(argv[1], "-a"))
+        return usage_error(o, "uname [-a]");
+    l_reset(&l);
+    l_str(&l, "Madire OS");
+    if (argc == 2) {
+        l_char(&l, ' ');
+        l_str(&l, c->extras->hostname ? c->extras->hostname : "unknown");
+        l_char(&l, ' ');
+        l_str(&l, c->version);
+        l_str(&l, long_mode_active(c) ? " x86_64" : " x86");
+    }
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_OK;
+}
+
+static enum shell_result cmd_hostname(int argc, char **argv, const struct shell_context *c,
+                                      const struct shell_output *o)
+{
+    (void)argc; (void)argv;
+    say(o, c->extras->hostname ? c->extras->hostname : "unknown", SHELL_TEXT);
+    return SHELL_OK;
+}
+
+static enum shell_result cmd_date(int argc, char **argv, const struct shell_context *c,
+                                  const struct shell_output *o)
+{
+    struct line l;
+    (void)argc; (void)argv;
+    if (!c->extras->rtc_ok) {
+        say(o, "Date: unavailable (RTC not responding)", SHELL_ERROR);
+        return SHELL_OK;
+    }
+    l_reset(&l);
+    l_str(&l, c->extras->date_text);
+    l_str(&l, " (RTC; time zone not set)");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_OK;
+}
+
+#define DMESG_DEFAULT_LINES 20u
+#define DMESG_MAX_LINES     9999u
+
+/* "dmesg [lines]": the last lines of the kernel log (default 20), each
+ * shortened to 79 columns if needed. */
+static enum shell_result cmd_dmesg(int argc, char **argv, const struct shell_context *c,
+                                   const struct shell_output *o)
+{
+    const struct shell_extras *e = c->extras;
+    uint32_t want = DMESG_DEFAULT_LINES;
+    if (argc == 2) {
+        const char *p = argv[1];
+        want = 0;
+        if (!*p)
+            return usage_error(o, "dmesg [lines]");
+        for (; *p; p++) {
+            if (*p < '0' || *p > '9' || want > DMESG_MAX_LINES)
+                return usage_error(o, "dmesg [lines]");
+            want = want * 10 + (uint32_t)(*p - '0');
+        }
+        if (want == 0 || want > DMESG_MAX_LINES)
+            return usage_error(o, "dmesg [lines]");
+    }
+    uint32_t lines = 0;
+    uint32_t pos = e->log ? logbuf_tail(e->log, e->log_len, e->log_wrapped, want, &lines) : 0;
+    if (lines == 0) {
+        say(o, "(the kernel log is empty)", SHELL_TEXT);
+        return SHELL_OK;
+    }
+    while (pos < e->log_len) {
+        uint32_t end = pos;
+        while (end < e->log_len && e->log[end] != '\n')
+            end++;
+        char fitted[LOGBUF_LINE_WIDTH + 1];
+        logbuf_fit(e->log + pos, end - pos, fitted, LOGBUF_LINE_WIDTH);
+        say(o, fitted, SHELL_TEXT);
+        pos = end + 1;
+    }
+    return SHELL_OK;
+}
+
+/* "reboot": asks; the console does the rest (SHELL_REBOOT). */
+static enum shell_result cmd_reboot(int argc, char **argv, const struct shell_context *c,
+                                    const struct shell_output *o)
+{
+    (void)argc; (void)argv; (void)c;
+    say(o, SHELL_REBOOT_QUESTION, SHELL_TEXT);
+    return SHELL_REBOOT;
+}
+
+bool shell_reboot_confirmed(const char *answer)
+{
+    while (*answer == ' ' || *answer == '\t')
+        answer++;
+    const char *yes = "yes";
+    while (*yes && *answer == *yes) {
+        answer++;
+        yes++;
+    }
+    if (*yes)
+        return false;
+    while (*answer == ' ' || *answer == '\t')
+        answer++;
+    return *answer == '\0';
+}
+
 static const struct command commands[] = {
     { "help",    "help",          "Show this list",             0, cmd_help },
     { "clear",   "clear",         "Clear the screen",           0, cmd_clear },
@@ -384,6 +527,69 @@ static const struct command commands[] = {
 /* 0.9: offered only when the context has threads (see shell.h). */
 static const struct command ps_command =
     { "ps",      "ps",            "Show threads",               0, cmd_ps };
+
+/* 0.9.1: offered only when the context has extras (see shell.h). */
+static const struct command extra_commands[] = {
+    { "history",  "history",       "Show previous commands (Up/Down recall)", 0, cmd_history },
+    { "uname",    "uname [-a]",    "Show the system name: uname [-a]",        1, cmd_uname },
+    { "hostname", "hostname",      "Show the computer's name",                0, cmd_hostname },
+    { "date",     "date",          "Show the date and time (RTC)",            0, cmd_date },
+    { "dmesg",    "dmesg [lines]", "Show kernel messages: dmesg [lines]",     1, cmd_dmesg },
+    { "reboot",   "reboot",        "Restart the computer (asks first)",       0, cmd_reboot },
+};
+
+#define EXTRA_COUNT (sizeof(extra_commands) / sizeof(extra_commands[0]))
+
+static const struct command *find_command(const char *name, const struct shell_context *c)
+{
+    for (uint32_t i = 0; i < COMMAND_COUNT; i++)
+        if (str_eq(name, commands[i].name))
+            return &commands[i];
+    if (c->threads && str_eq(name, ps_command.name))
+        return &ps_command;
+    if (c->extras)
+        for (uint32_t i = 0; i < EXTRA_COUNT; i++)
+            if (str_eq(name, extra_commands[i].name))
+                return &extra_commands[i];
+    return 0;
+}
+
+/* "help mem" / "mem --help": the purpose, then the usage. "help" itself
+ * takes an optional command name when the context has extras. */
+static void help_topic(const struct shell_output *o, const struct command *cmd)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, cmd->name);
+    l_str(&l, ": ");
+    l_str(&l, cmd->help);
+    emit(o, &l, SHELL_TEXT);
+    l_str(&l, "Usage: ");
+    l_str(&l, cmd == &commands[0] ? "help [command]" : cmd->usage);
+    emit(o, &l, SHELL_TEXT);
+}
+
+#define HELP_NAME_SHOWN 40      /* longer names are shortened, so the line fits */
+
+static enum shell_result help_unknown(const struct shell_output *o, const char *name)
+{
+    struct line l;
+    uint32_t n = 0;
+    while (name[n])
+        n++;
+    l_reset(&l);
+    l_str(&l, "No help for '");
+    if (n <= HELP_NAME_SHOWN) {
+        l_str(&l, name);
+    } else {
+        for (uint32_t i = 0; i < HELP_NAME_SHOWN - 3; i++)
+            l_char(&l, name[i]);
+        l_str(&l, "...");
+    }
+    l_str(&l, "': unknown command.");
+    emit(o, &l, SHELL_ERROR);
+    return SHELL_UNKNOWN;
+}
 
 static void help_row(const struct shell_output *o, const struct command *cmd)
 {
@@ -405,6 +611,9 @@ static enum shell_result cmd_help(int argc, char **argv, const struct shell_cont
         help_row(o, &commands[i]);
     if (c->threads)
         help_row(o, &ps_command);
+    if (c->extras)
+        for (uint32_t i = 0; i < EXTRA_COUNT; i++)
+            help_row(o, &extra_commands[i]);
     return SHELL_OK;
 }
 
@@ -424,18 +633,27 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         break;
     }
 
-    const struct command *cmd = 0;
-    for (uint32_t i = 0; i < COMMAND_COUNT && !cmd; i++)
-        if (str_eq(argv[0], commands[i].name))
-            cmd = &commands[i];
-    if (!cmd && c->threads && str_eq(argv[0], ps_command.name))
-        cmd = &ps_command;
+    const struct command *cmd = find_command(argv[0], c);
+    if (cmd && c->extras && argc == 2) {
+        /* 0.9.1: "<command> --help" for every command, "help <command>". */
+        if (str_eq(argv[1], "--help")) {
+            help_topic(o, cmd);
+            return SHELL_OK;
+        }
+        if (cmd == &commands[0]) {
+            const struct command *topic = find_command(argv[1], c);
+            if (!topic)
+                return help_unknown(o, argv[1]);
+            help_topic(o, topic);
+            return SHELL_OK;
+        }
+    }
     if (cmd) {
         if (argc - 1 > cmd->max_args) {
             struct line l;
             l_reset(&l);
             l_str(&l, "Usage: ");
-            l_str(&l, cmd->usage);
+            l_str(&l, cmd == &commands[0] && c->extras ? "help [command]" : cmd->usage);
             emit(o, &l, SHELL_ERROR);
             return SHELL_BAD_ARGS;
         }

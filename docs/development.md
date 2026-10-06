@@ -15,23 +15,29 @@ kernel/
   kernel.c/.h             start-up sequence, stack paint, device start-up, idle
                           loop, version; BOOTSCREEN_SAFE() (0.9)
   stackpeak.c/.h          stack high-water mark: paint and measure     (pure)
+  logbuf.c/.h             kernel log ring buffer for dmesg (0.9.1)    (pure)
+  rtc_time.c/.h           RTC date/time decoding and format (0.9.1)  (pure)
   multiboot.h             Multiboot 1 structures
   bootmod.c/.h            boot-module integrity check (test modules)  (pure)
   bootscreen.c/.h         boot screen layout: status column, memory panel, live lines
   console/
     textbuf.c/.h          80x25 console character grid, scrolling    (pure)
     lineedit.c/.h         prompt line editor (71 characters)        (pure)
-    console.c/.h          console: VGA drawing, cursor, serial copy, self-test
+    history.c/.h          command history, Up/Down browsing (0.9.1) (pure)
+    console.c/.h          console: VGA drawing, cursor, serial copy, self-test,
+                          history keys, reboot confirmation (0.9.1)
   shell/
     parser.c/.h           command-line splitter (max 8 words)       (pure)
-    shell.c/.h            the shell commands (seven, plus ps in 0.9) (pure)
+    shell.c/.h            the shell commands (seven; ps in 0.9; six more and
+                          help/--help for every command in 0.9.1)   (pure)
     cpuinfo.c/.h          CPUID register decoding                   (pure)
   timer.c/.h              system tick (IRQ0), uptime, bounded waits, timer self-test
   devtest.c/.h            timer / keyboard / IRQ diagnostics (test=...)
   input/
     keyqueue.c/.h         64-entry key-event queue                (pure)
   logo.c/.h               Madire M logo (stroke geometry + drawing)
-  kprintf.c/.h            kprintf (screen + serial), klogf (serial), ksnprintf
+  kprintf.c/.h            kprintf (screen + serial), klogf (serial), ksnprintf;
+                          the kernel log for dmesg (0.9.1)
   panic.c/.h              crash screen (panic, panicf, panic_exception)
   proc/                   kernel threads (0.9)
     sched_core.c/.h       states, run queue, slices, sleep/join/exit, stack
@@ -65,7 +71,9 @@ kernel/
     interrupts.c/.h       C interrupt dispatcher (exceptions; IRQs -> irq.c)
     irq.c/.h              IRQ handler registration, dispatch, EOI, counters
     pic.c/.h              8259 interrupt controller (remap, mask/unmask, EOI)
-    cmos.c/.h             read-only RTC seconds (timer diagnostic only)
+    cmos.c/.h             read-only RTC: seconds (timer diagnostic), date and
+                          time registers (0.9.1, for date)
+    reset.c/.h            restart: keyboard controller, triple fault (0.9.1)
     cpuid.c/.h            CPUID availability check + safe leaf reads; CR0, CR4,
                           EFER; NX detection and enabling
     pagefault.h           page-fault error-code decoding       (pure, header only)
@@ -117,6 +125,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `kernel/shell/parser.c`, `shell.c`, `cpuinfo.c`
 - `kernel/bootmod.c`, `kernel/stackpeak.c`
 - `kernel/proc/sched_core.c` (0.9)
+- `kernel/console/history.c`, `kernel/rtc_time.c`, `kernel/logbuf.c` (0.9.1)
 - `kernel/arch/x86/pagefault.h` and the inline NX decision in `cpuid.h` (header only)
 - the formatter in `kernel/kprintf.c` (`test_kprintf` includes the file, with the two output drivers stubbed)
 
@@ -127,6 +136,8 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - stay pure, so its exact output can be unit-tested in `tests/unit/test_shell.c`.
 
 Commands run in normal context, one at a time, and must return promptly.
+
+Since 0.9.1, new commands go into the `extra_commands[]` table, which exists only when the context has `extras` (the console always sets it; the older unit tests don't, so their output stays pinned). Every command then gets `help <command>` and `<command> --help` automatically from its usage and help text, so keep those short: `help` lists the name padded to 11 columns and the help text, and every line must fit 79 columns (test it in `tests/unit/test_shell_091.c`'s width test). A destructive command asks first, as `reboot` does (the shell returns a result telling the console to ask). Adding, changing or removing a command also updates [commands.md](commands.md) and its MOCS version in the same milestone (see [AGENTS.md](../AGENTS.md)).
 
 **Screen output after the console starts:** only the console writes to the screen. Use `klogf()` for serial-only diagnostics, and don't use `kprintf()` for screen output once the console is active (the crash screen is the exception). Since 0.9 only thread 0 may write to the screen at all; see *Kernel threads*.
 
@@ -262,9 +273,9 @@ From PowerShell, put the remote command in single quotes (or a script file): ins
 - 64-bit division and modulo are native instructions since 0.7 and fine. 128-bit arithmetic (`__int128`) isn't: it would need `libgcc`, which isn't linked.
 - No `__builtin_popcount` (without a POPCNT target it calls `libgcc`). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Data is never executable: map pages with `paging_nx_flag()` (see *Using memory*). Only kernel code (`.text`) runs.
-- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9); a change that raises it noticeably deserves a look.
+- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1); a change that raises it noticeably deserves a look.
 - Never use a low (physical) address as a pointer: the lower half is empty (0.8). Use `phys_view()` for the low 1 MiB and boot data, the window for other frames, and `kernel_phys()` to turn a kernel symbol into a physical address.
-- Diagnostics that shouldn't appear on screen go to `klogf()` (serial only).
+- Diagnostics that shouldn't appear on screen go to `klogf()` (serial only). Since 0.9.1 everything `klogf` and `kprintf` write is also kept in memory and shown by `dmesg`: never log secrets (and see the key-logging limitation in [PROGRESS.md](PROGRESS.md)).
 - Never allocate memory before `memory_init()`, and never write to a physical page you didn't get from `memory_alloc_page()`.
 - Kernel code and read-only data are read-only once paging is on (CR0.WP): writing to a `const` object, or to code, is a page fault.
 - Address 0 is never mapped: a NULL dereference is a page fault, not a silent read of the BIOS data area. Since 0.8 the same is true for every address in 0–4 GiB.

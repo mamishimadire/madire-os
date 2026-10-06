@@ -22,4 +22,9 @@ void klogf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * not fit is cut off). Returns the number of characters stored. */
 size_t ksnprintf(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
+/* 0.9.1: the kernel log (everything kputc and klogf wrote, for dmesg).
+ * Read it with preemption off (kernel/logbuf.h). */
+struct logbuf;
+const struct logbuf *klog_buffer(void);
+
 #endif

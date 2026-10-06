@@ -3,8 +3,22 @@
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/kprintf.h"
+#include "kernel/logbuf.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/thread.h"
+
+/* 0.9.1: every character kputc and klogf send to the serial port is also
+ * kept in the kernel log (dmesg). Written with preemption off (below), so
+ * no locking is needed; never from interrupt context. Text sent to the
+ * serial port directly (the boot screen's status lines, the console's
+ * output lines) is not in it. */
+static char klog_storage[LOGBUF_KERNEL_SIZE];
+static struct logbuf klog = { klog_storage, LOGBUF_KERNEL_SIZE, 0, 0 };
+
+const struct logbuf *klog_buffer(void)
+{
+    return &klog;
+}
 
 /* 0.9: the VGA cursor and the serial port are shared, unlocked state. Each
  * call (a character, a string, a whole formatted line) runs with
@@ -19,6 +33,7 @@ void kputc(char c)
     preempt_disable();
     vga_putc(c);
     serial_putc(c);
+    logbuf_putc(&klog, c);
     preempt_enable();
 }
 
@@ -48,6 +63,7 @@ static void sink_putc(struct sink *out, char c)
         break;
     case SINK_SERIAL:
         serial_putc(c);
+        logbuf_putc(&klog, c);
         break;
     case SINK_BUFFER:
         if (out->len + 1 < out->size)
