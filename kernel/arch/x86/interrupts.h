@@ -19,6 +19,11 @@ void interrupt_dispatch(struct interrupt_frame *frame);
 /* Number of breakpoint (int3) exceptions handled; used by the boot self-test. */
 uint32_t interrupts_breakpoint_count(void);
 
+/* 0.10, test=clac: count the interrupts whose handler runs with RFLAGS.AC
+ * set (with_ac) or clear, between start and stop. */
+void interrupts_ac_probe_start(void);
+void interrupts_ac_probe_stop(uint32_t *with_ac, uint32_t *without_ac);
+
 static inline void interrupts_enable(void)
 {
     __asm__ volatile ("sti");

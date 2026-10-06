@@ -22,8 +22,21 @@
 
 static volatile uint32_t breakpoint_count;
 
+/* 0.10, test=clac: while armed, every interrupt records whether RFLAGS.AC
+ * is set inside the handler (isr.asm clears it when SMAP is on). */
+static volatile bool ac_probe;
+static volatile uint32_t ac_set, ac_clear;
+
 void interrupt_dispatch(struct interrupt_frame *frame)
 {
+    if (ac_probe) {
+        uint64_t f;
+        __asm__ volatile ("pushfq; pop %0" : "=r"(f));
+        if (f & 0x40000ull)
+            ac_set++;
+        else
+            ac_clear++;
+    }
     if (frame->vector == EXCEPTION_BREAKPOINT) {
         breakpoint_count++;
         return;
@@ -42,4 +55,17 @@ void interrupt_dispatch(struct interrupt_frame *frame)
 uint32_t interrupts_breakpoint_count(void)
 {
     return breakpoint_count;
+}
+
+void interrupts_ac_probe_start(void)
+{
+    ac_set = ac_clear = 0;
+    ac_probe = true;
+}
+
+void interrupts_ac_probe_stop(uint32_t *with_ac, uint32_t *without_ac)
+{
+    ac_probe = false;
+    *with_ac = ac_set;
+    *without_ac = ac_clear;
 }
