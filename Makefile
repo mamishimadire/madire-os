@@ -56,10 +56,10 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
                             kernel/stackpeak.c kernel/proc/sched_core.c \
                             kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c \
-                            kernel/console/scrollback.c)
+                            kernel/console/scrollback.c kernel/memory/uvm_core.c                             kernel/memory/usercopy_core.c kernel/proc/syscall_core.c                             kernel/proc/proc_core.c kernel/proc/userimg.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test unit repro clean
+.PHONY: all iso run test unit user repro clean
 
 all: $(KERNEL)
 
@@ -84,6 +84,41 @@ $(KERNEL): $(ELF)
 	objcopy -O binary $(ELF) $@
 
 iso: $(ISO)
+
+# Built-in user programs (0.10). Each program in user/prog/ is linked with
+# user/crt0.asm at fixed addresses (user/link.ld) and turned into raw blobs;
+# scripts/user-images.sh checks every program and writes the table of
+# images (build/user/images.asm, struct userimg). Built separately from the
+# kernel; from 0.10 stage 4 on the kernel links build/user/images.o.
+#   -mgeneral-regs-only  no x87/MMX/SSE: CR0.EM is set and no FPU state is
+#                        saved between processes (checked by the script)
+USER_CFLAGS := -std=gnu11 -m64 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie                -mgeneral-regs-only -fno-stack-protector -fno-asynchronous-unwind-tables                -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra -Werror -I.
+USER_LDFLAGS := -T user/link.ld -nostdlib -z noexecstack -z max-page-size=0x1000 --build-id=none
+USER_PROGS  := $(sort $(basename $(notdir $(wildcard user/prog/*.c))))
+USER_ELFS   := $(USER_PROGS:%=$(BUILD)/user/%.elf)
+
+$(BUILD)/user/crt0.o: user/crt0.asm
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(BUILD)/user/%.o: user/prog/%.c user/syscall.h user/ulib.h
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD)/user/%.elf: $(BUILD)/user/crt0.o $(BUILD)/user/%.o user/link.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(BUILD)/user/crt0.o $(BUILD)/user/$*.o
+
+$(BUILD)/user/images.asm: $(USER_ELFS) scripts/user-images.sh
+	sh scripts/user-images.sh $(BUILD)/user $(USER_PROGS) > $@.tmp
+	mv $@.tmp $@
+
+$(BUILD)/user/images.o: $(BUILD)/user/images.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
+user: $(BUILD)/user/images.o
+
+# Keep the programs' objects (make would delete them as intermediates).
+.SECONDARY: $(BUILD)/user/crt0.o $(USER_PROGS:%=$(BUILD)/user/%.o)
 
 # The ISO build also runs the source checks (0.9: boot screen usage).
 $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
@@ -130,7 +165,7 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
-test: unit $(ISO) repro
+test: unit user $(ISO) repro
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 run: $(ISO)

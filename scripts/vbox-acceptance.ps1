@@ -34,6 +34,12 @@ if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
 if (-not $OutDir) { $OutDir = Join-Path $build "vbox-acceptance" }
 $serial = Join-Path $build "vbox-serial.log"    # the documented COM1 file
 
+# 0.10: the version is read once, from kernel/kernel.h; the checks that
+# contain it build their regex from $VRe, so a new version changes no check.
+$verMatch = Select-String -Path (Join-Path $root "kernel\kernel.h") -Pattern '^#define MADIRE_OS_VERSION "([0-9]+(\.[0-9]+)*)"$'
+if (-not $verMatch) { throw "cannot read MADIRE_OS_VERSION from kernel\kernel.h" }
+$VRe = [regex]::Escape($verMatch.Matches[0].Groups[1].Value)   # 0.9.2 -> 0\.9\.2
+
 # ---- VBoxManage ----
 function Find-VBoxManage {
     if ($VBoxManage) { return $VBoxManage }
@@ -201,7 +207,7 @@ if (Want "boot") {
     Start-Sleep -Seconds 1
     Shot "console-mem"
     Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
-        "^  0  running .* kernel$", "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$",
+        "^  0  running .* kernel$", "^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$",
         "^Kernel stack: +[0-9]+ bytes at peak, of 16384$",
         "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$")
     # 0.9.2: keys were typed (the console was opened and used), but key
@@ -277,7 +283,7 @@ if (Want "commands") {
     Start-Sleep -Seconds 1
     Shot "reboot-cancelled"
     Stop-Run "commands" @("^mem: Show memory information$", "^Usage: mem$",
-        "^Madire OS madire 0\.9\.2 x86_64$", "^madire$",
+        "^Madire OS madire $VRe x86_64$", "^madire$",
         "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$",
         "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  reboot   Restart the computer \(asks first\)$",
         "^Restart Madire OS now\? Type 'yes' to confirm:$", "^yes/no> no$", "^Restart cancelled\.$")

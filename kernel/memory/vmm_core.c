@@ -10,6 +10,12 @@ void vmm_init(struct vmm *vm, const struct vmm_ops *ops, uint64_t root)
     vm->root = root;
     vm->mapped_pages = 0;
     vm->page_tables = 0;
+    vm->upper_frozen = false;
+}
+
+void vmm_freeze_upper(struct vmm *vm)
+{
+    vm->upper_frozen = true;
 }
 
 static enum vmm_result check_va(uint64_t va)
@@ -61,6 +67,8 @@ enum vmm_result vmm_ensure_table(struct vmm *vm, uint64_t va)
         return VMM_ERR_EXISTS;
     if (level == 1)
         return VMM_OK;
+    if (level == 4 && vm->upper_frozen && vm_index(va, 4) >= VM_ENTRIES / 2)
+        return VMM_ERR_FROZEN;              /* nothing taken, nothing changed */
 
     /* Levels level-1 .. 1 are missing: take every frame first. */
     uint64_t frames[3];
@@ -166,6 +174,7 @@ const char *vmm_result_str(enum vmm_result result)
     case VMM_ERR_RESERVED_VA:  return "reserved virtual address";
     case VMM_ERR_FLAGS:        return "unsupported mapping flags";
     case VMM_ERR_NONCANONICAL: return "non-canonical address";
+    case VMM_ERR_FROZEN:       return "new kernel-half PML4 entry after the freeze";
     }
     return "unknown vmm error";
 }

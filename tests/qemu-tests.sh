@@ -23,6 +23,16 @@ passes_09=0          # checks added in 0.9, tagged "[0.9]"
 passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"
 passes_092=0         # checks added in 0.9.2, tagged "[0.9.2]"; the rest are 0.3 regression
 
+# 0.10: the version is read once, from kernel/kernel.h, and every check that
+# contains the version builds its regex from VRE, so a new version changes no
+# check. A missing or malformed version stops the run (an empty VRE would
+# make those checks match any version).
+VERSION=$(sed -n 's/^#define MADIRE_OS_VERSION "\([0-9][0-9.]*\)"$/\1/p' "$(dirname "$0")/../kernel/kernel.h")
+case "$VERSION" in
+""|*[!0-9.]*|.*|*.|*..*) echo "FATAL: cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1 ;;
+esac
+VRE=$(printf '%s' "$VERSION" | sed 's/\./\\./g')    # 0.9.2 -> 0\.9\.2 (sed: same in every bash version)
+
 pass() {
     echo "PASS: $1"
     passes=$((passes + 1))
@@ -165,7 +175,7 @@ grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
 boot_keys "$KLOG" 15 "System ready." "x" 0.15 -cdrom "$KISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.9\.2"                   "version shown"
+expect "$LOG" "Madire OS v$VRE"                      "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -478,7 +488,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -517,12 +527,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.9\.2 (64-bit x86-64, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c "^Madire OS v$VRE (64-bit x86-64, Multiboot 1)\$" "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9\.2"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v$VRE"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -1337,7 +1347,7 @@ expect_lines "$LOG" "[0.9.1] reboot --help: help only, no restart question" \
     "^madire> reboot --help$" "^reboot: Restart the computer \(asks first\)$" "^Usage: reboot$" "^(console: |madire> )"
 expect_lines "$LOG" "[0.9.1] uname" "^madire> uname$" "^Madire OS$"
 expect_lines "$LOG" "[0.9.1] uname -a: name, host, version, architecture" \
-    "^madire> uname -a$" "^Madire OS madire 0\.9\.2 x86_64$"
+    "^madire> uname -a$" "^Madire OS madire $VRE x86_64$"
 expect_lines "$LOG" "[0.9.1] uname -x: usage" "^madire> uname -x$" "^Usage: uname \[-a\]$"
 expect_lines "$LOG" "[0.9.1] hostname: the fixed name" "^madire> hostname$" "^madire$"
 expect_lines "$LOG" "[0.9.1] date: YYYY-MM-DD HH:MM:SS from the RTC, no time zone" \
