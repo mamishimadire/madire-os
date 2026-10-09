@@ -81,6 +81,24 @@ uint64_t thread_preemptions(void);      /* switches made at the preemption point
 uint64_t thread_ticks_run(int32_t tid); /* timer ticks charged to the thread */
 bool thread_need_resched(void);         /* a switch is pending */
 
+/* 0.10: address spaces. The calling thread moves into the address space
+ * whose PML4 is `cr3` (0 = back to the kernel's); every later switch to
+ * this thread loads it again. A thread must be back in the kernel's
+ * address space before it exits (else panic). thread_cr3: the PML4 a
+ * thread runs on. thread_preempted: times a thread was switched out at the
+ * preemption point (not counting its own yields). */
+void thread_set_cr3(uint64_t cr3);
+uint64_t thread_cr3(int32_t tid);
+uint64_t thread_preempted(int32_t tid);
+
+/* 0.10: the longest turn of one thread (ticks it ran without a switch),
+ * since it was created; thread_turn_max() is the longest of all. */
+uint64_t thread_turn_longest(int32_t tid);
+
+/* 0.10: the top of a live thread's kernel stack (thread 0: the boot stack),
+ * the value the TSS's RSP0 holds while it runs; 0 for no such thread. */
+uint64_t thread_kstack_top(int32_t tid);
+
 /* The thread using stack slot `slot`, or -1 (double-fault diagnosis). */
 int32_t thread_slot_owner(int slot);
 

@@ -30,10 +30,15 @@ VirtualBox power-on
        2. check Multiboot magic    and info pointer (wrong → crash screen)
        3. boot screen header       logo (custom palette), title, version
        4. gdt_init                 64-bit GDT: code 0x08, data 0x10, TSS 0x18
-                                   (IST1 = double-fault stack); ltr; read back
+                                   (IST1 = double-fault stack, IST2 (0.10) =
+                                   NMI and machine-check stack), 0x28 an
+                                   all-zero placeholder, user data 0x30 and
+                                   user code 0x38 (0.10); ltr; read back
        5. idt_init                 256-entry IDT (16-byte gates), vector 8 on
-                                   IST1; read back; CPU mode logged (EFER,
-                                   CR0, CR4, CS L-bit, TR, 64-bit arithmetic)
+                                   IST1, vectors 2 and 18 on IST2 (0.10); read
+                                   back; CPU mode logged (EFER, CR0, CR4, CS
+                                   L-bit, TR, 64-bit arithmetic) and the user
+                                   segments (0.10)
        6. pic_init                 PIC moved to vectors 32-47, all IRQs masked
        7. sti + int3 self-test     exception path works and returns
                                    (sti is safe: every IRQ is still masked)
@@ -56,6 +61,12 @@ VirtualBox power-on
       10b'. thread_init (0.9)      kernel_main becomes thread 0 ("kernel");
                                    other threads can be created from now on
                                    (their stacks need paging)
+      10b''. user_mode_setup (0.10) SMEP and SMAP when the CPU has them,
+                                   CR0.EM (no x87/MMX/SSE); SYSCALL (EFER.SCE,
+                                   STAR, LSTAR, SFMASK, read back); then the
+                                   kernel half of the PML4 is frozen (a
+                                   failure is fatal; paging off → NOT
+                                   APPLICABLE)
       10c. check_boot_modules      a test module must be intact (serial log;
                                    since 0.8 also the screen's message line)
       11. start_devices:
@@ -72,6 +83,10 @@ VirtualBox power-on
                                    thread that never yields, sleep(10),
                                    everything returned (fails → crash screen;
                                    paging off → NOT APPLICABLE)
+      12a'. usertest_boot (0.10)   user-mode self-test, serial only: the
+                                   programs hello, exitcode and nullptr run as
+                                   processes 1-3; each result and the cleanup
+                                   are checked (fails → crash screen)
       12b. key logging (0.9.2)     "Key events: …" on serial: logged only with the
                                    boot option keylog or a keyboard diagnostic
       13. diagnostics if requested (test=… on the boot command line)
@@ -83,8 +98,13 @@ VirtualBox power-on
                                    detached threads, yield if another thread
                                    is ready, else hlt
   any CPU exception → isr.asm stub → interrupt_dispatch → panic → crash screen
+            (0.10: one raised in ring 3 by a process → process_fault: only
+            that process ends, the kernel continues)
   IRQ0/IRQ1 → isr.asm stub → interrupt_dispatch → irq_dispatch → driver handler → EOI
             → (0.9) thread_tick (IRQ0 only) → thread_preempt_point (may switch threads)
+            → (0.10) if it interrupted ring 3: process_return_to_user (a
+              pending kill ends the process here)
+  SYSCALL (0.10) → syscall_entry.asm → syscall_dispatch → IRETQ back to ring 3
 ```
 
 **Why memory comes after the CPU set-up (steps 4–7):** if reading bootloader data hits a bad address, the IDT turns the fault into the crash screen rather than a silent reset. Nothing allocates memory before step 8, so the bootloader's structures can't be overwritten before they're reserved.
@@ -95,11 +115,13 @@ VirtualBox power-on
 
 **How the kernel gets to the higher half (0.8):** everything except `.boot` (the Multiboot header and the 32-bit stub) is linked at `0xFFFFFFFF80000000` + physical, but loaded at 1 MiB. The stub uses physical addresses (`symbol - 0xFFFFFFFF80000000`) for everything it touches outside `.boot`. After the far jump into 64-bit mode it is still running at its load address; it then jumps (through a 64-bit absolute address) to `long_entry` in `.text`, at its high address, which loads the data segments and the stack, logs `boot64: running at the higher half, RIP=0xffffffff80…`, and calls `kernel_main`. From the first C instruction on, the kernel runs high.
 
+**Why the user-mode set-up comes here (step 10b'', 0.10):** after paging and `thread_init`, because the freeze needs the kernel half complete (the thread-stack area in slot 507 is made by `paging_init`, the heap's slot exists) and every process shares it from then on; before any device, self-test thread or process exists, so CR4 and the SYSCALL registers are set once, with nothing running that could notice the change. The user-mode self-test (step 12a') runs after the scheduler self-test, because each process is a thread.
+
 **Why devices come after memory (step 11):** memory set-up and its self-test behave exactly as in 0.3 (IRQs masked). Each IRQ line is unmasked only once its handler is registered and its device configured. The timer comes first, so the keyboard self-test can use it for bounded waits.
 
 | Stage | File | Responsibility |
 |---|---|---|
-| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer, keyboard and, since 0.9, thread tests) |
+| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer, keyboard, since 0.9 thread tests, and since 0.10 the user-mode tests and the SMEP/SMAP crash tests: 27 entries) |
 | Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags (page-aligned modules, memory map, a.out kludge), checksum, then the physical load addresses: `load_addr = __kernel_phys_start`, `load_end_addr = __data_end_phys`, `bss_end_addr = __kernel_end_phys`, `entry_addr = _start`; must be within the first 8 KiB of the file |
 | Entry point | `boot/boot.asm` (`_start`, `.boot32`) | 32-bit stub: CPU checks, temporary tables, switch to long mode, jump to the higher half; passes `eax` (magic) and `ebx` (info pointer) to C as the first two arguments |
 | Memory layout | `linker/linker.ld` | 64-bit ELF, loaded at 1 MiB; since 0.8 linked and run at `0xFFFFFFFF80000000` + physical (`.boot` alone is linked at its load address); `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; `.bss` ends with the boot tables and the stacks; exports `__kernel_start/end` and per-section start/end symbols (virtual), plus the `*_phys` symbols the loader and the stub need |
@@ -129,9 +151,14 @@ kernel/               architecture-independent kernel code
                       command history (0.9.1), scrollback (0.9.2)
   shell/              command parser, shell commands, CPUID decoding
   proc/               kernel threads: scheduler core, thread layer, context
-                      switch, preemption-disable count, self-test (0.9)
+                      switch, preemption-disable count, self-test (0.9);
+                      user processes: process table, ring-3 entry, system
+                      calls, fault containment, user-mode tests (0.10)
 drivers/              hardware drivers
   vga/  serial/  pit/  keyboard/
+user/                 (0.10) the built-in user programs: crt0, system-call
+                      stubs, a tiny library, prog/*.c (linked at fixed
+                      addresses, built into the kernel as raw images)
 ```
 
 `kernel/memory/` doesn't depend on the display or the logo. The boot screen only displays the `struct memory_stats` that `kernel.c` hands it.
@@ -153,17 +180,23 @@ The GDT is the table of memory segments. The stub's temporary GDT is replaced at
 | `0x00` | null | – |
 | `0x08` | kernel code | 64-bit (L = 1), ring 0 |
 | `0x10` | kernel data | ring 0, read/write |
-| `0x18` | TSS (16-byte descriptor) | IST1 = top of the double-fault stack |
+| `0x18` | TSS (16-byte descriptor, entries 3 and 4) | RSP0 = the running thread's kernel stack top (0.10, set on every switch); IST1 = top of the double-fault stack; IST2 = top of the NMI / machine-check stack (0.10) |
+| `0x28` | **all zero** (0.10) | a placeholder, never loaded: `SYSRET`'s selector arithmetic starts here (STAR[63:48]); a 32-bit `SYSRET` would load it, and Madire OS has no 32-bit user code. Loading it into a data segment register raises #GP(0x28), which the `gpf` diagnostic relies on |
+| `0x30` | user data (0.10) | ring 3, read/write; used as `0x33` (RPL 3) |
+| `0x38` | user code (0.10) | 64-bit (L = 1, D = 0), ring 3; used as `0x3B` (RPL 3) |
 
-In long mode segmentation does no translation; protection comes from paging. `gdt_flush` loads the table, reloads the data segment registers and reloads `CS` with a far return; `ltr` loads the TSS. `gdt_init` then reads back `sgdt`, `CS`, `DS`, `SS` and `TR` to confirm the CPU is using the new values. User-mode segments come with user mode.
+In long mode segmentation does no translation; protection comes from paging. `gdt_flush` loads the table, reloads the data segment registers and reloads `CS` with a far return; `ltr` loads the TSS. `gdt_init` then reads back `sgdt`, `CS`, `DS`, `SS` and `TR` to confirm the CPU is using the new values. The GDT has 8 entries (limit `0x3F`); `test=gpflimit` loads selector `0x40`, the first one past it, and gets #GP(0x40).
+
+**The STAR MSR (0.10)** is `(0x28 | 3) << 48 | 0x08 << 32`: `SYSCALL` loads CS = `0x08` and SS = `0x10`; a 64-bit `SYSRET` would load CS = `0x28 + 16` = `0x3B` and SS = `0x28 + 8` = `0x33`, the same selectors `IRETQ` uses for user mode. Madire OS returns with `IRETQ` only (see *User processes*), but the layout keeps `SYSRET` possible. The decoding is pure and unit-tested (`gdt_desc.h`, `test_gdt010`); the boot log reads the descriptors back and the QEMU tests check their bits, and that entry 5 (`0x28`) is zero.
 
 ### IDT and interrupts (`idt.c`, `isr.asm`, `interrupts.c`)
 
-- **IDT:** 256 16-byte gates. Vectors 0–31 (CPU exceptions) and 32–47 (hardware IRQs) point at stubs; 48–255 are marked not-present, and reaching one raises a #GP, which is reported. **Vector 8 (double fault) runs on IST1**, its own stack, so it works even when the kernel stack is unusable.
+- **IDT:** 256 16-byte gates. Vectors 0–31 (CPU exceptions) and 32–47 (hardware IRQs) point at stubs; 48–255 are marked not-present, and reaching one raises a #GP, which is reported. **Vector 8 (double fault) runs on IST1**, its own stack, so it works even when the kernel stack is unusable. **Since 0.10, vectors 2 (NMI) and 18 (machine check) run on IST2**, a second stack: they can arrive at any instruction, including the first instructions of the `SYSCALL` entry, where RSP is still the program's. Every gate is DPL 0, so `int n` from ring 3 raises #GP (the gate number in the error code); `SYSCALL` is the only way in from a program.
+- **Entry from ring 3 (0.10):** the CPU switches to the TSS's RSP0, the running thread's own kernel stack top. With SMAP on, `isr_common` executes `clac` first, so an AC flag a program set never lifts SMAP inside the kernel (without SMAP, `clac` would be #UD and is skipped); `test=clac` checks both cases.
 - **Entry path:** each stub pushes a dummy error code where the CPU doesn't push one, then its vector number, then jumps to `isr_common`. `isr_common` saves the 15 general registers, aligns RSP to 16 bytes and calls `interrupt_dispatch(struct interrupt_frame *)`. On return it restores everything and executes `iretq`. The CPU always saves SS:RSP in long mode, so the frame holds the interrupted stack pointer.
 - **Policy:**
   - Breakpoint (`int3`) is counted and execution resumes. The boot self-test relies on this.
-  - Any other exception (vectors 0–31) is fatal and goes to the crash screen. This behaviour is unchanged since 0.2.
+  - Any other exception (vectors 0–31) is fatal and goes to the crash screen. This behaviour is unchanged since 0.2, with one exception since 0.10: an exception raised by a process's code in ring 3 ends only that process (see *Fault containment*). NMI, double fault and machine check stay fatal wherever they come from.
   - Vectors 32–47 (hardware IRQs) go to `irq_dispatch` (below). Since 0.9, after `irq_dispatch` returns (the EOI is already sent), IRQ0 charges the tick to the scheduler, and every IRQ ends at the preemption point, which may switch to another thread (see *Kernel threads and scheduler*). Exceptions never switch threads.
 - All gates are interrupt gates, so interrupts are disabled while a handler runs.
 
@@ -204,7 +237,17 @@ The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptio
    Address: 0x000000000015b000
   ```
 
-  `Details:` appears only when the reserved-bit or instruction-fetch bits are set. Error-code bits: 0 not present / protection violation, 1 read / write, 2 kernel / user mode, 3 reserved bit set, 4 instruction fetch; a protection violation on an instruction fetch is an **NX violation**. The address is CR2. Every page fault is fatal: nothing is loaded on demand.
+  `Details:` appears only when the reserved-bit or instruction-fetch bits are set. Error-code bits: 0 not present / protection violation, 1 read / write, 2 kernel / user mode, 3 reserved bit set, 4 instruction fetch; a protection violation on an instruction fetch is an **NX violation**. The address is CR2. Every page fault in the kernel is fatal: nothing is loaded on demand.
+- **The `Cause:` line (0.10).** The error code alone can't name SMEP or SMAP: a kernel instruction fetch from a user page under SMEP reads exactly like an NX violation (present + fetch, `0x11`), and a kernel read of a user page under SMAP like any protection violation. `pf_smx_str()` (`pagefault.h`, pure, `test_pfcause010`) recognises them: a **kernel-mode protection violation at a lower-half address** (the kernel's own tables map nothing there, so a present lower-half page is a process's user page) is SMEP for a fetch when CR4.SMEP is set, and SMAP for a read or write when CR4.SMAP is set and RFLAGS.AC was clear. The crash screen then adds a line, and the fetch is no longer called an NX violation:
+
+  ```
+   Page fault: protection violation, read, kernel mode
+   Details: instruction fetch
+   Cause: SMEP violation (the kernel executed a user page)
+   Address: 0x0000000000400000
+  ```
+
+  (or `Cause: SMAP violation (the kernel read a user page, AC=0)` / `… wrote …`). Every other page fault is decoded exactly as before, so `pfnx` (a kernel-half page) still says `(NX violation)`.
 - For a double fault (exception 8) it says why, when it can tell: `Double fault: kernel stack overflow (RSP is in the stack guard page)` with the RSP and the guard page's range; or that the stack reached its guard page (CR2 in the guard); since 0.9, that a kernel thread's stack overflowed, naming the thread (`Double fault: kernel thread stack overflow (thread 1 'overflow')`, then the RSP or CR2 and that thread's guard range); or that the IST1 stack overflowed; otherwise that it was handled on its own stack and RSP is not in the guard page.
 - `panic(message)` and `panicf(format, ...)` show a text message instead, for fatal start-up errors and memory misuse (e.g. `Double free of physical page 0x0014c000`).
 - Both copy everything to serial, then halt with `cli; hlt`. Since 0.9 the crash screen first sets `panic_active`, which exempts it from the rule that only thread 0 writes to the screen: whichever thread crashed, the screen shows it.
@@ -215,7 +258,7 @@ The two 8259 PICs are moved from vectors 8–15 (which collide with CPU exceptio
 **Stack high-water mark (0.8, `kernel/stackpeak.c`):** the guard page catches an overflow, but not how close the stack comes to one. So the very first thing `kernel_main` does is paint the unused part of the kernel stack with `0xA5`: from the stack's bottom up to 256 bytes below the current RSP. Interrupts are still off at that point (the stub cleared RFLAGS), so no interrupt frame can land in the painted area, and the 256-byte margin keeps the paint clear of the live frames (`stack_paint` is a leaf call that touches only its return address). Later, `stack_peak` finds the lowest byte that no longer holds the pattern; everything above it counts as used.
 
 - The result goes to serial at "System ready." (`Kernel stack: 1496 bytes at peak, of 16384` in 0.9) and is the last row of `mem`. The paint itself is logged too (`painted 0x…-0x…, 256 bytes below RSP 0x…`).
-- The 0.8 baseline is **1480 of 16384 bytes** after booting, after the keyboard flood and after the console session, in QEMU and VirtualBox alike; in 0.9 it is **1496**.
+- The 0.8 baseline is **1480 of 16384 bytes** after booting, after the keyboard flood and after the console session, in QEMU and VirtualBox alike; in 0.9 it is **1496**, in 0.10 **1512** (the boot stack; each process's thread has its own stack, with a peak of 2376 bytes for the boot self-test's programs).
 - Since 0.9 every kernel thread's stack is painted the same way when the thread is created, and the thread's final peak is logged when it exits (see *Kernel threads and scheduler*).
 - It can read a few bytes too low (if the deepest byte ever written happened to equal `0xA5`), never too high. The top 736 bytes (the stub's frames plus the margin) are never painted and always count as used, so 736 is the smallest value it can report.
 - It covers the kernel stack only; the IST1 stack isn't painted.
@@ -377,7 +420,7 @@ The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and I
 
 | Virtual range | PML4 slot | Maps to | Access |
 |---|---|---|---|
-| `0x0000000000000000–0x00007FFFFFFFFFFF` (the whole lower half) | 0–255 | – | **unmapped** (0.8): PML4[0] is not present, so every address in 0–4 GiB faults: page 0 (NULL), the kernel's old address `0x100000`, VGA's physical address, free RAM |
+| `0x0000000000000000–0x00007FFFFFFFFFFF` (the whole lower half) | 0–255 | – | **unmapped in the kernel's tables** (0.8): PML4[0] is not present, so every address in 0–4 GiB faults: page 0 (NULL), the kernel's old address `0x100000`, VGA's physical address, free RAM. Since 0.10 each process has its own lower half (user pages only; see *User processes*) |
 | `0xFFFF800000001000–0xFFFF8000000FFFFF` | 256 | physical `0x1000–0xFFFFF` (pages 1–255) | physical view: read/write, no-execute (VGA text buffer at `0xFFFF8000000B8000`, EBDA, ROM, GRUB data) |
 | `0xFFFF800000000000` + each boot-data reservation | 256 | that reservation | physical view: read/write, no-execute (Multiboot info, memory map, command line, module table, modules, module names) |
 | rest of slot 256 | 256 | – | unmapped: page 0 (`0xFFFF800000000000`), **free RAM** and the **kernel image** are deliberately not in the view |
@@ -452,7 +495,7 @@ Any mismatch frees the frames and leaves the temporary tables in place (`Paging 
 
 **Under preemption (0.9):** `paging_map`, `paging_unmap`, `paging_translate`, `kmalloc`, `kcalloc`, `kfree` and `kheap_stats` each run with preemption off. The window is held with preemption off from `vmm_window_map` to `vmm_window_unmap`, so no other thread can map it in between, and yielding while holding it panics. The heap is still not interrupt-safe; the context rule above is unchanged.
 
-**Known limits:** no direct map (the physical view covers only the low 1 MiB and the boot data); 4 KiB pages only, also for the kernel image; one address space, kernel mode only; until `paging_init` loads the kernel's tables the boot tables still map 0–4 GiB at 0, and if the walk-check fails the kernel stays on them; the heap never shrinks and isn't interrupt-safe; `kfree` validates the whole heap, which costs O(number of blocks) per free.
+**Known limits:** no direct map (the physical view covers only the low 1 MiB and the boot data); 4 KiB pages only, also for the kernel image; one kernel half, shared and frozen at boot (0.10: no new kernel-half PML4 slot can ever be added); until `paging_init` loads the kernel's tables the boot tables still map 0–4 GiB at 0, and if the walk-check fails the kernel stays on them; the heap never shrinks and isn't interrupt-safe; `kfree` validates the whole heap, which costs O(number of blocks) per free.
 
 ## Boot modules [built: 0.3 reserved, 0.7 checked, 0.8 on screen]
 
@@ -572,7 +615,7 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 
 ## Kernel threads and scheduler [built: 0.9]
 
-0.9 is the kernel side of processes: several flows of control inside the kernel, each with its own stack, switched by a preemptive scheduler. User mode, per-process address spaces and system calls come in 0.10.
+0.9 is the kernel side of processes: several flows of control inside the kernel, each with its own stack, switched by a preemptive scheduler. User mode, per-process address spaces and system calls came in 0.10 (see *User processes*): each process is one of these threads.
 
 | Module | Pure? | Responsibility |
 |---|---|---|
@@ -636,7 +679,9 @@ Guarded: every heap operation (`kmalloc`, `kcalloc`, `kfree`, `kheap_stats`), th
 
 **Deferred switch, policy (a):** when a tick asks for a switch while the count is above zero, the request stays pending (`need_resched`) and `preempt_enable()` does **not** switch. The switch happens at the end of the first interrupt after the count is back at zero: at most one tick (10 ms) later, sooner if another interrupt comes first. There stays a single switch point (the end of an IRQ), and `preempt_enable()` is safe anywhere, even with interrupts off. `test=preemptoff` holds the count for 20 ticks and proves that no switch happens meanwhile and that the other thread runs within one tick of the release.
 
-**Known limitation:** a thread that spends almost all its time inside guarded sections gets turns longer than the slice (`framethreads` has measured up to 77 ticks). Correctness and progress are unaffected; every scheduler diagnostic logs its longest turn.
+**Known limitation:** a thread that spends almost all its time inside guarded sections gets turns longer than the slice (`framethreads` has measured up to 77 ticks). Correctness and progress are unaffected; every scheduler diagnostic logs its longest turn. **Measured again in 0.10** (the plan's rule: a user process's longest turn at most 6 ticks): user processes never exceeded 5 ticks in QEMU; kernel threads still do (in the final regression `framethreads` 44, `heapthreads` 11, `preemptoff` 21 by design, and the kernel frame thread in `test=userpreempt` 43; in VirtualBox that thread took 125 and 189). One VirtualBox `userkill` boot measured 10 ticks, a watch item (see [PROGRESS.md](PROGRESS.md)).
+
+**Every switch since 0.10** also sets the TSS's RSP0 to the next thread's kernel stack top (`test=rsp0` checks it after yields and preemptions), and loads the next thread's CR3 when it differs: a process's thread runs in its own address space, a kernel thread in the kernel's.
 
 ### Concurrency audit (summary)
 
@@ -695,6 +740,124 @@ Each logs its details on serial and its result on the boot screen's message line
 
 **Known limits (0.9):** one CPU; no priorities; a fixed 50 ms slice; at most 64 threads with 16 KiB stacks; kernel threads only; thread 0 never blocks; longer turns inside guarded sections (policy (a)).
 
+## User processes [built: 0.10]
+
+0.10 runs programs in **ring 3** (user mode), each in **its own address space**, talking to the kernel only through **system calls**, and a program's mistakes end that program, never the kernel. The programs are still **built in**: small test programs compiled with the kernel. Loading ELF programs from boot modules, and the `run`, `kill` and `ps` commands, come in 0.11.
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/arch/x86/gdt_desc.h` | yes | The GDT layout, descriptor values and decoding, the STAR value (`test_gdt010`) |
+| `kernel/arch/x86/cpuprot.c/.h` | no (decision in `cpuid.h` is pure) | SMEP, SMAP and CR0.EM at boot; the `clac` flag and counter (`test_cpuprot010`) |
+| `kernel/memory/uvm_core.c/.h` | yes | A process's lower half: map, unmap, translate, tear down user pages through `vmm_ops` callbacks (`test_uvm`) |
+| `kernel/memory/vmm_core.c` | yes | 0.10: the **freeze** (no new kernel-half PML4 entry after boot: `VMM_ERR_FROZEN`; `test_vmm010`) |
+| `kernel/memory/uspace.c/.h` | no | Address spaces: create, enter/leave, map a filled page, destroy |
+| `kernel/memory/usercopy_core.c`, `usercopy.c/.h` | core pure | `copy_from_user`, `user_readable`: every page present + user, AC set only around the copy (`test_usercopy`) |
+| `kernel/proc/proc_core.c/.h` | yes | The process table: 63 slots, PIDs from 1, never reused within a boot; alive, zombie, reaped; kill requests (`test_proc`) |
+| `kernel/proc/userimg.c/.h` | yes | The built-in image table and its checks (`test_userimg`) |
+| `kernel/proc/userentry.h` | yes | The IRETQ frame for entering ring 3, built and checked (`test_userentry`) |
+| `kernel/proc/faultop.h` | yes | The instruction bytes at a fault's RIP, compared with the expected opcode (`test_faultop`) |
+| `kernel/proc/syscall_core.c/.h` | yes | System-call numbers, dispatch decision, argument rules, `write`'s line formatting, RFLAGS cleaning (`test_syscall`) |
+| `kernel/proc/process.c/.h` | no | Load, start, kill, wait, return-to-user hook, fault containment |
+| `kernel/proc/userenter.asm` | no | `enter_user`: the first `IRETQ` into ring 3 |
+| `kernel/proc/syscall_entry.asm`, `syscall.c/.h` | no | The `SYSCALL` entry, the dispatcher and the calls |
+| `kernel/proc/usertest.c/.h` | no | The user-mode boot self-test and diagnostics |
+| `user/` | – | The built-in programs (see [development.md](development.md)) |
+
+### CPU set-up for user mode
+
+- **Segments:** user data `0x33` and user code `0x3B` (GDT entries 6 and 7, RPL 3); see *GDT and TSS*.
+- **RSP0:** the TSS's RSP0 always holds the running thread's kernel stack top (set on every switch), so an interrupt, exception or system call from ring 3 lands on that thread's own stack.
+- **IST2:** NMI and machine check get their own stack (a fault on the `SYSCALL` path, before the kernel stack is loaded, must not run on the program's stack).
+- **SMEP and SMAP** (CR4 bits 20 and 21), when CPUID leaf 7 reports them: with SMEP the kernel can't execute a user page, with SMAP it can't read or write one unless RFLAGS.AC is set, which only `copy_from_user` does, around the copy itself. Every kernel entry (`isr_common`, `syscall_entry`) runs `clac` first when SMAP is on. Without them (QEMU's default CPU, and the VirtualBox VM) the log says `NOT APPLICABLE (not supported by this CPU)`. `test=smep` and `test=smap` prove that the CPU enforces them (see *Diagnostics* below).
+- **CR0.EM = 1:** x87, MMX and SSE instructions raise #NM or #UD. The kernel uses none (`-mgeneral-regs-only`), and no FPU state is saved between threads yet, so a program may not use them either: a program that tries is ended.
+- **The freeze:** once the kernel half is complete, `paging_freeze_kernel_half()` records the PML4 slots in use (256, 507, 508, 509, 510, 511) and from then on `vmm_core` refuses to create a new kernel-half PML4 entry; `paging_map` panics if asked to. Every process's PML4 holds a **copy** of entries 256–511, so a slot added later would be missing from the processes that already exist; the freeze makes that impossible instead of merely unlikely (`test=freezeviolation` proves the panic). New mappings inside the existing slots (heap growth, thread stacks) are fine: the tables below the PML4 are shared.
+
+### Address spaces
+
+- **One PML4 per process.** `uspace_create` takes a frame, copies entries 256–511 from the kernel's PML4 (every kernel mapping is shared) and points entry 510, the recursive slot, at the new PML4 itself, so the recursive mapping shows the process's own tables.
+- **Built and torn down by the process's own thread, on its own CR3.** The lower half is edited only through the recursive mapping, while the address space is loaded: a switch away and back reloads it, so building needs no preemption guard. `uspace_destroy` gives back every user frame and lower-half table bottom-up, returns the thread to the kernel's PML4, then frees the PML4 frame. A process's address space is never edited by another thread.
+- **Every frame is filled before it is mapped**, through the physical-access window (copied from the image, or zeroed): a frame never shows a previous owner's data.
+- **Rules for the lower half (`uvm_core`):** user pages only in `[0x400000, 0x7FFFFFFFF000)`; 4 KiB pages; every lower-half entry, at every level, has PTE_USER (and nothing in the upper half does: the kernel's `vmm_core` refuses user pages); only PTE_WRITE and PTE_NX may be requested; with NX in use **a page is never both writable and executable** (W^X). Without NX every user page is executable (a documented limitation); code pages are still never writable.
+
+**User layout** (`vm_layout.h`):
+
+| Range | Contents | Access |
+|---|---|---|
+| `0x0`–`0x3FFFFF` | nothing (NULL and small offsets from it always fault) | – |
+| `0x400000` (`VM_USER_TEXT`) | the program's code and read-only data | read + execute |
+| `0x500000` (`VM_USER_DATA`) | its data, then zeroed bss | read + write, no-execute |
+| `0x7FFFFFFF7000`–`0x7FFFFFFFEFFF` | the 32 KiB stack, ending at `VM_USER_TOP` = `0x7FFFFFFFF000`; nothing mapped below it | read + write, no-execute |
+| `0x7FFFFFFFF000` | the last canonical page below the hole: never mapped | – |
+
+### Entering ring 3
+
+`process_start(name, arg)` takes a process-table slot and creates the process's thread. That thread creates the address space, enters it, loads the image (`process_load`: code, data + bss, stack) and calls `enter_user`, which builds an `IRETQ` frame (SS `0x33`, RSP = the stack top, RFLAGS with IF set and IOPL 0, CS `0x3B`, RIP = the image's entry point; checked by `userentry.h`) and executes `IRETQ` with RDI = `arg`. The program's `crt0` calls `main(arg)` and passes its return value to `exit`.
+
+### System calls
+
+**Entry:** `SYSCALL` (enabled by EFER.SCE; LSTAR = `syscall_entry`; SFMASK clears TF, DF, IF, IOPL, NT and AC) arrives in ring 0 with RSP still the program's. `syscall_entry` saves it in one word (one CPU, interrupts off), loads the thread's kernel stack top from the TSS, and builds **the same frame as an interrupt from ring 3** (SS `0x33`, the user RSP, RFLAGS from R11, CS `0x3B`, RIP from RCX, error code 0, "vector" 256, then the general registers). `syscall_dispatch` enables interrupts, runs the call, sets RAX, cleans RFLAGS (the arithmetic flags, TF, DF, AC and ID kept; IOPL, NT, RF, VM, VIF and VIP cleared; IF set), sets RCX and R11 as `SYSRET` would leave them, and runs the same return-to-user hook as an interrupt. **The return is `IRETQ`, never `SYSRET`**: one return path for every kernel exit to ring 3, and none of `SYSRET`'s non-canonical-RIP pitfalls.
+
+**ABI:** the Linux x86-64 conventions, for the subset below, so that Linux programs can be ported later. Number in RAX, arguments in RDI, RSI, RDX, R10, R8, R9, result in RAX, errors as `-errno`; RCX and R11 are not preserved, every other register is (`sysregs` checks it). Madire's own table: the numbers and meanings come from the documented Linux interface; no Linux header is used.
+
+| Number | Call | Behaviour |
+|---|---|---|
+| 1 | `write(fd, buf, count)` | fd 1 or 2 (else `-EBADF`); at most 4096 bytes per call (a short count beyond); the whole buffer is checked before any of it is used (`-EFAULT`, nothing written); the text goes to the **serial log and `dmesg` only** (the screen comes with `run` in 0.11), as lines `[pid N] …`, split at each `\n` and after 100 characters, with every byte outside `0x20`–`0x7E` shown as `?` (a program can't send control sequences or forge a kernel log line) |
+| 24 | `sched_yield()` | gives up the CPU; 0 |
+| 35 | `nanosleep(req, rem)` | rounded up to whole timer ticks (0 → a yield); `-EINVAL` for `tv_sec < 0` or `tv_nsec` > 999999999, `-EFAULT` for a bad `req`; `rem` is never written (nothing interrupts a sleep: there are no signals) |
+| 39 | `getpid()` | the process ID |
+| 60 | `exit(status)` | ends the process; its status is `status & 0xFF` |
+| 231 | `exit_group(status)` | the same (one thread per process) |
+| anything else | – | `-ENOSYS` (38). The number is compared as the full 64-bit RAX: the x32 bit `0x40000000`, values of 2^32 and above, and −1 are all unknown. `0x10000000`–`0x1000FFFF` is reserved for Madire's own calls; none exists yet |
+
+errno values: `EBADF` 9, `EFAULT` 14, `EINVAL` 22, `ENOSYS` 38.
+
+### User memory (`copy_from_user`)
+
+A pointer from a program is never dereferenced directly. `copy_from_user(dst, src, len)` first checks the whole range against the address space loaded in CR3 (every page present and user, inside the user range, no overflow) and copies only if it passes, with RFLAGS.AC set just around the copy when SMAP is on; `user_readable` does the check alone, so `write` can refuse a bad buffer before using any part of it. A range that fails is never touched, so the copy can't fault in the kernel. **Check, then copy:** this is safe in 0.10 because nothing can change a process's mapping between the two steps (one CPU, one thread per process, no system call that unmaps memory). A binding rule (in [AGENTS.md](../AGENTS.md)) requires that the first milestone adding memory-unmapping system calls or threads inside a process makes the check and the copy atomic, or copies through the physical-access window, with a test that changes the mapping between check and copy.
+
+### Processes
+
+- **A process is one thread** running one image in ring 3, in its own address space. The process table (`proc_core`) is static: 63 slots (thread slots 1–63; thread 0 is the kernel), PIDs counting up from 1, never reused within a boot. A slot is `ALIVE`, then `ZOMBIE` (only the result is kept), then reaped by `process_wait`, which joins the thread and returns the result: exited (code = status & 0xFF), killed (code 0), or ended by a fault (code = the vector).
+- **A kill is only requested** (`process_kill`). The process ends itself at its next return to ring 3 (`process_return_to_user`, at the end of every interrupt or system call that came from ring 3), or before it first enters ring 3. So its address space is always torn down by its own thread, never while another thread might be using it. A program that never makes a system call is still killed within one timer tick of being scheduled.
+- **Teardown** is exact: every user frame, lower-half table, the PML4, the thread's stack slot and the table slot come back; the diagnostics check free pages, page tables, stack slots, threads and table slots against their values before.
+
+### Fault containment
+
+An exception raised by a process's code in ring 3 ends **that process only** (`process_fault`): its result is "fault" with the vector as code, one line goes to the serial log and `dmesg` (`Process N 'name' ended by CPU exception 14 (#PF Page Fault) at RIP 0x…: address 0x…, not present, read, user mode; the kernel continues`), and its thread tears down its address space and exits as for a kill. The instruction bytes at RIP are read through `copy_from_user` and kept with the fault, so the tests can prove **which instruction** faulted (opcode evidence, see [testing.md](testing.md)). Not contained: NMI, double fault and machine check (not the program's doing), and every exception in ring 0, which still ends on the crash screen, also when it happens while a process's thread runs kernel code. Contained, among others: page faults (NULL, kernel addresses, writing code, executing data, running off the stack), #UD, #GP (privileged instructions, `int n` to any gate, `sti`, `cli`), #NM and #UD for x87, MMX and SSE.
+
+### Built-in programs
+
+The programs in `user/prog/` are linked with `user/crt0.asm` at fixed addresses (`user/link.ld`: `.text` at `0x400000`, `.data`/`.bss` at `0x500000`), turned into raw blobs and a table of images (`scripts/user-images.sh`, which also refuses any other loaded section, a wrong address, an entry point outside the code, or x87/MMX/SSE registers in any program but `fpu`) and linked into the kernel's read-only data. The kernel still checks every table entry (`userimg_check`) before using it, as it will check ELF files in 0.11. 19 programs: `badptr`, `enosys`, `exitcode`, `fpu`, `getpid`, `hello`, `int80`, `isolate`, `kread`, `kwrite`, `nullptr`, `privileged`, `sleep`, `spin`, `stackover`, `sysregs`, `ud2`, `wx`, `yield`.
+
+### User-mode self-test (every boot)
+
+After the scheduler self-test, with paging on: `hello` (one line through `write`, status 0), `exitcode` (`exit(42)`) and `nullptr` (reads address 0) run as processes 1–3, one after another. Each result must be exact (status 0, status 42, ended by #PF at address 0 with the instruction `48 8b 04 25`), and the three address spaces must be torn down with free pages, tables, stack slots, threads and table slots exactly restored. A failure is fatal (`User-mode self-test failed (details on the serial log).`). It is **deterministic**: it checks only results, never timing (no tick counts, no assumptions about preemption), so tick bursts in VirtualBox can't make it fail on a correct kernel.
+
+### Diagnostics (`test=…`)
+
+| `test=` | GRUB position | Proves |
+|---|---|---|
+| `rsp0` | – | after every yield and preemption, RSP0 is the running thread's own stack top (4 threads, 4 distinct values, 0 mismatches) |
+| `clac` | – | with RFLAGS.AC set, interrupts are taken: with SMAP on every handler sees AC=0 and `clac` runs; without SMAP `clac` never runs (no #UD) |
+| `gpflimit` | – | crash test: selector `0x40`, past the 8-entry GDT: #GP(0x40) |
+| `freezeviolation` | – | crash test: a new kernel-half PML4 entry after the freeze panics, naming the address and slot |
+| `uaspace` | – | heap growth under a process CR3 seen under the kernel's; 500 address spaces built, entered, checked through the recursive mapping and torn down by two threads switched in the middle of builds and teardowns; free pages exactly restored |
+| `userspin` | 16 | the first program in ring 3: every timer interrupt taken there is checked (CS `0x3B`, SS `0x33`, RIP in the program, frame on RSP0); preempted from ring 3 and resumed there |
+| `userkill` | 17 | 60 processes started and killed (40 after reaching ring 3, 20 before), another process running meanwhile; everything restored; longest turn at most 6 ticks |
+| `userfault` | 18 | a read of address 0, `ud2`, running past the stack, writing its own code, executing its own data: each ends alone with its exception and the expected instruction bytes, while a spin process keeps running |
+| `userpriv` | 19 | 9 privileged instructions (`cli`, `hlt`, `out`, `in`, `mov` from CR3, `lgdt`, `wrmsr`, `rdmsr`, `invlpg`: #GP), `int3`, `int 0x80` and `int 0x20` (#GP with the gate in the error code), x87 `fld1` (#NM), MMX `pxor` and SSE `xorps` (#UD) |
+| `userkmem` | 20 | `sti`, `int 0x0e`, then reads and writes of kernel text, the heap and the PML4 (through the recursive slot): each a user-mode page fault at that address; a checksum of kernel text, read-only data, the kernel PML4 and the heap's first header unchanged |
+| `usersys` | 21 | exit statuses (42, 43, 263 & 0xFF = 7, 44 from `main`), `getpid`, 100 yields, 1028 unknown numbers → `-ENOSYS`, registers and RFLAGS across a call; exact call counts |
+| `userio` | 22 | `write` (a line; control characters and a fake kernel line shown as `?`; 5000 bytes, 4096 taken), `nanosleep` (100 ms = 10 ticks; argument errors), every bad pointer and descriptor refused with nothing written, two processes at the same virtual addresses isolated |
+| `userpreempt` | 23 | five spin processes (pure loops, `getpid`, `sched_yield`, `nanosleep`) and a kernel thread allocating frames: each user process's longest turn at most 6 ticks |
+| `userchurn` | 24 | 500 `hello` and 200 `nullptr` processes one after another, then 10 batches of 30 at once: 1000 address spaces, everything exactly restored |
+| `smep` | 25 | crash test: the kernel calls a present, executable user page holding `ret`: with SMEP, #PF `0x11` at `0x400000` and `Cause: SMEP violation …`; without SMEP `NOT APPLICABLE (not supported by this CPU)` and a normal boot |
+| `smap` | 26 | crash test: with AC clear the kernel reads a present user page: with SMAP, #PF `0x01` at `0x500000` and `Cause: SMAP violation …`; without SMAP `NOT APPLICABLE` and a normal boot |
+
+`smep` and `smap` panic if the CPU ever allowed the access, so they can't pass by accident.
+
+**Known limits (0.10):** built-in programs only (ELF programs, `run`, `kill` and `ps` with PIDs in 0.11); one thread per process; no signals, `fork` or `exec`; at most 63 processes; a fixed 32 KiB user stack and at most 64 KiB of code and 64 KiB of data per program; no x87/MMX/SSE in programs (no FPU state is saved); `write` reaches the serial log and `dmesg` only; without NX, user data is executable; check-then-copy is safe only while nothing can unmap user memory (binding rule above); the `SMEP`/`SMAP` crash path is proven in QEMU only, because the VirtualBox VM doesn't offer them.
+
 ## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
 
 | `test=` | GRUB entry | Proves | Result |
@@ -725,7 +888,7 @@ Each logs its details on serial and its result on the boot screen's message line
 
 All of them share one formatter. `panicf` builds on it. Since 0.9 each `kputc`, `kputs`, `kprintf` and `klogf` call runs with preemption off, so lines from different threads never interleave (`ksnprintf` writes only to the caller's buffer and needs no guard). `kputc` also enforces the screen rule: if a thread other than 0 writes to the screen, it panics, naming the thread (the crash screen is exempt). Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
 
-## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6; unchanged in 0.7, 0.8 and 0.9]
+## Display and branding [built: 0.2, layout updated 0.3, 0.4, 0.5 and 0.6; unchanged in 0.7, 0.8, 0.9 and 0.10]
 
 The boot screen (`kernel/bootscreen.c`) is laid out in rows:
 
@@ -762,7 +925,7 @@ This will be the only layer that touches port I/O, MMIO and CPU-specific instruc
 
 ## Security [planned]
 
-Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). Designing these needs process isolation (user mode, planned for 0.10) first. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7), an empty lower half and no writable alias of kernel code in the physical view (0.8), and an unmapped 16 KiB guard below every kernel thread's stack (0.9).
+Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). These build on process isolation, which exists since 0.10. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7), an empty lower half and no writable alias of kernel code in the physical view (0.8), and an unmapped 16 KiB guard below every kernel thread's stack (0.9). Since 0.10: programs run in ring 3 in separate address spaces, never see a kernel page (no user bit in the upper half), can't run privileged instructions or call interrupt gates, get W^X user pages (with NX), reach the kernel only through six checked system calls, and end alone when they fault; the kernel can't execute user pages (SMEP) or touch them outside `copy_from_user` (SMAP) when the CPU supports it, and the kernel half of every address space is frozen at boot.
 
 ## Filesystem [planned]
 
@@ -770,8 +933,8 @@ A virtual filesystem (VFS) layer first, then an initial RAM disk loaded by GRUB 
 
 ## System services [planned]
 
-User-mode services (init, logging, device manager) once user mode and system calls exist (user processes are planned for 0.10, on top of the 0.9 threads and scheduler).
+User-mode services (init, logging, device manager). User mode and system calls exist since 0.10; loading programs that aren't built in (ELF from boot modules) comes in 0.11, and a filesystem in 1.0.
 
 ## User interface [planned]
 
-A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history, more commands and running programs (0.10) come with later milestones. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.
+A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history (0.9.1) and scrollback (0.9.2) exist; running programs from the console (`run`, `kill`, `ps` with process numbers) comes in 0.11, on top of the 0.10 user processes. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.

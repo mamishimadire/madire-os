@@ -22,6 +22,17 @@ passes_08=0          # checks added in 0.8, tagged "[0.8]"
 passes_09=0          # checks added in 0.9, tagged "[0.9]"
 passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"
 passes_092=0         # checks added in 0.9.2, tagged "[0.9.2]"; the rest are 0.3 regression
+passes_010=0         # checks added in 0.10, tagged "[0.10]"
+
+# 0.10: the version is read once, from kernel/kernel.h, and every check that
+# contains the version builds its regex from VRE, so a new version changes no
+# check. A missing or malformed version stops the run (an empty VRE would
+# make those checks match any version).
+VERSION=$(sed -n 's/^#define MADIRE_OS_VERSION "\([0-9][0-9.]*\)"$/\1/p' "$(dirname "$0")/../kernel/kernel.h")
+case "$VERSION" in
+""|*[!0-9.]*|.*|*.|*..*) echo "FATAL: cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1 ;;
+esac
+VRE=$(printf '%s' "$VERSION" | sed 's/\./\\./g')    # 0.9.2 -> 0\.9\.2 (sed: same in every bash version)
 
 pass() {
     echo "PASS: $1"
@@ -35,6 +46,7 @@ pass() {
     "[0.9]"*) passes_09=$((passes_09 + 1)) ;;
     "[0.9.1]"*) passes_091=$((passes_091 + 1)) ;;
     "[0.9.2]"*) passes_092=$((passes_092 + 1)) ;;
+    "[0.10]"*) passes_010=$((passes_010 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -165,7 +177,7 @@ grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
 boot_keys "$KLOG" 15 "System ready." "x" 0.15 -cdrom "$KISO"
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
-expect "$LOG" "Madire OS v0\.9\.2"                   "version shown"
+expect "$LOG" "Madire OS v$VRE"                      "version shown"
 expect "$LOG" "GDT loaded: +OK"                       "GDT loaded"
 expect "$LOG" "IDT loaded \(256 entries\): +OK"       "IDT loaded"
 expect "$LOG" "Interrupt controller: +OK"             "PIC remapped and masked"
@@ -478,7 +490,7 @@ expect_in_order "$LOG" "[0.5] help lists all seven commands" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
     "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
-expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$"
+expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
 U1=$(sed -n 1p <<< "$UP" | hms_to_s)
@@ -517,12 +529,12 @@ expect_next "$LOG" "[0.5] more than 8 words refused"   "^madire> echo 1 2 3 4 5 
 expect_next "$LOG" "[0.5] exactly 8 words accepted"    "^madire> echo 1 2 3 4 5 6 7$" "^1 2 3 4 5 6 7$"
 expect "$LOG" "^console: input line full \(71 characters\)$" "[0.5] long input: refusal logged"
 expect_next "$LOG" "[0.5] long input: exactly 71 characters kept" "^madire> echo ${A66}$" "^${A66}$"
-VERSIONS=$(grep -c '^Madire OS v0\.9\.2 (64-bit x86-64, Multiboot 1)$' "$LOG")
+VERSIONS=$(grep -c "^Madire OS v$VRE (64-bit x86-64, Multiboot 1)\$" "$LOG")
 if [ "$VERSIONS" -eq 7 ]; then pass "[0.5] repeated commands: 7 identical version outputs"
 else fail "[0.5] repeated commands: expected 7 version outputs, got $VERSIONS"; fi
 expect "$LOG" "^console: scrolled [0-9]+ lines$"      "[0.5] output scrolls"
 expect_in_order "$LOG" "[0.5] clear, then the console keeps working" \
-    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v0\.9\.2"
+    "^madire> clear$" "^console: cleared$" "^madire> version$" "^Madire OS v$VRE"
 reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no panic, no unexpected IRQs"
 
 # ---- 0.6: paging and kernel heap ----
@@ -786,8 +798,11 @@ echo "      kernel stack ${KSTACK:-?} (guard ${KGUARD:-?}), IST1 stack ${ISTACK:
 
 # Deep normal use: touching a guard page is a #PF on a present stack
 # (or a #DF when the stack is the guard), so none of these may show one.
+# 0.10: "CPU exception N:" is the kernel's crash line (panic.c); a fault in
+# a program, contained by the kernel, is logged as "ended by CPU exception
+# N (...)" or "killed by a CPU exception: ..." and is not a kernel fault.
 for l in boot kbdflood console heapexhaust exhaust-16M exhaust-128M; do
-    reject "$OUT/serial-$l.log" "CPU exception|Double fault|PANIC" \
+    reject "$OUT/serial-$l.log" "CPU exception [0-9]+:|Double fault|PANIC" \
                                                       "[0.7] $l: never touched a stack guard page"
 done
 
@@ -1337,7 +1352,7 @@ expect_lines "$LOG" "[0.9.1] reboot --help: help only, no restart question" \
     "^madire> reboot --help$" "^reboot: Restart the computer \(asks first\)$" "^Usage: reboot$" "^(console: |madire> )"
 expect_lines "$LOG" "[0.9.1] uname" "^madire> uname$" "^Madire OS$"
 expect_lines "$LOG" "[0.9.1] uname -a: name, host, version, architecture" \
-    "^madire> uname -a$" "^Madire OS madire 0\.9\.2 x86_64$"
+    "^madire> uname -a$" "^Madire OS madire $VRE x86_64$"
 expect_lines "$LOG" "[0.9.1] uname -x: usage" "^madire> uname -x$" "^Usage: uname \[-a\]$"
 expect_lines "$LOG" "[0.9.1] hostname: the fixed name" "^madire> hostname$" "^madire$"
 expect_lines "$LOG" "[0.9.1] date: YYYY-MM-DD HH:MM:SS from the RTC, no time zone" \
@@ -1558,9 +1573,735 @@ fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|^key: " \
                                                       "[0.9.2] scrollback: no panic, dropped key, screen-rule violation or key event"
 
+# ---- 0.10: user mode, part 1 (CPU set-up; no program runs yet) ----
+
+echo "== [0.10] Version read once by the test harness"
+if [ -n "$VERSION" ]; then pass "[0.10] version read from kernel/kernel.h: $VERSION (every version check uses it)"
+else fail "[0.10] no version read from kernel/kernel.h"; fi
+TITLE=$(grep -m1 -E '^menuentry "' "$(dirname "$0")/../iso/boot/grub/grub.cfg")
+if [ "$TITLE" = "menuentry \"Madire OS v$VERSION\" {" ]; then
+    pass "[0.10] GRUB default entry is titled 'Madire OS v$VERSION'"
+else
+    fail "[0.10] GRUB default entry: '$TITLE', expected 'Madire OS v$VERSION'"
+fi
+
+# The descriptor checks decode the logged values here, independently of the
+# kernel's own decoding (bit 47 present, 45-46 DPL, 44 S, 43 code, 41 R/W,
+# 53 L, 54 D).
+echo "== [0.10] GDT, IDT and TSS for user mode (normal boot)"
+LOG=$OUT/serial-boot.log
+GDTL=$(grep -m1 -E '^GDT: [0-9]+ entries' "$LOG")
+echo "      ${GDTL:-no GDT line}"
+read -r GP GD GC <<< "$(grep -oE '=0x[0-9a-f]{16}' <<< "$GDTL" | cut -c2- | tr '\n' ' ')"
+if grep -qE '^GDT: 8 entries \(limit 0x003f\);' <<< "$GDTL"; then
+    pass "[0.10] GDT: 8 entries, limit 0x3F (read back with sgdt)"
+else
+    fail "[0.10] GDT size: ${GDTL:-missing}"
+fi
+if [ -n "${GP:-}" ] && [ $(( GP )) -eq 0 ]; then pass "[0.10] GDT entry 5 (0x28) is all zero"
+else fail "[0.10] GDT entry 5 (0x28): ${GP:-missing}"; fi
+if [ -n "${GD:-}" ] && [ $(( (GD >> 47) & 1 )) -eq 1 ] && [ $(( (GD >> 45) & 3 )) -eq 3 ] &&
+   [ $(( (GD >> 44) & 1 )) -eq 1 ] && [ $(( (GD >> 43) & 1 )) -eq 0 ] && [ $(( (GD >> 41) & 1 )) -eq 1 ]; then
+    pass "[0.10] GDT 0x30: user data segment (present, DPL 3, writable data) $GD"
+else
+    fail "[0.10] GDT 0x30 not a ring-3 data segment (${GD:-missing})"
+fi
+if [ -n "${GC:-}" ] && [ $(( (GC >> 47) & 1 )) -eq 1 ] && [ $(( (GC >> 45) & 3 )) -eq 3 ] &&
+   [ $(( (GC >> 43) & 1 )) -eq 1 ] && [ $(( (GC >> 53) & 1 )) -eq 1 ] && [ $(( (GC >> 54) & 1 )) -eq 0 ]; then
+    pass "[0.10] GDT 0x38: user code segment (present, DPL 3, code, L=1 D=0) $GC"
+else
+    fail "[0.10] GDT 0x38 not a ring-3 64-bit code segment (${GC:-missing})"
+fi
+expect "$LOG" "^IDT: IST1 on vector 8; IST2 on vectors 2, 18; 0 other vectors on an IST; the rest on the current stack$" \
+                                                      "[0.10] IDT: double fault on IST1, NMI and machine check on IST2, nothing else (read back with sidt)"
+TSSL=$(grep -m1 -E '^TSS: RSP0=' "$LOG")
+read -r R0 I1 I2 <<< "$(grep -oE '=0x[0-9a-f]{16}' <<< "$TSSL" | cut -c2- | tr '\n' ' ')"
+STOP=$(grep -m1 -oE '^Kernel stack: 0x[0-9a-f]{16}-0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}$')
+if [ -n "${I2:-}" ] && [ $(( I1 )) -ne 0 ] && [ $(( I2 )) -ne 0 ] && [ "$I1" != "$I2" ] &&
+   [ $(( I1 & 15 )) -eq 0 ] && [ $(( I2 & 15 )) -eq 0 ]; then
+    pass "[0.10] TSS: IST1 and IST2 are two different 16-byte-aligned stacks ($I1, $I2)"
+else
+    fail "[0.10] TSS IST stacks: ${TSSL:-missing}"
+fi
+if [ -n "${R0:-}" ] && [ -n "$STOP" ] && [ $(( R0 )) -eq $(( STOP )) ]; then
+    pass "[0.10] TSS: RSP0 at boot is thread 0's stack top ($R0, as the stack line reports)"
+else
+    fail "[0.10] TSS RSP0 ${R0:-missing}, boot stack top ${STOP:-missing}"
+fi
+
+echo "== [0.10] SMEP, SMAP, CR0.EM and the freeze (default QEMU CPU: no SMEP/SMAP)"
+expect "$LOG" "^SMEP: NOT APPLICABLE \(not supported by this CPU\)$" "[0.10] default CPU: SMEP not applicable"
+expect "$LOG" "^SMAP: NOT APPLICABLE \(not supported by this CPU\)$" "[0.10] default CPU: SMAP not applicable"
+expect "$LOG" "^CR0.EM: set: x87, MMX and SSE instructions fault \(the kernel uses none\)$" "[0.10] CR0.EM reported set"
+UCPU=$(grep -m1 -E '^User-mode CPU set-up: CR0=0x[0-9a-f]{8} CR4=0x[0-9a-f]{16}$' "$LOG")
+read -r UC0 UC4 <<< "$(grep -oE '=0x[0-9a-f]+' <<< "$UCPU" | cut -c2- | tr '\n' ' ')"
+if [ -n "${UC4:-}" ] && [ $(( UC0 & 0x4 )) -ne 0 ] && [ $(( UC4 & (3 << 20) )) -eq 0 ]; then
+    pass "[0.10] default CPU: CR0.EM set, CR4.SMEP and CR4.SMAP clear (bits checked by the script)"
+else
+    fail "[0.10] default CPU control registers: ${UCPU:-missing}"
+fi
+expect "$LOG" "^Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 \(6 entries\); every process shares them, a new one now panics$" \
+                                                      "[0.10] kernel half frozen at boot: slots 256, 507-511"
+
+LOG=$OUT/serial-clac.log
+boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=clac"
+expect "$LOG" "^clac test: SMAP off; [0-9]+ interrupts taken with AC=1 in the interrupted code; AC=1 seen by the handler [0-9]+ times; clac executed 0 times$" \
+                                                      "[0.10] default CPU: clac never executed (no #UD without SMAP)"
+expect "$LOG" "^clac test: PASS$"                     "[0.10] default CPU: clac test PASS"
+reject "$LOG" "PANIC|Invalid Opcode"                  "[0.10] default CPU: clac test without a panic or #UD"
+
+echo "== [0.10] SMEP and SMAP on (-cpu qemu64,+smep,+smap)"
+LOG=$OUT/serial-smap.log
+boot "$LOG" 15 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL"
+expect "$LOG" "^SMEP: enabled \(CR4.SMEP=1\): the kernel cannot execute user pages$" "[0.10] SMEP CPU: SMEP enabled"
+expect "$LOG" "^SMAP: enabled \(CR4.SMAP=1\): clac on every kernel entry$" "[0.10] SMAP CPU: SMAP enabled"
+UCPU=$(grep -m1 -E '^User-mode CPU set-up: CR0=0x[0-9a-f]{8} CR4=0x[0-9a-f]{16}$' "$LOG")
+read -r UC0 UC4 <<< "$(grep -oE '=0x[0-9a-f]+' <<< "$UCPU" | cut -c2- | tr '\n' ' ')"
+if [ -n "${UC4:-}" ] && [ $(( UC0 & 0x4 )) -ne 0 ] && [ $(( UC4 & (3 << 20) )) -eq $(( 3 << 20 )) ]; then
+    pass "[0.10] SMEP/SMAP CPU: CR0.EM, CR4.SMEP and CR4.SMAP set (bits checked by the script)"
+else
+    fail "[0.10] SMEP/SMAP CPU control registers: ${UCPU:-missing}"
+fi
+expect "$LOG" "^Scheduler self-test: PASS"            "[0.10] SMEP/SMAP CPU: scheduler self-test PASS (interrupts and switches with clac)"
+expect "$LOG" "System ready\."                        "[0.10] SMEP/SMAP CPU: System ready"
+reject "$LOG" "PANIC"                                 "[0.10] SMEP/SMAP CPU: no panic"
+LOG=$OUT/serial-smap-clac.log
+boot "$LOG" 15 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=clac"
+CL=$(grep -m1 -E '^clac test: SMAP on; ' "$LOG")
+echo "      ${CL:-no clac line}"
+if grep -qE '^clac test: SMAP on; [0-9]+ interrupts taken with AC=1 in the interrupted code; AC=1 seen by the handler 0 times; clac executed [1-9][0-9]* times$' <<< "$CL"; then
+    pass "[0.10] SMAP CPU: every handler ran with AC=0 and clac was executed"
+else
+    fail "[0.10] SMAP CPU: clac evidence missing (${CL:-no line})"
+fi
+expect "$LOG" "^clac test: PASS$"                     "[0.10] SMAP CPU: clac test PASS"
+
+echo "== [0.10] SMEP and SMAP enforced: the kernel touches a user page (test=smep, test=smap)"
+UVA=0x0000000000400000
+LOG=$OUT/serial-smep.log
+boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smep"
+expect "$LOG" "^SMEP test: user page $UVA \(present, user, executable: ret\); CR4.SMEP=1: the kernel calls it, this must fault$" \
+                                                      "[0.10] smep: present, executable user page built and entered first"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] smep: crash screen shown"
+expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.10] smep: exception 14"
+expect "$LOG" "Error code: 0x00000011"                "[0.10] smep: error code 0x11 (present, instruction fetch, kernel mode)"
+expect_in_order "$LOG" "[0.10] smep: decoded and named as a SMEP violation at the user page" \
+    "^ Page fault: protection violation, read, kernel mode$" "^ Details: instruction fetch$" \
+    "^ Cause: SMEP violation \(the kernel executed a user page\)$" "^ Address: $UVA$"
+expect "$LOG" "RIP=$UVA  CS=0x0008"                   "[0.10] smep: RIP is the user page, CS the kernel's (ring 0)"
+expect "$LOG" "CR2=$UVA"                              "[0.10] smep: CR2 is the fetched user address"
+reject "$LOG" "NX violation"                          "[0.10] smep: not misnamed as an NX violation"
+reject "$LOG" "System ready|without a fault"          "[0.10] smep: halted, the fetch was refused"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.10] smep: crash screen lines at most 79 characters (longest $w)"
+else
+    fail "[0.10] smep: crash screen line of $w characters (limit 79), or no crash screen"
+fi
+UVA=0x0000000000500000
+LOG=$OUT/serial-smapread.log
+boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smap"
+expect "$LOG" "^SMAP test: user page $UVA \(present, user, writable, holds 0x5a5a5a5a5a5a5a5a\); RFLAGS.AC=0, CR4.SMAP=1: the kernel reads it, this must fault$" \
+                                                      "[0.10] smap: present user data page built and entered first"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] smap: crash screen shown"
+expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.10] smap: exception 14"
+expect "$LOG" "Error code: 0x00000001"                "[0.10] smap: error code 0x01 (present, read, kernel mode)"
+expect_in_order "$LOG" "[0.10] smap: decoded and named as a SMAP violation at the user page" \
+    "^ Page fault: protection violation, read, kernel mode$" \
+    "^ Cause: SMAP violation \(the kernel read a user page, AC=0\)$" "^ Address: $UVA$"
+expect "$LOG" "CR2=$UVA"                              "[0.10] smap: CR2 is the user address read"
+RF=$(grep -m1 -oE 'CS=0x0008  RFLAGS=0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}$')
+if [ -n "${RF:-}" ] && [ $(( RF & 0x40000 )) -eq 0 ]; then
+    pass "[0.10] smap: faulted in ring 0 with RFLAGS.AC clear ($RF)"
+else
+    fail "[0.10] smap: ring-0 RFLAGS with AC clear not found (${RF:-missing})"
+fi
+reject "$LOG" "System ready|without a fault"          "[0.10] smap: halted, the read was refused"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.10] smap: crash screen lines at most 79 characters (longest $w)"
+else
+    fail "[0.10] smap: crash screen line of $w characters (limit 79), or no crash screen"
+fi
+for t in smep smap; do
+    T=$(tr 'a-z' 'A-Z' <<< "$t")
+    LOG=$OUT/serial-$t-default.log
+    boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=$t"
+    expect "$LOG" "^$T test: NOT APPLICABLE \(not supported by this CPU\)$" \
+                                                      "[0.10] $t on the default CPU: NOT APPLICABLE"
+    expect "$LOG" "System ready\."                    "[0.10] $t on the default CPU: boots normally"
+    reject "$LOG" "PANIC|$T test: user page"          "[0.10] $t on the default CPU: no access tried, no panic"
+done
+
+echo "== [0.10] RSP0 follows every thread switch (test=rsp0)"
+thread_diag rsp0 15
+RL=$(grep -m1 -E '^RSP0 test: [0-9]+ checks' "$LOG")
+echo "      ${RL:-no RSP0 line}"
+expect "$LOG" "^RSP0 test: [1-9][0-9]* checks in 4 threads after [0-9]+ switches \([0-9]+ preemptions\), 4 distinct RSP0 values, 0 mismatches$" \
+                                                      "[0.10] rsp0: every check after a switch saw the running thread's own stack top"
+expect "$LOG" "^RSP0 test: PASS$"                     "[0.10] rsp0: PASS (preempted and yielding threads)"
+reject "$LOG" "PANIC"                                 "[0.10] rsp0: no panic"
+
+echo "== [0.10] GDT selector past the end (test=gpflimit)"
+LOG=$OUT/serial-gpflimit.log
+boot "$LOG" 8 -kernel "$KERNEL" -append "test=gpflimit"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] gpflimit: crash screen shown"
+expect "$LOG" "CPU exception 13: General Protection Fault" "[0.10] gpflimit: reports vector 13"
+expect "$LOG" "Error code: 0x00000040"                "[0.10] gpflimit: error code 0x00000040 (selector 0x40, past the limit 0x3F)"
+expect "$LOG" "RIP=0x[0-9a-f]{16}  CS=0x0008"         "[0.10] gpflimit: registers dumped, CS is our GDT code segment"
+reject "$LOG" "System ready"                          "[0.10] gpflimit: halted instead of continuing"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.10] gpflimit: crash screen lines at most 79 characters (longest $w)"
+else
+    fail "[0.10] gpflimit: crash screen line of $w characters (limit 79), or no crash screen"
+fi
+
+echo "== [0.10] The freeze: a new kernel-half PML4 entry panics (test=freezeviolation)"
+LOG=$OUT/serial-freezeviolation.log
+boot "$LOG" 8 -kernel "$KERNEL" -append "test=freezeviolation"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] freezeviolation: crash screen shown"
+expect "$LOG" "Kernel-half PML4 entry created after the freeze: 0xffff808000000000 \(PML4 slot 257\)\." \
+                                                      "[0.10] freezeviolation: reported with the address and slot"
+reject "$LOG" "Freeze test: FAIL|System ready"        "[0.10] freezeviolation: the entry was not created, halted"
+
+echo "== [0.10] Address spaces: build, switch, check, tear down (test=uaspace)"
+thread_diag uaspace 30
+grep -E "^Address-space test: " "$LOG" | grep -vE ': (PASS|FAIL)|built, entered and torn down\.\.\.' | sed 's/^/      /'
+expect "$LOG" "^Address-space test: heap grew by [1-9][0-9]* KiB and [1-9][0-9]* page table\(s\) under a process CR3; the block read back under the kernel CR3 with 0 wrong bytes; kernel PML4 entries changed: 0: OK$" \
+                                                      "[0.10] uaspace: heap growth under a process CR3 (a new heap page table) is seen under the kernel CR3; no PML4 entry changed"
+expect "$LOG" "^Address-space test: 500 address spaces built, entered and checked by 2 threads \(13 user pages, 6 lower-half tables and a PML4 each\); 0 mapping and 0 content mismatches: OK$" \
+                                                      "[0.10] uaspace: 500 address spaces built and checked through the recursive mapping (frames, user bit, permissions, contents)"
+expect "$LOG" "^Address-space test: kernel half identical in every PML4, slot 510 its own: 0 wrong; upper-half entries with the user bit: 0 \(500 walks\): OK$" \
+                                                      "[0.10] uaspace: kernel half identical in all 500 PML4s; no user bit anywhere in the upper half"
+SW=$(grep -m1 -E '^Address-space test: switches in the middle: ' "$LOG")
+if grep -qE '^Address-space test: switches in the middle: [1-9][0-9]* builds and [1-9][0-9]* teardowns preempted, [1-9][0-9]* yields; CR3 right after every switch: [1-9][0-9]* checks, 0 wrong \([0-9]+ preemptions\): OK$' <<< "$SW"; then
+    pass "[0.10] uaspace: switches (preemptions and yields) in the middle of builds and teardowns; CR3 right after every one"
+else
+    fail "[0.10] uaspace: switch evidence missing (${SW:-no line})"
+fi
+TD=$(grep -m1 -E '^Address-space test: torn down bottom-up: ' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^Address-space test: torn down bottom-up: 6500 user frames and 3000 lower-half tables freed, 0 wrong; .*: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] uaspace: every user frame (6500) and lower-half table (3000) freed; free pages exactly restored ($F0 -> $F1)"
+else
+    fail "[0.10] uaspace: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^Address-space test: PASS$"            "[0.10] uaspace: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] uaspace: no panic"
+expect "$LOG" "System ready\."                        "[0.10] uaspace: System ready afterwards"
+LOG=$OUT/serial-uaspace-smap.log
+boot "$LOG" 30 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=uaspace"
+expect "$LOG" "^Address-space test: PASS$"            "[0.10] uaspace with SMEP and SMAP on: PASS (the kernel never touches a user page directly)"
+reject "$LOG" "PANIC"                                 "[0.10] uaspace with SMEP and SMAP on: no panic"
+
+echo "== [0.10] The first program in ring 3: spin, preempted by the timer (test=userspin)"
+thread_diag userspin 30
+grep -E "^User-mode test: " "$LOG" | grep -vE ': (PASS|FAIL)$' | sed 's/^/      /'
+expect "$LOG" "^User-mode test: [1-9][0-9]* built-in images checked: ok; 'spin': [1-9][0-9]* bytes of code at 0x0000000000400000, entry 0x00000000004[0-9a-f]{5}, [0-9]+ bytes of data and bss: OK$" \
+                                                      "[0.10] userspin: every built-in image checked; spin found"
+expect "$LOG" "^User-mode test: thread [1-9][0-9]* 'spin' loaded the image into its own address space: [1-9][0-9]* code, [0-9]+ data and 8 stack pages: OK$" \
+                                                      "[0.10] userspin: spin's code, data and 32 KiB stack mapped in its own address space"
+expect "$LOG" "^User-mode test: IRETQ frame RIP=0x00000000004[0-9a-f]{5} CS=0x003b RFLAGS=0x0000000000000202 RSP=0x00007ffffffff000 SS=0x0033 \(IF=1, IOPL=0, RIP inside the code\): OK$" \
+                                                      "[0.10] userspin: enter_user's IRETQ frame: CS 0x3B, SS 0x33, IF=1, IOPL=0, RIP inside the code"
+FI=$(grep -m1 -E '^User-mode test: first timer interrupt from ring 3, ' "$LOG")
+FAT=$(sed -nE 's/.*frame at 0x([0-9a-f]{16}) = RSP0 0x([0-9a-f]{16}) - 176, RSP0 = the thread.s stack top 0x([0-9a-f]{16}): OK$/\1 \2 \3/p' <<< "$FI")
+read -r FA FR FT <<< "$FAT"
+if grep -qE '^User-mode test: first timer interrupt from ring 3, in thread [1-9][0-9]*: CS=0x003b RIP=0x00000000004[0-9a-f]{5} RSP=0x00007ffffff[0-9a-f]{5} SS=0x0033 RFLAGS=0x0000000000000[2a][0-9a-f]{2}; ' <<< "$FI" &&
+   [ -n "$FA" ] && [ $(( 0x$FA + 176 )) -eq $(( 0x$FR )) ] && [ "$FR" = "$FT" ] &&
+   [ $(( 0x$FR )) -ge $(( 0xfffffd8000000000 )) ] && [ $(( 0x$FR )) -lt $(( 0xfffffe0000000000 )) ]; then
+    pass "[0.10] userspin: a timer interrupt taken in ring 3 (CS 0x3B, user RIP and RSP) arrived on the thread's RSP0 stack (frame 0x$FA + 176 = 0x$FR, in slot 507)"
+else
+    fail "[0.10] userspin: first ring-3 timer interrupt wrong (${FI:-no line})"
+fi
+expect "$LOG" "^User-mode test: [1-9][0-9]+ timer interrupts from ring 3: 0 with CS not 0x3B, 0 with SS not 0x33, 0 with IF clear, 0 with IOPL set, 0 not on the thread's RSP0 stack, 0 in another thread; RIP 0x4[0-9a-f]{5}-0x4[0-9a-f]{5} \(inside the code\), RSP 0x7ffffff[0-9a-f]{5}-0x7ffffff[0-9a-f]{5} \(inside the stack\): OK$" \
+                                                      "[0.10] userspin: every ring-3 timer interrupt checked (at least 10): all CS 0x3B, SS 0x33, IF=1, IOPL 0, on the RSP0 stack"
+PR=$(grep -m1 -E '^User-mode test: spin preempted ' "$LOG")
+if grep -qE '^User-mode test: spin preempted [0-9]+ times from ring 3 and back in ring 3 after a preemption [1-9][0-9]* times; [0-9]+ switches, [0-9]+ ticks run by spin; longest turn [0-6] ticks \(slice 5, at most 6\): OK$' <<< "$PR"; then
+    pass "[0.10] userspin: spin preempted from ring 3 (at least 5 times), resumed in ring 3, longest turn at most 6 ticks"
+else
+    fail "[0.10] userspin: preemption evidence missing (${PR:-no line})"
+fi
+expect "$LOG" "^User-mode test: PASS$"                "[0.10] userspin: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userspin: no panic"
+expect "$LOG" "System ready\."                        "[0.10] userspin: System ready while spin keeps running"
+LOG=$OUT/serial-userspin-smap.log
+boot "$LOG" 30 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=userspin"
+expect "$LOG" "^SMEP: enabled"                        "[0.10] userspin with SMEP and SMAP on: SMEP enabled"
+expect "$LOG" "^User-mode test: PASS$"                "[0.10] userspin with SMEP and SMAP on: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userspin with SMEP and SMAP on: no panic"
+
+echo "== [0.10] The first process teardown: kill at the next return to ring 3 (test=userkill)"
+thread_diag userkill 60
+grep -E "^User kill test: " "$LOG" | grep -vE ': (PASS|FAIL)$|started and killed\.\.\.$' | sed 's/^/      /'
+expect "$LOG" "^User kill test: 20 rounds of two spin processes: 60 started \(PIDs 4-63, one more each time, none reused\), 40 had returned to ring 3 before the kill; ended at a return to ring 3: 40 results 'killed' \(code 0\), 0 wrong: OK$" \
+                                                      "[0.10] userkill: 40 processes killed after running in ring 3, each ended at a return to ring 3; PIDs 4-63 (after the boot self-test's 1-3) never reused"
+expect "$LOG" "^User kill test: the second process kept running in ring 3 after the first one ended: 20 of 20 rounds: OK$" \
+                                                      "[0.10] userkill: killing one process leaves the other running in ring 3"
+expect "$LOG" "^User kill test: 20 processes killed right after they were started \([0-9]+ before entering ring 3\): 20 results 'killed', 0 wrong: OK$" \
+                                                      "[0.10] userkill: 20 processes killed right after the start (before ring 3) end cleanly"
+TD=$(grep -m1 -E '^User kill test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User kill test: 60 address spaces torn down by their own threads: 540 user frames and 360 lower-half tables freed, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] userkill: 60 address spaces torn down by their own threads (540 frames, 360 tables); free pages exactly restored ($F0 -> $F1)"
+else
+    fail "[0.10] userkill: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User kill test: longest turn [0-6] ticks \(slice 5, at most 6\): OK$" \
+                                                      "[0.10] userkill: longest turn at most 6 ticks"
+expect "$LOG" "^User kill test: PASS$"                "[0.10] userkill: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userkill: no panic"
+expect "$LOG" "System ready\."                        "[0.10] userkill: System ready afterwards"
+LOG=$OUT/serial-userkill-smap.log
+boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=userkill"
+expect "$LOG" "^User kill test: PASS$"                "[0.10] userkill with SMEP and SMAP on: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userkill with SMEP and SMAP on: no panic"
+
+echo "== [0.10] Fault containment, part 1: programs that make a mistake end alone (test=userfault)"
+# Booted with the console session afterwards: version, then an end marker.
+LOG=$OUT/serial-userfault.log
+boot_text "$LOG" 60 "System ready." "x{ret}version{ret}echo end-of-fault-test{ret}" 0.05 \
+    $'\nend-of-fault-test\n' -m 32M -kernel "$KERNEL" -append "test=userfault"
+grep -E "^(User fault test: |Process [0-9]+ )" "$LOG" | grep -vE ': (PASS|FAIL)$|must end alone\.\.\.$' | sed 's/^/      /'
+URIP='at RIP 0x00000000004[0-9a-f]{5}'
+expect "$LOG" "^Process [0-9]+ 'nullptr' ended by CPU exception 14 \(#PF Page Fault\) $URIP: address 0x0000000000000000, not present, read, user mode; the kernel continues$" \
+                                                      "[0.10] userfault: nullptr ended by #PF reading address 0 (one-line message)"
+expect "$LOG" "^Process [0-9]+ 'ud2' ended by CPU exception 6 \(#UD Invalid Opcode\) $URIP, error code 0x0; the kernel continues$" \
+                                                      "[0.10] userfault: ud2 ended by #UD (one-line message)"
+expect "$LOG" "^Process [0-9]+ 'stackover' ended by CPU exception 14 \(#PF Page Fault\) $URIP: address 0x00007fffffff6[0-9a-f]{3}, not present, write, user mode; the kernel continues$" \
+                                                      "[0.10] userfault: stackover ended by #PF in the page below its 32 KiB stack (one-line message)"
+expect "$LOG" "^Process [0-9]+ 'wx' ended by CPU exception 14 \(#PF Page Fault\) $URIP: address 0x00000000004[0-9a-f]{5}, protection violation, write, user mode; the kernel continues$" \
+                                                      "[0.10] userfault: wx 0 ended by #PF writing its own code (one-line message)"
+expect "$LOG" "^Process [0-9]+ 'wx' ended by CPU exception 14 \(#PF Page Fault\) at RIP (0x00000000005000[0-9a-f]{2}): address \1, protection violation, read, user mode, instruction fetch \(NX violation\); the kernel continues$" \
+                                                      "[0.10] userfault: wx 1 ended by #PF (NX) executing its own data (one-line message)"
+for c in "nullptr 0" "ud2 0" "stackover 0" "wx 0" "wx 1"; do
+    expect "$LOG" "^User fault test: $c \(.*\): process [0-9]+ killed by a CPU exception: #(PF|UD) at RIP .*: OK$" \
+                                                      "[0.10] userfault: $c: result 'killed by a CPU exception' with its vector, fault details checked"
+done
+n=$(grep -cE "^User fault test: .*, instruction ([0-9a-f]{2}( [0-9a-f]{2})*) \(expected \1\), .*: OK$" "$LOG")
+if [ "$n" -eq 5 ]; then pass "[0.10] userfault: each of the 5 faults came from its expected instruction (bytes at RIP, read with copy_from_user)"
+else fail "[0.10] userfault: $n of 5 faults at their expected instruction"; fi
+expect "$LOG" "^User fault test: spin kept running in ring 3 through the faults, then was killed: OK$" \
+                                                      "[0.10] userfault: another process kept running in ring 3 through every fault"
+TD=$(grep -m1 -E '^User fault test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User fault test: 6 address spaces torn down by their own threads, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] userfault: free pages ($F0 -> $F1), page tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] userfault: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User fault test: PASS$"               "[0.10] userfault: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userfault: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userfault: System ready afterwards"
+expect_next "$LOG" "[0.10] userfault: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-userfault-smap.log
+boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=userfault"
+expect "$LOG" "^User fault test: PASS$"               "[0.10] userfault with SMEP and SMAP on: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userfault with SMEP and SMAP on: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userfault with SMEP and SMAP on: System ready afterwards"
+
+echo "== [0.10] Fault containment, part 2: programs that try what ring 3 may not (test=userpriv)"
+LOG=$OUT/serial-userpriv.log
+boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-priv-test{ret}" 0.05 \
+    $'\nend-of-priv-test\n' -m 32M -kernel "$KERNEL" -append "test=userpriv"
+grep -E "^(User privilege test: |Process [0-9]+ )" "$LOG" | grep -vE ': (PASS|FAIL)$|may not\.\.\.$' | sed 's/^/      /'
+GPMSG="^Process [0-9]+ 'privileged' ended by CPU exception 13 \(#GP General Protection Fault\) $URIP, error code 0x0; the kernel continues$"
+n=$(grep -cE "$GPMSG" "$LOG")
+if [ "$n" -eq 9 ]; then pass "[0.10] userpriv: 9 privileged instructions, each ended its process by #GP(0) (one-line messages)"
+else fail "[0.10] userpriv: $n of 9 privileged processes ended by #GP(0)"; fi
+for a in "0 cli" "1 hlt" "2 out" "3 in" "4 mov from cr3" "5 lgdt" "6 wrmsr" "7 rdmsr" "8 invlpg"; do
+    expect "$LOG" "^User privilege test: privileged ${a%% *} \(${a#* }.*\): process [0-9]+ killed by a CPU exception: #GP at RIP .*, error code 0x0 \(result code 13\): OK$" \
+                                                      "[0.10] userpriv: ${a#* } in ring 3: #GP, process ended"
+done
+for g in "3 0x1a int3" "0x80 0x402 int 0x80" "0x20 0x102 int 0x20"; do
+    read -r gate gerr gname <<< "$g"
+    expect "$LOG" "^Process [0-9]+ 'int80' ended by CPU exception 13 \(#GP General Protection Fault\) $URIP, error code $gerr; the kernel continues$" \
+                                                      "[0.10] userpriv: $gname to a ring-0 gate: #GP with error code $gerr (gate $gate), process ended"
+done
+expect "$LOG" "^Process [0-9]+ 'fpu' ended by CPU exception 7 \(#NM Device Not Available\) $URIP, error code 0x0; the kernel continues$" \
+                                                      "[0.10] userpriv: x87 with CR0.EM set: #NM, process ended"
+n=$(grep -cE "^Process [0-9]+ 'fpu' ended by CPU exception 6 \(#UD Invalid Opcode\) $URIP, error code 0x0; the kernel continues$" "$LOG")
+if [ "$n" -eq 2 ]; then pass "[0.10] userpriv: MMX and SSE with CR0.EM set: #UD, processes ended"
+else fail "[0.10] userpriv: $n of 2 MMX/SSE processes ended by #UD"; fi
+n=$(grep -cE "^User privilege test: (privileged|int80|fpu) [0-9] \(.*\): process [0-9]+ killed by a CPU exception: .*: OK$" "$LOG")
+if [ "$n" -eq 15 ]; then pass "[0.10] userpriv: all 15 results 'killed by a CPU exception' with the right vector and error code"
+else fail "[0.10] userpriv: $n of 15 results right"; fi
+n=$(grep -cE "^User privilege test: .*, instruction ([0-9a-f]{2}( [0-9a-f]{2})*) \(expected \1\), .*: OK$" "$LOG")
+if [ "$n" -eq 15 ]; then pass "[0.10] userpriv: each of the 15 faults came from its expected instruction (bytes at RIP, read with copy_from_user)"
+else fail "[0.10] userpriv: $n of 15 faults at their expected instruction"; fi
+expect "$LOG" "^User privilege test: spin kept running in ring 3 through the faults, then was killed: OK$" \
+                                                      "[0.10] userpriv: another process kept running in ring 3 through every fault"
+TD=$(grep -m1 -E '^User privilege test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User privilege test: 16 address spaces torn down by their own threads, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] userpriv: free pages ($F0 -> $F1), page tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] userpriv: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User privilege test: PASS$"           "[0.10] userpriv: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userpriv: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userpriv: System ready afterwards"
+expect_next "$LOG" "[0.10] userpriv: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-userpriv-smap.log
+boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=userpriv"
+expect "$LOG" "^User privilege test: PASS$"           "[0.10] userpriv with SMEP and SMAP on: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userpriv with SMEP and SMAP on: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userpriv with SMEP and SMAP on: System ready afterwards"
+
+echo "== [0.10] Fault containment, part 3: sti, int 0x0e and kernel memory (test=userkmem)"
+LOG=$OUT/serial-userkmem.log
+boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-kmem-test{ret}" 0.05 \
+    $'\nend-of-kmem-test\n' -m 32M -kernel "$KERNEL" -append "test=userkmem"
+grep -E "^(User kernel-memory test: |Process [0-9]+ )" "$LOG" | grep -vE ': (PASS|FAIL)$|for the kernel\.\.\.$' | sed 's/^/      /'
+expect "$LOG" "^Process [0-9]+ 'privileged' ended by CPU exception 13 \(#GP General Protection Fault\) $URIP, error code 0x0; the kernel continues$" \
+                                                      "[0.10] userkmem: sti in ring 3: #GP(0), process ended (one-line message)"
+expect "$LOG" "^Process [0-9]+ 'int80' ended by CPU exception 13 \(#GP General Protection Fault\) $URIP, error code 0x72; the kernel continues$" \
+                                                      "[0.10] userkmem: int 0x0e to a ring-0 gate: #GP with error code 0x72 (gate 0x0e), process ended"
+for k in "kread ffffffff80100000 read kernel text" "kread fffffe8000000000 read kernel data (heap)" "kread ffffff7fbfdfe000 read the PML4" \
+         "kwrite ffffffff80100000 write kernel text" "kwrite fffffe8000000000 write kernel data (heap)" "kwrite ffffff7fbfdfe000 write the PML4"; do
+    read -r kp ka kacc kwhat <<< "$k"
+    expect "$LOG" "^Process [0-9]+ '$kp' ended by CPU exception 14 \(#PF Page Fault\) $URIP: address 0x$ka, protection violation, $kacc, user mode; the kernel continues$" \
+                                                      "[0.10] userkmem: $kp: $kacc of $kwhat (0x$ka): #PF, protection violation, user mode; process ended"
+done
+n=$(grep -cE "^User kernel-memory test: (privileged|int80|kread|kwrite) [0-9] \(.*\): process [0-9]+ killed by a CPU exception: .*: OK$" "$LOG")
+if [ "$n" -eq 8 ]; then pass "[0.10] userkmem: all 8 results 'killed by a CPU exception' with the right vector, error code and address"
+else fail "[0.10] userkmem: $n of 8 results right"; fi
+n=$(grep -cE "^User kernel-memory test: .*, instruction ([0-9a-f]{2}( [0-9a-f]{2})*) \(expected \1\), .*: OK$" "$LOG")
+if [ "$n" -eq 8 ]; then pass "[0.10] userkmem: each of the 8 faults came from its expected instruction (bytes at RIP, read with copy_from_user)"
+else fail "[0.10] userkmem: $n of 8 faults at their expected instruction"; fi
+KCS=$(grep -m1 -E '^User kernel-memory test: kernel text and read-only data' "$LOG")
+if grep -qE 'checksum (0x[0-9a-f]{16}) before, \1 after; kwrite.s value found at 0 of its 3 targets: OK$' <<< "$KCS"; then
+    pass "[0.10] userkmem: kernel text, read-only data, kernel PML4 and heap header checksum identical before and after; kwrite's value nowhere"
+else
+    fail "[0.10] userkmem: kernel memory changed (${KCS:-no line})"
+fi
+expect "$LOG" "^User kernel-memory test: spin kept running in ring 3 through the faults, then was killed: OK$" \
+                                                      "[0.10] userkmem: another process kept running in ring 3 through every fault"
+TD=$(grep -m1 -E '^User kernel-memory test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User kernel-memory test: 9 address spaces torn down by their own threads, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] userkmem: free pages ($F0 -> $F1), page tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] userkmem: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User kernel-memory test: PASS$"       "[0.10] userkmem: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userkmem: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userkmem: System ready afterwards"
+expect_next "$LOG" "[0.10] userkmem: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-userkmem-smap.log
+boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=userkmem"
+expect "$LOG" "^User kernel-memory test: PASS$"       "[0.10] userkmem with SMEP and SMAP on: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userkmem with SMEP and SMAP on: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userkmem with SMEP and SMAP on: System ready afterwards"
+
+echo "== [0.10] The first system calls: exit, exit_group, getpid, sched_yield, -ENOSYS (test=usersys)"
+# The MSRs, read back at every boot (here the normal boot of the first group).
+SC=$(grep -m1 -E '^SYSCALL: ' "$OUT/serial-boot.log")
+echo "      $SC"
+ENTRY=$(nm "$OUT/madire.elf" | awk '$3 == "syscall_entry" { print $1 }')
+if grep -qE "^SYSCALL: EFER=0x[0-9a-f]{15}[13579bdf] \(SCE=1\) STAR=0x002b000800000000 LSTAR=0x$ENTRY SFMASK=0x0000000000047700, read back: OK$" <<< "$SC" &&
+   [ -n "$ENTRY" ]; then
+    pass "[0.10] SYSCALL MSRs read back: EFER.SCE=1, STAR 0x002b000800000000, LSTAR = syscall_entry (0x$ENTRY), SFMASK TF|IF|DF|IOPL|NT|AC"
+else
+    fail "[0.10] SYSCALL MSRs wrong (${SC:-no line}; syscall_entry 0x${ENTRY:-?})"
+fi
+LOG=$OUT/serial-usersys.log
+boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-sys-test{ret}" 0.05 \
+    $'\nend-of-sys-test\n' -m 32M -kernel "$KERNEL" -append "test=usersys"
+grep -E "^User syscall test: " "$LOG" | grep -vE ': (PASS|FAIL)$|system calls\.\.\.$' | sed 's/^/      /'
+for c in "exitcode 0 42" "exitcode 1 43" "exitcode 2 7" "exitcode 3 44" "yield 0 0" "enosys 0 0" "sysregs 0 0"; do
+    read -r cp ca cs <<< "$c"
+    expect "$LOG" "^User syscall test: $cp $ca \(.*\): process [0-9]+ exited, status $cs \(expected $cs\): OK$" \
+                                                      "[0.10] usersys: $cp $ca: the kernel collected exit status $cs"
+done
+GP=$(grep -m1 -E "^User syscall test: getpid 0 " "$LOG")
+GPID=$(sed -nE 's/.*: process ([0-9]+) exited, status ([0-9]+) .*/\1/p' <<< "$GP")
+GST=$(sed -nE 's/.*: process ([0-9]+) exited, status ([0-9]+) .*/\2/p' <<< "$GP")
+if [ -n "$GPID" ] && [ "$GST" = "$(( GPID & 255 ))" ] && grep -qE ': OK$' <<< "$GP"; then
+    pass "[0.10] usersys: getpid returned the kernel's process ID (exit status $GST = PID $GPID & 0xFF)"
+else
+    fail "[0.10] usersys: getpid wrong (${GP:-no line})"
+fi
+expect "$LOG" "^User syscall test: system calls made: getpid 3, sched_yield 100, exit 7, exit_group 1, write 4, -ENOSYS 1028: OK$" \
+                                                      "[0.10] usersys: exactly the calls made were counted; 1028 unknown numbers (0-1023, x32, >= 2^32, -1, Madire range) gave -ENOSYS"
+expect "$LOG" "^User syscall test: spin kept running in ring 3 meanwhile, then was killed: OK$" \
+                                                      "[0.10] usersys: another process kept running in ring 3"
+TD=$(grep -m1 -E '^User syscall test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User syscall test: 9 address spaces torn down by their own threads, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] usersys: free pages ($F0 -> $F1), page tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] usersys: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User syscall test: PASS$"             "[0.10] usersys: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] usersys: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] usersys: System ready afterwards"
+expect_next "$LOG" "[0.10] usersys: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-usersys-smap.log
+boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=usersys"
+expect "$LOG" "^User syscall test: PASS$"             "[0.10] usersys with SMEP and SMAP on: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] usersys with SMEP and SMAP on: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] usersys with SMEP and SMAP on: System ready afterwards"
+
+echo "== [0.10] System calls with pointer arguments: write, nanosleep, bad pointers (test=userio)"
+LOG=$OUT/serial-userio.log
+boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-io-test{ret}" 0.05 \
+    $'\nend-of-io-test\n' -m 32M -kernel "$KERNEL" -append "test=userio"
+grep -E "^(User I/O test: |\[pid )" "$LOG" | grep -vE ': (PASS|FAIL)$|bad pointers\.\.\.$|^\[pid [0-9]+\] [a-z]{100}$' | sed 's/^/      /'
+# uio_pid <case text>: the process ID of a case, from its result line
+uio_pid() { grep -m1 -E "^User I/O test: $1.*: process [0-9]+ exited" "$LOG" | sed -nE 's/.*: process ([0-9]+) exited.*/\1/p'; }
+for c in "hello 0" "hello 1" "hello 2" "sleep 0" "sleep 1" "badptr 0" "isolate 1" "isolate 2"; do
+    expect "$LOG" "^User I/O test: $c \(.*\): process [0-9]+ exited, status 0 \(expected 0\): OK$" \
+                                                      "[0.10] userio: $c exited with status 0 (every result it checked was right)"
+done
+P=$(uio_pid "hello 0")
+expect "$LOG" "^\[pid $P\] Hello from user mode$"     "[0.10] userio: hello's line in the log, prefixed [pid $P]"
+P=$(uio_pid "hello 1")
+expect "$LOG" "^\[pid $P\] A\?\[2JB\?C\?D\?E\?F\?G$" \
+                                                      "[0.10] userio: ESC, BEL, CR, TAB, DEL and 0xFF written by a program reach the log as '?'"
+expect "$LOG" "^\[pid $P\] Process 99 'spin' ended by CPU exception 13 \(#GP General Protection Fault\); the kernel continues$" \
+                                                      "[0.10] userio: a fake kernel line written by a program carries its [pid $P] prefix"
+reject "$LOG" "^Process 99 "                          "[0.10] userio: no unprefixed fake kernel line in the log"
+n=$(LC_ALL=C grep -cE '^\[pid [0-9]+\] .*[^ -~]' "$LOG")
+if [ "$n" -eq 0 ]; then pass "[0.10] userio: no program line in the log holds a byte outside 0x20-0x7E"
+else fail "[0.10] userio: $n program lines hold control or non-ASCII bytes"; fi
+P=$(uio_pid "hello 2")
+nl=$(grep -cE "^\[pid $P\] " "$LOG")
+nc=$(grep -E "^\[pid $P\] " "$LOG" | sed -E "s/^\[pid $P\] //" | tr -d '\n' | wc -c)
+n100=$(grep -cE "^\[pid $P\] [a-z]{100}$" "$LOG")
+if [ "$nl" -eq 41 ] && [ "$nc" -eq 4096 ] && [ "$n100" -eq 40 ]; then
+    pass "[0.10] userio: a 5000-byte write took 4096 bytes (short count), logged as 40 lines of 100 and one of 96"
+else
+    fail "[0.10] userio: 5000-byte write logged as $nl lines, $nc characters ($n100 of 100)"
+fi
+expect "$LOG" "^User I/O test: nanosleep 100 ms: 10 ticks asked for, 1[01] slept: OK$" \
+                                                      "[0.10] userio: nanosleep 100 ms = 10 ticks, slept 10 or 11"
+P=$(uio_pid "sleep 1")
+expect "$LOG" "^\[pid $P\] sleep: wrong results: 0$"  "[0.10] userio: nanosleep argument errors: -EINVAL (tv_nsec 1e9 and -1, tv_sec -1), -EFAULT (NULL, kernel, across the top), 0 for 0, rem never written"
+P=$(uio_pid "badptr 0")
+BL=$(grep -E "^\[pid $P\] " "$LOG")
+if [ "$BL" = "[pid $P] badptr: valid write
+[pid $P] xxxxxxx
+[pid $P] badptr: wrong results: 0" ]; then
+    pass "[0.10] userio: badptr: every bad pointer gave -EFAULT (bad fd -EBADF) and logged nothing; only its 3 valid writes reached the log"
+else
+    fail "[0.10] userio: badptr's log lines: $(echo "$BL" | tr '\n' '|')"
+fi
+n=$(grep -cE "^\[pid [0-9]+\] isolate: foreign values seen: 0$" "$LOG")
+if [ "$n" -eq 2 ]; then pass "[0.10] userio: two isolate processes at the same addresses, at the same time, each saw only its own data"
+else fail "[0.10] userio: $n of 2 isolate processes saw only their own data"; fi
+expect "$LOG" "^User I/O test: spin kept running in ring 3 meanwhile, then was killed: OK$" \
+                                                      "[0.10] userio: another process kept running in ring 3"
+TD=$(grep -m1 -E '^User I/O test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User I/O test: 9 address spaces torn down by their own threads, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] userio: free pages ($F0 -> $F1), page tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] userio: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User I/O test: PASS$"                 "[0.10] userio: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userio: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userio: System ready afterwards"
+expect_next "$LOG" "[0.10] userio: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-userio-smap.log
+boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=userio"
+expect "$LOG" "^User I/O test: PASS$"                 "[0.10] userio with SMEP and SMAP on: PASS (copy_from_user's stac/clac)"
+reject "$LOG" "PANIC"                                 "[0.10] userio with SMEP and SMAP on: no crash screen, no panic"
+expect "$LOG" "System ready\."                        "[0.10] userio with SMEP and SMAP on: System ready afterwards"
+
+echo "== [0.10] The user-mode boot self-test (every boot)"
+LOG=$OUT/serial-boot.log
+grep -E "^(User-mode self-test: |\[pid [1-3]\] )" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^User-mode self-test: hello \(one line through write\): process 1 exited, status 0 \(expected 0\): OK$" \
+                                                      "[0.10] boot self-test: hello ran as process 1 and exited with status 0"
+expect "$LOG" "^\[pid 1\] Hello from user mode$"      "[0.10] boot self-test: hello's line in the log"
+expect "$LOG" "^User-mode self-test: exitcode \(exit\(42\)\): process 2 exited, status 42 \(expected 42\): OK$" \
+                                                      "[0.10] boot self-test: exitcode ran as process 2, status 42 collected"
+expect "$LOG" "^User-mode self-test: nullptr \(read of address 0\): process 3 killed by a CPU exception: #PF, address 0x0000000000000000, instruction 48 8b 04 25: OK$" \
+                                                      "[0.10] boot self-test: nullptr ran as process 3 and ended by #PF at address 0, at its instruction"
+TD=$(grep -m1 -E '^User-mode self-test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User-mode self-test: 3 address spaces torn down, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] boot self-test: free pages ($F0 -> $F1), page tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] boot self-test: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User-mode self-test: PASS$"           "[0.10] boot self-test: PASS on the normal boot"
+expect "$OUT/serial-smap.log" "^User-mode self-test: PASS$" \
+                                                      "[0.10] boot self-test: PASS with SMEP and SMAP on"
+nb=0; nm=0
+for f in "$OUT"/serial-*.log; do
+    grep -q "System ready\." "$f" || continue
+    nb=$((nb + 1))
+    grep -q "^User-mode self-test: PASS$" "$f" || { nm=$((nm + 1)); echo "      no self-test PASS in $(basename "$f")"; }
+done
+if [ "$nb" -gt 0 ] && [ "$nm" -eq 0 ]; then pass "[0.10] boot self-test: PASS in every one of the $nb boots that reached System ready"
+else fail "[0.10] boot self-test: missing in $nm of $nb boots that reached System ready"; fi
+
+echo "== [0.10] User processes under preemption: per-process longest turn (test=userpreempt)"
+thread_diag userpreempt 40
+grep -E "^User preemption test: " "$LOG" | grep -vE ': (PASS|FAIL)$|for 3 seconds\.\.\.$' | sed 's/^/      /'
+n=$(grep -cE "^User preemption test: spin [0-3] \(.*\): process [0-9]+, thread [0-9]+: longest turn [0-6] ticks \(at most 6\), [0-9]+ ticks run, preempted [0-9]+ times, back in ring 3 [1-9][0-9]* times: OK$" "$LOG")
+if [ "$n" -eq 5 ]; then pass "[0.10] userpreempt: each of the 5 user processes (2 pure loops, getpid, sched_yield, nanosleep) had a longest turn of at most 6 ticks"
+else fail "[0.10] userpreempt: $n of 5 user processes within 6 ticks (policy (a) rule: STOP and report)"; fi
+expect "$LOG" "^User preemption test: kernel frame thread: longest turn [0-9]+ ticks .*, 0 tag mismatches: OK$" \
+                                                      "[0.10] userpreempt: the frame-allocating kernel thread ran alongside, no frame handed out twice (its longest turn logged)"
+expect "$LOG" "^User preemption test: all killed; free pages ([0-9]+) -> \1, .*processes left 0: OK$" \
+                                                      "[0.10] userpreempt: all killed; free pages, tables, stacks, threads and process table restored"
+expect "$LOG" "^User preemption test: PASS$"          "[0.10] userpreempt: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userpreempt: no panic"
+expect "$LOG" "System ready\."                        "[0.10] userpreempt: System ready afterwards"
+
+echo "== [0.10] Process churn: 1000 processes (test=userchurn)"
+thread_diag userchurn 180
+grep -E "^User churn test: " "$LOG" | grep -vE ': (PASS|FAIL)$|started and ended\.\.\.$' | sed 's/^/      /'
+expect "$LOG" "^User churn test: 500 hello processes one after another: 500 exited with status 0: OK$" \
+                                                      "[0.10] userchurn: 500 hello processes in sequence, each status 0"
+expect "$LOG" "^User churn test: 200 nullptr processes one after another: 200 ended by #PF: OK$" \
+                                                      "[0.10] userchurn: 200 nullptr processes in sequence, each ended by #PF"
+expect "$LOG" "^User churn test: 10 batches of 30 at once \(hello and nullptr alternating; at most 30 alive\): 300 of 300 results right: OK$" \
+                                                      "[0.10] userchurn: 10 batches of 30 processes alive at once, every result right"
+TD=$(grep -m1 -E '^User churn test: [0-9]+ address spaces torn down' "$LOG")
+F0=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\1/p' <<< "$TD")
+F1=$(sed -nE 's/.*free pages ([0-9]+) -> ([0-9]+),.*/\2/p' <<< "$TD")
+if grep -qE '^User churn test: 1000 address spaces torn down by their own threads: [0-9]+ user frames and 6000 lower-half tables freed, 0 wrong; .*processes left 0: OK$' <<< "$TD" &&
+   [ -n "$F0" ] && [ "$F0" = "$F1" ]; then
+    pass "[0.10] userchurn: 1000 address spaces torn down; free pages ($F0 -> $F1), tables, stack slots, threads and process table exactly restored"
+else
+    fail "[0.10] userchurn: teardown or free pages wrong (${TD:-no line})"
+fi
+expect "$LOG" "^User churn test: PASS$"               "[0.10] userchurn: PASS"
+reject "$LOG" "PANIC"                                 "[0.10] userchurn: no panic"
+expect "$LOG" "System ready\."                        "[0.10] userchurn: System ready afterwards"
+
+echo "== [0.10] GRUB Diagnostics: the user-mode entries (appended; existing entries unchanged)"
+CFG="$(dirname "$0")/../iso/boot/grub/grub.cfg"
+# Every Diagnostics entry, in menu order: "title|test option".
+DIAGS=$(awk '/^submenu "Diagnostics"/ { in_sub = 1; next }
+             in_sub && /^ *menuentry "/ { t = $0; sub(/^ *menuentry "/, "", t); sub(/" \{$/, "", t) }
+             in_sub && /^ *multiboot / { o = $0; sub(/.*test=/, "", o); print t "|" o }' "$CFG")
+OLD16="Crash test: divide by zero|divzero
+Crash test: invalid opcode|ud
+Crash test: general protection fault|gpf
+Page-fault test: read from NULL|pfnull
+Page-fault test: read from unmapped address|pfunmapped
+Page-fault test: write to read-only kernel code|pfreadonly
+Page-fault test: execute from no-execute data (NX)|pfnx
+Page-fault test: read the kernel's old low address|pflow
+Crash test: kernel stack overflow|stackoverflow
+Memory test: allocate every page|memexhaust
+Memory test: double free|doublefree
+Memory test: free a kernel page|freereserved
+Timer test: measure against RTC|timer
+Keyboard test: show key codes|keyboard
+Thread test: preemption|preempt
+Crash test: kernel thread stack overflow|threadoverflow"
+if [ "$(head -n 16 <<< "$DIAGS")" = "$OLD16" ]; then
+    pass "[0.10] GRUB Diagnostics: the 16 existing entries unchanged, in their positions 0-15"
+else
+    fail "[0.10] GRUB Diagnostics: an existing entry moved or changed"
+fi
+UENTRIES="userspin|User-mode test: PASS|30
+userkill|User kill test: PASS|60
+userfault|User fault test: PASS|60
+userpriv|User privilege test: PASS|60
+userkmem|User kernel-memory test: PASS|60
+usersys|User syscall test: PASS|60
+userio|User I/O test: PASS|60
+userpreempt|User preemption test: PASS|40
+userchurn|User churn test: PASS|180"
+pos=16
+while IFS='|' read -r opt passline secs; do
+    entry=$(sed -n "$((pos + 1))p" <<< "$DIAGS")
+    if [ "${entry##*|}" = "$opt" ]; then
+        pass "[0.10] GRUB Diagnostics position $pos: '${entry%|*}' (test=$opt)"
+    else
+        fail "[0.10] GRUB Diagnostics position $pos: '${entry:-none}', expected test=$opt"
+    fi
+    # Boot that entry through GRUB: a test-only ISO, the same grub.cfg with
+    # the default set to Diagnostics > position $pos.
+    D="$OUT/isodiag-$opt"
+    rm -rf "$D" && mkdir -p "$D/boot/grub"
+    cp "$KERNEL" "$D/boot/madire.kernel"
+    sed -e "s/^set default=0$/set default=\"1>$pos\"/" -e 's/^set timeout=3$/set timeout=0/' "$CFG" > "$D/boot/grub/grub.cfg"
+    LOG=$OUT/serial-grub-$opt.log
+    if grub-mkrescue -o "$OUT/madire-os-diag-$opt.iso" "$D" >/dev/null 2>&1; then
+        boot "$LOG" "$secs" -m 32M -cdrom "$OUT/madire-os-diag-$opt.iso"
+        if grep -q "^$passline$" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+            pass "[0.10] GRUB Diagnostics position $pos boots through GRUB and reaches '$passline'"
+        else
+            fail "[0.10] GRUB Diagnostics position $pos (test=$opt): no '$passline' (or a panic) in $LOG"
+        fi
+    else
+        fail "[0.10] GRUB Diagnostics position $pos: grub-mkrescue failed"
+    fi
+    pos=$((pos + 1))
+done <<< "$UENTRIES"
+# Stage 7: smep and smap at 25 and 26, each booted through GRUB twice: on
+# the default CPU (no SMEP/SMAP: NOT APPLICABLE, then System ready) and on
+# a CPU with both (the crash screen with #PF and the Cause line).
+SENTRIES="smep|SMEP|0x00000011|SMEP violation \(the kernel executed a user page\)
+smap|SMAP|0x00000001|SMAP violation \(the kernel read a user page, AC=0\)"
+while IFS='|' read -r opt name err cause; do
+    entry=$(sed -n "$((pos + 1))p" <<< "$DIAGS")
+    if [ "${entry##*|}" = "$opt" ]; then
+        pass "[0.10] GRUB Diagnostics position $pos: '${entry%|*}' (test=$opt)"
+    else
+        fail "[0.10] GRUB Diagnostics position $pos: '${entry:-none}', expected test=$opt"
+    fi
+    D="$OUT/isodiag-$opt"
+    rm -rf "$D" && mkdir -p "$D/boot/grub"
+    cp "$KERNEL" "$D/boot/madire.kernel"
+    sed -e "s/^set default=0$/set default=\"1>$pos\"/" -e 's/^set timeout=3$/set timeout=0/' "$CFG" > "$D/boot/grub/grub.cfg"
+    if grub-mkrescue -o "$OUT/madire-os-diag-$opt.iso" "$D" >/dev/null 2>&1; then
+        LOG=$OUT/serial-grub-$opt.log
+        boot "$LOG" 20 -m 32M -cdrom "$OUT/madire-os-diag-$opt.iso"
+        if grep -q "^$name test: NOT APPLICABLE (not supported by this CPU)$" "$LOG" &&
+           grep -q "System ready\." "$LOG" && ! grep -q "PANIC" "$LOG"; then
+            pass "[0.10] GRUB Diagnostics position $pos, default CPU: NOT APPLICABLE, then System ready"
+        else
+            fail "[0.10] GRUB Diagnostics position $pos (test=$opt), default CPU: no NOT APPLICABLE / System ready, or a panic, in $LOG"
+        fi
+        LOG=$OUT/serial-grub-$opt-cpu.log
+        boot "$LOG" 20 -m 32M -cpu qemu64,+smep,+smap -cdrom "$OUT/madire-os-diag-$opt.iso"
+        if grep -q "CPU exception 14: Page Fault (#PF)" "$LOG" && grep -q "Error code: $err" "$LOG" &&
+           grep -qE "^ Cause: $cause$" "$LOG" && ! grep -q "System ready" "$LOG"; then
+            pass "[0.10] GRUB Diagnostics position $pos, SMEP+SMAP CPU: crash screen with #PF $err and the $name Cause line"
+        else
+            fail "[0.10] GRUB Diagnostics position $pos (test=$opt), SMEP+SMAP CPU: no #PF $err with the $name Cause line in $LOG"
+        fi
+    else
+        fail "[0.10] GRUB Diagnostics position $pos: grub-mkrescue failed"
+    fi
+    pos=$((pos + 1))
+done <<< "$SENTRIES"
+if [ "$(wc -l <<< "$DIAGS")" -eq 27 ]; then pass "[0.10] GRUB Diagnostics: 27 entries (16 earlier, 9 user-mode, smep and smap)"
+else fail "[0.10] GRUB Diagnostics: $(wc -l <<< "$DIAGS") entries, expected 27"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 new in 0.9.2)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 new in 0.10)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

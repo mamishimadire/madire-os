@@ -14,7 +14,9 @@
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/cpuid.h"
+#include "kernel/arch/x86/cpuprot.h"
 #include "kernel/arch/x86/gdt.h"
+#include "kernel/arch/x86/gdt_desc.h"
 #include "kernel/arch/x86/idt.h"
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/irq.h"
@@ -30,6 +32,7 @@
 #include "kernel/memory/memory.h"
 #include "kernel/memory/memtest.h"
 #include "kernel/memory/paging.h"
+#include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/memory/vmtest.h"
 #include "kernel/multiboot.h"
@@ -37,6 +40,8 @@
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/schedtest.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/syscall.h"
+#include "kernel/proc/usertest.h"
 #include "kernel/stackpeak.h"
 #include "kernel/timer.h"
 
@@ -196,6 +201,71 @@ static void log_cpu_mode(void)
           arith ? "PASS" : "WRONG");
 }
 
+/*
+ * 0.10: the user-mode parts of the GDT, IDT and TSS, read back from the
+ * tables the CPU is using (sgdt / sidt), so the tests check what is loaded.
+ */
+static void log_user_segments(void)
+{
+    struct __attribute__((packed)) { uint16_t limit; uint64_t base; } gdtr;
+    __asm__ volatile ("sgdt %0" : "=m"(gdtr));
+    klogf("GDT: %u entries (limit 0x%04x); 0x28 placeholder=0x%016llx; "
+          "user data 0x30=0x%016llx; user code 0x38=0x%016llx\n",
+          (unsigned)(gdtr.limit + 1) / 8, gdtr.limit,
+          (unsigned long long)gdt_descriptor(GDT_USER32_PLACEHOLDER),
+          (unsigned long long)gdt_descriptor(GDT_USER_DATA),
+          (unsigned long long)gdt_descriptor(GDT_USER_CODE));
+
+    char ist1[32], ist2[32];
+    size_t n1 = 0, n2 = 0;
+    unsigned other = 0;
+    ist1[0] = ist2[0] = 0;
+    for (int v = 0; v < IDT_HANDLED_VECTORS; v++) {
+        int ist = idt_gate_ist(v);
+        if (ist == 1 && n1 < sizeof(ist1) - 8)
+            n1 += ksnprintf(ist1 + n1, sizeof(ist1) - n1, "%s%d", n1 ? ", " : "", v);
+        else if (ist == 2 && n2 < sizeof(ist2) - 8)
+            n2 += ksnprintf(ist2 + n2, sizeof(ist2) - n2, "%s%d", n2 ? ", " : "", v);
+        else if (ist != 0)
+            other++;
+    }
+    klogf("IDT: IST1 on vector %s; IST2 on vectors %s; %u other vectors on an IST; "
+          "the rest on the current stack\n", ist1, ist2, other);
+    klogf("TSS: RSP0=0x%016llx (thread 0's stack top), IST1=0x%016llx, IST2=0x%016llx\n",
+          (unsigned long long)gdt_rsp0(), (unsigned long long)gdt_ist(1),
+          (unsigned long long)gdt_ist(2));
+}
+
+/*
+ * 0.10: CPU protections for user mode (SMEP, SMAP, CR0.EM) and the freeze of
+ * the kernel half, once paging and the thread stacks' area exist, before
+ * any process. Serial log only (the boot screen's rows are fixed).
+ */
+static void user_mode_setup(bool paging_on)
+{
+    if (!paging_on) {
+        klogf("User mode: NOT APPLICABLE (paging is off)\n");
+        return;
+    }
+    struct cpuprot_status cp;
+    cpuprot_init(&cp);
+    klogf("SMEP: %s\n", cp.smep_on ? "enabled (CR4.SMEP=1): the kernel cannot execute user pages"
+                       : cp.smep_supported ? "FAILED (supported, but CR4.SMEP is not set)"
+                       : "NOT APPLICABLE (not supported by this CPU)");
+    klogf("SMAP: %s\n", cp.smap_on ? "enabled (CR4.SMAP=1): clac on every kernel entry"
+                       : cp.smap_supported ? "FAILED (supported, but CR4.SMAP is not set)"
+                       : "NOT APPLICABLE (not supported by this CPU)");
+    klogf("CR0.EM: %s\n", cp.em_on ? "set: x87, MMX and SSE instructions fault (the kernel uses none)"
+                         : "NOT SET");
+    klogf("User-mode CPU set-up: CR0=0x%08x CR4=0x%016llx\n", cpu_read_cr0(),
+          (unsigned long long)cpu_read_cr4());
+    if ((cp.smep_supported && !cp.smep_on) || (cp.smap_supported && !cp.smap_on) || !cp.em_on)
+        panic("User-mode CPU set-up failed (details on the serial log).");
+    if (!syscall_init())            /* 0.10: SYSCALL entry (EFER.SCE, STAR, LSTAR, SFMASK) */
+        panic("System-call set-up failed (details on the serial log).");
+    paging_freeze_kernel_half();
+}
+
 /* Checks every Multiboot module after start-up (memory, paging and heap are
  * set up by now): a test module (kernel/bootmod.h) must still be intact,
  * which proves nothing the kernel set up was placed on top of it. Serial
@@ -235,7 +305,74 @@ static void run_diagnostics(void)
 {
     /* 0.9 thread diagnostics. The longer names come first: cmdline_has
      * matches prefixes, and "test=preempt" (stage 4) is one of these. */
-    if (cmdline_has("test=reboottriple")) {
+    if (cmdline_has("test=gpflimit")) {           /* before test=gpf: a prefix of it */
+        diag_message("Crash test: general protection fault (selector past the GDT's end)");
+        /* 0.10: selector 0x40 = GDT entry 8, the first one past the 8-entry
+         * GDT (limit 0x3F): #GP(0x40), from the limit check. */
+        __asm__ volatile ("mov $0x40, %%ax\n\t"
+                          "mov %%ax, %%ds" ::: "eax");
+    } else if (cmdline_has("test=freezeviolation")) {
+        diag_message("Crash test: new kernel-half PML4 entry after the freeze (must panic)");
+        /* 0.10: PML4 slot 257 is empty in the kernel half; creating it after
+         * the freeze panics inside paging_map. */
+        uint32_t frame = memory_alloc_page();
+        paging_map(0xFFFF808000000000ull, frame, PTE_WRITE | paging_nx_flag());
+        diag_message("Freeze test: FAIL (the new kernel-half entry was created)");
+    } else if (cmdline_has("test=smep")) {
+        diag_message("Crash test: the kernel executes a user page (SMEP must refuse it)");
+        usertest_smep();                            /* returns only without SMEP */
+        diag_message("SMEP test: NOT APPLICABLE (not supported by this CPU)");
+    } else if (cmdline_has("test=smap")) {
+        diag_message("Crash test: the kernel reads a user page (SMAP must refuse it)");
+        usertest_smap();                            /* returns only without SMAP */
+        diag_message("SMAP test: NOT APPLICABLE (not supported by this CPU)");
+    } else if (cmdline_has("test=rsp0")) {
+        diag_message("RSP0 test: 4 threads check the TSS's RSP0 after every switch...");
+        diag_message(usertest_rsp0() ? "RSP0 test: PASS" : "RSP0 test: FAIL (see serial log)");
+    } else if (cmdline_has("test=uaspace")) {
+        diag_message("Address-space test: 500 address spaces built, entered and torn down...");
+        diag_message(usertest_uaspace() ? "Address-space test: PASS"
+                                        : "Address-space test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userpreempt")) {
+        diag_message("User preemption test: 5 processes and a frame thread for 3 seconds...");
+        diag_message(usertest_userpreempt() ? "User preemption test: PASS"
+                                            : "User preemption test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userchurn")) {
+        diag_message("User churn test: 1000 processes started and ended...");
+        diag_message(usertest_userchurn() ? "User churn test: PASS"
+                                          : "User churn test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userio")) {
+        diag_message("User I/O test: write, nanosleep and bad pointers...");
+        diag_message(usertest_userio() ? "User I/O test: PASS"
+                                       : "User I/O test: FAIL (see serial log)");
+    } else if (cmdline_has("test=usersys")) {
+        diag_message("User syscall test: 8 programs make system calls...");
+        diag_message(usertest_usersys() ? "User syscall test: PASS"
+                                        : "User syscall test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userkmem")) {
+        diag_message("User kernel-memory test: 8 programs reach for the kernel...");
+        diag_message(usertest_userkmem() ? "User kernel-memory test: PASS"
+                                         : "User kernel-memory test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userpriv")) {
+        diag_message("User privilege test: 15 programs try what ring 3 may not...");
+        diag_message(usertest_userpriv() ? "User privilege test: PASS"
+                                         : "User privilege test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userfault")) {
+        diag_message("User fault test: 5 programs make a mistake; each must end alone...");
+        diag_message(usertest_userfault() ? "User fault test: PASS"
+                                          : "User fault test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userkill")) {
+        diag_message("User kill test: 60 spin processes started and killed...");
+        diag_message(usertest_userkill() ? "User kill test: PASS"
+                                         : "User kill test: FAIL (see serial log)");
+    } else if (cmdline_has("test=userspin")) {
+        diag_message("User-mode test: the program spin runs in ring 3 and is preempted...");
+        diag_message(usertest_userspin() ? "User-mode test: PASS"
+                                         : "User-mode test: FAIL (see serial log)");
+    } else if (cmdline_has("test=clac")) {
+        diag_message("clac test: interrupts taken with RFLAGS.AC set...");
+        diag_message(usertest_clac() ? "clac test: PASS" : "clac test: FAIL (see serial log)");
+    } else if (cmdline_has("test=reboottriple")) {
         /* 0.9.1, QEMU only: the reboot fallback, without the keyboard
          * controller. QEMU (-no-reboot) exits when the machine resets. */
         diag_message("Restart test: forcing a triple fault (no keyboard controller)");
@@ -362,7 +499,10 @@ static void run_diagnostics(void)
         __asm__ volatile ("ud2");
     } else if (cmdline_has("test=gpf")) {
         diag_message("Crash test: general protection fault");
-        /* Selector 0x28 = GDT entry 5, beyond the end of our 3-entry GDT. */
+        /* Selector 0x28 = GDT entry 5: since 0.10 the all-zero placeholder
+         * (gdt_desc.h), inside the GDT's limit but not a data or readable
+         * code segment, so the type check raises #GP(0x28) (until 0.10 it
+         * was past the end of a 5-entry GDT; test=gpflimit covers that). */
         __asm__ volatile ("mov $0x28, %%ax\n\t"
                           "mov %%ax, %%ds" ::: "eax");
     }
@@ -512,9 +652,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_draw_header();
 
     bootscreen_status("GDT loaded:", gdt_init() ? BOOT_OK : BOOT_FAILED,
-                      "64-bit code 0x08, data 0x10, TSS 0x18 (IST1 double-fault stack)");
+                      "64-bit code 0x08, data 0x10, TSS 0x18 (IST1, IST2), user data 0x33, code 0x3B");
     bootscreen_status("IDT loaded (256 entries):", idt_init() ? BOOT_OK : BOOT_FAILED, NULL);
     log_cpu_mode();
+    log_user_segments();
     bootscreen_status("Interrupt controller:", pic_init() ? BOOT_OK : BOOT_FAILED,
                       "remapped, IRQs masked");
 
@@ -572,6 +713,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     /* 0.9: kernel_main becomes thread 0 ("kernel"). Other threads get their
      * stacks from slot 507, so they exist only with paging on. */
     thread_init();
+    user_mode_setup(paging_on);
 
     check_boot_modules(mbi);
 
@@ -591,6 +733,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     if (paging_on) {
         if (!schedtest_boot())
             panic("Scheduler self-test failed (details on the serial log).");
+        /* 0.10: three programs as processes (hello, exitcode, nullptr);
+         * deterministic (no timing assumptions), fatal on failure. */
+        if (!usertest_boot())
+            panic("User-mode self-test failed (details on the serial log).");
     } else {
         klogf("Scheduler self-test: NOT APPLICABLE (paging is off: no thread stacks)\n");
     }

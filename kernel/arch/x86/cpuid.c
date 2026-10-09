@@ -118,3 +118,28 @@ bool cpu_enable_nx(void)
                       "d"((uint32_t)(efer >> 32)) : "memory");
     return (cpu_read_efer() & EFER_NXE) != 0;
 }
+
+void cpu_leaf7(uint32_t *max_basic, uint32_t *leaf7_ebx)
+{
+    uint32_t r[4] = { 0, 0, 0, 0 };
+    *max_basic = 0;
+    *leaf7_ebx = 0;
+    if (!cpuid_supported())
+        return;
+    cpuid(0, r);
+    *max_basic = r[0];
+    if (r[0] >= CPUID_STRUCT_FEATURES) {
+        cpuid(CPUID_STRUCT_FEATURES, r);            /* subleaf 0 (ECX = 0) */
+        *leaf7_ebx = r[1];
+    }
+}
+
+void cpu_write_cr0(uint32_t cr0)
+{
+    __asm__ volatile ("mov %0, %%cr0" : : "r"((uint64_t)cr0) : "memory");
+}
+
+void cpu_write_cr4(uint64_t cr4)
+{
+    __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4) : "memory");
+}

@@ -13,4 +13,9 @@ void panic(const char *message) __attribute__((noreturn));
 void panicf(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 void panic_exception(const struct interrupt_frame *frame) __attribute__((noreturn));
 
+/* 0.10: a CPU exception's name and mnemonic ("Page Fault", "#PF"), for
+ * the message when a process is ended by one. */
+const char *exception_name(unsigned vector);
+const char *exception_mnemonic(unsigned vector);
+
 #endif

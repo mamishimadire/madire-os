@@ -75,7 +75,10 @@ static void check_restored(const struct baseline *b)
  * reorder the turns (VirtualBox can deliver several ticks at once after
  * the host delayed the VM, so a slice can run out within microseconds):
  * the order is judged by sched_order_check(), which accepts a deviation
- * only right after a preemption, and requires every thread's full count. */
+ * only where a preemption came within the previous two turns (0.10: a
+ * thread preempted after logging, before yielding, shows the deviation one
+ * turn later), and requires every thread's full count. The log lines still
+ * say "right after a preemption" (an existing test matches them). */
 
 #define PP_ROUNDS        50
 #define PP_CAP           (2 * PP_ROUNDS + 8)
@@ -320,7 +323,8 @@ bool schedtest_threads(void)
         if_bad += code & 0xFF;
     }
     /* Strict round robin unless a preemption reordered turns (allowed only
-     * right after one; every thread must still have all 100 turns). */
+     * where one came within the previous 8 turns, one per thread of the
+     * cycle (0.10); every thread must still have all 100 turns). */
     int32_t cycle[TT_THREADS];
     for (uint32_t i = 0; i < TT_THREADS; i++)
         cycle[i] = (int32_t)i;

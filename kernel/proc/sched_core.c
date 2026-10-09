@@ -286,17 +286,20 @@ enum sched_order sched_order_check(const struct sched_turn *log, uint32_t n,
         if (!known)
             return SCHED_ORDER_BAD_COUNT;
     }
-    /* Breaks, each of which needs a preemption since the previous turn. */
+    /* Breaks, each of which needs a preemption within the previous k turns
+     * (0.10; 0.9 looked at the previous turn only). A thread preempted after
+     * logging its turn but before yielding makes the wrong turn appear only
+     * after every other thread of the cycle has logged once more, and those
+     * turns already carry the raised count. */
     for (uint32_t i = 0; i < n; i++) {
         int32_t want = cycle[0];
-        uint64_t before = pre_start;
         if (i > 0) {
             uint32_t j = 0;
             while (cycle[j] != log[i - 1].tid)
                 j++;
             want = cycle[(j + 1) % k];
-            before = log[i - 1].preemptions;
         }
+        uint64_t before = i >= k ? log[i - k].preemptions : pre_start;
         if (log[i].tid == want)
             continue;
         if (log[i].preemptions <= before)

@@ -136,8 +136,13 @@ void sched_tick(struct sched *s, uint64_t now);
  *   - every thread of the cycle has exactly `rounds` turns, nothing else;
  *   - a turn that is not the expected one (the thread after the previous
  *     turn's thread in the cycle, or cycle[0] first) is a "break"; a break
- *     is allowed only where the preemption count rose since the previous
- *     turn (or since `pre_start` for the first);
+ *     is allowed only where the preemption count rose within the previous
+ *     k turns, k = the cycle's length (or since `pre_start` for the first k
+ *     turns). 0.10: 0.9 compared with the previous turn only, but a thread
+ *     preempted after logging its turn and before yielding shows the wrong
+ *     turn only once every other thread has logged again (with the count
+ *     already raised): the boot self-test failed on a correct kernel. For
+ *     the ping-pong (k = 2) that is the previous two turns, nothing looser;
  *   - SCHED_ORDER_STRICT: no break; SCHED_ORDER_RELAXED: every break
  *     explained by a preemption; otherwise BAD_COUNT or BAD_ORDER.
  */

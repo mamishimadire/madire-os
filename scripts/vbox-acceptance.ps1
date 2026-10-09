@@ -22,7 +22,7 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, memexhaust, module, repeat
+    [string[]]$Only = @(),              # menu, boot, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, user, smx, memexhaust, module, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$Repeat = 0                    # extra normal boots (self-test result of each)
 )
@@ -33,6 +33,12 @@ if (-not $Iso) { $Iso = Join-Path $build "madire-os.iso" }
 if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
 if (-not $OutDir) { $OutDir = Join-Path $build "vbox-acceptance" }
 $serial = Join-Path $build "vbox-serial.log"    # the documented COM1 file
+
+# 0.10: the version is read once, from kernel/kernel.h; the checks that
+# contain it build their regex from $VRe, so a new version changes no check.
+$verMatch = Select-String -Path (Join-Path $root "kernel\kernel.h") -Pattern '^#define MADIRE_OS_VERSION "([0-9]+(\.[0-9]+)*)"$'
+if (-not $verMatch) { throw "cannot read MADIRE_OS_VERSION from kernel\kernel.h" }
+$VRe = [regex]::Escape($verMatch.Matches[0].Groups[1].Value)   # 0.9.2 -> 0\.9\.2
 
 # ---- VBoxManage ----
 function Find-VBoxManage {
@@ -152,12 +158,23 @@ function Stop-Run([string]$name, [string[]]$expect) {
     }
 }
 
-# GRUB Diagnostics positions (0.9): presses of the down arrow from the
-# first entry of the submenu.
+# GRUB Diagnostics positions (0.9; 16-26 appended in 0.10): presses of the
+# down arrow from the first entry of the submenu.
 $Diag = [ordered]@{
     divzero = 0; ud = 1; gpf = 2; pfnull = 3; pfunmapped = 4; pfreadonly = 5; pfnx = 6;
     pflow = 7; stackoverflow = 8; memexhaust = 9; doublefree = 10; freereserved = 11;
-    timer = 12; keyboard = 13; preempt = 14; threadoverflow = 15
+    timer = 12; keyboard = 13; preempt = 14; threadoverflow = 15;
+    userspin = 16; userkill = 17; userfault = 18; userpriv = 19; userkmem = 20;
+    usersys = 21; userio = 22; userpreempt = 23; userchurn = 24; smep = 25; smap = 26
+}
+
+# Notes a check that a pattern is absent from a kept serial log (case-
+# sensitive: normal boot lines say "panic_exception" and "panics").
+function Absent([string]$name, [string]$pattern) {
+    $log = Join-Path $OutDir "$Prefix-$name.serial.log"
+    if (-not (Test-Path $log)) { return }
+    $n = @(Select-String -Path $log -Pattern $pattern -CaseSensitive).Count
+    Note ("{0,-16} {1,-8} /no {2}: {3} lines/" -f $name, $(if ($n -eq 0) { "OK" } else { "MISSING" }), $pattern, $n)
 }
 
 # Boots a Diagnostics entry: down to "Diagnostics", Enter, down to the entry, Enter.
@@ -184,6 +201,9 @@ if (Want "menu") {
     for ($i = 0; $i -lt 15; $i++) { Down }
     Start-Sleep -Milliseconds 300
     Shot "grub-diagnostics-end"             # entries 14 and 15 at the bottom
+    for ($i = 0; $i -lt 11; $i++) { Down }
+    Start-Sleep -Milliseconds 300
+    Shot "grub-diagnostics-user"            # 0.10: entries 16-26, 26 (smap) selected
     Stop-Run "menu" @()
 }
 if (Want "boot") {
@@ -201,7 +221,7 @@ if (Want "boot") {
     Start-Sleep -Seconds 1
     Shot "console-mem"
     Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
-        "^  0  running .* kernel$", "^Madire OS v0\.9\.2 \(64-bit x86-64, Multiboot 1\)$",
+        "^  0  running .* kernel$", "^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$",
         "^Kernel stack: +[0-9]+ bytes at peak, of 16384$",
         "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$")
     # 0.9.2: keys were typed (the console was opened and used), but key
@@ -211,6 +231,18 @@ if (Want "boot") {
         $keys = @(Select-String -Path $log -Pattern '^key: ').Count
         Note ("{0,-16} {1,-8} /no key event logged although keys were typed: {2} key lines/" -f "boot-console",
               $(if ($keys -eq 0) { "OK" } else { "MISSING" }), $keys)
+        # 0.10: the user-mode boot self-test (hello, exitcode, nullptr as
+        # processes 1-3), from the same normal boot.
+        foreach ($p in @("^User-mode self-test: hello \(one line through write\): process 1 exited, status 0 \(expected 0\): OK$",
+                         "^User-mode self-test: exitcode \(exit\(42\)\): process 2 exited, status 42 \(expected 42\): OK$",
+                         "^User-mode self-test: nullptr \(read of address 0\): process 3 killed by a CPU exception: #PF, address 0x0000000000000000, instruction 48 8b 04 25: OK$",
+                         "^User-mode self-test: PASS$")) {
+            $ok = Select-String -Path $log -Pattern $p -Quiet
+            Note ("{0,-16} {1,-8} /{2}/" -f "boot-selftest", $(if ($ok) { "OK" } else { "MISSING" }), $p)
+        }
+        # 0.10: the CPU features as the VM presents them (report only).
+        $feat = @(Select-String -Path $log -Pattern '^(SMEP|SMAP|NX|CR0\.EM): ' | ForEach-Object { $_.Line })
+        foreach ($f in $feat) { Write-Host "cpu (report only): $f"; $script:results.Add("cpu report: $f") }
     }
 }
 # 0.9.2: console scrollback. dmesg 60 gives enough lines to page back.
@@ -277,7 +309,7 @@ if (Want "commands") {
     Start-Sleep -Seconds 1
     Shot "reboot-cancelled"
     Stop-Run "commands" @("^mem: Show memory information$", "^Usage: mem$",
-        "^Madire OS madire 0\.9\.2 x86_64$", "^madire$",
+        "^Madire OS madire $VRe x86_64$", "^madire$",
         "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$",
         "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  reboot   Restart the computer \(asks first\)$",
         "^Restart Madire OS now\? Type 'yes' to confirm:$", "^yes/no> no$", "^Restart cancelled\.$")
@@ -376,6 +408,57 @@ if (Want "diag") {
     Start-Sleep -Seconds 1
     Shot "keyboard"
     Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP")
+}
+# 0.10: the user-mode Diagnostics entries 16-24, each through GRUB: its
+# PASS line, then System ready, and no panic (the same result lines as the
+# QEMU GRUB checks).
+if (Want "user") {
+    $user = [ordered]@{
+        userspin = @("User-mode test: PASS", 60); userkill = @("User kill test: PASS", 90);
+        userfault = @("User fault test: PASS", 90); userpriv = @("User privilege test: PASS", 90);
+        userkmem = @("User kernel-memory test: PASS", 90); usersys = @("User syscall test: PASS", 90);
+        userio = @("User I/O test: PASS", 90); userpreempt = @("User preemption test: PASS", 90);
+        userchurn = @("User churn test: PASS", 300)
+    }
+    foreach ($t in $user.Keys) {
+        $pass = [regex]::Escape($user[$t][0])
+        Start-Diag $t
+        Wait-Serial "^$pass$|FAIL|PANIC|$halted" $user[$t][1] | Out-Null
+        Wait-Serial "^System ready\.|$halted" 20 | Out-Null
+        Start-Sleep -Seconds 1
+        Shot $t
+        Stop-Run $t @("^$pass$", "^System ready\.")
+        Absent $t "PANIC"
+    }
+}
+# 0.10: smep and smap (entries 25 and 26). The expected result follows the
+# CPU as the VM presents it (the boot's "SMEP:"/"SMAP:" line): enabled ->
+# the crash screen with #PF and the Cause line; not supported -> NOT
+# APPLICABLE, then System ready.
+if (Want "smx") {
+    $smx = [ordered]@{
+        smep = @("SMEP", "0x00000011", "SMEP violation \(the kernel executed a user page\)", "0x0000000000400000");
+        smap = @("SMAP", "0x00000001", "SMAP violation \(the kernel read a user page, AC=0\)", "0x0000000000500000")
+    }
+    foreach ($t in $smx.Keys) {
+        $Feat, $err, $cause, $addr = $smx[$t]      # not $T: PowerShell names ignore case
+        Start-Diag $t
+        Wait-Serial "^$Feat test: NOT APPLICABLE|$halted" 60 | Out-Null
+        Wait-Serial "^System ready\.|$halted" 20 | Out-Null
+        Start-Sleep -Seconds 1
+        Shot $t
+        $on = (Test-Path $serial) -and (Select-String -Path $serial -Pattern "^${Feat}: enabled" -Quiet)
+        Write-Host "${t} (report only): the VM's CPU $(if ($on) { "has $Feat (enabled)" } else { "does not report $Feat" })"
+        $script:results.Add("$t report: $Feat $(if ($on) { 'enabled' } else { 'not supported' })")
+        if ($on) {
+            Stop-Run $t @("^$Feat test: user page $addr ", "CPU exception 14: Page Fault \(#PF\)", "Error code: $err",
+                          "^ Cause: $cause$", "^ Address: $addr$", $halted)
+            Absent $t "System ready|without a fault|NX violation"
+        } else {
+            Stop-Run $t @("^$Feat test: NOT APPLICABLE \(not supported by this CPU\)$", "^System ready\.")
+            Absent $t "PANIC"
+        }
+    }
 }
 if (Want "memexhaust") {
     Start-Diag "memexhaust"

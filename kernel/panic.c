@@ -34,6 +34,16 @@ static const char *const exception_mnemonics[32] = {
     "-", "-", "-", "-", "#HV", "#VC", "#SX", "-",
 };
 
+const char *exception_name(unsigned vector)
+{
+    return exception_names[vector & 31];
+}
+
+const char *exception_mnemonic(unsigned vector)
+{
+    return exception_mnemonics[vector & 31];
+}
+
 volatile bool panic_active;
 
 static void panic_begin(void)
@@ -73,18 +83,25 @@ void panicf(const char *fmt, ...)
 
 /* Exception 14: the error code decoded, and the faulting address (CR2).
  * Every page fault is fatal: no page is ever brought in on demand. Split
- * over up to three lines so none reaches the 80th column (an 80-character
- * line would leave a blank line: vga_putc moves on after column 79). */
-static void print_page_fault(uint32_t error_code, uint64_t cr2)
+ * over up to four lines so none reaches the 80th column (an 80-character
+ * line would leave a blank line: vga_putc moves on after column 79).
+ * 0.10: a SMEP or SMAP fault gets a "Cause:" line (pf_smx_str); its fetch
+ * is then not called an NX violation, which the error code cannot tell. */
+static void print_page_fault(uint32_t error_code, uint64_t cr2, uint64_t cr4, uint64_t rflags)
 {
+    const char *smx = pf_smx_str(error_code, cr2, cr4, rflags);
     kprintf(" Page fault: %s, %s, %s\n", pf_cause_str(error_code), pf_access_str(error_code),
             pf_mode_str(error_code));
     /* The optional parts each start with ", "; drop the first one. */
     const char *reserved = pf_reserved_str(error_code), *fetch = pf_fetch_str(error_code);
+    if (smx && fetch[0])
+        fetch = ", instruction fetch";
     if (reserved[0])
         kprintf(" Details: %s%s\n", reserved + 2, fetch);
     else if (fetch[0])
         kprintf(" Details: %s\n", fetch + 2);
+    if (smx)
+        kprintf(" Cause: %s\n", smx);
     kprintf(" Address: 0x%016llx\n", (unsigned long long)cr2);
 }
 
@@ -152,7 +169,7 @@ void panic_exception(const struct interrupt_frame *f)
             exception_names[f->vector & 31], exception_mnemonics[f->vector & 31]);
     kprintf(" Error code: 0x%08x\n", (uint32_t)f->error_code);
     if (f->vector == 14)
-        print_page_fault((uint32_t)f->error_code, cr2);
+        print_page_fault((uint32_t)f->error_code, cr2, cr4, f->rflags);
     if (f->vector == 8)
         print_double_fault(f->rsp, cr2);
     kputc('\n');

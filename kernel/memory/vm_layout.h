@@ -54,6 +54,22 @@
 #define VM_PHYS_VIEW_INDEX    256u
 #define VM_PHYS_VIEW_BASE     0xFFFF800000000000ull /* virtual = this + physical */
 
+/*
+ * 0.10: a process's lower half (its own tables; the upper half is the
+ * kernel's, shared). User pages lie in [VM_USER_MIN, VM_USER_TOP): nothing
+ * below 4 MiB (NULL and small offsets from it always fault), and the last
+ * canonical page below the hole is never mapped. A program's code and
+ * read-only data are at VM_USER_TEXT (read + execute), its data and bss at
+ * VM_USER_DATA (read + write, no-execute), and its stack ends at
+ * VM_USER_STACK_TOP, with nothing mapped below it.
+ */
+#define VM_USER_MIN           0x0000000000400000ull
+#define VM_USER_TOP           0x00007FFFFFFFF000ull /* exclusive */
+#define VM_USER_TEXT          0x0000000000400000ull
+#define VM_USER_DATA          0x0000000000500000ull
+#define VM_USER_STACK_TOP     VM_USER_TOP
+#define VM_USER_STACK_SIZE    (32u * 1024)
+
 /* Where the kernel reads a physical address that lies in the physical view
  * (low 1 MiB, boot data). Anything else is not mapped there. */
 static inline void *phys_view(uint64_t phys)

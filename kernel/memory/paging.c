@@ -947,7 +947,30 @@ enum vmm_result paging_map(uint64_t va, uint64_t phys, uint64_t flags)
     enum vmm_result r = vmm_map(&vm, va, phys, flags);
     stats.page_tables = vm.page_tables;
     preempt_enable();
+    if (r == VMM_ERR_FROZEN)            /* 0.10: a kernel bug, never an ordinary error */
+        panicf("Kernel-half PML4 entry created after the freeze: 0x%016llx (PML4 slot %u).",
+               (ull)va, vm_index(va, 4));
     return r;
+}
+
+void paging_freeze_kernel_half(void)
+{
+    require_enabled("paging_freeze_kernel_half");
+    char list[96];
+    size_t n = 0;
+    unsigned count = 0;
+    preempt_disable();
+    vmm_freeze_upper(&vm);
+    const volatile uint64_t *pml4 = (const volatile uint64_t *)(uintptr_t)VM_PML4;
+    for (unsigned i = VM_ENTRIES / 2; i < VM_ENTRIES; i++) {
+        if (!pte_present(pml4[i]) || n >= sizeof(list) - 8)
+            continue;
+        n += ksnprintf(list + n, sizeof(list) - n, "%s%u", count ? ", " : "", i);
+        count++;
+    }
+    preempt_enable();
+    klogf("Kernel half frozen: PML4 slots %s (%u entries); every process shares them, "
+          "a new one now panics\n", list, count);
 }
 
 enum vmm_result paging_unmap(uint64_t va, uint64_t *phys_out)
@@ -1005,4 +1028,14 @@ void vmm_window_unmap(void)
 const struct paging_stats *paging_stats(void)
 {
     return &stats;
+}
+
+const struct vmm_ops *paging_recursive_ops(void)
+{
+    return &recursive_ops;
+}
+
+uint64_t paging_kernel_cr3(void)
+{
+    return stats.cr3;
 }

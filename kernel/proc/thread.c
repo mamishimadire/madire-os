@@ -1,4 +1,5 @@
 /* Kernel threads (see thread.h). */
+#include "kernel/arch/x86/gdt.h"
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/kernel.h"
@@ -29,6 +30,9 @@ struct kthread {
     uint64_t rsp;               /* saved by switch_to while off the CPU */
     int slot;                   /* kernel stack slot; -1 for thread 0 */
     uint64_t turn_start;        /* tick at which it last got the CPU */
+    uint64_t cr3;               /* 0.10: its address space's PML4; 0 = the kernel's */
+    uint64_t preempted;         /* 0.10: times it was switched out at the preemption point */
+    uint64_t turn_longest;      /* 0.10: its own longest turn, in ticks (test=userpreempt) */
 };
 
 /* All scheduler state is changed with interrupts disabled (irq_save). */
@@ -42,10 +46,13 @@ static volatile uint64_t preemptions;
 static volatile uint64_t turn_max;      /* longest turn of a thread other than 0 */
 static volatile bool log_exits = true;
 static volatile uint32_t peak_max;      /* highest final stack peak since reset */
+static uint64_t kernel_cr3;             /* 0.10: the kernel's PML4 (thread_init) */
+static uint64_t loaded_cr3;             /* 0.10: what CR3 holds now */
 
 #define STACK_PAGES (KSTACK_SIZE / VM_PAGE_SIZE)
 
 extern void switch_to(uint64_t *save_rsp, uint64_t new_rsp);
+extern char stack_top[];                    /* boot/boot.asm: thread 0's stack */
 extern char thread_trampoline[];
 
 static void copy_name(char *dst, const char *src)
@@ -65,8 +72,12 @@ void thread_init(void)
         threads[i].name[0] = '\0';
         threads[i].rsp = 0;
         threads[i].slot = -1;
+        threads[i].cr3 = 0;
+        threads[i].preempted = 0;
     }
     copy_name(threads[0].name, "kernel");
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(kernel_cr3));
+    loaded_cr3 = kernel_cr3;
     ready = true;
     irq_restore(f);
 }
@@ -116,16 +127,40 @@ bool thread_need_resched(void)
     return sched.need_resched;
 }
 
+uint64_t thread_kstack_top(int32_t tid)
+{
+    if (tid == 0)
+        return (uint64_t)(uintptr_t)stack_top;
+    if (tid < 0 || tid >= SCHED_MAX_THREADS || threads[tid].slot < 0)
+        return 0;
+    return kstack_bottom(threads[tid].slot) + KSTACK_SIZE;
+}
+
 /* Interrupts are off. Returns once `prev` runs again (never, after exit).
- * Also measures turns: how many ticks `prev` ran since it got the CPU. */
+ * Also measures turns: how many ticks `prev` ran since it got the CPU.
+ * 0.10: every switch, from every path (yield, sleep, join, exit,
+ * preemption), comes through here, and sets the TSS's RSP0 to the next
+ * thread's kernel stack top: an interrupt or exception from ring 3 then
+ * always lands on the stack of the thread that was running. */
 static void switch_threads(int32_t prev, int32_t next)
 {
     if (next == prev)
         return;
     uint64_t now = timer_ticks();
+    if (now - threads[prev].turn_start > threads[prev].turn_longest)
+        threads[prev].turn_longest = now - threads[prev].turn_start;
     if (prev != 0 && now - threads[prev].turn_start > turn_max)
         turn_max = now - threads[prev].turn_start;
     threads[next].turn_start = now;
+    gdt_set_rsp0(thread_kstack_top(next));
+    /* 0.10: each thread runs in its own address space (kernel threads in
+     * the kernel's). CR3 is loaded only when it changes; loading it also
+     * flushes the TLB (no global pages, no PCIDs). */
+    uint64_t cr3 = threads[next].cr3 ? threads[next].cr3 : kernel_cr3;
+    if (cr3 != loaded_cr3) {
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+        loaded_cr3 = cr3;
+    }
     switch_to(&threads[prev].rsp, threads[next].rsp);
 }
 
@@ -263,6 +298,9 @@ int32_t thread_create(const char *name, thread_fn fn, void *arg, bool detached)
     top[-8] = (uint64_t)(uintptr_t)arg;             /* r13 */
     top[-9] = 0;                                    /* r14 */
     top[-10] = 0;                                   /* r15 */
+    threads[tid].cr3 = 0;                           /* 0.10: starts in the kernel's address space */
+    threads[tid].preempted = 0;
+    threads[tid].turn_longest = 0;
 
     copy_name(threads[tid].name, name);
     threads[tid].slot = slot;
@@ -351,6 +389,9 @@ void thread_exit(int32_t code)
     if (log_exits)
         klogf("Thread %d '%s' exited: code %d, stack peak %u of %u\n", (int)me,
               threads[me].name, (int)code, peak, (unsigned)KSTACK_SIZE);
+    if (threads[me].cr3)
+        panicf("thread_exit: thread %d '%s' is still in an address space (CR3 0x%016llx).",
+               (int)me, threads[me].name, (unsigned long long)threads[me].cr3);
     irq_save();                     /* never restored: this thread is done */
     int32_t prev = sched.current, next = prev;
     enum sched_result r = sched_exit(&sched, code, &next);
@@ -422,6 +463,7 @@ void thread_preempt_point(void)
     int32_t prev = sched.current, next = prev;
     if (sched_preempt(&sched, preempt_count(), &next)) {
         preemptions++;
+        threads[prev].preempted++;
         switch_threads(prev, next);
     }
 }
@@ -436,4 +478,34 @@ void thread_screen_violation(void)
     int32_t cur = sched.current;
     panicf("Screen output from thread %d '%s': only thread 0 writes to the screen "
            "(use klogf).", (int)cur, threads[cur].name);
+}
+
+void thread_set_cr3(uint64_t cr3)
+{
+    uint32_t f = irq_save();
+    int32_t me = sched.current;
+    threads[me].cr3 = cr3;
+    uint64_t want = cr3 ? cr3 : kernel_cr3;
+    if (want != loaded_cr3) {
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(want) : "memory");
+        loaded_cr3 = want;
+    }
+    irq_restore(f);
+}
+
+uint64_t thread_cr3(int32_t tid)
+{
+    if (tid < 0 || tid >= SCHED_MAX_THREADS)
+        return 0;
+    return threads[tid].cr3 ? threads[tid].cr3 : kernel_cr3;
+}
+
+uint64_t thread_preempted(int32_t tid)
+{
+    return (tid >= 0 && tid < SCHED_MAX_THREADS) ? threads[tid].preempted : 0;
+}
+
+uint64_t thread_turn_longest(int32_t tid)
+{
+    return (tid >= 0 && tid < SCHED_MAX_THREADS) ? threads[tid].turn_longest : 0;
 }

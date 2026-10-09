@@ -46,6 +46,7 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 
 - Back up to a `wip/<version>` branch at every stop point, with a message saying whether the state is TESTED.
 - One commit on `main` per milestone, tagged `vX.Y` (or `vX.Y.Z`); delete the `wip` branch after the final push.
+- **`wip/` branches are backups only (binding, since 0.10):** never open or merge a pull request from a `wip/` branch into `main`; `main` receives only the single milestone commit, after acceptance. (Branch protection isn't available for this repository, so this rule is the protection.)
 - Commit and tag messages are UTF-8 **without a byte order mark**; verify their first bytes (`57 49 50` for "WIP", for example). PowerShell's default output adds a BOM: write message files with `UTF8Encoding($false)`.
 - `.vscode/` is never committed.
 
@@ -58,12 +59,17 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 
 - If a command is refused for lack of a permission verdict ("no verdict"), **retry once only**, then stop and report. Never bypass a permission check.
 
-## 10. External code
+## 10. User memory (binding, since 0.10)
+
+- The kernel reads user memory only through `copy_from_user` (or checks it with `user_readable`), never by dereferencing a user address.
+- **Check, then copy:** any milestone that adds memory-unmapping system calls or threads inside a process must make the user-pointer check and the copy atomic (or copy through the physical-access window), with a test that changes the mapping between check and copy.
+
+## 11. External code
 
 - No external code, text or assets are copied without the owner's approval and a licence check. Madire OS has no licence yet; one must be decided first.
 - External references are studied outside the repository; see [docs/references.md](docs/references.md).
 
-## 11. Build and test commands
+## 12. Build and test commands
 
 ```powershell
 .\scripts\build.ps1                 # Windows: build and test in the Codespace, fetch the ISO

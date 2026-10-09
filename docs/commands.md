@@ -1,6 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.3
+# Madire OS Command Standard (MOCS) v0.5
 
-**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default.
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`.
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -24,7 +24,9 @@ Madire OS provides the foundations that applications need (processes, files, dev
 | **PLANNED** | Planned; the entry names the foundation it needs first |
 | **APPLICATION** | An installable application, not part of Madire OS |
 
-**Implemented today (Madire OS 0.9.1):** 14 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9), and `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1). `ps` lists the kernel threads; it becomes the process list in 0.10. Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
+**Implemented today (since Madire OS 0.9.1; unchanged in 0.9.2 and 0.10):** 14 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9), and `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1). `ps` lists the kernel threads; it becomes the process list in 0.11. Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
+
+**In this standard (v0.5):** 182 commands: 14 IMPLEMENTED, 155 PLANNED and 13 APPLICATION (by level: 20 CORE, 149 SYSTEM, 13 APPLICATION).
 
 **Notes on the 0.9.1 commands:**
 
@@ -33,14 +35,14 @@ Madire OS provides the foundations that applications need (processes, files, dev
 - `dmesg` shows only what the kernel wrote through `kprintf`/`klogf` (a 32 KiB log). The boot screen's status lines and the console's command output go to the serial port directly and aren't in it (a boot-screen line can therefore appear joined to the next one). Since 0.9.2 key events aren't logged by default, so `dmesg` holds no typed keys (they are logged only with the boot option `keylog`, for tests, or during the keyboard diagnostics).
 - `help <unknown>` prints only `No help for 'X': unknown command.`, without a second sentence, so that every line fits 79 columns (names longer than 40 characters are shortened).
 
-**Today: where the commands run.** Madire OS has no user programs yet, so all 14 implemented commands run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. After 0.10 (user processes), SYSTEM commands are expected to move out into separate user programs; CORE commands stay in the shell.
+**Today: where the commands run.** Since 0.10 Madire OS runs user processes, but only its built-in test programs, and no command starts one; so all 14 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Once programs can be loaded and managed (0.11: ELF programs from boot modules, `run`, `kill`, `ps` with process numbers), SYSTEM commands are expected to move out into separate user programs; CORE commands stay in the shell.
 
 | Command | Level | Today |
 |---|---|---|
 | `help`, `echo`, `history` | CORE | in the kernel console; stays in the shell |
-| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot` | SYSTEM | in the kernel console; expected to become separate programs after 0.10 |
+| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot` | SYSTEM | in the kernel console; expected to become separate programs after 0.11 |
 
-**Foundations** named below: processes (0.10), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
+**Foundations** named below: processes (0.10 user processes, 0.11 programs and process management), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
 
 ## 3. Commands
 
@@ -66,6 +68,12 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `fg` | Bring a background program to the foreground | CORE | PLANNED (processes, job control) |
 | `bg` | Continue a stopped program in the background | CORE | PLANNED (processes, job control) |
 | `time` | Measure how long a command takes to run | CORE | PLANNED (processes) |
+| `pushd` | Change to a folder and remember the previous one on a stack | CORE | PLANNED (filesystem; shell state) |
+| `popd` | Return to the folder last remembered by `pushd` | CORE | PLANNED (filesystem; shell state) |
+| `prompt` | Show or change the shell prompt | CORE | PLANNED (shell language) |
+| `presskey` | Wait until a key is pressed (in scripts) | SYSTEM | PLANNED (shell language, for scripts) |
+| `colors` | Show or set the console's colour scheme (text and background colours) | SYSTEM | PLANNED (terminal app, graphics) |
+| `wintitle` | Set the terminal window's title | SYSTEM | PLANNED (terminal app, graphics) |
 
 ### System information
 
@@ -79,7 +87,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `hostname` | Show the computer's name (a fixed name, `madire`, for now) | SYSTEM | IMPLEMENTED (0.9.1; changing it: PLANNED, settings storage) |
 | `date` | Show the date and time (from the real-time clock; no time zone yet) | SYSTEM | IMPLEMENTED (0.9.1; time zones and setting the date: PLANNED, settings storage) |
 | `system` | Show a readable summary of the whole system: OS, version, CPU, memory, disks, devices, uptime | SYSTEM | PLANNED (disk and hardware drivers) |
-| `disk` | Show disks and how they are used | SYSTEM | PLANNED (disk drivers) |
+| `disk` | Show disks and how they are used; subcommands `disk label` (show or change a volume's name) and `disk info` (a volume's name and serial number, read only) | SYSTEM | PLANNED (disk drivers; `disk label` and `disk info` also need the filesystem) |
 | `devices` | Show connected hardware | SYSTEM | PLANNED (hardware drivers) |
 | `free` | Show memory use in one compact table (used, free, total) | SYSTEM | PLANNED (no new foundation) |
 | `lscpu` | Show the processor's cores, caches and topology in detail | SYSTEM | PLANNED (multi-core support, ACPI tables) |
@@ -91,9 +99,9 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `ps` | List what is running (kernel threads today; processes from 0.10) | SYSTEM | IMPLEMENTED |
-| `run` | Start a program | SYSTEM | PLANNED (processes, 0.10) |
-| `kill` ⚠ | End a process by its number | SYSTEM | PLANNED (processes, 0.10) |
+| `ps` | List what is running (kernel threads today; processes from 0.11) | SYSTEM | IMPLEMENTED |
+| `run` | Start a program | SYSTEM | PLANNED (processes, 0.11) |
+| `kill` ⚠ | End a process by its number | SYSTEM | PLANNED (processes, 0.11) |
 | `pkill` ⚠ | End processes by name | SYSTEM | PLANNED (processes) |
 | `top` | Show running processes and their resource use, updated live | SYSTEM | PLANNED (processes) |
 | `nice` | Start a program with a given priority | SYSTEM | PLANNED (processes, scheduler priorities) |
@@ -116,6 +124,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `stat` | Show a file's details | SYSTEM | PLANNED (filesystem) |
 | `find` | Search for files and folders by name or property | SYSTEM | PLANNED (filesystem) |
 | `locate` | Find files quickly through an index | SYSTEM | PLANNED (filesystem) |
+| `fileattr` | Show or change a file's attributes (read-only, hidden) | SYSTEM | PLANNED (filesystem) |
 
 ### Reading and text (needs the filesystem and pipes)
 
@@ -290,6 +299,8 @@ These are subcommands of `pkg`, not separate commands. `pkg remove` is the one n
 | `locale` | Show or set the language and regional formats | SYSTEM | PLANNED (settings storage) |
 | `schedule` | Run commands at set times | SYSTEM | PLANNED (processes, filesystem) |
 | `open` | Open a file or address with its default app | SYSTEM | PLANNED (graphics, apps) |
+| `defaults` | Show or choose which app opens each file type | SYSTEM | PLANNED (graphics, apps) |
+| `bootconf` ⚠ | Show or change the boot configuration | SYSTEM | PLANNED (UEFI / boot phase) |
 
 ### Madire Security Platform
 
@@ -365,6 +376,10 @@ Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, b
 | `cpu` / `lscpu` | `cpu` is a summary; `lscpu` lists cores, caches and topology in detail |
 | `netstat` / `ss` | `netstat` summarises connections and statistics; `ss` shows each socket in detail |
 | `dmesg` / `logs` | `dmesg` shows kernel messages only; `logs` the whole system log |
+| `sleep` / `presskey` | `sleep` waits for a given time; `presskey` waits for a key press |
+| `disk label` / `disk info` | `disk label` names a volume (shows or changes the name); `disk info` only shows a volume's name and serial number |
+| `disk info` / `volume` | `disk info` is about storage volumes; `volume` is the sound volume |
+| `chmod` / `fileattr` | `chmod` sets who may read, write or run a file (permissions); `fileattr` sets a file's own attributes (read-only, hidden) || `open` / `defaults` | `open` opens one file with its default app; `defaults` chooses which app is the default |
 
 ## 5. Shell language
 
@@ -382,7 +397,10 @@ These are features of the shell, not commands:
 ## 6. Rules
 
 - **Design principles:** simple, predictable, safe, scriptable, documented, consistent.
+- **Names (since v0.5):** Madire commands use Madire's own names or open Unix/POSIX names, never Microsoft/DOS-specific command names. Windows names appear only in the "Windows equivalents" table (section 8).
 - **Help everywhere:** every official command eventually supports `command --help` and `man command`. Both document the purpose, syntax, options, examples, exit status and the permissions required. Since 0.9.1 every implemented command answers `<command> --help` and `help <command>` (its purpose and usage, so far); `man` needs the filesystem.
+- **"Did you mean" (PLANNED, candidate for the shell milestone after 0.11):** when a command name is not found, the shell suggests the closest implemented command or commands by edit distance (for example `hlep` → `help`), in lines of at most 79 columns. A suggestion is only text: nothing is ever run automatically.
+- **Help sections (PLANNED, same candidate):** like the Linux manual's sections (1 user commands, 8 administration commands, 2 system calls), future Madire help separates user commands, administration commands and the system-call reference.
 - **Destructive commands** (marked ⚠: for example `rm`, `format`, `partition`, `userdel`, `reboot`) require confirmation or show a clear warning first.
 - **Madire AI** never changes the system without informing the user first.
 - **Keeping this standard current:** whenever a milestone adds, changes or removes a command, this file is updated in the same milestone (status, level, purpose, foundation) and the MOCS version goes up by one step (v0.1 → v0.2 → …). New commands follow these rules: one meaning per name, a level (CORE, SYSTEM or APPLICATION), `--help`, and a confirmation or a clear warning before destructive actions. The same rule is in [AGENTS.md](../AGENTS.md).
@@ -391,7 +409,7 @@ These are features of the shell, not commands:
 ## 7. Priority order
 
 1. Kernel, memory, shell: **done** (0.1–0.9).
-2. Processes: kernel threads (0.9, done), user processes (0.10).
+2. Processes: kernel threads (0.9, done), user processes (0.10), programs and process management (0.11).
 3. Filesystem (1.0).
 4. Drivers.
 5. Networking.
@@ -401,3 +419,33 @@ These are features of the shell, not commands:
 9. Madire AI.
 
 The small 0.9.1 (shell commands that need no new foundation, done) and 0.9.2 (console scrollback, key logging off by default) come between 0.9 and 0.10; see [roadmap.md](roadmap.md).
+
+## 8. Windows equivalents
+
+For people who know the Windows command prompt: the Madire names for common Windows commands. Most are PLANNED; the status of each Madire command is in section 3.
+
+| Windows | Madire OS |
+|---|---|
+| `DIR` | `ls` |
+| `COPY` | `cp` |
+| `DEL` | `rm` |
+| `TYPE` | `cat` |
+| `TASKLIST` | `ps` |
+| `TASKKILL` | `kill` (by number), `pkill` (by name) |
+| `SC` | `service` (one service), `services` (the list) |
+| `SCHTASKS` | `schedule` |
+| `CHKDSK` | `fsck` |
+| `DISKPART` | `partition` (and `lsblk` to list disks) |
+| `ICACLS` | `chmod`, `chown`, `chgrp` (file permissions and owners) |
+| `SET` | `set` (shell variables), `env` / `export` (the environment) |
+| `DOSKEY` | `alias` (macros), `history` (recall) |
+| `START` | `open` (a file or address), `run` (a program) |
+| `SYSTEMINFO` | `system` |
+| `PAUSE` | `presskey` |
+| `COLOR` | `colors` |
+| `TITLE` | `wintitle` |
+| `ATTRIB` | `fileattr` |
+| `LABEL` | `disk label` |
+| `VOL` | `disk info` |
+| `BCDEDIT` | `bootconf` |
+| `ASSOC`, `FTYPE` | `defaults` |

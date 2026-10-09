@@ -56,4 +56,20 @@ void vmm_window_unmap(void);
 
 const struct paging_stats *paging_stats(void);
 
+/* 0.10: the table operations through the recursive slot. They reach the
+ * tables of whichever PML4 is loaded in CR3 (each process PML4's slot 510
+ * points to itself), so a process's lower half is edited while its CR3 is
+ * loaded (kernel/memory/uspace.c). Frames come from and go back to the
+ * page allocator. */
+const struct vmm_ops *paging_recursive_ops(void);
+
+/* 0.10: the kernel's own PML4 (the CR3 of every kernel thread). */
+uint64_t paging_kernel_cr3(void);
+
+/* 0.10: no new kernel-half PML4 entry from now on (vmm_freeze_upper): every
+ * process's PML4 will copy entries 256-511 once, so one added later would
+ * be missing there. Logs the slots in use. A paging_map that would create
+ * one panics. Called once at boot, before the first process. */
+void paging_freeze_kernel_half(void);
+
 #endif

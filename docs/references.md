@@ -35,6 +35,31 @@ For 0.9 and the coming user processes (0.10), three of the projects above are li
 
 No code, text or assets from them are in Madire OS: the 0.9 scheduler, context switch and tests were written for this project. The licences are as understood now and must be checked against each project before any use, under the rules above.
 
+### Linux documentation (study-only, 0.10 onwards)
+
+Parts of the Linux kernel's own documentation (the `Documentation/` tree of https://github.com/torvalds/linux) are listed as **study-only** references. Linux is **GPL-2.0-only**; nothing from it is copied into Madire OS. GPL-2.0-only code could be reused only if Madire OS itself were licensed under GPL-2.0, which is one factor in the pending decision on Madire OS's own licence ([roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet)).
+
+| Path | Worth reading for | Milestone |
+|---|---|---|
+| `Documentation/arch/x86/` | x86-64 kernel entry and the interrupt stacks (IST) | 0.10: the `SYSCALL` entry, NMI and machine-check stacks |
+| `Documentation/security/self-protection.rst` | SMEP, SMAP and W^X (no page both writable and executable) | 0.10 |
+| `Documentation/mm/` | address spaces and page tables | 0.10 and later |
+| `Documentation/scheduler/` | how a larger scheduler is designed, for comparison | later scheduler work |
+| `Documentation/filesystems/` | the virtual filesystem layer and filesystems | 1.0 |
+| `Documentation/driver-api/` | driver interfaces | the drivers phase |
+
+### Further study references (study-only, 0.10 onwards)
+
+Read for ideas only; nothing from them is copied into Madire OS, under the rules above.
+
+| Project | Link | Worth reading for | Licence (to be verified) |
+|---|---|---|---|
+| OSDev Wiki | https://wiki.osdev.org | user mode, system calls, paging, process management, context switching, ELF | **Check the wiki's content licence before quoting anything** |
+| Redox OS | https://github.com/redox-os/redox | a Rust microkernel: its design, memory isolation and security; relevant to the open decision on Rust for drivers ([roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet)) | MIT |
+| xv6-riscv | https://github.com/mit-pdos/xv6-riscv | the current xv6 targets **RISC-V**, so its code does not apply to x86-64; its concepts do: `copyin`/`copyout` (user pointers checked page by page when used), system-call dispatch and argument fetching, `exec` (for the 0.11 program loader). Cross-checked against 0.10's system calls (stage 5b): no change needed | MIT |
+
+**System-call behaviour:** the Linux man-pages project (for example `syscall(2)`, `syscalls(2)`, `write(2)`, `nanosleep(2)`, `getpid(2)`, `sched_yield(2)`, `exit(2)`) is the reference for how the Linux-compatible system calls behave: numbers, arguments, return values and error codes. Only these facts are used; no text or code is copied.
+
 ## Windows compatibility layer (study-only)
 
 References for the Windows-compatibility layer of the applications and compatibility strategy ([roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet)). Study-only: nothing is copied; porting either project would need the owner's approval, a licence check and the Linux/POSIX compatibility it depends on.

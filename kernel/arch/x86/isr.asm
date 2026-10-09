@@ -10,10 +10,23 @@
 
 bits 64
 extern interrupt_dispatch
+extern cpuprot_smap_active
+extern cpuprot_clac_count
 
 section .text
 
 isr_common:
+    ; 0.10: with SMAP on, clear AC first, so an AC flag set by the
+    ; interrupted code (a program can set it) never lifts SMAP in here; the
+    ; interrupted RFLAGS is already saved by the CPU and comes back with
+    ; iretq. Without SMAP clac would raise #UD, so it is skipped. The flags
+    ; changed by cmp/inc are those of the handler, not of the interrupted
+    ; code.
+    cmp byte [rel cpuprot_smap_active], 0
+    je .smap_done
+    clac
+    inc qword [rel cpuprot_clac_count]
+.smap_done:
     push rax
     push rcx
     push rdx

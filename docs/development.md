@@ -40,14 +40,25 @@ kernel/
   kprintf.c/.h            kprintf (screen + serial), klogf (serial), ksnprintf;
                           the kernel log for dmesg (0.9.1)
   panic.c/.h              crash screen (panic, panicf, panic_exception)
-  proc/                   kernel threads (0.9)
+  proc/                   kernel threads (0.9) and user processes (0.10)
     sched_core.c/.h       states, run queue, slices, sleep/join/exit, stack
                           slots, turn-order check                     (pure)
-    thread.c/.h           thread API, stacks in slot 507, switches, tick and
-                          preemption hooks, screen rule
+    thread.c/.h           thread API, stacks in slot 507, switches (RSP0 and
+                          CR3 since 0.10), tick and preemption hooks, screen rule
     switch.asm            switch_to (RFLAGS + callee-saved), trampoline
     preempt.h             preemption-disable count, deferred switch (a)
     schedtest.c/.h        boot self-test and thread diagnostics (test=...)
+    proc_core.c/.h        process table: 63 slots, PIDs, results (0.10) (pure)
+    userimg.c/.h          built-in image table and checks (0.10)     (pure)
+    userentry.h           the IRETQ frame into ring 3 (0.10)  (pure, header only)
+    faultop.h             instruction bytes at a fault's RIP (0.10) (pure, header only)
+    syscall_core.c/.h     system-call numbers, rules, write lines (0.10) (pure)
+    process.c/.h          load, start, kill, wait, return-to-user hook,
+                          fault containment (0.10)
+    userenter.asm         enter_user: the first IRETQ into ring 3 (0.10)
+    syscall_entry.asm     the SYSCALL entry (0.10)
+    syscall.c/.h          SYSCALL set-up, dispatcher, write, nanosleep (0.10)
+    usertest.c/.h         user-mode boot self-test and diagnostics (0.10)
   memory/
     mmap.c/.h             memory map validation + iteration      (pure)
     reserve.c/.h          memory that must never be allocated    (pure)
@@ -57,19 +68,30 @@ kernel/
     vm_layout.h           every virtual-address layout constant; phys_view(),
                           kernel_phys() (higher-half layout since 0.8)
     pte.h                 4-level entry bits (incl. NX), index helpers  (pure)
-    vmm_core.c/.h         map / unmap / translate via callbacks    (pure)
+    vmm_core.c/.h         map / unmap / translate via callbacks; the freeze
+                          (0.10)                                   (pure)
     paging.c/.h           build, walk-check, load CR3; NX; guard pages; physical
-                          view; empty lower half; self-test; window
+                          view; empty lower half; self-test; window; freeze of
+                          the kernel half (0.10)
+    uvm_core.c/.h         a process's lower half: user pages (0.10) (pure)
+    uspace.c/.h           address spaces: create, enter, map, destroy (0.10)
+    usercopy_core.c/.h    user-range checks (0.10)                 (pure)
+    usercopy.c/.h         copy_from_user, user_readable (0.10)
     heap.c/.h             first-fit boundary-tag allocator         (pure)
     kmalloc.c/.h          kernel heap: kmalloc / kcalloc / kfree
     vmtest.c/.h           page-fault (incl. pflow), NX, stack-overflow and heap
                           diagnostics
   arch/x86/
     io.h                  port I/O (inb/outb)
-    gdt.c/.h, gdt_flush.asm   64-bit segment table + TSS (IST1 double-fault stack)
-    idt.c/.h              interrupt table (16-byte gates; vector 8 uses IST1)
-    isr.asm               64-bit interrupt entry stubs (iretq)
-    interrupts.c/.h       C interrupt dispatcher (exceptions; IRQs -> irq.c)
+    gdt.c/.h, gdt_flush.asm   64-bit segment table + TSS (IST1 double-fault stack;
+                          0.10: user segments, IST2, RSP0)
+    gdt_desc.h            GDT layout, descriptors, STAR (0.10) (pure, header only)
+    idt.c/.h              interrupt table (16-byte gates; vector 8 uses IST1,
+                          2 and 18 use IST2)
+    isr.asm               64-bit interrupt entry stubs (iretq; clac with SMAP)
+    interrupts.c/.h       C interrupt dispatcher (exceptions; IRQs -> irq.c;
+                          ring-3 exceptions -> process_fault)
+    cpuprot.c/.h          SMEP, SMAP, CR0.EM at boot (0.10)
     irq.c/.h              IRQ handler registration, dispatch, EOI, counters
     pic.c/.h              8259 interrupt controller (remap, mask/unmask, EOI)
     cmos.c/.h             read-only RTC: seconds (timer diagnostic), date and
@@ -85,11 +107,20 @@ drivers/
   pit/pit_divisor.h       rate -> divisor maths                 (pure)
   keyboard/ps2kbd.c/.h    i8042 + PS/2 keyboard -> IRQ1
   keyboard/scancode.c/.h  scancode set 1 decoder, US layout     (pure)
+user/                     built-in user programs (0.10)
+  crt0.asm                _start: main(arg) in RDI, then exit(return value)
+  link.ld                 .text at 0x400000, .data/.bss at 0x500000
+  syscall.h               the system-call stubs (SYSCALL, Linux x86-64 numbers)
+  ulib.h                  a tiny library (no C library yet): strings, numbers,
+                          expectations; the kernel addresses tests aim at
+  prog/*.c                one file per program (19 in 0.10)
 linker/linker.ld          kernel memory layout (64-bit; loaded at 1 MiB, linked and
                           run at 0xFFFFFFFF80000000 + physical since 0.8)
 iso/boot/grub/grub.cfg    GRUB menu (normal boot + Diagnostics)
 scripts/
   install-deps.sh         installs the toolchain on Ubuntu (run by .devcontainer/)
+  user-images.sh          checks each built-in program and writes the image
+                          table, build/user/images.asm (0.10)
   build.ps1               Windows: build + test inside the GitHub Codespace
   run.ps1                 Windows: boot the ISO in VirtualBox
   vbox-acceptance.ps1     Windows: scripted VirtualBox acceptance test (0.9)
@@ -129,6 +160,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `kernel/proc/sched_core.c` (0.9)
 - `kernel/console/history.c`, `kernel/rtc_time.c`, `kernel/logbuf.c` (0.9.1)
 - `kernel/console/scrollback.c` (0.9.2)
+- 0.10: `kernel/memory/uvm_core.c`, `usercopy_core.c`; `kernel/proc/syscall_core.c`, `proc_core.c`, `userimg.c`; header only: `kernel/arch/x86/gdt_desc.h`, the SMEP/SMAP decision in `cpuid.h`, `kernel/proc/userentry.h`, `faultop.h`, the SMEP/SMAP cause in `pagefault.h`
 - `kernel/arch/x86/pagefault.h` and the inline NX decision in `cpuid.h` (header only)
 - the formatter in `kernel/kprintf.c` (`test_kprintf` includes the file, with the two output drivers stubbed)
 
@@ -210,6 +242,30 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 - A thread's stack is 16 KiB with an unmapped 16 KiB guard below it. An overflow ends on the crash screen, naming the thread. Each exiting thread logs its stack peak.
 - Scheduler state is changed only with interrupts off (`irq_save`/`irq_restore`), because the timer tick changes it from IRQ context.
 
+**User mode (0.10).** The design is in *User processes* in [architecture.md](architecture.md). Rules:
+
+- **PTE_USER in the lower half only.** User pages are mapped only through `uspace_map_page` (`uvm_core`), into `[VM_USER_MIN, VM_USER_TOP)`. Nothing in the upper half ever has the user bit: `vmm_core` (and so `paging_map`) refuses it, and `test=uaspace` walks 500 PML4s to prove it.
+- **Fill a frame before mapping it** into a process (`uspace_map_page` does it: copy or zero through the window). A freed frame keeps its old contents.
+- **W^X:** request `PTE_WRITE` or executable, never both (`uvm_core` refuses a writable executable page when NX is in use). Data, bss and stacks get `PTE_WRITE | paging_nx_flag()`.
+- **Every pointer a program passes goes through `copy_from_user`** (or `user_readable` first, when the whole buffer must be refused before any of it is used). Never dereference a user address in the kernel: with SMAP that faults, without it a bad pointer would crash the kernel. A system call that takes a buffer copies it into kernel memory first and works on the copy.
+- **Check, then copy (binding, see [AGENTS.md](../AGENTS.md)):** the check and the copy are separate steps, which is safe only while nothing can change a process's mapping in between. Any milestone that adds memory-unmapping system calls or threads inside a process must make the user-pointer check and the copy atomic (or copy through the physical-access window), with a test that changes the mapping between check and copy.
+- **No FPU in programs:** CR0.EM is set and no x87/MMX/SSE state is saved between threads, so programs are built with `-mgeneral-regs-only` like the kernel. `scripts/user-images.sh` fails the build if any program other than `fpu` uses an x87/MMX/SSE register (and if `fpu` doesn't).
+- **The freeze:** after boot, no new kernel-half PML4 slot may be created (every process holds a copy of slots 256–511): `paging_map` into an empty kernel-half slot panics. A new kernel area must use a slot that exists at the freeze (add it to the boot set-up and to `paging_freeze_kernel_half`'s list, with a walk-check line), never one created later.
+- **A process's address space is changed only by its own thread**, on its own CR3. Another thread asks (`process_kill`); the process acts at its next return to ring 3.
+- **Kernel faults stay fatal**, also while a process's thread runs kernel code (a system call): a bug in a system call must end on the crash screen, never be "contained".
+- A program's output (`write`) goes to the serial log and `dmesg`, never the screen, and must never contain anything secret.
+
+**The built-in programs (`user/`).** `make` builds each `user/prog/<name>.c` with `USER_CFLAGS` (freestanding, no C library, `-mgeneral-regs-only`, `-Werror`), links it with `user/crt0.asm` by `user/link.ld` (`.text` at `0x400000`, `.data`/`.bss` at `0x500000`), then runs `scripts/user-images.sh`, which checks every ELF (only `.text`, `.data` and `.bss` loaded, at those addresses; `_start` inside `.text`; no x87/MMX/SSE registers except in `fpu`) and writes `build/user/images.asm`: the raw code and data blobs and a sorted `struct userimg` table (name, code, size, data, size, data + bss size, entry). The kernel links `build/user/images.o`; `make repro` copies `user/` and `scripts/user-images.sh` too, and the images are byte-identical across builds. The kernel checks every entry with `userimg_check` before use (`test_userimg`), and `process_start` finds an image by name.
+
+**Adding a test program.** Write `user/prog/<name>.c` with `int main(long arg)`, using `user/syscall.h` and `user/ulib.h` only (no C library); names are `[a-z0-9_]`, at most 15 characters. Keep code and data under 64 KiB each. The Makefile and the image table pick it up automatically. Start it from a diagnostic in `kernel/proc/usertest.c` with `process_start("<name>", arg)` and `process_wait`, and check its exact result (exit status, or the fault's vector, address and instruction bytes). A program that deliberately faults must have its expected opcode checked (see opcode evidence in [testing.md](testing.md)).
+
+**Adding a system call.**
+
+1. Take the number and meaning from the documented Linux x86-64 interface (or, for a Madire-only call, a number in `0x10000000`–`0x1000FFFF`); add it to `kernel/proc/syscall_core.h` (number, `enum syscall_id`) and `syscall_lookup`, and to `user/syscall.h`.
+2. Put every argument rule in the pure core (`syscall_core.c`) and unit-test it in `tests/unit/test_syscall.c`: valid and invalid values, limits, the full 64-bit compare.
+3. Implement the kernel side in `kernel/proc/syscall.c`: arguments arrive in RDI, RSI, RDX, R10, R8, R9; return a value or `-errno`. Copy every pointer argument with `copy_from_user` before use (and follow the check-then-copy rule). A call that blocks runs with interrupts on, as any kernel code of the thread does.
+4. Test it from a program and a diagnostic (QEMU checks), including every bad pointer and argument; update the table in [architecture.md](architecture.md).
+
 ## Toolchain
 
 | Tool | Package (Ubuntu) | Used for |
@@ -238,9 +294,9 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 
 ## Running the full test suite (detached, on a hash-verified snapshot)
 
-Since 0.9 the full suite (`make unit test iso`: 24 unit suites, `make repro`, 528 QEMU checks) takes about **15 minutes**. That is longer than the time limit of many terminals and coding tools, and a run cut off by such a limit can look like a hang or a pass. So the default procedure, for people and agents alike, is to run it **detached** inside the Codespace and to prove which sources it tested:
+Since 0.9 the full suite (`make unit test iso`; in 0.10: 41 unit suites, `make repro`, 838 QEMU checks) takes about **15 minutes** (about **30** since 0.10). That is longer than the time limit of many terminals and coding tools, and a run cut off by such a limit can look like a hang or a pass. So the default procedure, for people and agents alike, is to run it **detached** inside the Codespace and to prove which sources it tested:
 
-1. **Snapshot:** copy the files under test (`Makefile`, `boot/`, `kernel/`, `drivers/`, `linker/`, `iso/`, `scripts/`, `tests/`) to a snapshot folder outside the repository, and record the SHA-256 of every file.
+1. **Snapshot:** copy the files under test (`Makefile`, `boot/`, `kernel/`, `drivers/`, `linker/`, `iso/`, `scripts/`, `tests/`, and since 0.10 `user/`) to a snapshot folder outside the repository, and record the SHA-256 of every file.
 2. **Upload** the snapshot to the Codespace, to a fresh `/tmp/madire-os-build` (`gh codespace cp -e -r …`, as `scripts/build.ps1` does).
 3. **Verify:** list the SHA-256 of every file in the Codespace copy (`find . -type f | sort | xargs sha256sum`) and compare it with the snapshot's list. Any difference, missing or extra file means the run wouldn't test the snapshot: upload again.
 4. **Start detached**, so the run doesn't depend on the session that started it:
@@ -249,7 +305,7 @@ Since 0.9 the full suite (`make unit test iso`: 24 unit suites, `make repro`, 52
    cd /tmp/madire-os-build && (nohup bash -c 'make unit test iso > /tmp/regression.txt 2>&1; echo "MAKE EXIT $?" >> /tmp/regression.txt' >/dev/null 2>&1 &)
    ```
 
-5. **Poll** the log until its last line is `MAKE EXIT <code>` (a few short checks, not one long blocking command), then download it. The run passed only if the code is 0, the summary says `ALL TESTS PASSED (528 checks: …)` with the expected count per tag, and every unit suite says `PASS`.
+5. **Poll** the log until its last line is `MAKE EXIT <code>` (a few short checks, not one long blocking command), then download it. The run passed only if the code is 0, the summary says `ALL TESTS PASSED (838 checks: …)` (0.10; 528 in 0.9) with the expected count per tag, and every unit suite says `PASS`. Since 0.10 it takes about 30 minutes.
 6. Before trusting the result, confirm that the working tree still equals the snapshot (same hashes). A file changed since the snapshot means the run didn't test it.
 
 From PowerShell, put the remote command in single quotes (or a script file): inside double quotes PowerShell expands `$?` locally before the command reaches the Codespace.
@@ -278,8 +334,9 @@ From PowerShell, put the remote command in single quotes (or a script file): ins
 - 64-bit division and modulo are native instructions since 0.7 and fine. 128-bit arithmetic (`__int128`) isn't: it would need `libgcc`, which isn't linked.
 - No `__builtin_popcount` (without a POPCNT target it calls `libgcc`). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Data is never executable: map pages with `paging_nx_flag()` (see *Using memory*). Only kernel code (`.text`) runs.
-- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1, 1496 at 0.9.2); a change that raises it noticeably deserves a look.
+- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1, 1496 at 0.9.2, 1512 at 0.10); a change that raises it noticeably deserves a look.
 - Never use a low (physical) address as a pointer: the lower half is empty (0.8). Use `phys_view()` for the low 1 MiB and boot data, the window for other frames, and `kernel_phys()` to turn a kernel symbol into a physical address.
+- Never dereference a user (lower-half) address in the kernel (0.10): the lower half belongs to whichever process is running. Use `copy_from_user` (see *User mode*); with SMEP/SMAP on, executing or touching a user page directly ends on the crash screen with a `Cause:` line.
 - Diagnostics that shouldn't appear on screen go to `klogf()` (serial only). Since 0.9.1 everything `klogf` and `kprintf` write is also kept in memory and shown by `dmesg`: never log secrets.
 - **Key events are not logged by default** (since 0.9.2). Logging them is for tests and diagnostics only: the boot option `keylog` (a whole word on the kernel command line) or `test=keyboard`/`test=kbdflood`. A QEMU check that reads `key:` lines must boot with `keylog` (the GRUB-boot checks use the test-only keylog ISO the test script builds). Don't add another path that logs typed text.
 - **Secret input (binding, see [AGENTS.md](../AGENTS.md)):** No milestone may add a password or other secret prompt without implementing secret-input mode in the same milestone: key events never logged (even with `keylog`), the line not echoed to serial or `dmesg`, not stored in history, and shown as `*` on screen.
