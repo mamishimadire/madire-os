@@ -417,7 +417,9 @@ With the fixes, the `user` and `smx` groups were re-run: every row passed except
 
 **In 0.11** (ISO `c79ac24e…`, kernel `0851bd59…`, built from the stage 6 tree) the full run with `-Repeat 10` gave **119 of 119**: every existing group, the boot self-tests, positions 16–26 and the new `procs` group; each of the 10 extra boots gave `self-test PASS; ping-pong preemptions 0`. `userkill` was then run 10 more times (the same keys and timings, VM settings checked and unchanged): all PASS with a longest turn of 5 ticks, taken by `spin` (user process 4), which resolves the 0.10 watch item. Every longest turn in the VirtualBox logs was at most 5 ticks, with the same owners as QEMU (`userpreempt`: the user processes 5/5/5/0/0, the kernel thread `frames` 1; the scheduler self-test `spin` 5; `preempt` `spin0` 5). The only difference from QEMU: the VM's CPU offers neither SMEP nor SMAP (both NOT APPLICABLE, as on QEMU's default CPU). The per-boot QEMU serial logs weren't downloaded by `remote-regress.ps1`, so the comparison used the result lines and figures (a follow-up adds the download). `run hello` on the VM:
 
-![run hello: the program's text on the screen, then its end line (0.11)](images/run-hello-v0.11.png)
+![run hello: the program's text on the screen, then its end line (0.11)](images/v0.11-run-hello.png)
+
+The other `procs` screenshots: [the boot screen](images/v0.11-boot.png), [`run exitcode`, `run -b spin` and `ps`](images/v0.11-ps.png), [`kill` then `no`](images/v0.11-kill-no.png), [`kill` then `yes`](images/v0.11-kill-yes.png), [Ctrl+C on `spin`](images/v0.11-ctrlc-spin.png), [Ctrl+C on `lines`](images/v0.11-ctrlc-lines.png). (`run nullptr` isn't part of the VirtualBox group; it is checked in QEMU.)
 
 ### Test A: normal boot
 

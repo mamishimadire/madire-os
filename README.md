@@ -4,11 +4,11 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 
 **Current version:** 0.11 (Milestone 0.11: programs and process management)
 
-![Madire OS v0.10 boot screen](docs/images/boot-screen-v0.10.png)
+![Madire OS v0.11 boot screen](docs/images/v0.11-boot.png)
 
 Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that GRUB delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first); **Ctrl+C** ends the program in the foreground:
 
-![run hello: the program's output on the screen (0.11)](docs/images/run-hello-v0.11.png)
+![run hello: the program's output on the screen (0.11)](docs/images/v0.11-run-hello.png)
 
 Programs run in **user mode** (since 0.10), each in its own address space, and talk to the kernel only through system calls; a program that makes a mistake is ended alone, and the kernel carries on. The Diagnostics menu runs the built-in test programs:
 
@@ -68,6 +68,34 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - draws the Madire M logo, built from geometry, in VGA text mode.
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
+
+## v0.11 in pictures
+
+Screenshots from the 0.11 VirtualBox acceptance run (`MadireOS-Test`).
+
+The boot screen of v0.11, with the self-tests passed and the 7 program modules loaded in the background:
+
+![v0.11 boot screen](docs/images/v0.11-boot.png)
+
+`run exitcode` ends with status 42; `run -b spin` starts a program in the background, and `ps` lists it as process 6 after the thread table:
+
+![run exitcode, run -b spin and ps](docs/images/v0.11-ps.png)
+
+`kill 6` asks first; answering `no` leaves the program running:
+
+![kill, then no: Kill cancelled](docs/images/v0.11-kill-no.png)
+
+Asked again, `yes` ends it, and its end line follows:
+
+![kill, then yes: process 6 killed](docs/images/v0.11-kill-yes.png)
+
+**Ctrl+C** ends a program that never stops by itself (`run spin`):
+
+![Ctrl+C on spin](docs/images/v0.11-ctrlc-spin.png)
+
+and one that is printing to the screen (`run lines`, stopped at line 29 of 100):
+
+![Ctrl+C on lines](docs/images/v0.11-ctrlc-lines.png)
 
 ## Development environment
 
