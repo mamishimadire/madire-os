@@ -1,11 +1,16 @@
 /* sleep (0.10).
  *   arg 0: nanosleep for 100 ms; exits with its result (0). The kernel
  *          measures the ticks the process slept.
- *   arg 1: argument errors; exits with the number of wrong results. */
+ *   arg 1: argument errors; exits with the number of wrong results.
+ *   arg 2: nanosleep for 10 s (0.11: a kill or Ctrl+C wakes it at once). */
 #include "user/ulib.h"
 
 int main(long arg)
 {
+    if (arg == 2) {
+        struct timespec t = { 10, 0 };
+        return (int)sys_nanosleep(&t, 0);
+    }
     if (arg == 0) {
         struct timespec t = { 0, 100000000 };
         return (int)sys_nanosleep(&t, 0);

@@ -7,6 +7,7 @@
 #include "kernel/console/console.h"
 #include "kernel/console/history.h"
 #include "kernel/console/lineedit.h"
+#include "kernel/console/outq.h"
 #include "kernel/console/scrollback.h"
 #include "kernel/console/textbuf.h"
 #include "kernel/kernel.h"
@@ -15,7 +16,10 @@
 #include "kernel/rtc_time.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/panic.h"
 #include "kernel/proc/preempt.h"
+#include "kernel/proc/process.h"
+#include "kernel/proc/progmod.h"
 #include "kernel/proc/thread.h"
 #include "kernel/shell/parser.h"
 #include "kernel/shell/shell.h"
@@ -42,6 +46,15 @@ static struct history hist;             /* 0.9.1 */
 static bool confirming;                 /* 0.9.1: the next line answers "reboot" */
 static const char *prompt = PROMPT;
 static struct scrollback sb;            /* 0.9.2: 1000 lines, about 156 KiB */
+static int32_t fg_pid;                  /* 0.11: the foreground program (0: none) */
+static int32_t kill_pid;                /* 0.11: the process "kill" asked about (0: none) */
+static bool ctrl_c_sent;                /* 0.11: Ctrl+C sent to the foreground program */
+static uint64_t ctrl_c_tick;
+static int32_t bg_list[PROC_MAX];       /* 0.11: background programs to collect */
+static uint32_t bg_count;
+static struct outq program_outq;          /* 0.11 stage 5: foreground output */
+static int32_t outq_wait_logged_pid;
+static uint8_t outq_drain[256];
 
 /* ---- Drawing (grid -> VGA) ---- */
 
@@ -138,6 +151,31 @@ static void write_screen(const char *text, uint8_t attr)
         grid_putc(*text++);
 }
 
+/* Program output is queued by its process, but only thread 0 draws it. */
+static void drain_program_output(void)
+{
+    preempt_disable();
+    size_t n = outq_read(&program_outq, outq_drain, sizeof(outq_drain));
+    preempt_enable();
+    if (n == 0)
+        return;
+
+    leave_scrollback();
+    textbuf_set_attr(&screen, ATTR_TEXT);
+    for (size_t i = 0; i < n; i++) {
+        char c = (char)outq_drain[i];
+        if (c == '\n') {
+            grid_putc('\n');
+        } else {
+            if (screen.col >= 79)
+                grid_putc('\n');
+            grid_putc(c);
+        }
+    }
+    render_all();
+    place_cursor();
+}
+
 /* ---- Input line ---- */
 
 static void draw_input(void)
@@ -179,6 +217,65 @@ static void shell_sink(void *ctx, const char *text, enum shell_text kind)
 
 static const struct shell_output sink = { shell_sink, 0 };
 
+/* ---- Programs (0.11) ---- */
+
+/* shell_procs.start: a program module, by name. */
+static int32_t start_program(void *ctx, const char *name, uint64_t arg, bool background)
+{
+    (void)ctx;
+    if (!progmod_find(progmod_table(), name))
+        return SHELL_RUN_NO_PROGRAM;
+    if (background && bg_count >= PROC_MAX)
+        return SHELL_RUN_FAILED;
+    if (!background)
+        preempt_disable();
+    int32_t pid = process_start_program(name, arg);
+    if (pid <= 0) {
+        if (!background)
+            preempt_enable();
+        return SHELL_RUN_FAILED;
+    }
+    klogf("console: %s process %d '%s', argument %llu\n",
+          background ? "started in the background:" : "running", (int)pid, name,
+          (unsigned long long)arg);
+    if (background)
+        bg_list[bg_count++] = pid;
+    else
+        fg_pid = pid;
+    if (!background)
+        preempt_enable();
+    return pid;
+}
+
+/* shell_procs.ask_kill: the next line answers "End process N?". */
+static void ask_kill(void *ctx, int32_t pid)
+{
+    (void)ctx;
+    kill_pid = pid;
+}
+
+/* Collects an ended process: its result and its end line. */
+static void collect(int32_t pid, char *line)
+{
+    struct process_info rows[PROC_MAX];
+    uint32_t n = process_list(rows, PROC_MAX);
+    const char *name = "?";
+    for (uint32_t i = 0; i < n; i++)
+        if (rows[i].pid == pid)
+            name = rows[i].name;
+    char kept[PROC_NAME_MAX];
+    uint32_t k = 0;
+    for (; k + 1 < PROC_NAME_MAX && name[k]; k++)
+        kept[k] = name[k];
+    kept[k] = '\0';
+    uint64_t address = process_fault_address(pid);
+    struct proc_result res = { PROC_END_EXIT, 0 };
+    process_wait(pid, &res);
+    shell_end_line(line, pid, kept, (enum shell_end)res.end, res.code,
+                   res.end == PROC_END_FAULT && res.code >= 0
+                       ? exception_mnemonic((unsigned)res.code) : 0, address);
+}
+
 static void build_context(struct shell_context *c)
 {
     c->version = MADIRE_OS_VERSION;
@@ -215,6 +312,24 @@ static void build_context(struct shell_context *c)
     c->threads = rows;
     c->thread_count = n;
 
+    /* 0.11: the processes for "ps", and "run". */
+    static struct process_info infos[PROC_MAX];
+    static struct shell_process prows[PROC_MAX];
+    static struct shell_procs procs;
+    uint32_t np = process_list(infos, PROC_MAX);
+    for (uint32_t i = 0; i < np; i++) {
+        prows[i].pid = infos[i].pid;
+        prows[i].state = infos[i].ended ? "ended" : "running";
+        prows[i].tid = infos[i].tid;
+        prows[i].name = infos[i].name;
+    }
+    procs.rows = prows;
+    procs.count = np;
+    procs.start = start_program;
+    procs.ask_kill = ask_kill;
+    procs.ctx = 0;
+    c->procs = &procs;
+
     /* 0.9.1: the extra commands' data. The kernel log is copied with
      * preemption off, so no other thread's klogf changes it mid-copy; the
      * copy ends with this command's own "madire> ..." line. */
@@ -248,6 +363,34 @@ static void answer_reboot(const char *answer)
     shell_sink(0, SHELL_REBOOT_CANCELLED "\n", SHELL_TEXT);
 }
 
+/* 0.11: the answer to "kill". Only exactly "yes" ends the process; the
+ * console then waits for it like a foreground program (its end line, then
+ * the prompt). Returns true while it waits. */
+static bool answer_kill(const char *answer)
+{
+    int32_t pid = kill_pid;
+    kill_pid = 0;
+    if (!shell_reboot_confirmed(answer)) {      /* the same exact "yes" rule */
+        shell_sink(0, SHELL_KILL_CANCELLED "\n", SHELL_TEXT);
+        return false;
+    }
+    if (process_kill(pid) != PROC_OK) {         /* it ended meanwhile */
+        char t[64];
+        ksnprintf(t, sizeof(t), "kill: process %d has already ended.\n", (int)pid);
+        shell_sink(0, t, SHELL_ERROR);
+        return false;
+    }
+    klogf("console: kill confirmed for process %d\n", (int)pid);
+    for (uint32_t i = 0; i < bg_count; i++) {
+        if (bg_list[i] == pid) {
+            bg_list[i] = bg_list[--bg_count];
+            break;
+        }
+    }
+    fg_pid = pid;
+    return true;
+}
+
 static void submit(void)
 {
     uint32_t scrolls_before = screen.scrolls;
@@ -262,13 +405,23 @@ static void submit(void)
     enum shell_result r = SHELL_OK;
     if (confirming) {
         confirming = false;                 /* not a command: not in the history */
-        answer_reboot(line);
+        if (kill_pid) {
+            if (answer_kill(line))
+                r = SHELL_RUN;              /* wait for its end, as for a program */
+        } else {
+            answer_reboot(line);
+        }
     } else {
         history_add(&hist, line);           /* before it runs: "history" lists itself */
         struct shell_context ctx;
         build_context(&ctx);
         r = shell_execute(line, &ctx, &sink);
-        confirming = r == SHELL_REBOOT;
+        confirming = r == SHELL_REBOOT || r == SHELL_KILL;
+    }
+    if (r == SHELL_RUN) {                   /* 0.11: no prompt until it ends */
+        render_all();
+        place_cursor();
+        return;
     }
     if (r == SHELL_CLEAR) {
         keep_screen_rows();                 /* 0.9.2: clear never loses lines */
@@ -306,6 +459,10 @@ void console_start(const struct memory_stats *mem)
 
     textbuf_init(&screen, ATTR_TEXT);
     sb_init(&sb);
+    preempt_disable();
+    outq_init(&program_outq);
+    preempt_enable();
+    outq_wait_logged_pid = 0;
     write_screen("M A D I R E   O S\n", ATTR_TITLE);
     write_screen(MADIRE_OS_NAME " v" MADIRE_OS_VERSION "\n\n", ATTR_PROMPT);
     write_screen("Type 'help' for a list of commands.\n\n", ATTR_TEXT);
@@ -329,6 +486,18 @@ void console_handle_key(const struct key_event *e)
 {
     if (!active)
         return;
+    if (fg_pid) {
+        /* 0.11: a program runs in the foreground; only Ctrl+C reaches it
+         * (it ends the program). The key is never logged. */
+        if ((e->flags & KEY_PRESSED) && (e->flags & KEY_CTRL) && e->keycode == KEY_CHAR &&
+            (e->ascii == 'c' || e->ascii == 'C' || e->ascii == 3) && !ctrl_c_sent) {
+            ctrl_c_sent = true;
+            ctrl_c_tick = timer_ticks();
+            if (process_kill(fg_pid) == PROC_OK)
+                klogf("console: Ctrl+C: kill requested for process %d\n", (int)fg_pid);
+        }
+        return;
+    }
 
     /* 0.9.2: Shift+PgUp / Shift+PgDn page through the scrollback; while
      * scrolled back, any other key press first returns to the live screen
@@ -368,6 +537,79 @@ void console_handle_key(const struct key_event *e)
     case LE_NONE:
         break;
     }
+}
+
+void console_poll(void)
+{
+    if (!active)
+        return;
+    drain_program_output();
+    char line[SHELL_END_LINE_MAX];
+    for (uint32_t i = 0; i < bg_count; ) {
+        if (!process_ended(bg_list[i])) {
+            i++;
+            continue;
+        }
+        collect(bg_list[i], line);
+        klogf("%s\n", line);                /* background: serial and dmesg only */
+        bg_list[i] = bg_list[--bg_count];
+    }
+    if (fg_pid && process_ended(fg_pid)) {
+        preempt_disable();
+        size_t queued = outq_used(&program_outq);
+        preempt_enable();
+        if (queued != 0)
+            return;
+        collect(fg_pid, line);
+        if (ctrl_c_sent)                    /* 0.11: how soon Ctrl+C took effect */
+            klogf("console: process %d collected %u ticks after Ctrl+C\n", (int)fg_pid,
+                  (unsigned)(timer_ticks() - ctrl_c_tick));
+        ctrl_c_sent = false;
+        fg_pid = 0;
+        uint32_t len = 0;
+        while (line[len])
+            len++;
+        line[len] = '\n';
+        line[len + 1] = '\0';
+        if (screen.col != 0)
+            grid_putc('\n');
+        shell_sink(0, line, SHELL_TEXT);
+        show_prompt();
+        render_all();
+        place_cursor();
+    }
+}
+
+/* Called only by sys_write from a process thread. Background output remains
+ * serial-only. A full queue yields until thread 0 drains it; a pending kill
+ * returns a short write promptly, so no bytes disappear without a count. */
+size_t console_program_write(int32_t pid, const uint8_t *text, size_t len)
+{
+    preempt_disable();
+    bool foreground = pid == fg_pid;
+    preempt_enable();
+    if (!foreground)
+        return len;
+
+    size_t accepted = 0;
+    while (accepted < len) {
+        if (process_current_kill_pending())
+            break;
+
+        preempt_disable();
+        size_t n = outq_write(&program_outq, text + accepted, len - accepted);
+        bool full = n < len - accepted;
+        preempt_enable();
+        accepted += n;
+
+        if (full && outq_wait_logged_pid != pid) {
+            outq_wait_logged_pid = pid;
+            klogf("console: process %d waiting for output queue\n", (int)pid);
+        }
+        if (accepted < len)
+            thread_yield();
+    }
+    return accepted;
 }
 
 /* ---- Self-test (pure modules only; no hardware) ---- */

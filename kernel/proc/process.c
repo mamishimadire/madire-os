@@ -2,42 +2,98 @@
 #include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pagefault.h"
 #include "kernel/kprintf.h"
+#include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pte.h"
 #include "kernel/memory/usercopy.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/loadplan.h"
 #include "kernel/proc/process.h"
+#include "kernel/proc/progmod.h"
 #include "kernel/proc/thread.h"
 
-/* Maps `size` bytes from src (the rest of `mem` bytes zero) at va, page by
- * page. */
-static bool map_range(struct uspace *as, uint64_t va, const uint8_t *src, uint64_t size,
-                      uint64_t mem, uint64_t flags, uint32_t *pages)
+/* 0.11: what every load added up to (test=elfrun). */
+static struct process_load_totals load_totals;
+
+static bool same_str(const char *a, const char *b)
 {
-    for (uint64_t off = 0; off < mem; off += VM_PAGE_SIZE) {
-        uint64_t len = off < size ? size - off : 0;
-        if (len > VM_PAGE_SIZE)
-            len = VM_PAGE_SIZE;
-        if (uspace_map_page(as, va + off, len ? src + off : 0, len, flags, 0) != UVM_OK)
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+/* True if the frame lies inside a boot module (boot data): a program's
+ * pages are always fresh frames, never the module's own. */
+static bool frame_in_module(uint64_t frame)
+{
+    unsigned count;
+    const struct phys_range *r = memory_reservations(&count);
+    for (unsigned i = 0; i < count; i++)
+        if (r[i].what && same_str(r[i].what, "boot module") && frame + VM_PAGE_SIZE > r[i].start &&
+            frame < r[i].end)
+            return true;
+    return false;
+}
+
+/* Maps one segment page by page, each page a fresh frame filled from the
+ * segment's bytes (loadplan_page) and zeros. */
+static bool map_segment(struct uspace *as, const struct load_segment *s, uint64_t flags,
+                        uint32_t *pages, struct process_load_stats *st)
+{
+    uint64_t page = loadplan_first_page(s);
+    for (uint32_t i = 0; i < loadplan_pages(s); i++, page += VM_PAGE_SIZE) {
+        uint64_t src_off, frame = 0;
+        uint32_t at, len;
+        loadplan_page(s, page, &src_off, &at, &len);
+        if (uspace_map_page_at(as, page, len ? s->src + src_off : 0, len, at, flags, &frame) !=
+            UVM_OK)
             return false;
+        if (frame_in_module(frame))
+            st->in_modules++;
         (*pages)++;
     }
     return true;
 }
 
+bool process_load_plan(struct uspace *as, const struct load_plan *plan,
+                       struct process_load_stats *st)
+{
+    st->text = st->data = st->stack = st->in_modules = 0;
+    uint64_t nx = paging_nx_flag();
+    bool ok = true;
+    for (uint32_t i = 0; ok && i < plan->count; i++) {
+        const struct load_segment *s = &plan->seg[i];
+        uint64_t flags = s->exec ? 0 : (s->write ? PTE_WRITE | nx : nx);
+        ok = map_segment(as, s, flags, s->exec ? &st->text : &st->data, st);
+    }
+    const struct load_segment stack = { VM_USER_STACK_TOP - VM_USER_STACK_SIZE, 0,
+                                        VM_USER_STACK_SIZE, 0, true, false };
+    ok = ok && map_segment(as, &stack, PTE_WRITE | nx, &st->stack, st);
+    uint32_t f = irq_save();
+    load_totals.loads++;
+    load_totals.pages += st->text + st->data + st->stack;
+    load_totals.in_modules += st->in_modules;
+    irq_restore(f);
+    return ok;
+}
+
 bool process_load(struct uspace *as, const struct userimg *img, struct process_load_stats *st)
 {
-    st->text = st->data = st->stack = 0;
-    if (userimg_check(img) != USERIMG_OK)
+    struct load_plan plan;
+    st->text = st->data = st->stack = st->in_modules = 0;
+    if (!loadplan_from_userimg(img, &plan))
         return false;
-    uint64_t rw = PTE_WRITE | paging_nx_flag();
-    return map_range(as, VM_USER_TEXT, img->text, img->text_size, vm_ceil(img->text_size), 0,
-                     &st->text) &&
-           map_range(as, VM_USER_DATA, img->data, img->data_size, vm_ceil(img->data_mem), rw,
-                     &st->data) &&
-           map_range(as, VM_USER_STACK_TOP - VM_USER_STACK_SIZE, 0, 0, VM_USER_STACK_SIZE, rw,
-                     &st->stack);
+    return process_load_plan(as, &plan, st);
+}
+
+void process_load_totals(struct process_load_totals *out)
+{
+    uint32_t f = irq_save();
+    *out = load_totals;
+    irq_restore(f);
 }
 
 /* ---- processes (stage 4b) ---- */
@@ -47,9 +103,12 @@ bool process_load(struct uspace *as, const struct userimg *img, struct process_l
 static struct proc_table table;
 static bool table_ready;
 static struct uspace spaces[PROC_MAX];
-static const struct userimg *images[PROC_MAX];
+static const struct userimg *images[PROC_MAX];     /* a built-in image, or */
+static const uint8_t *files[PROC_MAX];             /* 0.11: an ELF file (checked again at load) */
+static uint64_t file_sizes[PROC_MAX];
 static uint64_t args[PROC_MAX];
 static volatile uint64_t user_returns[PROC_MAX];
+static uint64_t fault_addresses[PROC_MAX];          /* 0.11: "run" */
 static uint8_t slot_of_tid[SCHED_MAX_THREADS];  /* slot + 1; 0 = not a process */
 static struct process_teardown_totals totals;
 
@@ -90,15 +149,34 @@ static int32_t process_thread(void *arg)
     uint32_t f = irq_save();
     slot_of_tid[thread_current()] = (uint8_t)(slot + 1);
     irq_restore(f);
+    thread_set_pid(table.e[slot].pid);     /* 0.11: for the longest-turn record */
 
+    /* One loading path (0.11): a built-in image or an ELF file becomes a
+     * load plan. The ELF file is checked again here: the check at boot is
+     * not trusted alone. A refused file never gets an address space. */
+    struct load_plan plan;
+    bool planned;
+    if (images[slot]) {
+        planned = loadplan_from_userimg(images[slot], &plan);
+    } else {
+        struct elf_plan ep;
+        enum elf_result er = elf_check(files[slot], file_sizes[slot], &ep);
+        if (er != ELF_OK) {
+            klogf("Process %d '%s': load failed: %s; it never ran\n", (int)table.e[slot].pid,
+                  table.e[slot].name, elf_result_str(er));
+            process_finish(slot, PROC_END_LOAD_FAILED, (int32_t)er);
+        }
+        loadplan_from_elf(files[slot], &ep, &plan);
+        planned = true;
+    }
     struct process_load_stats st;
-    if (!uspace_create(&spaces[slot]))
+    if (!planned || !uspace_create(&spaces[slot]))
         process_finish(slot, PROC_END_FAULT, -1);
     uspace_enter(&spaces[slot]);
-    if (!process_load(&spaces[slot], images[slot], &st))
+    if (!process_load_plan(&spaces[slot], &plan, &st))
         process_finish(slot, PROC_END_FAULT, -1);
     struct user_iret frame;
-    user_iret_build(&frame, images[slot]);
+    user_iret_build_entry(&frame, plan.entry);
 
     /* A kill requested before ring 3 ends the process here; one requested
      * from now on is seen at its first return to ring 3. */
@@ -110,26 +188,28 @@ static int32_t process_thread(void *arg)
     enter_user(&frame, args[slot]);
 }
 
-int32_t process_start(const char *name, uint64_t arg)
+/* A process for a built-in image (img) or an ELF file (file, size). */
+static int32_t start(const char *name, const struct userimg *img, const uint8_t *file,
+                     uint64_t size, uint64_t arg)
 {
-    const struct userimg *img = userimg_find(user_images, user_images_count, name);
-    if (!img || userimg_check(img) != USERIMG_OK)
-        return -1;
     int slot = -1;
     int32_t pid = -1;
     uint32_t f = irq_save();
     table_init();
-    enum proc_status r = proc_alloc(&table, img->name, &slot, &pid);
+    enum proc_status r = proc_alloc(&table, name, &slot, &pid);
     if (r == PROC_OK) {
         images[slot] = img;
+        files[slot] = file;
+        file_sizes[slot] = size;
         args[slot] = arg;
         user_returns[slot] = 0;
+        fault_addresses[slot] = 0;
         spaces[slot].pml4 = 0;
     }
     irq_restore(f);
     if (r != PROC_OK)
         return -1;
-    int32_t tid = thread_create(img->name, process_thread, (void *)(intptr_t)slot, false);
+    int32_t tid = thread_create(name, process_thread, (void *)(intptr_t)slot, false);
     f = irq_save();
     if (tid < 0) {
         struct proc_result res;
@@ -143,12 +223,41 @@ int32_t process_start(const char *name, uint64_t arg)
     return pid;
 }
 
+int32_t process_start(const char *name, uint64_t arg)
+{
+    const struct userimg *img = userimg_find(user_images, user_images_count, name);
+    if (!img || userimg_check(img) != USERIMG_OK)
+        return -1;
+    return start(img->name, img, 0, 0, arg);
+}
+
+int32_t process_start_file(const char *name, const uint8_t *file, uint64_t size, uint64_t arg)
+{
+    if (!name || !file)
+        return -1;
+    return start(name, 0, file, size, arg);
+}
+
+int32_t process_start_program(const char *name, uint64_t arg)
+{
+    const struct progmod *m = progmod_find(progmod_table(), name);
+    if (!m)
+        return -1;
+    return process_start_file(m->name, (const uint8_t *)phys_view(m->phys), m->size, arg);
+}
+
 enum proc_status process_kill(int32_t pid)
 {
     uint32_t f = irq_save();
     table_init();
     enum proc_status r = proc_request_kill(&table, pid);
+    int slot = r == PROC_OK ? proc_find(&table, pid) : -1;
+    int32_t tid = slot >= 0 ? table.e[slot].tid : -1;
     irq_restore(f);
+    /* 0.11 (Q7): a process asleep in nanosleep wakes now, and ends when
+     * its system call returns, instead of after the whole sleep. */
+    if (tid > 0 && thread_wake(tid))
+        klogf("Process %d: kill requested while asleep; woken early\n", (int)pid);
     return r;
 }
 
@@ -194,6 +303,44 @@ uint32_t process_live(void)
     return n;
 }
 
+uint32_t process_list(struct process_info *out, uint32_t max)
+{
+    uint32_t n = 0;
+    uint32_t f = irq_save();
+    for (int i = 0; table_ready && i < PROC_MAX && n < max; i++) {
+        const struct proc_entry *e = &table.e[i];
+        if (e->state == PROC_FREE)
+            continue;
+        out[n].pid = e->pid;
+        out[n].tid = e->tid;
+        out[n].ended = e->state == PROC_ZOMBIE;
+        for (int k = 0; k < PROC_NAME_MAX; k++)
+            out[n].name[k] = e->name[k];
+        n++;
+    }
+    irq_restore(f);
+    return n;
+}
+
+bool process_ended(int32_t pid)
+{
+    uint32_t f = irq_save();
+    int slot = table_ready ? proc_find(&table, pid) : -1;
+    bool ended = slot >= 0 && table.e[slot].state == PROC_ZOMBIE;
+    irq_restore(f);
+    return ended;
+}
+
+uint64_t process_fault_address(int32_t pid)
+{
+    uint32_t f = irq_save();
+    int slot = table_ready ? proc_find(&table, pid) : -1;
+    uint64_t a = slot >= 0 && table.e[slot].state == PROC_ZOMBIE &&
+                 table.e[slot].result.end == PROC_END_FAULT ? fault_addresses[slot] : 0;
+    irq_restore(f);
+    return a;
+}
+
 void process_teardown_totals(struct process_teardown_totals *out)
 {
     uint32_t f = irq_save();
@@ -236,6 +383,7 @@ void process_fault(const struct interrupt_frame *frame)
     if (copy_from_user(f.op.b, frame->rip, n))
         f.op.n = n;
     last_fault = f;
+    fault_addresses[slot] = v == 14 ? cr2 : frame->rip;
     interrupts_enable();                    /* as for a kill: the thread ends itself */
     if (v == 14) {
         uint32_t e = (uint32_t)frame->error_code;
@@ -273,6 +421,14 @@ static int current_slot(const char *what)
 int32_t process_current_pid(void)
 {
     return table.e[current_slot("getpid")].pid;
+}
+
+bool process_current_kill_pending(void)
+{
+    uint32_t f = irq_save();
+    bool pending = proc_kill_pending(&table, current_slot("kill check"));
+    irq_restore(f);
+    return pending;
 }
 
 void process_exit_current(int32_t status)

@@ -6,7 +6,8 @@
 #define SELFTEST_TICKS        3u
 #define SELFTEST_SPIN_LIMIT   50000000u   /* bounds the wait if IRQ0 never comes */
 
-static volatile uint64_t ticks;
+/* 0.11: 8-byte aligned, so one load reads it whole (timer_ticks). */
+static volatile uint64_t ticks __attribute__((aligned(8)));
 static volatile uint32_t seconds;
 static volatile uint32_t subticks;
 static bool initialised;
@@ -31,11 +32,21 @@ bool timer_init(void)
     return initialised;
 }
 
+/* 0.11: one aligned 64-bit load, which x86-64 performs atomically, so no
+ * cli/sti: timer_irq is the counter's only writer, and a reader sees the
+ * value before or after an increment, never half of one. (The 32-bit kernel
+ * needed cli for its two 32-bit loads.) With more CPUs later this stays
+ * correct: one writer, and aligned 64-bit loads are atomic on every CPU.
+ * The cli/sti pair also made QEMU's TCG starve IRQ0 in tight wait loops:
+ * it checks for interrupts when leaving a translated block, and the block
+ * ended by sti left it inside the STI shadow (0.11 stage 4a diagnosis).
+ * The barriers and the atomic load keep the compiler from caching or
+ * hoisting the read out of a wait loop. */
 uint64_t timer_ticks(void)
 {
-    uint32_t flags = irq_save();
-    uint64_t t = ticks;
-    irq_restore(flags);
+    __asm__ volatile ("" ::: "memory");
+    uint64_t t = __atomic_load_n(&ticks, __ATOMIC_RELAXED);
+    __asm__ volatile ("" ::: "memory");
     return t;
 }
 

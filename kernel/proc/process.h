@@ -19,6 +19,7 @@
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/memory/uspace.h"
 #include "kernel/proc/faultop.h"
+#include "kernel/proc/loadplan.h"
 #include "kernel/proc/proc_core.h"
 #include "kernel/proc/userentry.h"
 #include "kernel/proc/userimg.h"
@@ -30,6 +31,7 @@ extern const uint64_t user_images_count;
 /* Pages a load mapped, by kind. */
 struct process_load_stats {
     uint32_t text, data, stack;
+    uint32_t in_modules;            /* 0.11: frames inside a boot module (must stay 0) */
 };
 
 /* Checks the image (userimg_check) and maps it into the address space,
@@ -40,6 +42,19 @@ struct process_load_stats {
  * bad image or no memory (what was mapped stays for uspace_destroy). */
 bool process_load(struct uspace *as, const struct userimg *img, struct process_load_stats *st);
 
+/* 0.11: the one loading path. process_load turns the image into a plan and
+ * calls this; ELF programs come here too. Every page is a fresh frame
+ * filled from the plan's bytes (never a page of the source); the stack is
+ * added as before. */
+bool process_load_plan(struct uspace *as, const struct load_plan *plan,
+                       struct process_load_stats *st);
+
+/* 0.11: what every load added up to since boot (test=elfrun). */
+struct process_load_totals {
+    uint32_t loads, pages, in_modules;
+};
+void process_load_totals(struct process_load_totals *out);
+
 /* userenter.asm: starts the program in ring 3 with RDI = arg. */
 void enter_user(const struct user_iret *frame, uint64_t arg) __attribute__((noreturn));
 
@@ -47,6 +62,17 @@ void enter_user(const struct user_iret *frame, uint64_t arg) __attribute__((nore
  * Returns its process ID (> 0), or -1: no such image, the process table
  * is full, or no thread could be created. */
 int32_t process_start(const char *name, uint64_t arg);
+
+/* 0.11: a process for an ELF file in kernel-reachable memory (a module,
+ * through the physical view). The file is checked (again) by the
+ * process's own thread before anything is mapped; a refused file ends the
+ * process with PROC_END_LOAD_FAILED (code = the elf_check result) before
+ * it has an address space. Returns the process ID or -1, as above. */
+int32_t process_start_file(const char *name, const uint8_t *file, uint64_t size, uint64_t arg);
+
+/* 0.11: the program module `name` (progmod_table), as above; -1 if no
+ * such program was kept at boot. */
+int32_t process_start_program(const char *name, uint64_t arg);
 
 /* Requests the end of process `pid`; it ends at its next return to ring 3
  * (result PROC_END_KILLED). */
@@ -81,6 +107,8 @@ void process_last_fault(struct process_fault *out);
  * thread: its process ID (panics if the thread is not a process), and
  * exit / exit_group (result PROC_END_EXIT with this status; never returns). */
 int32_t process_current_pid(void);
+/* True when the calling process has a pending kill request. */
+bool process_current_kill_pending(void);
 void process_exit_current(int32_t status) __attribute__((noreturn));
 
 /* The thread of process `pid` (alive or not yet waited for), or -1. */
@@ -88,6 +116,26 @@ int32_t process_tid(int32_t pid);
 
 /* Processes alive or not yet waited for. */
 uint32_t process_live(void);
+
+/* 0.11: one row of the process table, for the console's "ps" and "run". */
+struct process_info {
+    int32_t pid;
+    int32_t tid;
+    bool ended;                     /* ended, its result not yet collected */
+    char name[PROC_NAME_MAX];
+};
+
+/* Copies at most `max` rows (alive or ended, in table order); returns how
+ * many. */
+uint32_t process_list(struct process_info *out, uint32_t max);
+
+/* True once process `pid` has ended (its result waits for process_wait). */
+bool process_ended(int32_t pid);
+
+/* The address an exception ended `pid` at: CR2 for a page fault, RIP for
+ * any other; 0 if it did not end by an exception. Valid until its result
+ * is collected. */
+uint64_t process_fault_address(int32_t pid);
 
 /* What the processes' own teardowns gave back since boot (test=userkill). */
 struct process_teardown_totals {

@@ -10,6 +10,9 @@ void serial_putc(char c) { (void)c; }
 /* 0.9: the preemption-disable count kprintf.c uses (kernel/proc/thread.c). */
 volatile uint32_t preempt_count_value;
 void preempt_underflow(void) { printf("    FAIL: preempt_enable() underflow\n"); unit_failures++; }
+/* 0.11, policy (b): never set here, so preempt_enable() never switches. */
+volatile uint8_t preempt_resched_pending;
+void preempt_resched(void) {}
 /* 0.9: kputc's thread-0 screen check (kernel/proc/thread.c). */
 #include <stdbool.h>
 #include <stdlib.h>

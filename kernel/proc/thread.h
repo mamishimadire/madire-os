@@ -29,6 +29,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "kernel/proc/sched_core.h"
 
@@ -57,6 +58,9 @@ void thread_exit(int32_t code) __attribute__((noreturn));
  * again at the first tick at or after now + ticks. Thread 0 waits by
  * polling (yield, or hlt when nothing else can run). 0 ticks: a yield. */
 void thread_sleep(uint32_t ticks);
+/* 0.11: ends thread `tid`'s sleep early (sched_wake); false if it was not
+ * sleeping. Its thread_sleep returns at its next turn. */
+bool thread_wake(int32_t tid);
 
 /* Thread 0: frees one detached thread that has exited. True if it did. */
 bool thread_reap(void);
@@ -117,6 +121,17 @@ uint32_t thread_peak_max(void);         /* highest final peak since the last res
  * thread_peak_max(); each scheduler diagnostic resets them at its start. */
 void thread_turn_reset(void);
 uint64_t thread_turn_max(void);
+/* 0.11: who took that longest turn, as text for a log line, e.g.
+ * "thread 3 'spin' (user process 12): 5 ticks", "thread 2 'frames' (kernel
+ * thread): 44 ticks", "thread 1 'spin' (ring-3 thread, no process): 5
+ * ticks" (test=userspin's thread), or "no thread (no turn of 1 tick or
+ * more)". The owner is captured at the switch that ended the turn
+ * (sched_longest). */
+void thread_turn_owner(char *buf, size_t size);
+/* 0.11: the calling thread runs process `pid` (process.c, once, when the
+ * process's thread starts). Kept until the thread slot is reused, so a
+ * turn that ends at the process's exit is still attributed to it. */
+void thread_set_pid(int32_t pid);
 
 /* kputc's check: true while only thread 0 runs, or during a panic. */
 bool thread_screen_allowed(void);

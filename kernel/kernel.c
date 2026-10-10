@@ -38,6 +38,7 @@
 #include "kernel/multiboot.h"
 #include "kernel/panic.h"
 #include "kernel/proc/preempt.h"
+#include "kernel/proc/progmod.h"
 #include "kernel/proc/schedtest.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/syscall.h"
@@ -283,13 +284,18 @@ static void check_boot_modules(const struct multiboot_info *mbi)
         struct bootmod_result r;
         enum bootmod_status s =
             bootmod_check((const uint8_t *)phys_view(mods[i].mod_start), size, &r);
-        if (s == BOOTMOD_NO_HEADER)
-            klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s\n", i + 1, mods[i].mod_start,
-                  mods[i].mod_end, size, bootmod_status_str(s));
-        else
-            klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s (FNV-1a 0x%08x, expected 0x%08x)\n",
-                  i + 1, mods[i].mod_start, mods[i].mod_end, size, bootmod_status_str(s),
-                  r.actual, r.expected);
+        /* 0.11: anything that is not a test module is a program candidate:
+         * checked and named by progmod (serial and dmesg only, never the
+         * screen, never a "Boot module" line). */
+        if (s == BOOTMOD_NO_HEADER) {
+            progmod_register(i + 1, mods[i].string ? phys_view(mods[i].string) : NULL,
+                             mods[i].mod_start, (const uint8_t *)phys_view(mods[i].mod_start),
+                             size);
+            continue;
+        }
+        klogf("Boot module %u: 0x%08x-0x%08x (%u bytes): %s (FNV-1a 0x%08x, expected 0x%08x)\n",
+              i + 1, mods[i].mod_start, mods[i].mod_end, size, bootmod_status_str(s),
+              r.actual, r.expected);
         /* 0.8: also on the screen's message line, for machines without a
          * serial port (only when a module was loaded). */
         char msg[80];
@@ -297,6 +303,7 @@ static void check_boot_modules(const struct multiboot_info *mbi)
                   bootmod_status_str(s), size);
         bootscreen_message(msg);
     }
+    progmod_summary();
 }
 
 /* Diagnostics: GRUB's "Diagnostics" menu (or QEMU -append) passes test=<name>
@@ -318,6 +325,9 @@ static void run_diagnostics(void)
         uint32_t frame = memory_alloc_page();
         paging_map(0xFFFF808000000000ull, frame, PTE_WRITE | paging_nx_flag());
         diag_message("Freeze test: FAIL (the new kernel-half entry was created)");
+    } else if (cmdline_has("test=elfrun")) {
+        diag_message("ELF run test: module programs against their built-in twins...");
+        diag_message(usertest_elfrun() ? "ELF run test: PASS" : "ELF run test: FAIL (see serial log)");
     } else if (cmdline_has("test=smep")) {
         diag_message("Crash test: the kernel executes a user page (SMEP must refuse it)");
         usertest_smep();                            /* returns only without SMEP */
@@ -390,6 +400,10 @@ static void run_diagnostics(void)
         diag_message("Preemptoff test: switch deferred while preemption is disabled...");
         diag_message(schedtest_preemptoff() ? "Preemptoff test: PASS"
                                             : "Preemptoff test: FAIL (see serial log)");
+    } else if (cmdline_has("test=preemptlong")) {
+        diag_message("Preemptlong test: 4 threads inside guarded sections for 3 seconds...");
+        diag_message(schedtest_preemptlong() ? "Preemptlong test: PASS"
+                                             : "Preemptlong test: FAIL (see serial log)");
     } else if (cmdline_has("test=preempt")) {
         diag_message("Preempt test: 3 threads that never yield, for 3 seconds...");
         diag_message(schedtest_preempt() ? "Preempt test: PASS" : "Preempt test: FAIL (see serial log)");
@@ -587,6 +601,8 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                     console_start(mem);
             }
         }
+
+        console_poll();                     /* 0.11: programs that have ended */
 
         uint32_t dropped = keyboard_dropped();
         if (dropped != reported_dropped) {

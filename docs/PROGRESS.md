@@ -22,7 +22,8 @@ Each milestone is one commit on `main`. The hashes are from `git log`; tags exis
 | | `3b01a8a` | 2026-10-06 | Documentation commit: the Madire OS Command Standard, `docs/commands.md` (MOCS v0.1; no code) |
 | **0.9.1** | `1300fb5` (tag `v0.9.1`) | 2026-10-06 | Shell commands: `history` (with Up/Down recall), `uname`, `hostname`, `date` (from the RTC), `dmesg` (a 32 KiB kernel log), `reboot` (with a confirmation; keyboard-controller reset, triple-fault fallback), `help <command>` and `<command> --help` for every command; MOCS v0.2 |
 | **0.9.2** | `14339ff` (tag `v0.9.2`) | 2026-10-06 | Console scrollback (the last 1000 lines with their colours, Shift+PgUp/PgDn, an indicator on the last row, `clear` keeps the screen) and key-event logging off by default (boot option `keylog` for tests; the keyboard diagnostics turn it on); MOCS v0.3 |
-| **0.10** | this milestone's commit (tag `v0.10`) | 2026-10-09 | User processes: ring 3 with user segments, IST2 and RSP0 on every switch; SMEP, SMAP and CR0.EM; one address space per process, the kernel half frozen at boot; `SYSCALL` with six Linux x86-64 system calls (`write`, `sched_yield`, `nanosleep`, `getpid`, `exit`, `exit_group`), returning with `IRETQ`; `copy_from_user`; faults contained to the program; 19 built-in test programs; a user-mode self-test at every boot; 11 new Diagnostics entries (16–26); the crash screen's `Cause:` line for SMEP/SMAP; the test harness reads the version once; MOCS v0.4 and v0.5 |
+| **0.10** | `80ae0b0` (tag `v0.10`) | 2026-10-09 | User processes: ring 3 with user segments, IST2 and RSP0 on every switch; SMEP, SMAP and CR0.EM; one address space per process, the kernel half frozen at boot; `SYSCALL` with six Linux x86-64 system calls (`write`, `sched_yield`, `nanosleep`, `getpid`, `exit`, `exit_group`), returning with `IRETQ`; `copy_from_user`; faults contained to the program; 19 built-in test programs; a user-mode self-test at every boot; 11 new Diagnostics entries (16–26); the crash screen's `Cause:` line for SMEP/SMAP; the test harness reads the version once; MOCS v0.4 and v0.5 |
+| **0.11** | this milestone's commit (tag `v0.11`) | 2026-10-10 | User processes, part 2: a strict ELF64 loader; programs delivered as boot modules (7 on the default GRUB entry); one loading path for built-in images and ELF files; `run`, `run -b`, `kill` (asks first), `ps` with processes, Ctrl+C; program output on the screen through an output queue drained by thread 0, with back-pressure; the longest-turn record names its thread; policy (b), switching at `preempt_enable` (an approved deviation); `timer_ticks()` without `cli`/`sti` (protected `timer.c`); the stall-capture and key-evidence test harness; `scripts/remote-regress.ps1`; MOCS v0.6 |
 
 
 ## 2. Tests passing at each milestone
@@ -41,8 +42,11 @@ Each milestone is one commit on `main`. The hashes are from `git log`; tags exis
 | 0.9.1 | 28 (+ `history`, `rtc`, `logbuf`, `shell_091`) | 560 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 `[0.9.1]`), plus `make repro` |
 | 0.9.2 | 29 (+ `scrollback`) | 585 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 + 25 `[0.9.2]`), plus `make repro` |
 | 0.10 | 41 (+ `gdt010`, `cpuprot010`, `vmm010`, `uvm`, `usercopy`, `proc`, `userimg`, `userentry`, `faultop`, `syscall`, `pfcause010`, `sched010`) | 838 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 + 25 + 253 `[0.10]`), plus `make repro` |
+| 0.11 | 51 (+ `elf`, `progmod`, `loadplan`, `longest011`, `preemptb`, `order011`, `wake011`, `shell_run011`, `shell_kill011`, `outq`) | 1071 (150 + 30 + 32 + 49 + 96 + 32 + 139 + 32 + 25 + 253 + 233 `[0.11]`), plus `make repro` |
 
-Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Test` before it was committed. Since 0.9 that test is scripted (`scripts/vbox-acceptance.ps1`, see [testing.md](testing.md)). In 0.9, 33 of 33 checks passed, plus 20 extra normal boots, each with the scheduler self-test `PASS` and 0 preemptions during its ping-pong.
+Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Test` before it was committed. Since 0.9 that test is scripted (`scripts/vbox-acceptance.ps1`, see [testing.md](testing.md)). In 0.9, 33 of 33 checks passed, plus 20 extra normal boots, each with the scheduler self-test `PASS` and 0 preemptions during its ping-pong. In 0.11, 119 of 119 checks passed, plus 10 extra normal boots (each self-test `PASS`, 0 ping-pong preemptions) and 10 `userkill` boots (longest turn 5 ticks every time).
+
+**Full-regression durations.** 0.9: about 15 minutes; 0.10: about 30; 0.11: 46–53 minutes per run from stage 3b on (stage 6, the final baseline: 49 minutes, 2933 s; the Codespace session 55 minutes). A test-infrastructure milestone is planned once a run exceeds about 60 minutes (see [roadmap.md](roadmap.md)).
 
 **0.9 test details:** the 139 `[0.9]` checks are in 19 groups (listed in [testing.md](testing.md)). Of the existing 389 checks only the 4 version checks changed (`v0.8` → `v0.9`); none was removed or weakened. The new unit suites make 32,782 checks (`test_sched`), 1,190 (`test_kstack`) and 23 (`test_shell_ps09`). The full suite takes about 15 minutes, so it runs detached in the Codespace (see [development.md](development.md)).
 
@@ -55,6 +59,12 @@ Each milestone also passed its VirtualBox acceptance test on the VM `MadireOS-Te
 **Policy (a) measured again (0.10):** the plan's rule is that a user process's longest turn is at most 6 ticks (else stop). In QEMU every user process stayed at or below 5 ticks in every run; kernel threads still take longer turns inside guarded sections (final regression: `framethreads` 44 ticks, `heapthreads` 11, `preemptoff` 21 by design, the kernel frame thread in `test=userpreempt` 43; in VirtualBox that thread took 125 and 189). Stage 6a's run gave `framethreads` 33 and `heapthreads` 13; 0.9 measured up to 77.
 
 **Stack peak and figures (0.10):** the boot stack's peak is **1512 bytes** at "System ready." and after `ps`/`version` in the console, in QEMU and VirtualBox alike (1496 in 0.9.2); each process's thread has its own stack (2376 bytes for the boot self-test's programs). On `MadireOS-Test`: free pages **917028** at boot and **916968** in `mem` (20 fewer than 0.9.2), **457** mapped pages (QEMU `-kernel`: 458), **15** page tables; the memory exhaustion test allocates 916968 pages. The kernel image ends at physical `0x1CC000`, **208 KiB below the 2 MiB boundary**.
+
+**0.11 test details:** the 233 `[0.11]` checks are in 10 groups plus 14 owner checks inside older groups (listed in [testing.md](testing.md)): the longest turn's owner (2, plus 14 in the `[0.9]`/`[0.10]` diagnostics), ELF checks on the host (33), program modules found at boot (56), the default GRUB entry's 7 programs (12), ELF programs loaded into processes (56), policy (b) turn bounds (7), `test=preemptlong` (10), the `run`/`run -b`/`ps` session (11), the `kill`/Ctrl+C session (18), and screen output, scrollback and the Q8 flood test (14). The 10 new unit suites make 612 checks (`elf` 158, `shell_run011` 114, `progmod` 67, `longest011` 54, `preemptb` 53, `loadplan` 47, `wake011` 47, `shell_kill011` 44, `outq` 18, `order011` 10); `test_kprintf` got two stubs (no check changed). **Existing checks:** 8 changed, each reported and accepted (see *Changed checks in 0.11* below); none was removed or weakened. `make repro`: identical (kernel `0851bd59…`); no undefined symbols, no libgcc/libc helper, no SSE/x87 register. **VirtualBox:** 119 of 119, with the new `procs` group (`run hello` with its text on screen, `run exitcode`, `run -b spin`, `ps`, `kill` then "no" then "yes", Ctrl+C on `spin` and on `lines`), 10 extra normal boots and `userkill` ×10; every turn at most 5 ticks with the same owners as QEMU; the only difference from QEMU is that the VM's CPU offers neither SMEP nor SMAP (both NOT APPLICABLE, as on QEMU's default CPU).
+
+**Policy (b) measured (0.11):** every longest turn in the final regression is at most 5 ticks, each with its owner: `framethreads` 5 (`frame0`), `heapthreads` 5 (`heap0`), `preemptlong` 5 (`long0`), the kernel frame thread in `test=userpreempt` 1 (`frames`), the user processes 5/5/5/0/0 (`spin`), `preemptoff`'s other thread 5 (its holder's 20-tick hold is deliberate and exempt by name). Under policy (a) the same kernel threads took 33–187 ticks.
+
+**Stack peaks and figures (0.11):** the boot stack's peak is **1512 bytes** at "System ready." (1544 after a VirtualBox console session). Programs that write through `sys_write`, whose 4 KiB copy buffer is now on the thread's stack, peak at **4984–5248 of 16384 bytes** (`hello`, `lines` 4984; `flood` 5248) against 2696 for programs that don't write; the highest kernel-thread peak is the churn test's deliberately deep thread (8496). On `MadireOS-Test`: free pages **917003** at boot and **916943** in `mem`, **482** mapped pages, **15** page tables, 20 reserved ranges (5 + the module table + 2 × 7 program modules). The kernel image ends at physical `0x1D7000`, **164 KiB below the 2 MiB boundary**.
 
 **Stack peak baseline (0.8):** the kernel stack's high-water mark is **1480 of 16384 bytes**, the same after booting, after the keyboard flood and after the scripted console session, in QEMU and in VirtualBox. Future milestones can compare against it (processes in 0.9 will add their own stacks).
 
@@ -123,17 +133,26 @@ What each milestone left open when it was committed, and where it was resolved.
   - **No secret-input mode exists yet.** No prompt asks for a secret today; the binding rule in AGENTS.md says the first milestone that adds one must implement it (no key logging even with `keylog`, no echo to serial or `dmesg`, no history, `*` on screen).
   - The `dmesg` joined-lines effect described under 0.9.1 is still there (a fix is proposed above).
 - **0.10:**
-  - **Built-in programs only.** The 19 test programs are compiled with the kernel; ELF programs from boot modules, and `run`, `kill` and `ps` with process numbers, come in 0.11. One thread per process; no signals, `fork` or `exec`; at most 63 processes; a fixed 32 KiB user stack; at most 64 KiB of code and 64 KiB of data per program.
+  - **Built-in programs only.** The 19 test programs are compiled with the kernel; ELF programs from boot modules, and `run`, `kill` and `ps` with process numbers, come in 0.11. (Resolved in 0.11.) One thread per process; no signals, `fork` or `exec`; at most 63 processes; a fixed 32 KiB user stack; at most 64 KiB of code and 64 KiB of data per program.
   - **No FPU state is saved.** CR0.EM is set, so x87, MMX and SSE instructions end a program (#NM / #UD); programs are built without them.
-  - **`write` reaches the serial log and `dmesg` only** (as `[pid N] …` lines, `?` for control characters, at most 4096 bytes per call), never the screen; screen output comes with `run` in 0.11.
-  - **`IRETQ` only:** every return to ring 3, also from a system call, uses `IRETQ`, not the faster `SYSRET` (one return path, and none of `SYSRET`'s non-canonical-RIP pitfalls). `nanosleep` never writes `rem` (nothing interrupts a sleep).
+  - **`write` reaches the serial log and `dmesg` only** (as `[pid N] …` lines, `?` for control characters, at most 4096 bytes per call), never the screen; screen output comes with `run` in 0.11. (Resolved in 0.11 for the foreground program.)
+  - **`IRETQ` only:** every return to ring 3, also from a system call, uses `IRETQ`, not the faster `SYSRET` (one return path, and none of `SYSRET`'s non-canonical-RIP pitfalls). `nanosleep` never writes `rem` (nothing interrupts a sleep; since 0.11 only a kill does, and the process then ends).
   - **The SMEP/SMAP crash path is proven in QEMU only** (`qemu64,+smep,+smap`): the VirtualBox VM doesn't offer SMEP or SMAP to the guest, so there `test=smep` and `test=smap` report NOT APPLICABLE. The "not supported" path is proven in both.
   - **QEMU's `emms` quirk:** QEMU 8.2.2's TCG doesn't raise #UD for `emms` with CR0.EM set, real CPUs do. The tests use `pxor %mm0,%mm0` for MMX (it faults in both); no test runs `emms` since stage 5a, so the real CPU's behaviour wasn't observed.
   - **Without NX, user data is executable:** W^X for user pages holds only on CPUs with NX (code pages are never writable either way).
   - **Check, then copy:** `copy_from_user` checks the range, then copies. That is safe only while nothing can change a process's mapping in between (true in 0.10: one CPU, one thread per process, no unmapping system call). A binding rule in AGENTS.md covers the first milestone that changes this.
   - **The kernel half is frozen at boot:** no new kernel-half PML4 slot can be added afterwards (by design; a new kernel area needs a slot that exists at boot).
-  - Kernel threads still get turns longer than the slice inside guarded sections (policy (a)); user processes stayed within the 6-tick rule (one VirtualBox exception, a watch item).
+  - Kernel threads still get turns longer than the slice inside guarded sections (policy (a)); user processes stayed within the 6-tick rule (one VirtualBox exception, a watch item). (Resolved in 0.11 by policy (b); the VirtualBox watch item didn't recur.)
   - Still open from before: RAM above 4 GiB; no direct map; 4 KiB pages only; the ISO isn't reproducible; `test_reserve` depends on the load address; the `cpu` "Features:" line can wrap; the "no CPUID" path isn't executed; the `dmesg` joined-lines effect; no secret-input mode yet.
+- **0.11:**
+  - **14 or more boot modules stop the boot.** The protected `reserve.c` holds 32 ranges: 5 without modules, 1 for the module table and 2 per module, so 13 modules use all 32 and a 14th panics at boot. A graceful refusal needs a change to `reserve.c` and its own plan. At most 8 program modules are kept.
+  - **ELF programs only as static `ET_EXEC` x86-64 files** within the loader's rules (see [architecture.md](architecture.md)): no dynamic linking, no PIE, at most 4 loadable segments, 1 MiB of file and 1 MiB of memory.
+  - **Foreground programs start with preemption off** (from creating the process until the console has recorded it as the foreground program), so a program's first `write` already counts as foreground. A behaviour note, not a fault.
+  - **Background output is never on the screen:** `run -b` programs write to the serial log and `dmesg` only, and their end line too.
+  - **`kill` is interactive only:** it always asks; scripts will need a non-interactive `kill -y <pid>` (noted for a shell milestone).
+  - **Some diagnostic waits have no bound if ticks stop** (for example `test=timer` in `devtest.c` and waits in `schedtest.c`); bounds are a follow-up.
+  - **The 4 KiB `write` buffer is on the process thread's kernel stack** (16 KiB): measured peaks are at most 5248 bytes.
+  - Still open from before: RAM above 4 GiB; no direct map; 4 KiB pages only; no FPU state; the ISO isn't reproducible; `test_reserve` depends on the load address; the `cpu` "Features:" line can wrap; the "no CPUID" path isn't executed; the `dmesg` joined-lines effect; no secret-input mode yet.
 
 ### Incidents and corrections in 0.10
 
@@ -147,12 +166,56 @@ What each milestone left open when it was committed, and where it was resolved.
 
 **Approved deviation: the 0.9 turn-order rule changed in 0.10** (stage 2). `sched_order_check()` now accepts a wrong turn when the preemption count rose within the previous k turns (k = the cycle's length), instead of the previous turn only; see the decision log.
 
+### Approved deviation in 0.11: policy (b)
+
+0.9's policy (a) kept a switch that fell due while preemption was disabled pending until the next interrupt after the count was back at 0. A thread that lives in guarded sections (allocating frames in a loop) could therefore keep the CPU for about 100 ticks, and in stage 3 one `framethreads` run starved a thread completely. **Policy (b):** the `preempt_enable()` that brings the count to 0 with a switch pending switches at once (`preempt_resched()`), provided interrupts are on, the scheduler is ready and no panic is in progress (`sched_switch_on_enable()`, unit test `test_preemptb`). Wherever this holds a timer interrupt could already have switched, so no new interleaving appears. The end of an IRQ stays a switch point. The protected `memory.c` is unchanged, but its guard's `preempt_enable()` may now switch, which is the same as an interrupt arriving at that point.
+
+**Evidence (A/B, `test=framethreads`, 30 interleaved pairs):** policy (a) (stage 3 kernel): longest turn **29 / 67.5 / 187 ticks** (min / median / max), **5 of 30 runs starved a thread** (FAIL), 1–11 preemptions; policy (b): **5 / 5 / 5 ticks, 0 of 30 starved**, 40 preemptions every run. `test=preemptlong` (4 threads over 99.9% of their time in guarded sections) keeps every turn at 5 ticks. Owner's conditions: a turn over 6 ticks is a STOP (never a relaxed bound); in VirtualBox it triggers re-runs first.
+
+### The protected `timer.c` change (0.11, approved)
+
+`timer_ticks()` now reads the tick counter with one relaxed `__atomic_load_n` between compiler barriers (a single `mov`), with no `cli`/`sti`. The counter is 8-byte aligned and the timer interrupt is its only writer; an aligned 64-bit load is atomic on x86-64 (also on more CPUs later), so a reader sees the value before or after an increment, never half of one. The `cli`/`sti` pair came from the 32-bit kernel, which needed two loads. It was also the cause of an old flaw (below).
+
+### Incidents and corrections in 0.11
+
+- **Two old flaws found and fixed (both present since 0.10 or earlier, not caused by 0.11 code).** A rare silent stall of `test=preempt` (first seen in 0.10 stage 2, under policy (a)) and rare boot self-test halts ("cooperative ping-pong … out of order without a preemption") were reproduced under host load: in 300 loaded boots of three kernels (0.10, 0.11 stage 3b.2, stage 4a) 9 stalled and 8 halted, at the same rate on 0.10.
+  - **The stall:** the new stall capture showed the kernel's tick count frozen or crawling (for example 277 → 277 over a second) while QEMU raised IRQ 0 100 times a second, with the interrupt pending and unmasked at the PIC, IF=1, the local APIC correct, and the CPU in a wait loop calling `timer_ticks()`. QEMU's TCG checks for interrupts when it leaves a translated block; `sti` ends a block, so the check fell inside the one-instruction STI shadow and the pending interrupt waited. Fix: `timer_ticks()` without `cli`/`sti` (above). Real CPUs are not affected.
+  - **The ping-pong halt:** every rejected sequence was `A A B A … B B`: thread 0 was preempted after creating thread A and before creating B, so A took its first turn alone, and the rule "50 turns each" forced a compensating `B B` at the end, 98 turns after the only preemption. A setup race in the test, not a kernel fault. Fix (test-only): every thread of a cycle is created with preemption off; the checker is unchanged, and `test_order011` pins the sequence and its verdict.
+  - Verification: 300 loaded `test=preempt` boots and 100 loaded plain boots of the fixed kernel all passed (0 stalls, 0 halts); the 300-tick test now takes 3.05–3.15 s under load (4–12 s before).
+- **The framethreads starvation (stage 3)** was policy (a) at work; it led to policy (b) (above).
+- **A run lost to an idle Codespace:** one regression stopped when the Codespace shut itself down while nothing polled it; the run was repeated on the same snapshot. Since then every run is polled (or driven by `scripts/remote-regress.ps1`).
+- **GitHub Codespaces billing:** Codespace use was stopped by GitHub billing during the milestone, and a budget was set. Codespaces is a paid resource: sessions are started for a task and stopped as soon as the results are collected (AGENTS.md).
+- **Builder switches and handover.** The coding agent changed from Claude Code to Codex (after stage 4b) and back to Claude Code (after Codex's usage limit stopped it during stage 5's regression). The handover note `docs/HANDOVER-0.11.md` carried the plan, the decisions and the state; its lasting content is in this file and it was removed at the end of the milestone. Codex delivered the 4b IRQ 1 evidence fix, stage 5 and `scripts/remote-regress.ps1`; Claude Code reviewed them before committing.
+- **The key-evidence IRQ 1 record at first wrote nothing** (stage 4b): GNU `timeout` signals its whole process group, so QEMU had stopped before the wrapper read it. Fixed by starting QEMU in its own session (`setsid`).
+
+### Changed checks in 0.11
+
+Each was reported and accepted when it was made; none was removed or weakened.
+
+1. The two new `[0.11]` owner-check name patterns use `'[^']+'` (thread names may contain `-`, e.g. `if-preempted`).
+2. The `[0.11]` `userpreempt` owner check (a 0.11 test fix): the turn record is reset before the processes start, and every figure and the owner are read under `preempt_disable` before the kill phase.
+3. "all 19 built programs" became "all 20" (`lines` added).
+4. The `elfrun` line in fixture-only boots requires only `in_modules` unchanged; the compared count is informational.
+5. `[0.9] help: ps listed after the seven commands` and `[0.9.1] help lists the six new commands after ps` expect "Show threads and processes" (decision Q6).
+6. `[0.11] preemptoff`: "0 or 1 tick after the release and the switch recorded at the release" (a check must never fail on a correct kernel); the strict "switch inside `preempt_enable`: yes" stays in its own check.
+7. `[0.11] run: hello ran exactly once` counts only after `madire> run hello` (the boot self-test runs `hello` too).
+8. The 0.11 unit check in `test_shell_run011`: the help list ends with `run`, then `kill`.
+
 ### Watch items
 
-- **Preemptions inside the boot self-test's ping-pong.** In 200 boots each, the stage-2 kernel saw a preemption inside the cooperative ping-pong 5 times and the 0.9.2 kernel once (not significant: about an 11% chance if both were equally likely). Stage 6a's regression: 1 in 85 logs; the final regression: 2 preemptions in 102 logs; VirtualBox: 0 in 41 boots. Such a preemption needs a burst of timer ticks. Re-check in later milestones.
-- **The VirtualBox 10-tick `userkill` turn.** One VirtualBox boot of `test=userkill` (stage 7) measured a longest turn of 10 ticks, beyond the 6-tick rule; every functional result was correct. 10 re-runs (no other VM running, host 0–23 % busy) and 2 other boots all measured 5. Probably a VirtualBox tick burst, unconfirmed: the turn record doesn't say which thread took it. If it recurs, the record gets the thread's identity (TID, and whether it is a user process or the kernel test thread) first; a kernel test thread over 6 ticks isn't a policy violation, but must be shown, not assumed.
-- **The QMP stall capture (proposal, later, not now):** add the capture used for the stage-2 stall investigation (CPU registers, interrupt-controller state and IRQ counts, taken automatically when a boot stops producing output) to the test harness as a diagnostic aid that changes no checks.
-- **The 2 MiB boundary.** One page table maps 2 MiB, and the kernel image is loaded at 1 MiB. It ended at physical `0x1B8000` in 0.9.2 (288 KiB below the boundary) and ends at `0x1CC000` in 0.10: **208 KiB (52 pages) below it**. Future growth will cross it, and the kernel's tables will then need one more page table: the page-table count, the mapped-page and free-page figures and the walk-check's table count will change. The tests recompute these figures from the log, and the docs must expect the change.
+- **Missing keys (0.11):** in about 700 loaded keyboard boots, one (`test=preempt keylog`, stage 4a.1 verification) logged no key event at all while the test passed. Unclassified (keys not sent, or IRQ 1 never raised); 200 instrumented boots afterwards were clean. The key-evidence harness now keeps the injector's output and the IRQ 1 counts; if a boot ever shows keys sent and IRQ 1 raised but nothing logged, it is a kernel issue (STOP).
+- **The `write` buffer on the kernel stack (0.11):** answered by the measured peaks (at most 5248 of 16384 bytes); re-check when a program's kernel path grows.
+- **Preemptions inside the boot self-test's ping-pong.** In 200 boots each, the stage-2 kernel saw a preemption inside the cooperative ping-pong 5 times and the 0.9.2 kernel once (not significant: about an 11% chance if both were equally likely). Stage 6a's regression: 1 in 85 logs; the final regression: 2 preemptions in 102 logs; VirtualBox: 0 in 41 boots. Such a preemption needs a burst of timer ticks. 0.11: 0 in the 10 extra VirtualBox boots; the halts found under load are explained and fixed (above).
+- **The VirtualBox 10-tick `userkill` turn (0.10): resolved in 0.11.** The turn record now names its thread, and 10 VirtualBox `userkill` boots measured 5 ticks each (`spin`, user process 4).
+- **The QMP stall capture: done in 0.11** (the stall watch, see [testing.md](testing.md)).
+- **The 2 MiB boundary.** One page table maps 2 MiB, and the kernel image is loaded at 1 MiB. It ended at physical `0x1B8000` in 0.9.2 (288 KiB below the boundary), `0x1CC000` in 0.10 (208 KiB) and ends at `0x1D7000` in 0.11: **164 KiB (41 pages) below it**. Future growth will cross it, and the kernel's tables will then need one more page table: the page-table count, the mapped-page and free-page figures and the walk-check's table count will change. The tests recompute these figures from the log, and the docs must expect the change.
+
+### Follow-ups (from 0.11)
+
+- `scripts/remote-regress.ps1` should download the per-boot QEMU serial logs, so `compare.py`-style comparisons with VirtualBox can run on them.
+- Bounded diagnostic waits (a limit on every wait for ticks).
+- A test-infrastructure milestone once a full regression exceeds about 60 minutes (see [roadmap.md](roadmap.md)).
+- A local Kali Linux build VM as a second regression target (not approved yet; `remote-regress.ps1` accepts only the Codespace).
 
 ## 4. Roadmap
 
@@ -163,8 +226,9 @@ What each milestone left open when it was committed, and where it was resolved.
 | **0.9.1** | Shell commands needing no new kernel foundations: `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `help <command>`, `<command> --help` | done |
 | **0.9.2** | Console scrollback (the last 1000 lines, Shift+PgUp/PgDn) and key-event logging off by default | done |
 | **0.10** | Processes, part 2: user processes (user mode, one address space per process, system calls, faults contained to the program; built-in test programs) | done |
-| **0.11** | Processes, part 3: ELF programs from boot modules, `run`, `kill`, `ps` with process numbers, Ctrl+C | next (needs its own plan and approval) |
-| **1.0** | Filesystem: a virtual filesystem layer and an initial RAM disk, then disk filesystems | planned |
+| **0.11** | Processes, part 3: ELF programs from boot modules, `run`, `kill`, `ps` with process numbers, Ctrl+C, program output on the screen | done |
+| (optional) | A shell milestone (scripts, `kill -y`, pipes once files exist), if chosen before 1.0 | option (needs its own plan and approval) |
+| **1.0** | Filesystem: a virtual filesystem layer from the start and an initial RAM disk, then disk filesystems | next (needs its own plan and approval) |
 
 ### 0.10 items: how they were delivered
 
@@ -178,11 +242,12 @@ What each milestone left open when it was committed, and where it was resolved.
 - **Read the version once in the tests.** **Done** (7 checks).
 - Still excluded: the filesystem, signals, threads inside user processes, SMP, fork/exec, priorities.
 
-### 0.11 items (planned; 0.11 needs its own plan and approval)
+### 0.11 items: how they were delivered
 
-- An ELF loader with strict checks, programs delivered as boot modules, and malformed-ELF test fixtures.
-- `run`, `kill` and `ps` with process numbers (MOCS: PLANNED for 0.11); Ctrl+C for the foreground program; a program's output on the screen.
-- If the VirtualBox `userkill` turn recurs: the longest-turn record names the thread (TID, user process or kernel thread).
+- An ELF loader with strict checks, programs delivered as boot modules, and malformed-ELF test fixtures. **Done** (30 fixtures; the file is checked at boot and again at load).
+- `run`, `kill` and `ps` with process numbers; Ctrl+C for the foreground program; a program's output on the screen. **Done** (MOCS v0.6), with `run -b` and back-pressure.
+- The longest-turn record names the thread (TID, user process or kernel thread). **Done in stage 0**, before any recurrence.
+- **Added during 0.11 with approval:** policy (b); the `timer_ticks()` change in the protected `timer.c`; the stall capture and key-evidence harness; `scripts/remote-regress.ps1`.
 
 The candidate items listed for 0.8 were decided in its plan. Delivered in 0.8:
 
@@ -267,7 +332,7 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 | **No locks: a preemption-disable count.** The heap, the frame allocator, paging and the window, `kprintf`/`klogf` and the console's serial copy run each operation with preemption off; the scheduler's own state is changed with interrupts off | 0.9 | Enough on one CPU; interrupt handlers still never use these subsystems |
 | The protected `memory.c` gets only a mechanical guard in `memory_alloc_page` and `memory_free_page` | 0.9 | Approved in the plan; the only protected file changed in 0.9 |
 | One switch point: the end of an IRQ, after `irq_dispatch` (so after the EOI), in `interrupts.c`; `timer.c` and `irq.c` unchanged; exceptions never switch | 0.9 | |
-| **Deferred switch, policy (a):** a switch requested while preemption is off stays pending and happens at the first interrupt after the count is back at 0 (at most one tick later); `preempt_enable()` itself never switches | 0.9, stage 3 | `test=preemptoff` measures the bound (1 tick) |
+| **Deferred switch, policy (a):** a switch requested while preemption is off stays pending and happens at the first interrupt after the count is back at 0 (at most one tick later); `preempt_enable()` itself never switches | 0.9, stage 3 | `test=preemptoff` measures the bound (1 tick). Superseded in 0.11 by policy (b) |
 | Kernel thread stacks in PML4 slot 507 (`0xFFFFFD8000000000`): 64 slots of 32 KiB, each a 16 KiB stack above a 16 KiB unmapped guard; the area's page table is made at boot | 0.9 | Creating a thread never needs a table frame, and slot 507 exists before 0.10 copies the kernel half |
 | F1: the console's per-line serial copy runs with preemption off | 0.9, stage 2 | So a thread's `klogf` line can't land inside a console line |
 | F2: the protected `bootscreen.c` stays unchanged; every boot-screen call that can happen while other threads exist goes through `BOOTSCREEN_SAFE()` in `kernel.c` (thread 0 only, preemption off); `scripts/check-bootscreen.sh` fails the ISO build on any other call (the boot sequence and the boot-only `devtest.c` excepted) | 0.9, stages 2–3 | |
@@ -320,4 +385,17 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 | `wip/` branches are backups only: never opened or merged as a pull request into `main`, which receives only the single milestone commit | 0.10 (2026-10-07) | After the PR #1 incident; branch protection is unavailable on the free plan. In AGENTS.md |
 | MOCS v0.5: Madire's own or open Unix/POSIX command names, no Microsoft/DOS-specific names (`presskey`, `colors`, `wintitle`, `fileattr`, `disk label`, `disk info`, `bootconf`) | 0.10 | Documentation only |
 | Study-only references added: Linux kernel documentation and man-pages (GPL-2.0-only, nothing copied), OSDev (licence check before quoting), Redox OS and xv6-riscv (MIT, concepts only); 1.0 to design a VFS layer from the start | 0.10 | See references.md and roadmap.md |
+| 0.11 plan decisions: Q1 the built-in 0.10 images stay as kernel test programs; Q2 `run` starts ELF program modules only; Q3 the default GRUB entry loads 7 program modules (hello, spin, exitcode, nullptr, sleep, getpid, lines), at most 8 kept; Q4 `run` in the foreground, `run -b` in the background (serial and `dmesg` only); Q5 `kill` asks first, Ctrl+C acts at once (a non-interactive `kill -y` later, for scripts); Q6 the `ps` help "Show threads and processes"; Q7 a kill or Ctrl+C wakes a `nanosleep` early (`sched_wake`, pure); Q8 write back-pressure (yield while the foreground queue is full, give up if a kill is pending) with a required flood test; Q9 module names from the command line or the file name, `[a-z0-9_]{1,15}`, duplicates refused | 0.11 planning (approved 2026-10-09) | Baseline `80ae0b0`; no protected file changes planned |
+| The longest-turn record names its thread (TID, process ID, kernel thread or ring-3 thread), in new log lines only | 0.11, stage 0 | A/B 20+20: no measurable effect on turns |
+| The ELF loader accepts static `ET_EXEC` x86-64 files only, with the rules in architecture.md; the file is checked at boot and again at load; built-in images and ELF files share one loading path (load plans), and every page is a fresh frame | 0.11, stages 1–3 | Never maps module pages into a process |
+| **Approved deviation: policy (b)**, switching at the `preempt_enable()` that brings the count to 0 | 0.11, stage 3b | See *Approved deviation in 0.11*; the A/B evidence is there |
+| The stall capture (`tests/qemu-watch.sh`, `tests/qemu_capture.py`) runs every QEMU boot; a harness diagnostic that decides no check | 0.11, stage 4a | Approved after the second occurrence of the `test=preempt` stall |
+| **Protected `timer.c` changed:** `timer_ticks()` without `cli`/`sti`; ping-pong and `test=threads` cycles created with preemption off | 0.11, stage 4a.1 | Approved after the diagnosis; see *Incidents and corrections in 0.11* |
+| Key evidence: `boot_keys` keeps the injector's output; the stall watch records the IRQ 1 counts; QEMU starts in its own session (`setsid`) | 0.11, stage 4b | Diagnostic only |
+| The `kill` confirmation (`yes/no>`, only exactly "yes"), Ctrl+C logged only as "console: Ctrl+C: kill requested for process N", and the evidence lines "console: kill confirmed for process N" and "console: process N collected T ticks after Ctrl+C" | 0.11, stage 4b | Confirmed by the owner |
+| Program output: an 8 KiB `outq` drained by thread 0 only, wrapped at 79 columns, no doubled serial copy, background output never on screen; a full queue makes the writer yield, a pending kill ends the wait with a short write | 0.11, stage 5 | `tests/user/flood.c` is a test-only program outside the ISO and image lists |
+| `scripts/remote-regress.ps1` is the regression tool (starts and stops the Codespace, guard proof, hash-verified snapshot, checks, downloads the log) | 0.11, stage 5 | Written by Codex; accepted with its cleanup fix |
+| Builder switch: Claude Code → Codex → Claude Code, with a handover note | 0.11 | The note's lasting content is in this file |
+| Codespaces is a paid resource: start it for a task, stop it when the results are collected | 0.11 | In AGENTS.md |
+| `commands.md` MOCS v0.6: `run`, `run -b`, `kill` and the process list in `ps` IMPLEMENTED | 0.11 | |
 | **Open decision, HIGH PRIORITY: Madire OS's own licence** (for example MIT, Apache-2.0, GPL-3.0 or proprietary), to be decided before any outside code is included | 0.9.1 | Restates the 0.7-planning rule above as an open decision with high priority |

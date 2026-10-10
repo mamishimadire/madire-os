@@ -148,17 +148,22 @@ kernel/               architecture-independent kernel code
   timer.c             system tick, uptime, bounded waits
   devtest.c           timer / keyboard / IRQ diagnostics
   console/            console: text grid, line editor, screen + serial output,
-                      command history (0.9.1), scrollback (0.9.2)
+                      command history (0.9.1), scrollback (0.9.2), program
+                      output queue (0.11)
   shell/              command parser, shell commands, CPUID decoding
   proc/               kernel threads: scheduler core, thread layer, context
                       switch, preemption-disable count, self-test (0.9);
                       user processes: process table, ring-3 entry, system
-                      calls, fault containment, user-mode tests (0.10)
+                      calls, fault containment, user-mode tests (0.10);
+                      the ELF checks, program modules and load plans (0.11)
 drivers/              hardware drivers
   vga/  serial/  pit/  keyboard/
-user/                 (0.10) the built-in user programs: crt0, system-call
-                      stubs, a tiny library, prog/*.c (linked at fixed
-                      addresses, built into the kernel as raw images)
+user/                 (0.10) the user programs: crt0, system-call stubs, a
+                      tiny library, prog/*.c (linked at fixed addresses;
+                      built into the kernel as raw images, and since 0.11
+                      also as ELF files for the ISO's program modules)
+tests/                host unit tests, QEMU tests and their helpers (the
+                      stall watch, 0.11); tests/user/ test-only programs
 ```
 
 `kernel/memory/` doesn't depend on the display or the logo. The boot screen only displays the `struct memory_stats` that `kernel.c` hands it.
@@ -510,7 +515,7 @@ GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are res
 | Hardware | PIT channel 0 → IRQ0 (vector 32); `drivers/pit/pit.c` |
 | Mode | Mode 2 (rate generator), low byte then high byte, binary: command `0x34` |
 | Rate | **100 Hz**. Divisor `round(1193182 / 100)` = **11932** (`pit_divisor_for()`, unit-tested), giving 99.998 Hz. |
-| Ticks | 64-bit counter, incremented in the IRQ0 handler. It's read with interrupts briefly off: on 32-bit x86 (up to 0.6) that took two 32-bit loads, and the code is unchanged in 64-bit. It can't wrap in practice (5.8 billion years). |
+| Ticks | 64-bit counter, 8-byte aligned, incremented only in the IRQ0 handler. **Since 0.11** `timer_ticks()` reads it with one relaxed atomic load between compiler barriers (a single `mov`), with no `cli`/`sti`: an aligned 64-bit load is atomic on x86-64 (also with more CPUs later), so a reader sees the value before or after an increment. Up to 0.10 it was read with interrupts briefly off (needed on 32-bit x86 for two 32-bit loads), and in tight wait loops that `cli`/`sti` pattern let QEMU's TCG starve IRQ0 (see [PROGRESS.md](PROGRESS.md)). The counter can't wrap in practice (5.8 billion years). |
 | Seconds | A separate 32-bit counter, advanced every 100 ticks inside the handler, so nothing needs 64-bit division |
 | Order | Register the handler, program the PIT, unmask IRQ0, verify the mask (`timer_init`) |
 | Self-test | Two latched counter reads prove the PIT is counting. A **bounded busy-wait** (no `hlt`, so a dead timer can't hang the boot) must then see 3 ticks. The failure message tells "PIT not counting" apart from "counting but no IRQ0". |
@@ -677,9 +682,9 @@ Guarded: every heap operation (`kmalloc`, `kcalloc`, `kfree`, `kheap_stats`), th
 
 **Blocking with preemption disabled is a bug:** `thread_yield`, `thread_sleep`, `thread_join` and `thread_exit` panic at once if the count is above zero: `thread_yield: called with preemption disabled (count 1, thread 0 'kernel').` (`test=preemptyield`, `preemptjoin`, `preemptsleep`).
 
-**Deferred switch, policy (a):** when a tick asks for a switch while the count is above zero, the request stays pending (`need_resched`) and `preempt_enable()` does **not** switch. The switch happens at the end of the first interrupt after the count is back at zero: at most one tick (10 ms) later, sooner if another interrupt comes first. There stays a single switch point (the end of an IRQ), and `preempt_enable()` is safe anywhere, even with interrupts off. `test=preemptoff` holds the count for 20 ticks and proves that no switch happens meanwhile and that the other thread runs within one tick of the release.
+**Pending switch, policy (b) (0.11; an approved deviation from 0.9's policy (a)):** when a tick asks for a switch while the count is above zero, the request stays pending (`need_resched`, mirrored in `preempt_resched_pending`). The `preempt_enable()` that brings the count back to zero then switches at once (`preempt_resched()` in `thread.c`), provided interrupts are on, the scheduler is ready and no panic is in progress (the pure decision is `sched_switch_on_enable()`, `test_preemptb`). Interrupt handlers run with interrupts off, so they never switch there; anywhere else this applies, a timer interrupt could already have switched, so no new interleaving appears. The end of an IRQ stays a switch point (for a `preempt_enable()` that ran with interrupts off). The protected `memory.c` is unchanged, but its guard's `preempt_enable()` may now switch: the same as an interrupt arriving at that point. `test=preemptoff` holds the count for 20 ticks and proves that no switch happens meanwhile and that the switch comes inside the releasing `preempt_enable()`.
 
-**Known limitation:** a thread that spends almost all its time inside guarded sections gets turns longer than the slice (`framethreads` has measured up to 77 ticks). Correctness and progress are unaffected; every scheduler diagnostic logs its longest turn. **Measured again in 0.10** (the plan's rule: a user process's longest turn at most 6 ticks): user processes never exceeded 5 ticks in QEMU; kernel threads still do (in the final regression `framethreads` 44, `heapthreads` 11, `preemptoff` 21 by design, and the kernel frame thread in `test=userpreempt` 43; in VirtualBox that thread took 125 and 189). One VirtualBox `userkill` boot measured 10 ticks, a watch item (see [PROGRESS.md](PROGRESS.md)).
+Under 0.9's **policy (a)** the switch waited for the next interrupt after the count was back at zero, so a thread living in guarded sections got turns far longer than the slice (up to 187 ticks measured, and one `framethreads` run starved a thread). Under policy (b) every turn stays within the slice plus the rest of one guarded section: `framethreads`, `heapthreads`, `test=preemptlong` and every user process measure at most 5 ticks (the A/B evidence is in [PROGRESS.md](PROGRESS.md)). The longest-turn record names its thread (TID, process ID, kernel thread or ring-3 thread).
 
 **Every switch since 0.10** also sets the TSS's RSP0 to the next thread's kernel stack top (`test=rsp0` checks it after yields and preemptions), and loads the next thread's CR3 when it differs: a process's thread runs in its own address space, a kernel thread in the kernel's.
 
@@ -691,7 +696,7 @@ Before the first switch was written, every mutable file-scope variable in `kerne
 |---|---|
 | **Preemption off** for each operation | kernel heap; frame allocator; paging, `vmm` and the recursive mapping; the physical-access window (held from map to unmap); `kprintf`/`klogf` output (VGA cursor, serial port); the console's serial copy (F1); boot-screen calls through `BOOTSCREEN_SAFE()` (F2) |
 | **Interrupts off** | the scheduler's queues and thread records (the tick changes them from IRQ context) |
-| **Already IRQ-safe** (unchanged) | the key queue (popped with interrupts off, one consumer: thread 0); the timer counters (64-bit read with `irq_save`, 32-bit reads atomic); the IRQ counters |
+| **Already IRQ-safe** (unchanged) | the key queue (popped with interrupts off, one consumer: thread 0); the timer counters (0.11: the 64-bit tick count is one aligned atomic load, no `cli`/`sti`; 32-bit reads atomic); the IRQ counters |
 | **Thread 0 only** | the console (grid, line editor, shell), the boot screen, the logo, VGA writes outside `kprintf`; enforced by `kputc` (F3) and `BOOTSCREEN_SAFE()` |
 | **Boot only**, read-only afterwards | memory map and reservations, page-table build and walk-check state, the self-test page, GDT/IDT/TSS, PIC masks, CPU information, the command line and Multiboot data, the existing diagnostics' state, the boot stack's paint data |
 | **Single aligned reads** | the free-page count and paging figures read by `mem` (at most one operation stale) |
@@ -742,7 +747,7 @@ Each logs its details on serial and its result on the boot screen's message line
 
 ## User processes [built: 0.10]
 
-0.10 runs programs in **ring 3** (user mode), each in **its own address space**, talking to the kernel only through **system calls**, and a program's mistakes end that program, never the kernel. The programs are still **built in**: small test programs compiled with the kernel. Loading ELF programs from boot modules, and the `run`, `kill` and `ps` commands, come in 0.11.
+0.10 runs programs in **ring 3** (user mode), each in **its own address space**, talking to the kernel only through **system calls**, and a program's mistakes end that program, never the kernel. 0.10's programs were **built in**: small test programs compiled with the kernel. 0.11 adds ELF programs delivered as boot modules, and the `run`, `kill` and `ps` commands (see *Programs and the console* below).
 
 | Module | Pure? | Responsibility |
 |---|---|---|
@@ -801,9 +806,9 @@ Each logs its details on serial and its result on the boot screen's message line
 
 | Number | Call | Behaviour |
 |---|---|---|
-| 1 | `write(fd, buf, count)` | fd 1 or 2 (else `-EBADF`); at most 4096 bytes per call (a short count beyond); the whole buffer is checked before any of it is used (`-EFAULT`, nothing written); the text goes to the **serial log and `dmesg` only** (the screen comes with `run` in 0.11), as lines `[pid N] …`, split at each `\n` and after 100 characters, with every byte outside `0x20`–`0x7E` shown as `?` (a program can't send control sequences or forge a kernel log line) |
+| 1 | `write(fd, buf, count)` | fd 1 or 2 (else `-EBADF`); at most 4096 bytes per call (a short count beyond); the whole buffer is checked before any of it is used (`-EFAULT`, nothing written); the text goes to the **serial log and `dmesg`** as lines `[pid N] …` (and, since 0.11, to the screen for the foreground program, see *Program output*), split at each `\n` and after 100 characters, with every byte outside `0x20`–`0x7E` shown as `?` (a program can't send control sequences or forge a kernel log line) |
 | 24 | `sched_yield()` | gives up the CPU; 0 |
-| 35 | `nanosleep(req, rem)` | rounded up to whole timer ticks (0 → a yield); `-EINVAL` for `tv_sec < 0` or `tv_nsec` > 999999999, `-EFAULT` for a bad `req`; `rem` is never written (nothing interrupts a sleep: there are no signals) |
+| 35 | `nanosleep(req, rem)` | rounded up to whole timer ticks (0 → a yield); `-EINVAL` for `tv_sec < 0` or `tv_nsec` > 999999999, `-EFAULT` for a bad `req`; `rem` is never written (there are no signals; since 0.11 a kill or Ctrl+C wakes the sleeper at once, and the process then ends on its way out) |
 | 39 | `getpid()` | the process ID |
 | 60 | `exit(status)` | ends the process; its status is `status & 0xFF` |
 | 231 | `exit_group(status)` | the same (one thread per process) |
@@ -856,7 +861,56 @@ After the scheduler self-test, with paging on: `hello` (one line through `write`
 
 `smep` and `smap` panic if the CPU ever allowed the access, so they can't pass by accident.
 
-**Known limits (0.10):** built-in programs only (ELF programs, `run`, `kill` and `ps` with PIDs in 0.11); one thread per process; no signals, `fork` or `exec`; at most 63 processes; a fixed 32 KiB user stack and at most 64 KiB of code and 64 KiB of data per program; no x87/MMX/SSE in programs (no FPU state is saved); `write` reaches the serial log and `dmesg` only; without NX, user data is executable; check-then-copy is safe only while nothing can unmap user memory (binding rule above); the `SMEP`/`SMAP` crash path is proven in QEMU only, because the VirtualBox VM doesn't offer them.
+**Known limits (0.10):** built-in programs only (ELF programs, `run`, `kill` and `ps` with PIDs in 0.11); one thread per process; no signals, `fork` or `exec`; at most 63 processes; a fixed 32 KiB user stack and at most 64 KiB of code and 64 KiB of data per program; no x87/MMX/SSE in programs (no FPU state is saved); `write` reaches the serial log and `dmesg` only; without NX, user data is executable; check-then-copy is safe only while nothing can unmap user memory (binding rule above); the `SMEP`/`SMAP` crash path is proven in QEMU only, because the VirtualBox VM doesn't offer them. (0.11 removed the first and the `write` limit for the foreground program.)
+
+## Programs and the console [built: 0.11]
+
+0.11 runs **ELF programs delivered as boot modules**, started from the console with `run`, listed by `ps`, ended by `kill` or Ctrl+C, and shows a foreground program's output on the screen.
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/proc/elf_core.c/.h` | yes | The ELF64 checks and the program's segment plan (`test_elf`, 158 checks; `tests/elfcheck.c` runs the same checks on the host) |
+| `kernel/proc/progmod_core.c/.h` | yes | Program-module names and the table of kept programs (at most 8) (`test_progmod`) |
+| `kernel/proc/progmod.c/.h` | no | At boot: registers each boot module that isn't a test module, checks it, logs one line per decision |
+| `kernel/proc/loadplan.c/.h` | yes | A load plan (pages, protections, bytes to copy, entry point) from a built-in image or a checked ELF file (`test_loadplan`) |
+| `kernel/proc/process.c` | no | `process_load_plan` (the one loading path), `process_start_program`, the early wake on kill |
+| `kernel/console/outq.c/.h` | yes | The 8 KiB output queue for the foreground program (`test_outq`) |
+| `kernel/console/console.c`, `kernel/shell/shell.c` | glue / pure | `run`, `run -b`, `kill`, `ps` with processes, Ctrl+C, the drain (`test_shell_run011`, `test_shell_kill011`) |
+
+### The ELF loader and its rules
+
+A program is accepted only if every rule holds (`elf_check`); anything else is refused with a named reason ("not an ELF file", "segment is writable and executable", …):
+
+- ELF64, little-endian, `ET_EXEC` (static; no dynamic linking, no PIE), machine x86-64, version 1, a consistent header; at most 16 program headers.
+- Program-header types only from an allowlist: `PT_LOAD`, `PT_GNU_STACK` (not executable), `PT_NOTE`, `PT_GNU_PROPERTY`, `PT_NULL`.
+- 1 to 4 `PT_LOAD` segments, in ascending order, inside `[0x400000, 0x40000000)`, page-aligned (`p_align` 0x1000, offset and address congruent), never two segments in one page, never writable and executable at once (W^X).
+- The entry point inside the executable bytes of a segment's file data.
+- At most 1 MiB of file and 1 MiB of memory.
+
+The file is checked **at boot** (when the module is registered) and **again at load**, by the process's own thread: the boot check isn't trusted alone. A file refused at load ends its process with "load failed" before it has an address space. Malformed files are tested with 30 generated fixtures (`tests/elf-fixtures.py`).
+
+### Program modules
+
+GRUB's default entry loads the programs as Multiboot modules: `module /boot/prog/<name>.elf <name>`. A module's name is the second word of its command line, or its file name without `.elf`; names are `[a-z0-9_]{1,15}`, duplicates are refused. At most 8 program modules are kept; each decision is one line on the serial log and in `dmesg`, never on the screen (`Program module 3 'hello': 5176 bytes, ELF checked: 2 segments, 3 pages, entry 0x400000`). The default entry loads 7: `hello`, `spin`, `exitcode`, `nullptr`, `sleep`, `getpid`, `lines`. Module memory is boot data (below 4 GiB, reserved, reached through the physical view); it is **never mapped into a process**. **Limit:** the protected `reserve.c` holds 32 ranges, and each module takes 2, so 13 modules fill it and a 14th stops the boot.
+
+### One loading path
+
+Built-in images and ELF files are both turned into a **load plan**, and `process_load_plan` is the only code that maps a program: every page is a **fresh frame**, filled through the physical-access window from the plan's bytes (never a page of the module), then mapped with the plan's protections; the stack is added as before. `test=elfrun` proves it: every module program runs, the built-in images still run, two copies of `isolate` see only their own data, and no frame inside a module is ever mapped (`in_modules` stays 0).
+
+### `run`, `run -b`, `ps`, `kill` and Ctrl+C
+
+- **`run <name> [n]`** starts a kept program module with RDI = `n` (0 to 4294967295) **in the foreground**: the console shows no prompt and ignores keys (except Ctrl+C) until it ends, then prints its end line: `[process 4 'hello' exited, status 0]`, `[process 5 'spin' killed]` or `[process 6 'nullptr' ended by #PF at 0x0000000000000000]` (the address is CR2 for a page fault, otherwise RIP). A foreground program is started with preemption off, so it is the foreground program before its first `write`.
+- **`run -b <name> [n]`** starts it **in the background** (`[process 7 'spin' started in the background]`); its output and its end line go to the serial log and `dmesg` only, never the screen. Thread 0 collects ended background processes.
+- **`ps`** shows the thread table exactly as before, then the processes: `PID  STATE    TID  NAME` (running or ended) and a count.
+- **`kill <pid>`** asks first (`End process 6 'spin'? Type 'yes' to confirm:` at the `yes/no>` prompt); only exactly "yes" ends it (the console then waits for it and shows its end line), anything else prints `Kill cancelled.`. PID 0, unknown and already-ended processes are refused.
+- **Ctrl+C** (Ctrl held, `c`) ends the foreground program; it is logged only as `console: Ctrl+C: kill requested for process N` (no key is logged; `lineedit.c` is unchanged).
+- **Early wake (Q7):** a kill wakes a process asleep in `nanosleep` at once (`sched_wake`, pure, `test_wake011`); it then ends when its system call returns. Ctrl+C on a sleeping program brings the prompt back within 2 ticks (0 measured).
+
+### Program output: the queue and thread 0's drain
+
+`write` from the **foreground** program copies the bytes (at most 4096, through a buffer on the thread's kernel stack), shows every byte outside `0x20`–`0x7E` except newline as `?`, and appends them to an **8 KiB queue** (`outq`, every operation with preemption off). **Only thread 0 draws them**: `console_poll`, on every pass of the idle loop, drains the queue to the screen, wrapping at 79 columns; output that scrolls off goes into the scrollback like any other line. The serial log and `dmesg` keep exactly the `[pid N] …` lines they had before, so there is **no doubled serial copy**. Output from background programs never reaches the queue.
+
+**Back-pressure (Q8):** when the queue is full the writer **yields** until thread 0 has drained some of it (one line `console: process N waiting for output queue` per process), and a pending kill ends the wait at once with a short write, so Ctrl+C always works on a program that floods the screen. The console stays responsive because thread 0 never waits for a program. The end line is printed only after the queue is empty. Proven by the flood test (`tests/user/flood.c`, a test-only program that writes 4 KiB blocks forever).
 
 ## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
 

@@ -19,15 +19,20 @@
  * The empty asm statements are compiler barriers: nothing the section
  * protects is moved outside it.
  *
- * Deferred switch (approved policy (a)): when a timer tick asks for a switch
- * while the count is above zero, the request stays pending (need_resched)
- * and preempt_enable() does NOT switch. The switch happens at the first
- * interrupt after the count is back at zero, at the end of that interrupt
- * (kernel/arch/x86/interrupts.c): at most one timer tick (10 ms) later, or
- * sooner if another interrupt comes first. There is a single switch point
- * (the end of an IRQ, after the EOI), and preempt_enable() stays safe to
- * call anywhere, including with interrupts off. test=preemptoff measures
- * the bound.
+ * Pending switch: when a timer tick asks for a switch while the count is
+ * above zero, the request stays pending (need_resched). 0.9 policy (a):
+ * the switch waited for the first interrupt after the count was back at
+ * zero, and a thread that spent almost all its time in guarded sections
+ * could keep the CPU for about 100 ticks, because tick after tick landed
+ * inside a section. 0.11 policy (b) (an approved deviation): the
+ * preempt_enable() that brings the count to zero switches at once
+ * (preempt_resched, kernel/proc/thread.c), if interrupts are on, the
+ * scheduler is ready and no panic is in progress. Interrupt handlers run
+ * with interrupts off, so they never switch here; anywhere else this
+ * applies, a timer interrupt could already have switched, so no new
+ * interleaving appears. The end of an IRQ (interrupts.c) stays a switch
+ * point too. preempt_enable() is still safe with interrupts off (it does
+ * not switch then). test=preemptoff measures both.
  *
  * Yielding, sleeping, joining or exiting with the count above zero is a
  * kernel bug and panics (kernel/proc/thread.c). preempt_enable() at zero
@@ -38,6 +43,10 @@
 
 extern volatile uint32_t preempt_count_value;     /* kernel/proc/thread.c */
 void preempt_underflow(void);                     /* panics */
+/* 0.11, policy (b): a switch is due (a copy of the scheduler's need_resched,
+ * set at each tick), and the switch itself (kernel/proc/thread.c). */
+extern volatile uint8_t preempt_resched_pending;
+void preempt_resched(void);
 
 static inline void preempt_disable(void)
 {
@@ -51,6 +60,8 @@ static inline void preempt_enable(void)
     if (preempt_count_value == 0)
         preempt_underflow();
     preempt_count_value = preempt_count_value - 1;
+    if (preempt_count_value == 0 && preempt_resched_pending)
+        preempt_resched();                        /* 0.11: policy (b) */
 }
 
 static inline uint32_t preempt_count(void)

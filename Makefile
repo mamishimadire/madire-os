@@ -51,15 +51,17 @@ UNIT_CC      := gcc -m64 -no-pie -Wl,-Ttext-segment=0x10000000
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -fno-pie -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
                             drivers/keyboard/scancode.c kernel/input/keyqueue.c \
-                            kernel/console/textbuf.c kernel/console/lineedit.c \
+                            kernel/console/textbuf.c kernel/console/lineedit.c kernel/console/outq.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
                             kernel/stackpeak.c kernel/proc/sched_core.c \
                             kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c \
-                            kernel/console/scrollback.c kernel/memory/uvm_core.c                             kernel/memory/usercopy_core.c kernel/proc/syscall_core.c                             kernel/proc/proc_core.c kernel/proc/userimg.c)
+                            kernel/console/scrollback.c kernel/memory/uvm_core.c                             kernel/memory/usercopy_core.c kernel/proc/syscall_core.c                             kernel/proc/proc_core.c kernel/proc/userimg.c \
+                            kernel/proc/elf_core.c kernel/proc/progmod_core.c \
+                            kernel/proc/loadplan.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test unit user repro clean
+.PHONY: all iso run test unit user elfcheck repro clean
 
 all: $(KERNEL)
 
@@ -119,18 +121,31 @@ $(BUILD)/user/images.asm: $(USER_ELFS) scripts/user-images.sh
 $(BUILD)/user/images.o: $(BUILD)/user/images.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-user: $(BUILD)/user/images.o
+user: $(BUILD)/user/images.o $(BUILD)/test-user/flood.elf
+
+# Test-only ELF for the stage 5 queue back-pressure test. It stays outside
+# build/user so it cannot change the built-in image or ISO module lists.
+$(BUILD)/test-user/flood.o: tests/user/flood.c user/syscall.h user/ulib.h
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(BUILD)/test-user/flood.elf: $(BUILD)/user/crt0.o $(BUILD)/test-user/flood.o user/link.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(BUILD)/user/crt0.o $(BUILD)/test-user/flood.o
 
 # Keep the programs' objects (make would delete them as intermediates).
 .SECONDARY: $(BUILD)/user/crt0.o $(USER_PROGS:%=$(BUILD)/user/%.o)
 
 # The ISO build also runs the source checks (0.9: boot screen usage).
-$(ISO): $(KERNEL) iso/boot/grub/grub.cfg
+# 0.11: the programs the default entry loads as modules are the ELF files
+# named in grub.cfg's "module /boot/prog/<name>.elf" lines (one list only).
+ISO_PROGS := $(sort $(patsubst /boot/prog/%.elf,%,$(shell if test -f iso/boot/grub/grub.cfg; then grep -o '/boot/prog/[a-z0-9_]*\.elf' iso/boot/grub/grub.cfg; fi)))
+$(ISO): $(KERNEL) iso/boot/grub/grub.cfg $(ISO_PROGS:%=$(BUILD)/user/%.elf)
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
-	mkdir -p $(BUILD)/isodir/boot/grub
+	mkdir -p $(BUILD)/isodir/boot/grub $(BUILD)/isodir/boot/prog
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
 	cp iso/boot/grub/grub.cfg $(BUILD)/isodir/boot/grub/grub.cfg
+	for p in $(ISO_PROGS); do cp $(BUILD)/user/$$p.elf $(BUILD)/isodir/boot/prog/$$p.elf || exit 1; done
 	grub-mkrescue -o $@ $(BUILD)/isodir 2>/dev/null
 	@echo "ISO ready: $@"
 
@@ -143,6 +158,16 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
 
 unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do $$t || exit 1; done
+
+# 0.11: the kernel's ELF checks (kernel/proc/elf_core.c) as a host tool, for
+# the built programs and the malformed fixtures (tests/elf-fixtures.py);
+# tests/qemu-tests.sh runs it.
+ELFCHECK := $(BUILD)/elfcheck
+$(ELFCHECK): tests/elfcheck.c kernel/proc/elf_core.c kernel/proc/elf_core.h
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/elfcheck.c kernel/proc/elf_core.c -o $@
+
+elfcheck: $(ELFCHECK)
 
 # Reproducible build (0.8): copy the sources into two fresh trees and build
 # each from clean. Tree b is built with a `find` that lists files in reverse
@@ -169,7 +194,7 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
-test: unit user $(ISO) repro
+test: unit user elfcheck $(ISO) repro
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 run: $(ISO)

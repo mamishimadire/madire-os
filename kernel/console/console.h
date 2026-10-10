@@ -13,6 +13,8 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include "drivers/keyboard/scancode.h"
 #include "kernel/memory/memory.h"
 
@@ -27,7 +29,18 @@ void console_start(const struct memory_stats *mem);
 
 bool console_active(void);
 
-/* One key event from the keyboard queue. */
+/* One key event from the keyboard queue. While a program runs in the
+ * foreground (0.11, "run") key events are ignored. */
 void console_handle_key(const struct key_event *e);
+
+/* 0.11: called from the idle loop (thread 0) on every pass: collects the
+ * foreground program once it has ended (its end line, then the prompt)
+ * and any background program that has ended (its end line in the serial
+ * log and dmesg only). */
+void console_poll(void);
+
+/* 0.11 stage 5: queues cleaned output from the calling process. Foreground
+ * output waits for room; background output is accepted for serial only. */
+size_t console_program_write(int32_t pid, const uint8_t *text, size_t len);
 
 #endif

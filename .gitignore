@@ -1,2 +1,14 @@
 build/
 .vscode/
+
+# Object files and libraries (the build writes them under build/; these
+# catch stray ones elsewhere)
+*.o
+*.a
+*.so
+*.d
+
+# Python bytecode (the test helpers are Python)
+__pycache__/
+*.py[cod]
+.venv/

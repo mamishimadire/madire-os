@@ -2,11 +2,15 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.10 (Milestone 0.10: user processes)
+**Current version:** 0.11 (Milestone 0.11: programs and process management)
 
 ![Madire OS v0.10 boot screen](docs/images/boot-screen-v0.10.png)
 
-Since 0.10 programs run in **user mode**, each in its own address space, and talk to the kernel only through system calls; a program that makes a mistake is ended alone, and the kernel carries on. The programs are still built in (small test programs), and the Diagnostics menu runs them:
+Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that GRUB delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first); **Ctrl+C** ends the program in the foreground:
+
+![run hello: the program's output on the screen (0.11)](docs/images/run-hello-v0.11.png)
+
+Programs run in **user mode** (since 0.10), each in its own address space, and talk to the kernel only through system calls; a program that makes a mistake is ended alone, and the kernel carries on. The Diagnostics menu runs the built-in test programs:
 
 ![User fault test: PASS (0.10)](docs/images/userfault-v0.10.png)
 
@@ -39,9 +43,9 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - runs a physical page allocator, which it tests on real RAM at every boot;
 - runs with 4-level paging: the page tables are checked before they are loaded, page 0 is left unmapped so NULL pointers fault, kernel code is read-only, and everything except kernel code is **no-execute (NX)**;
 - has unmapped **guard pages** below its stacks: a kernel stack overflow becomes a double fault, handled on its own stack (IST1), and is reported instead of resetting the machine;
-- measures how deep its stack has ever been used (a **high-water mark**, shown by `mem`: 1512 of 16384 bytes at "System ready." in 0.10);
+- measures how deep its stack has ever been used (a **high-water mark**, shown by `mem`: 1512 of 16384 bytes at "System ready." in 0.10 and 0.11);
 - runs **kernel threads** (since 0.9), each with its own 16 KiB stack above an unmapped guard, so a thread's stack overflow is caught and the crash screen names the thread;
-- **schedules them preemptively**: round robin with a 50 ms time slice, switching at the end of a timer interrupt, plus sleep, join and exit codes; a thread that never gives up the CPU can't starve the others;
+- **schedules them preemptively**: round robin with a 50 ms time slice, switching at the end of a timer interrupt (and, since 0.11, as soon as a thread leaves a section where preemption was off, so every turn stays within about a slice), plus sleep, join and exit codes; a thread that never gives up the CPU can't starve the others;
 - keeps itself safe under preemption without locks: the heap, the page allocator, paging and screen/serial output each run with preemption briefly disabled, and only the console thread writes to the screen;
 - tests its scheduler at every boot (two threads taking turns, preemption, sleep, everything freed afterwards);
 - runs **user processes** (since 0.10): programs in ring 3, each in **its own address space** (the kernel's half shared, and frozen at boot), preempted like any thread, killed safely at their next return to user mode, and torn down exactly;
@@ -49,6 +53,8 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - **contains faults:** a program that reads NULL, runs an invalid or privileged instruction, touches kernel memory, overflows its stack, writes its code or executes its data (W^X) is ended alone, with one log line naming the exception and the exact instruction;
 - uses **SMEP and SMAP** when the CPU has them, so the kernel itself can't run or touch program memory by mistake (and the crash screen names such a fault); x87/MMX/SSE are off for programs (CR0.EM);
 - tests user mode at every boot (three programs as processes 1–3: output, an exit status, a contained NULL read);
+- **loads ELF programs** (since 0.11) delivered by GRUB as boot modules (7 on the default entry), after strict checks at boot and again at load (static x86-64 only, no writable code, at most 4 segments and 1 MiB), copying them into fresh pages through one loading path;
+- **runs and manages them from the console** (since 0.11): `run` and `run -b`, `ps` with process IDs, `kill` (which asks first) and Ctrl+C, which also wakes a sleeping program at once; a foreground program's output appears on the screen, drawn only by the console thread from a queue, and a program that floods it is slowed down rather than the console;
 - has a kernel heap (`kmalloc`, `kcalloc`, `kfree`) that catches double frees, invalid frees and corrupted blocks;
 - explains page faults on the crash screen (what kind of access, and the faulting address);
 - checks that boot modules loaded by GRUB arrive intact, and shows the result on the screen as well as the serial log;
@@ -57,7 +63,7 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel;
 - provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End), and since 0.9.2 a **scrollback** of the last 1000 lines (Shift+PgUp / Shift+PgDn);
 - **doesn't log what you type** (since 0.9.2): key events reach the logs only with the boot option `keylog` (for tests) or during the keyboard diagnostics;
-- runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`, since 0.9 `ps`, and since 0.9.1 `history` (with Up/Down recall), `uname`, `hostname`, `date`, `dmesg` and `reboot` (which asks first); `help <command>` and `<command> --help` explain any command;
+- runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`, since 0.9 `ps`, since 0.9.1 `history` (with Up/Down recall), `uname`, `hostname`, `date`, `dmesg` and `reboot` (which asks first), and since 0.11 `run` and `kill`; `help <command>` and `<command> --help` explain any command;
 - keeps a 32 KiB kernel log in memory (`dmesg`), reads the date and time from the real-time clock, and restarts the machine through the keyboard controller, with a triple-fault fallback;
 - draws the Madire M logo, built from geometry, in VGA text mode.
 
@@ -92,7 +98,7 @@ On Linux (Codespace terminal, WSL, CI):
 bash scripts/install-deps.sh   # once (a Codespace from .devcontainer/ runs it for you)
 make            # kernel: build/madire.elf (with symbols) and build/madire.kernel (bootable)
 make iso        # bootable ISO: build/madire-os.iso
-make unit       # host unit tests, 41 suites (memory, 4-level page tables, heap,
+make unit       # host unit tests, 51 suites (memory, 4-level page tables, heap,
                 # keyboard decoder and queue, PIT maths, console text grid, line
                 # editor, parser, shell, CPUID decoding, kprintf, NX and page-fault
                 # decoding, boot modules, stack high-water mark, scheduler, thread
@@ -100,12 +106,14 @@ make unit       # host unit tests, 41 suites (memory, 4-level page tables, heap,
                 # 0.9.1 commands, scrollback; 0.10: GDT, SMEP/SMAP, the freeze,
                 # user pages, user copies, process table, program images, ring-3
                 # entry, fault opcodes, system calls, SMEP/SMAP crash causes,
-                # turn order)
+                # turn order; 0.11: ELF checks, program modules, load plans,
+                # turn owners, policy (b), the early wake, run/ps/kill, the
+                # output queue)
 make repro      # two clean builds in fresh directories: madire.elf and
                 # madire.kernel must be byte-identical (make test runs it too)
-make test       # unit tests + repro + 838 QEMU checks (150 from 0.3 + 30 from 0.4 +
+make test       # unit tests + repro + 1071 QEMU checks (150 from 0.3 + 30 from 0.4 +
                 # 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from
-                # 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 new):
+                # 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 from 0.10 + 233 new):
                 # boot, long mode, CPUs without long mode, logo, memory at 5 RAM
                 # sizes, crash tests, timer rate, scripted keyboard input, a scripted
                 # console session, paging and heap self-tests, the higher-half kernel
@@ -117,8 +125,11 @@ make test       # unit tests + repro + 838 QEMU checks (150 from 0.3 + 30 from 0
                 # key logging off by default, scrollback read back from the VGA screen,
                 # user mode: segments, SMEP/SMAP, address spaces, programs in ring 3,
                 # kill, contained faults with their instructions, system calls, bad
-                # pointers, 1000 processes, the GRUB Diagnostics entries.
-                # About 30 minutes: see docs/development.md for running it detached
+                # pointers, 1000 processes, the GRUB Diagnostics entries; ELF programs
+                # from boot modules and malformed files, run/kill/ps and Ctrl+C in
+                # console sessions, screen output and a flooding program.
+                # About 50 minutes: run it with scripts/remote-regress.ps1
+                # (see docs/development.md)
 make run        # boot in a QEMU window
 make clean
 ```
@@ -132,6 +143,8 @@ make clean
                                         # the VM settings (never changes them), boots each
                                         # test, keeps screenshots and serial logs
 ```
+
+In the console, try `run hello`, `run -b spin`, `ps`, then `kill <pid>` (it asks first), and `run lines 65636` followed by **Ctrl+C**.
 
 When the boot screen says `System ready. Press any key to open the console.`, press a key. That key only opens the console; it isn't typed. Type `help` for the list of commands.
 
@@ -148,7 +161,7 @@ The GRUB menu has a **Diagnostics** submenu:
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.10)
+## Limitations (v0.11)
 
 - 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
 - **Only RAM below 4 GiB is used.** On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
@@ -159,7 +172,7 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - **Boot modules:** the screen has one message line, so with several modules only the last result stays visible; the serial log has them all.
 - **Keyboard:** PS/2 only (USB keyboards need firmware legacy emulation), US layout only, no LEDs (Caps Lock state is tracked in software only), keypad assumes Num Lock on.
 - **Console and shell:**
-  - Fourteen built-in commands (the full plan is in [docs/commands.md](docs/commands.md)).
+  - Sixteen built-in commands (the full plan is in [docs/commands.md](docs/commands.md)).
   - Commands are lowercase and case-sensitive; at most 8 words per line and 71 characters of input.
   - `history` keeps only the last 16 lines and the scrollback the last 1000 lines; both are lost at restart. No tab completion, pipes or scripting.
   - Shift+PgUp/PgDn need the grey PgUp/PgDn keys: the numeric keypad's ones type `9`/`3` (Num Lock is assumed on).
@@ -167,11 +180,12 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
   - `dmesg` shows only what the kernel logged through `kprintf`/`klogf`: the boot screen's status lines and the console's own output aren't in it, and a boot-screen line can appear joined to the next one there.
   - Key events are logged only with the boot option `keylog` or during the keyboard diagnostics (for tests); never use `keylog` where secrets are typed. There is no password prompt yet; the first one must come with a secret-input mode (see [AGENTS.md](AGENTS.md)).
   - `reboot` uses the keyboard controller (or a triple fault); there is no `shutdown` or `poweroff` yet.
-  - Ctrl+key and Alt+key do nothing.
+  - Ctrl+key and Alt+key do nothing, except Ctrl+C while a program runs in the foreground (0.11).
+  - `kill` always asks first; there is no non-interactive form for scripts yet (planned: `kill -y <pid>`).
   - Long output lines wrap at column 80, even mid-word (for example `cpu`'s "Features:" line on some CPUs).
 - **Interrupts:** only IRQ0 and IRQ1 are enabled, through the legacy 8259 PIC (no APIC). The timer runs at a fixed 100 Hz (10 ms resolution).
-- **User processes (0.10):** only the built-in test programs run; loading ELF programs from boot modules, and `run`, `kill` and `ps` with process numbers, come in 0.11. One thread per process, at most 63 processes, a 32 KiB stack each; no signals, `fork` or `exec`. Programs can't use x87/MMX/SSE (no FPU state is saved). `write` output goes to the serial log and `dmesg` only, not the screen. Six system calls. Without NX, program data is executable. SMEP and SMAP are used only when the CPU offers them (the VirtualBox VM doesn't).
-- **Threads and scheduling (0.9):** at most 64 threads with 16 KiB stacks; round robin with a fixed 50 ms slice, no priorities. A thread that spends almost all its time with preemption disabled can run longer than its slice (correctness is unaffected). Only one CPU is used.
+- **User processes:** programs come only as boot modules (no filesystem yet): at most 8 are kept, and 14 or more boot modules of any kind stop the boot. Only static x86-64 ELF executables within the loader's rules (no dynamic linking, at most 4 segments, 1 MiB). One thread per process, at most 63 processes, a 32 KiB stack each; no signals, `fork` or `exec`. Programs can't use x87/MMX/SSE (no FPU state is saved). Only the foreground program's output reaches the screen; background programs (`run -b`) write to the serial log and `dmesg` only. Six system calls. Without NX, program data is executable. SMEP and SMAP are used only when the CPU offers them (the VirtualBox VM doesn't).
+- **Threads and scheduling:** at most 64 threads with 16 KiB stacks; round robin with a fixed 50 ms slice, no priorities. Only one CPU is used.
 - No filesystem yet (planned for 1.0).
 - The logo is blocky: text mode gives 80×50 pixels, each 9×8 screen pixels in size.
 - Building needs a Linux environment; there is no native Windows toolchain yet. The kernel build is reproducible (byte-identical), but the ISO isn't (`grub-mkrescue` records timestamps).

@@ -5,6 +5,8 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 ## 1. Before you start
 
 - **Only one coding agent works on the repository at a time.** Never start while another agent may still be working on it.
+- **Optional read-only reviewer.** The owner may ask a second agent to review plans, diffs or results. A reviewer only reads (the repository, logs, reports) and reports its findings to the owner; it never edits files, runs builds or tests that change anything, commits, pushes, or uses the Codespace or the VM. Its findings are proposals: the builder acts on them only after the owner's approval.
+- **When the builder changes** (for example from one coding agent to another), the outgoing builder commits and backs up everything with an honest TESTED / NOT TESTED message and leaves a handover note (state, plan and decisions, next stage, watch items); the incoming builder reads it, verifies the state, and reports before acting.
 - **Read [docs/PROGRESS.md](docs/PROGRESS.md) first**, then this file: current state, decisions, known limitations and what comes next.
 - **Verify the state before acting**, and report any difference instead of changing it:
   - the repository: branch, `git status`, the last commits on `main` and on the `wip/<version>` branch, against what the last report or handover says;
@@ -27,13 +29,14 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 
 - Each milestone plan lists the protected files it must change, with a justification for each; never change a protected file without that justification and approval.
 - Check every stage with a diff of the protected files against the previous milestone's commit.
-- Protected in 0.9 (unchanged unless noted): `kernel/memory/memory.c` (changed in 0.9 by an approved, mechanical preemption guard), `heap.c`, `reserve.c`, `pmm.c`, `mmap.c/.h`, `memtest.c`, `timer.c`, `irq.c`, `pic.c`, `devtest.c`, `bootscreen.c/.h`, all of `drivers/`, `kernel/input/`, `textbuf.c`, `lineedit.c`, `parser.c`, `cpuinfo.c`, `logo.c`, `cmos.c`, `io.h`, `multiboot.h`, `tests/unit/test_shell.c`, `test_mmap.c`, `test_reserve.c`, `tests/memory_check.py`, `tests/qmp_keys.py`.
+- Protected in 0.9 (unchanged unless noted): `kernel/memory/memory.c` (changed in 0.9 by an approved, mechanical preemption guard), `heap.c`, `reserve.c`, `pmm.c`, `mmap.c/.h`, `memtest.c`, `timer.c` (changed in 0.11 by the approved lock-free `timer_ticks()` read), `irq.c`, `pic.c`, `devtest.c`, `bootscreen.c/.h`, all of `drivers/`, `kernel/input/`, `textbuf.c`, `lineedit.c`, `parser.c`, `cpuinfo.c`, `logo.c`, `cmos.c`, `io.h`, `multiboot.h`, `tests/unit/test_shell.c`, `test_mmap.c`, `test_reserve.c`, `tests/memory_check.py`, `tests/qmp_keys.py`.
 
 ## 5. Tests
 
 - Every milestone plan must list **every** existing check that contains a version string (not only the named version checks), since a version bump changes them all.
 - Never reduce existing test coverage. Explain every changed check (what it checked before, what it checks now, and why it still proves the same fact). Lists of expected failures are exact and agreed in advance.
-- **Run the full suite detached in the Codespace, on a hash-verified snapshot** (it takes about 15 minutes; a tool's time limit must never cut it off silently). The procedure is in [docs/development.md](docs/development.md): snapshot with SHA-256 of every file, upload, compare the hashes, `nohup make unit test iso`, poll for `MAKE EXIT`, then confirm the working tree still equals the snapshot.
+- **Run the full suite detached in the Codespace, on a hash-verified snapshot** (it takes about 50 minutes since 0.11; a tool's time limit must never cut it off silently). Use `scripts/remote-regress.ps1`, which does every step (snapshot with SHA-256 of every file, upload, its own hash-guard proof, `make unit test iso` detached, polling for `MAKE EXIT`, the checks, the final hash comparison, stopping the Codespace); the procedure is in [docs/development.md](docs/development.md). Then confirm the working tree still equals the snapshot.
+- **Codespaces is a paid resource: use it efficiently.** Start a Codespace only for a task, stop it as soon as the results are collected, keep extra sessions short, and report the Codespace time with each run.
 - Report results by tag (`[0.4]` … and the new milestone's), with the unit suites, `make repro`, the symbol and SSE checks and the protected-file diff.
 - **The build must stay reproducible:** `make repro` gives byte-identical `madire.elf` and `madire.kernel`.
 
@@ -72,6 +75,7 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 ## 12. Build and test commands
 
 ```powershell
+.\scripts\remote-regress.ps1        # Windows: the full regression in the Codespace (starts and stops it)
 .\scripts\build.ps1                 # Windows: build and test in the Codespace, fetch the ISO
 .\scripts\vbox-acceptance.ps1       # Windows: VirtualBox acceptance test
 ```

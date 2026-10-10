@@ -39,6 +39,9 @@ static bool finish(void)
     klogf("%s: longest turn: %u ticks (slice %u); highest thread stack peak: %u of %u bytes\n",
           prefix, (unsigned)thread_turn_max(), SCHED_SLICE_TICKS, thread_peak_max(),
           KSTACK_SIZE);
+    char who[80];                   /* 0.11: whose turn it was */
+    thread_turn_owner(who, sizeof(who));
+    klogf("%s: longest turn taken by %s\n", prefix, who);
     klogf("%s: %s (%u checks, %u mismatches)\n", prefix, failures ? "FAIL" : "PASS", items,
           failures);
     return failures == 0;
@@ -140,6 +143,27 @@ struct pp_result {
     uint64_t preemptions, switches;
 };
 
+static bool order_ok(enum sched_order o);
+
+/* 0.11, a diagnostic for a rejected order (the verdict is unchanged): the
+ * logged turns as A or B with the preemption count each saw, 25 a line. */
+static void log_turns(int32_t a, int32_t b, uint64_t pre0)
+{
+    klogf("%s: ping-pong turns rejected (A = thread %d, B = thread %d; preemptions at the "
+          "start %u; thread:count):\n", prefix, (int)a, (int)b, (unsigned)pre0);
+    char d[400];                    /* 25 entries of at most 14 characters */
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < pp_len; i++) {
+        char who = pp_log[i].tid == a ? 'A' : pp_log[i].tid == b ? 'B' : '?';
+        n += (uint32_t)ksnprintf(d + n, sizeof(d) - n, "%s%c:%u", n ? " " : "", who,
+                                 (unsigned)pp_log[i].preemptions);
+        if ((i + 1) % 25 == 0 || i + 1 == pp_len) {
+            klogf("%s:   turns %u-%u: %s\n", prefix, i / 25 * 25 + 1, i + 1, d);
+            n = 0;
+        }
+    }
+}
+
 /* One ping-pong. force: thread A runs one turn past its slice (the timer
  * must preempt it); bad_mode 1/2: thread A skips / repeats a turn. */
 static bool run_pingpong(struct pp_result *r, bool force, int bad_mode)
@@ -149,8 +173,21 @@ static bool run_pingpong(struct pp_result *r, bool force, int bad_mode)
     pp_force_tid = pp_bad_tid = -1;
     pp_bad_mode = bad_mode;
     uint64_t sw0 = thread_switches(), pre0 = thread_preemptions();
+    /* 0.11 (stage 4a.1): both threads are created, and their roles set,
+     * with preemption off, so neither runs before the whole cycle is
+     * queued. A timer preemption of thread 0 between the two creations let
+     * A take its first turn alone (A A B ... B B, which the order rule
+     * rightly rejects). thread_create never yields, joins or sleeps. */
+    preempt_disable();
     r->a = thread_create("pingA", pingpong, (void *)(intptr_t)11, false);
     r->b = thread_create("pingB", pingpong, (void *)(intptr_t)22, false);
+    if (r->a > 0 && r->b > 0) {
+        if (force)                              /* set before either thread runs */
+            pp_force_tid = r->a;
+        if (bad_mode)
+            pp_bad_tid = r->a;
+    }
+    preempt_enable();
     if (r->a <= 0 || r->b <= 0) {
         if (r->a > 0)
             thread_join(r->a);
@@ -158,15 +195,13 @@ static bool run_pingpong(struct pp_result *r, bool force, int bad_mode)
             thread_join(r->b);
         return false;
     }
-    if (force)                                  /* set before either thread runs */
-        pp_force_tid = r->a;
-    if (bad_mode)
-        pp_bad_tid = r->a;
     r->code_a = thread_join(r->a);
     r->code_b = thread_join(r->b);
     const int32_t cycle[2] = { r->a, r->b };
     r->turns = pp_len;
     r->order = sched_order_check(pp_log, pp_len, cycle, 2, PP_ROUNDS, pre0, &r->breaks);
+    if (!order_ok(r->order))
+        log_turns(r->a, r->b, pre0);        /* 0.11: a diagnostic only */
     r->preemptions = thread_preemptions() - pre0;
     r->switches = thread_switches() - sw0;
     pp_force_tid = pp_bad_tid = -1;
@@ -305,10 +340,12 @@ bool schedtest_threads(void)
     bool created = true;
     static const char *const names[TT_THREADS] = { "w0", "w1", "w2", "w3",
                                                    "w4", "w5", "w6", "w7" };
+    preempt_disable();                  /* 0.11: the whole cycle first (run_pingpong) */
     for (uint32_t i = 0; i < TT_THREADS; i++) {
         tids[i] = thread_create(names[i], worker, (void *)(uintptr_t)i, false);
         created = created && tids[i] > 0;
     }
+    preempt_enable();
     char d[112];
     ksnprintf(d, sizeof(d), "%u threads", TT_THREADS);
     line("create", d, created);
@@ -675,7 +712,8 @@ bool schedtest_preempt(void)
     return finish();
 }
 
-/* ---- test=preemptoff: the deferred switch (policy (a)) ---- */
+/* ---- test=preemptoff: the deferred switch (0.9 policy (a); 0.11 policy (b):
+ * the preempt_enable() that releases the guard switches at once) ---- */
 
 #define PO_HOLD_TICKS 20
 
@@ -683,6 +721,13 @@ static volatile uint32_t po_b_count, po_released, po_stop;
 static volatile uint64_t po_release_tick, po_b_resume_tick;
 static volatile uint32_t po_b_frozen, po_no_switch, po_pending;
 static volatile uint64_t po_held;
+/* 0.11: the holder is inside its releasing preempt_enable(), and what the
+ * other thread saw when it first ran after the release. */
+static volatile uint32_t po_enabling, po_b_saw_enabling;
+/* 0.11: preemptions counted before the release, and when the other
+ * thread first ran after it (a switch at the release is a preemption,
+ * whether preempt_enable or the timer interrupt right after it made it). */
+static volatile uint64_t po_pre_release, po_b_pre;
 
 static int32_t po_holder(void *arg)
 {
@@ -697,8 +742,11 @@ static int32_t po_holder(void *arg)
     po_pending = thread_need_resched();
     po_held = timer_ticks() - t0;
     po_release_tick = timer_ticks();
+    po_pre_release = thread_preemptions();
     po_released = 1;
-    preempt_enable();                       /* does not switch by itself */
+    po_enabling = 1;
+    preempt_enable();                       /* 0.11, policy (b): switches here */
+    po_enabling = 0;
     uint64_t t1 = timer_ticks();
     while (!po_b_resume_tick && timer_ticks() < t1 + 50)
         __asm__ volatile ("pause");
@@ -711,8 +759,11 @@ static int32_t po_other(void *arg)
     (void)arg;
     while (!po_stop) {
         po_b_count++;
-        if (po_released && !po_b_resume_tick)
+        if (po_released && !po_b_resume_tick) {
+            po_b_saw_enabling = po_enabling;
+            po_b_pre = thread_preemptions();
             po_b_resume_tick = timer_ticks();
+        }
     }
     return 0;
 }
@@ -725,6 +776,8 @@ bool schedtest_preemptoff(void)
     char d[112];
     po_b_count = po_released = po_stop = 0;
     po_release_tick = po_b_resume_tick = 0;
+    po_enabling = po_b_saw_enabling = 0;
+    po_pre_release = po_b_pre = 0;
     int32_t ta = thread_create("holder", po_holder, 0, false);
     int32_t tb = thread_create("other", po_other, 0, false);
     line("create", "a thread that disables preemption, and another", ta > 0 && tb > 0);
@@ -732,6 +785,12 @@ bool schedtest_preemptoff(void)
         return finish();
     thread_join(ta);
     thread_join(tb);
+    /* 0.11: each thread's own longest turn (the holder's includes its
+     * deliberate hold, which no turn bound applies to). */
+    klogf("Preemptoff test: thread %d 'other': longest turn %u ticks; thread %d 'holder': "
+          "longest turn %u ticks (includes its deliberate %u-tick hold)\n", (int)tb,
+          (unsigned)thread_turn_longest(tb), (int)ta, (unsigned)thread_turn_longest(ta),
+          PO_HOLD_TICKS);
     ksnprintf(d, sizeof(d), "preemption off for %u ticks: no switch, the other thread did not run",
               (unsigned)po_held);
     line("no switch while the guard is held", d,
@@ -744,6 +803,13 @@ bool schedtest_preemptoff(void)
               (unsigned)delay);
     line("switch within one tick after the release", d,
          po_b_resume_tick != 0 && po_b_resume_tick >= po_release_tick && delay <= 1);
+    /* 0.11: where the switch at the release was made (a log line, not a
+     * check item). */
+    klogf("Preemptoff test: switch at the release: by %s; preemptions %u -> %u\n",
+          po_b_saw_enabling ? "preempt_enable" : "the timer interrupt right after it",
+          (unsigned)po_pre_release, (unsigned)po_b_pre);
+    line("switch inside preempt_enable at the release (policy (b))",
+         po_b_saw_enabling ? "yes" : "no", po_b_saw_enabling);
     check_restored(&b);
     return finish();
 }
@@ -1019,6 +1085,98 @@ bool schedtest_framethreads(void)
     line("concurrent use under preemption", d, fewest > 100 && pre >= 1);
     ksnprintf(d, sizeof(d), "%u frames lost their tag (none handed out twice)", bad);
     line("every frame tag intact", d, bad == 0);
+    check_restored(&b);
+    return finish();
+}
+
+/* ---- test=preemptlong: threads that live in guarded sections (0.11) ----
+ *
+ * Policy (b): each thread spends almost all its time with preemption
+ * disabled; every section lasts until the next timer tick, so every tick
+ * lands inside one. Under the 0.9 policy (a) a switch waited for an
+ * interrupt with the count at 0, so such a thread could keep the CPU for a
+ * long time; now the preempt_enable() that ends the section switches, and
+ * every turn stays within a slice plus one section (at most 6 ticks). */
+
+#define PL_THREADS  4
+#define PL_TICKS    300
+#define PL_MAX_TURN 6
+
+static volatile uint64_t pl_end;
+static volatile uint64_t pl_inside[PL_THREADS], pl_outside[PL_THREADS];
+static volatile uint32_t pl_turns[PL_THREADS], pl_sections[PL_THREADS];
+
+static inline uint64_t pl_tsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Time inside a section counts as inside; the gap between two sections
+ * counts as outside only when no switch came in between (otherwise the gap
+ * is mostly other threads' time, and the thread's own part of it is a few
+ * instructions). A changed switch count means the thread left the CPU and
+ * came back: one more turn. */
+static int32_t pl_body(void *arg)
+{
+    uint32_t idx = (uint32_t)(uintptr_t)arg, turns = 1, sections = 0;
+    uint64_t inside = 0, outside = 0, sw = thread_switches(), gap_start = 0;
+    while (timer_ticks() < pl_end) {
+        preempt_disable();
+        uint64_t a = pl_tsc();
+        if (gap_start && thread_switches() == sw)
+            outside += a - gap_start;
+        uint64_t t = timer_ticks();
+        while (timer_ticks() == t)
+            __asm__ volatile ("pause");
+        uint64_t b = pl_tsc();
+        inside += b - a;
+        sections++;
+        preempt_enable();               /* policy (b): a pending switch happens here */
+        uint64_t s = thread_switches();
+        if (s != sw) {
+            turns++;
+            sw = s;
+        }
+        gap_start = pl_tsc();
+    }
+    pl_inside[idx] = inside;
+    pl_outside[idx] = outside;
+    pl_turns[idx] = turns;
+    pl_sections[idx] = sections;
+    return 0;
+}
+
+bool schedtest_preemptlong(void)
+{
+    begin("Preemptlong test");
+    struct baseline b;
+    take_baseline(&b);
+    char d[112];
+    pl_end = timer_ticks() + PL_TICKS;
+    int32_t tids[PL_THREADS];
+    bool created = true;
+    static const char *const names[PL_THREADS] = { "long0", "long1", "long2", "long3" };
+    for (uint32_t i = 0; i < PL_THREADS; i++) {
+        tids[i] = thread_create(names[i], pl_body, (void *)(uintptr_t)i, false);
+        created = created && tids[i] > 0;
+    }
+    line("create", "4 threads that keep preemption disabled until each next tick", created);
+    if (!created)
+        return finish();
+    for (uint32_t i = 0; i < PL_THREADS; i++)
+        thread_join(tids[i]);
+    /* Read before any new thread can reuse the slots. */
+    for (uint32_t i = 0; i < PL_THREADS; i++) {
+        uint64_t longest = thread_turn_longest(tids[i]);
+        uint64_t all = pl_inside[i] + pl_outside[i];
+        uint32_t permille = all ? (uint32_t)(pl_inside[i] * 1000 / all) : 0;
+        ksnprintf(d, sizeof(d), "thread %d: %u.%u%% in guarded sections (%u), %u turns, "
+                  "longest turn %u ticks (at most %u)", (int)tids[i], permille / 10, permille % 10,
+                  pl_sections[i], pl_turns[i], (unsigned)longest, PL_MAX_TURN);
+        line(names[i], d, permille > 950 && pl_turns[i] >= 5 && longest <= PL_MAX_TURN);
+    }
     check_restored(&b);
     return finish();
 }

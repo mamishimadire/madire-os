@@ -22,7 +22,7 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, user, smx, memexhaust, module, repeat
+    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, user, smx, memexhaust, module, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$Repeat = 0                    # extra normal boots (self-test result of each)
 )
@@ -283,6 +283,51 @@ if (Want "scrollback") {
 # 0.9.1: the shell commands. The guest's "date" is compared with the host's
 # clock (local time and UTC) and the difference is only reported: the VM's
 # RTC setting is never changed here.
+# 0.11: programs from the console (the default GRUB entry loads them):
+# run (output on the screen), run -b, ps, kill asking first (no, then yes),
+# Ctrl+C on a spinning and on a printing program.
+if (Want "procs") {
+    $ctrlC = { Key 1d 2e ae 9d; Start-Sleep -Seconds 2 }
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    TypeText "run hello"; Enter; Start-Sleep -Seconds 2
+    Shot "procs-run-hello"
+    TypeText "run exitcode"; Enter; Start-Sleep -Seconds 2
+    TypeText "run -b spin"; Enter
+    Wait-Serial "^\[process [0-9]+ 'spin' started in the background\]$" 10 | Out-Null
+    $m = Select-String -Path $serial -Pattern "^\[process ([0-9]+) 'spin' started in the background\]$" |
+         Select-Object -First 1
+    $bgPid = if ($m) { $m.Matches[0].Groups[1].Value } else { "0" }
+    TypeText "ps"; Enter; Start-Sleep -Seconds 1
+    Shot "procs-ps"
+    TypeText "kill $bgPid"; Enter
+    TypeText "no"; Enter; Start-Sleep -Seconds 1
+    Shot "procs-kill-no"
+    TypeText "kill $bgPid"; Enter
+    TypeText "yes"; Enter; Start-Sleep -Seconds 2
+    Shot "procs-kill-yes"
+    TypeText "clear"; Enter
+    TypeText "run spin"; Enter; Start-Sleep -Seconds 2
+    & $ctrlC
+    Shot "procs-ctrlc-spin"
+    TypeText "run lines 65636"; Enter; Start-Sleep -Seconds 2
+    & $ctrlC
+    Shot "procs-ctrlc-lines"
+    TypeText "ps"; Enter; Start-Sleep -Seconds 1
+    Shot "procs-ps-after"
+    Stop-Run "procs" @("^\[pid [0-9]+\] Hello from user mode$", "^\[process [0-9]+ 'hello' exited, status 0\]$",
+        "^\[process [0-9]+ 'exitcode' exited, status 42\]$",
+        "^\[process $bgPid 'spin' started in the background\]$", "^ +$bgPid  running +[0-9]+  spin$",
+        "^End process $bgPid 'spin'\? Type 'yes' to confirm:$", "^yes/no> no$", "^Kill cancelled\.$",
+        "^yes/no> yes$", "^console: kill confirmed for process $bgPid$", "^\[process $bgPid 'spin' killed\]$",
+        "^console: Ctrl\+C: kill requested for process [0-9]+$", "^\[process [0-9]+ 'lines' killed\]$",
+        "^console: process [0-9]+ collected [0-9]+ ticks after Ctrl\+C$", "^0 processes$")
+    Absent "procs" "^key: "
+    Absent "procs" "PANIC|Screen output from thread"
+}
+
 if (Want "commands") {
     Start-Run
     Wait-Serial "System ready\." 40 | Out-Null

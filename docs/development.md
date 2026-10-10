@@ -161,6 +161,7 @@ The Makefile compiles every `.c` and `.asm` file under `kernel/` and `drivers/` 
 - `kernel/console/history.c`, `kernel/rtc_time.c`, `kernel/logbuf.c` (0.9.1)
 - `kernel/console/scrollback.c` (0.9.2)
 - 0.10: `kernel/memory/uvm_core.c`, `usercopy_core.c`; `kernel/proc/syscall_core.c`, `proc_core.c`, `userimg.c`; header only: `kernel/arch/x86/gdt_desc.h`, the SMEP/SMAP decision in `cpuid.h`, `kernel/proc/userentry.h`, `faultop.h`, the SMEP/SMAP cause in `pagefault.h`
+- 0.11: `kernel/proc/elf_core.c`, `progmod_core.c`, `loadplan.c`; `kernel/console/outq.c`; the policy (b) decision and `sched_wake` in `sched_core.c`
 - `kernel/arch/x86/pagefault.h` and the inline NX decision in `cpuid.h` (header only)
 - the formatter in `kernel/kprintf.c` (`test_kprintf` includes the file, with the two output drivers stubbed)
 
@@ -259,6 +260,10 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 
 **Adding a test program.** Write `user/prog/<name>.c` with `int main(long arg)`, using `user/syscall.h` and `user/ulib.h` only (no C library); names are `[a-z0-9_]`, at most 15 characters. Keep code and data under 64 KiB each. The Makefile and the image table pick it up automatically. Start it from a diagnostic in `kernel/proc/usertest.c` with `process_start("<name>", arg)` and `process_wait`, and check its exact result (exit status, or the fault's vector, address and instruction bytes). A program that deliberately faults must have its expected opcode checked (see opcode evidence in [testing.md](testing.md)).
 
+**Adding a program module (0.11).** Every `user/prog/<name>.c` is also built as `build/user/<name>.elf`. To deliver one with the system, add a line `module /boot/prog/<name>.elf <name>` to the default entry in `iso/boot/grub/grub.cfg`: `make iso` copies exactly the programs named there (one list only), and `run <name>` can then start it. Keep within the loader's rules (static `ET_EXEC` x86-64, 1–4 loadable segments in `[0x400000, 0x40000000)`, page-aligned, never writable and executable, at most 1 MiB of file and of memory; the full list is in [architecture.md](architecture.md)); `make elfcheck` builds `tests/elfcheck.c`, which runs the kernel's own checks on the host. At most 8 program modules are kept, and with 14 or more boot modules of any kind the boot stops (the protected reservation table is full). If you change the default entry's program list, update the `[0.11]` ISO checks in `tests/qemu-tests.sh` (they compare it with the expected 7). Programs only for tests (like `tests/user/flood.c`) are built outside `build/user`, so they never join the ISO or the image table.
+
+**Console output rule (0.11).** Only thread 0 writes to the screen. A program's output reaches it through the output queue (`outq`), which thread 0 drains in `console_poll`; nothing else may draw program text, and nothing may wait in thread 0 for a program. The serial log and `dmesg` keep exactly one `[pid N] …` record of each line: don't add a second serial copy of what the queue shows. Background programs never write to the screen.
+
 **Adding a system call.**
 
 1. Take the number and meaning from the documented Linux x86-64 interface (or, for a Madire-only call, a number in `0x10000000`–`0x1000FFFF`); add it to `kernel/proc/syscall_core.h` (number, `enum syscall_id`) and `syscall_lookup`, and to `user/syscall.h`.
@@ -294,7 +299,7 @@ Normal code picks up the results in the idle loop. Use `irq_save()`/`irq_restore
 
 ## Running the full test suite (detached, on a hash-verified snapshot)
 
-Since 0.9 the full suite (`make unit test iso`; in 0.10: 41 unit suites, `make repro`, 838 QEMU checks) takes about **15 minutes** (about **30** since 0.10). That is longer than the time limit of many terminals and coding tools, and a run cut off by such a limit can look like a hang or a pass. So the default procedure, for people and agents alike, is to run it **detached** inside the Codespace and to prove which sources it tested:
+Since 0.9 the full suite (`make unit test iso`; in 0.10: 41 unit suites, `make repro`, 838 QEMU checks) takes about **15 minutes** (about **30** since 0.10, about **50** in 0.11). That is longer than the time limit of many terminals and coding tools, and a run cut off by such a limit can look like a hang or a pass. So the default procedure, for people and agents alike, is to run it **detached** inside the Codespace and to prove which sources it tested:
 
 1. **Snapshot:** copy the files under test (`Makefile`, `boot/`, `kernel/`, `drivers/`, `linker/`, `iso/`, `scripts/`, `tests/`, and since 0.10 `user/`) to a snapshot folder outside the repository, and record the SHA-256 of every file.
 2. **Upload** the snapshot to the Codespace, to a fresh `/tmp/madire-os-build` (`gh codespace cp -e -r …`, as `scripts/build.ps1` does).
@@ -311,6 +316,18 @@ Since 0.9 the full suite (`make unit test iso`; in 0.10: 41 unit suites, `make r
 From PowerShell, put the remote command in single quotes (or a script file): inside double quotes PowerShell expands `$?` locally before the command reaches the Codespace.
 
 `scripts/build.ps1` still runs `make iso test` in the foreground. That's fine when nothing can cut it off, but its result is not the evidence for a stage or a milestone.
+
+### `scripts/remote-regress.ps1` (since 0.11: the regression tool)
+
+Since 0.11 the procedure above is automated, and the full suite takes **about 50 minutes** (0.11: 1071 QEMU checks, 51 unit suites). From PowerShell, in the repository:
+
+```powershell
+.\scripts\remote-regress.ps1          # Codespace target (the only one approved)
+```
+
+It requires the Codespace to be **Shutdown** and 2-core, then: hashes every file under test (`Makefile`, `boot/`, `drivers/`, `iso/`, `kernel/`, `linker/`, `scripts/`, `tests/`, `user/`) into a manifest; packs the snapshot and checks the archive against the manifest; **starts the Codespace**; checks that no earlier regression is still running; uploads the snapshot into a fresh `/workspaces/madire-regression-<run id>`; **proves its own hash guard** (a deliberately altered copy must be rejected before anything runs, and the correct copy must pass); starts `make unit test iso` detached; polls every 60 s until `MAKE EXIT`; runs the checks (the summary, every unit suite, no `grub.cfg` repro notices, no undefined symbols, no libgcc/libc helpers, 0 SSE/x87 uses, the kernel end and the 2 MiB margin, failing below 32 KiB); confirms the remote snapshot's hashes still match; downloads `regression.log` and the stage 5 screen evidence; and **stops the Codespace** (also after a failure), printing the session's length. The last line `RESULTS=<folder>` names the local copy. Run it in the background and read its output when it ends; a pass prints `REMOTE_REGRESSION_RESULT=PASS` and `CODESPACE_SHUTDOWN=CONFIRMED`. Planned: it should also download the per-boot serial logs.
+
+**Codespaces is a paid resource.** Start a Codespace for a task and stop it as soon as the results are collected (the tool does both); don't leave one idle, and keep extra sessions (for example to fetch an ISO) short. An idle Codespace also stops itself after a while, which once cut off a regression that nothing polled.
 
 ## Compiler flags
 
@@ -334,7 +351,7 @@ From PowerShell, put the remote command in single quotes (or a script file): ins
 - 64-bit division and modulo are native instructions since 0.7 and fine. 128-bit arithmetic (`__int128`) isn't: it would need `libgcc`, which isn't linked.
 - No `__builtin_popcount` (without a POPCNT target it calls `libgcc`). `__builtin_ctz` is fine, because it compiles to `bsf`.
 - Data is never executable: map pages with `paging_nx_flag()` (see *Using memory*). Only kernel code (`.text`) runs.
-- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1, 1496 at 0.9.2, 1512 at 0.10); a change that raises it noticeably deserves a look.
+- The kernel stack is 16 KiB with an unmapped guard page below it; a deeper stack ends on the crash screen (double fault). Keep large buffers off the stack (static, or `kmalloc`). `mem` shows the high-water mark (1480 bytes at 0.8, 1496 at 0.9, 1512 at 0.9.1, 1496 at 0.9.2, 1512 at 0.10 and 0.11); a change that raises it noticeably deserves a look. Each thread's stack is 16 KiB too; since 0.11 `write` keeps its 4 KiB copy buffer on the calling process thread's stack (peaks measured at most 5248 bytes).
 - Never use a low (physical) address as a pointer: the lower half is empty (0.8). Use `phys_view()` for the low 1 MiB and boot data, the window for other frames, and `kernel_phys()` to turn a kernel symbol into a physical address.
 - Never dereference a user (lower-half) address in the kernel (0.10): the lower half belongs to whichever process is running. Use `copy_from_user` (see *User mode*); with SMEP/SMAP on, executing or touching a user page directly ends on the crash screen with a `Cause:` line.
 - Diagnostics that shouldn't appear on screen go to `klogf()` (serial only). Since 0.9.1 everything `klogf` and `kprintf` write is also kept in memory and shown by `dmesg`: never log secrets.

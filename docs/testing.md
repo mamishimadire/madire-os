@@ -68,16 +68,52 @@ They're compiled with the host GCC as ordinary 64-bit Linux programs (`-m64 -no-
 | `test_pfcause010` (3) | 0.10 | the crash screen's `Cause:` decision: SMEP for a kernel-mode fetch from a present lower-half page with CR4.SMEP (also with AC set); SMAP for a kernel read or write with CR4.SMAP and AC clear; nothing for a kernel-half address, a user-mode fault, a not-present page, a reserved bit, AC set, or the feature off; the boundary at `0x0000800000000000`; every message fits 79 columns; the NX decoding unchanged |
 | `test_sched010` (7) | 0.10 | the 0.9 turn-order check with its 0.10 window (one cycle of k turns): a thread preempted after logging its turn and before yielding is accepted; nothing looser than that (two turns of the same thread still fail); `pingpongbad`'s skip and repeat still fail; `pingpongpreempt` still passes; the strict case unchanged; a three-thread cycle. This suite fails on the 0.9 rule |
 
-`test_pte` is unchanged in 0.9: the slot-507 layout cases that the plan put there are in `test_kstack`, next to the stack-slot code they check. In 0.10 every existing suite is unchanged and still passes; the 0.10 rules got their own 12 suites (41 in all).
+| `test_elf` (158 checks) | 0.11 | every ELF64 rule: header fields, type, machine, program-header counts and the allowlist, 1–4 `PT_LOAD` (a fifth refused), ascending, range, alignment and congruence, shared pages, W+X, entry inside executable file bytes, size caps; the segment plan |
+| `test_progmod` (67) | 0.11 | module names (second word, file name without `.elf`, `[a-z0-9_]{1,15}`, duplicates refused), the table of at most 8 kept programs, the summary line |
+| `test_loadplan` (47) | 0.11 | load plans from a built-in image and from a checked ELF file: pages, protections, bytes to copy, zero fill, the entry point |
+| `test_longest011` (54) | 0.11 | the longest-turn record with its owner (thread, process ID, kernel or ring-3 thread), ties, name cutting |
+| `test_preemptb` (53) | 0.11 | policy (b): the switch-on-enable decision (count, pending, interrupts on, ready, no panic) and the inline `preempt_enable` calling `preempt_resched` only at count 0 with a switch pending |
+| `test_order011` (10) | 0.11 | the ping-pong sequence logged under load (`A A B … B B`, one preemption before the first turn) and its `BAD_ORDER` verdict; a cycle queued first stays strict; `pingpongbad` stays strict |
+| `test_wake011` (47) | 0.11 | `sched_wake`: a sleeper woken at once to the tail of the run queue with `need_resched`; only sleepers (not ready, joining or free threads); other sleepers keep sleeping |
+| `test_shell_run011` (114) | 0.11 | `run` (foreground, `-b`, arguments 0–4294967295, refusals), `ps` with processes, the end lines, `help`; every line at most 79 columns; nothing changes without the `procs` field |
+| `test_shell_kill011` (44) | 0.11 | `kill` asks first; PID 0, unknown, ended processes and bad arguments refused; `help kill` |
+| `test_outq` (18) | 0.11 | the 8 KiB output queue: writes, reads, wrap-around, full and empty |
+
+`test_pte` is unchanged in 0.9: the slot-507 layout cases that the plan put there are in `test_kstack`, next to the stack-slot code they check. In 0.10 every existing suite is unchanged and still passes; the 0.10 rules got their own 12 suites (41 in all). In 0.11 the 10 new suites bring the total to 51; `test_kprintf` got two stubs for policy (b) (no check changed), and `test_shell_run011`'s help tail was extended for `kill` (a 0.11 check).
 
 ### 1b. QEMU tests (`tests/qemu-tests.sh`)
 
 These boot the kernel headless in QEMU and check the serial output. The kernel copies its screen text to COM1 and logs details there. Each run writes `build/serial-*.log`.
 
-Checks added in 0.4 to 0.10 are tagged `[0.4]` to `[0.10]`, so the summary line separates them from the 0.3 regression checks:
-`ALL TESTS PASSED (838 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 new in 0.10)`.
+Checks added in 0.4 to 0.11 are tagged `[0.4]` to `[0.11]`, so the summary line separates them from the 0.3 regression checks:
+`ALL TESTS PASSED (1071 checks: 150 0.3 regression + 30 from 0.4 + 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 from 0.10 + 233 new in 0.11)`.
 
-`make test` also runs `make repro` before the QEMU tests; its result becomes 3 of the `[0.8]` checks. The whole suite takes about 30 minutes since 0.10 (15 in 0.9); run it detached on a hash-verified snapshot (see [development.md](development.md)).
+`make test` also runs `make repro` before the QEMU tests; its result becomes 3 of the `[0.8]` checks. The whole suite takes about 50 minutes in 0.11 (30 in 0.10, 15 in 0.9); run it with `scripts/remote-regress.ps1` (see [development.md](development.md)).
+
+**Regression durations in 0.11** (full detached runs): about 46–53 minutes each from stage 3b on (3b.1 49, 3b.2 47, 4a 50, 4a.1 47, 4b 47, 5 about 53, 6 49 minutes); the stage 6 Codespace session took 55 minutes in all.
+
+**The `[0.11]` groups** (233 checks; 14 of them are owner checks inside the `[0.9]` and `[0.10]` diagnostics):
+
+| Group (checks) | Boots | Proves |
+|---|---|---|
+| **The longest turn's owner** (2 + 14) | the self-test and every scheduler and user-mode diagnostic | each "longest turn taken by thread N 'name' (kernel thread / user process N / ring-3 thread)" line gives exactly the ticks the existing longest-turn line reported |
+| **ELF checks on the host** (33) | none (`make elfcheck`) | the built programs pass the kernel's own ELF checks on the host; each of the 29 malformed fixtures is refused with its expected reason |
+| **Program modules found at boot** (56) | `-initrd` with programs and fixtures | each module's line (accepted with its segments, pages and entry, or refused with the reason); names from the command line or the file; bad and duplicate names refused; at most 8 kept; 13 modules fill the reservation table, a 14th stops the boot; nothing on the screen |
+| **The default GRUB entry loads 7 programs** (12) | the real ISO and the keylog ISO | `grub.cfg` names exactly the 7 programs the ISO holds; each accepted with its size; 20 reserved ranges; no module line on the screen (read from the VGA buffer) |
+| **ELF programs loaded into processes** (56) | `test=elfrun` with modules, also on `qemu64,+smep,+smap` | every module program runs through the one loading path with its exact result; the built-in images still run; two `isolate` copies isolated; no frame inside a module ever mapped; every malformed fixture refused again at load, with no address space built |
+| **Policy (b) turn bounds** (7) | the logs of `framethreads`, `heapthreads`, `userpreempt`, `preemptoff` | each longest turn at most 6 ticks with its owner named; `preemptoff`: the other thread runs 0 or 1 tick after the release with the switch recorded there, the switch inside the releasing `preempt_enable`, and the holder's deliberate 20-tick hold exempt by name |
+| **`test=preemptlong`** (10) | `test=preemptlong` | 4 kernel threads spend over 95% of their time in guarded sections for 300 ticks; each takes at least 5 turns, every turn at most 6 ticks |
+| **Console: `run`, `run -b`, `ps`** (11) | a QMP console session with 4 program modules | `run hello` (its line, then `exited, status 0`), `run exitcode` (42), `run nullptr` (#PF at the address the kernel logged), `run -b spin` then `ps` with its PID, state and name; an unknown name and a bad argument refused; every line at most 79 columns; no `key:` lines |
+| **Console: `kill` and Ctrl+C** (18) | a QMP console session with `spin`, `sleep`, `lines` | `kill` asks; "no" cancels (still running), "yes" ends it with its end line; `kill 0` and an unknown PID refused; Ctrl+C on `spin`, on a 10 s `sleep` (woken early) and on `lines` (stopped early), each prompt back at most 2 ticks after Ctrl+C; no process left; free pages equal before and after |
+| **Screen output, scrollback and Q8** (14) | QMP sessions read with `qmp_screen.py` | `hello`'s text on the VGA screen; `lines` wrapped at exactly 79 columns with control characters as `?`; one unchanged `[pid N]` serial record per line; background output never on the screen; Shift+PgUp shows earlier program output; the flood program fills the queue, Ctrl+C ends the waiting writer, the prompt accepts another command and no process is left |
+
+**Changed checks in 0.11** (each reported and accepted, none removed or weakened): the two `ps` help checks of `[0.9]` and `[0.9.1]` expect "Show threads and processes"; "all 19 built programs" became 20; and five `[0.11]` checks were corrected during the milestone (the owner-name pattern, the `userpreempt` owner window, the `elfrun` fixture-only line, the `preemptoff` release check, "hello ran exactly once"). The full list is in [PROGRESS.md](PROGRESS.md).
+
+**The stall watch (0.11, a harness diagnostic that decides no check).** `qemu-tests.sh` puts `tests/qemu-watch.sh` first in `PATH` as `qemu-system-x86_64`, so every QEMU boot runs through it. It starts QEMU in its own session (`setsid`) with one more HMP monitor and watches the serial log: after 6 seconds without output (an idle kernel logs `uptime` every 5 s), `tests/qemu_capture.py` takes 3 samples 1 s apart of the registers (RIP resolved with `nm`, RSP, RFLAGS and IF, CR3, CS, HLT), `info pic`, `info irq` (how far IRQ 0 advanced), `info lapic`, and kernel variables read from memory at their symbols (the tick count, `preempt_count_value`, `preempt_resched_pending`, the current thread, `need_resched`). Deliberate halts are skipped unless a check logged MISMATCH first. The captures are listed at the end of the run under "Stall watch"; a capture in a boot that passed is a slow test, not a stall. This is how the 0.11 stall was diagnosed (see [PROGRESS.md](PROGRESS.md)).
+
+**Key evidence (0.11, decides no check).** `boot_keys` keeps the key injector's output next to the serial log (`<log>.keys.txt`), and when a key-typing boot reaches its time limit the stall watch records QEMU's IRQ 1 count and the kernel's `counts[1]` (`<log>.irq1.txt`). A boot with missing keys can then be classified: injector failed, IRQ 1 never raised, or raised but not logged (a kernel issue).
+
+**The regression tool's guard proof.** Before every run, `scripts/remote-regress.ps1` proves its own hash guard in the Codespace: a deliberately altered copy of the snapshot must be rejected before anything runs (`ALTERED_GUARD_EXIT=43`), and the correct copy must pass (`CORRECT_SNAPSHOT_GUARD_PASS`); at the end it checks that the remote snapshot's hashes still match (`FINAL_SNAPSHOT_HASH_MATCH=PASS`). See [development.md](development.md).
 
 **The version is read once (0.10).** The script reads `MADIRE_OS_VERSION` from `kernel/kernel.h` once (`VERSION`) and builds every version regex from it (`VRE`, the dots escaped with `sed`, which behaves the same in every bash version); a missing or malformed version stops the run. `scripts/vbox-acceptance.ps1` does the same (`$VRe`). So a new version changes no check. Before the bump to 0.10 this was proven at 0.9.2: every regex built from the file expanded byte for byte to the old fixed one (in bash 5.2.37, bash 5.2.21 and PowerShell).
 
@@ -364,6 +400,7 @@ Since 0.9 the tests below are run by a script, on Windows, with the VM powered o
 | `pf` | the five page-fault entries and the kernel stack overflow: each one's address, NX or double-fault line, halted |
 | `diag` | divide by zero (`#DE`), the timer diagnostic (`Timer diagnostic: PASS`) and the keyboard diagnostic (`a`, `Shift+A` with `flags=0x03`, Up) |
 | `user` (0.10) | Diagnostics entries 16–24, one boot each: the entry's PASS line, then `System ready.`, and no `PANIC` (case-sensitive); a screenshot each |
+| `procs` (0.11) | the console with the default entry's program modules: `run hello` (its text on the screen, then `[process 4 'hello' exited, status 0]`), `run exitcode` (status 42), `run -b spin`, `ps` (its PID running), `kill <pid>` then `no` (`Kill cancelled.`), then `yes` (killed, end line), `run spin` and `run lines 65636` each ended by Ctrl+C, a final `ps` with `0 processes`; no `key:` line, no panic; a screenshot of each step |
 | `smx` (0.10) | entries 25 (`smep`) and 26 (`smap`). The expected result follows the CPU as the VM presents it (the boot's `SMEP:`/`SMAP:` line, reported): enabled → the crash screen with `CPU exception 14`, the error code (`0x00000011` / `0x00000001`), the `Cause:` line, the address and `System halted.`, and no `System ready`, `without a fault` or `NX violation`; not supported → `… test: NOT APPLICABLE (not supported by this CPU)`, `System ready.` and no `PANIC` |
 | `memexhaust` | `Memory exhaustion test: PASS`, then `mem` in the console |
 | `module` | the module ISO: `Boot module 1: test pattern intact (14016 bytes)` |
@@ -377,6 +414,10 @@ In 0.9 the full run gave 33 of 33 expected lines, and 20 extra normal boots each
 2. in the `smx` loop a variable `$T` (the feature name) overwrote the loop variable `$t` (the test name), because PowerShell variable names ignore case, so those logs were saved as `SMEP`/`SMAP`: the variable is now `$Feat`.
 
 With the fixes, the `user` and `smx` groups were re-run: every row passed except one: `userkill` measured a **longest turn of 10 ticks** (bound: 6), with every functional result correct. That is the plan's stop rule, so stage 7 stopped; the owner chose to re-run `userkill` alone 10 times (headless, VM settings checked and unchanged): all 10 measured 5 ticks and passed, with no other VM running and the host 0–23 % busy before each run. The single 10-tick turn is recorded as a watch item (probably a VirtualBox tick burst; unconfirmed, because the turn record doesn't say which thread took it). If it recurs, the record will name the thread (its TID, and whether it is a user process or the kernel test thread) before anything else changes.
+
+**In 0.11** (ISO `c79ac24e…`, kernel `0851bd59…`, built from the stage 6 tree) the full run with `-Repeat 10` gave **119 of 119**: every existing group, the boot self-tests, positions 16–26 and the new `procs` group; each of the 10 extra boots gave `self-test PASS; ping-pong preemptions 0`. `userkill` was then run 10 more times (the same keys and timings, VM settings checked and unchanged): all PASS with a longest turn of 5 ticks, taken by `spin` (user process 4), which resolves the 0.10 watch item. Every longest turn in the VirtualBox logs was at most 5 ticks, with the same owners as QEMU (`userpreempt`: the user processes 5/5/5/0/0, the kernel thread `frames` 1; the scheduler self-test `spin` 5; `preempt` `spin0` 5). The only difference from QEMU: the VM's CPU offers neither SMEP nor SMAP (both NOT APPLICABLE, as on QEMU's default CPU). The per-boot QEMU serial logs weren't downloaded by `remote-regress.ps1`, so the comparison used the result lines and figures (a follow-up adds the download). `run hello` on the VM:
+
+![run hello: the program's text on the screen, then its end line (0.11)](images/run-hello-v0.11.png)
 
 ### Test A: normal boot
 

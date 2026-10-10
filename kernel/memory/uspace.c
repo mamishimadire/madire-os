@@ -57,16 +57,25 @@ void uspace_leave(void)
 enum uvm_result uspace_map_page(struct uspace *as, uint64_t va, const void *src, size_t len,
                                 uint64_t flags, uint64_t *frame_out)
 {
+    return uspace_map_page_at(as, va, src, len, 0, flags, frame_out);
+}
+
+enum uvm_result uspace_map_page_at(struct uspace *as, uint64_t va, const void *src, size_t len,
+                                   size_t at, uint64_t flags, uint64_t *frame_out)
+{
     if (!uspace_is_current(as))
         panicf("uspace_map_page(0x%016llx): the address space is not loaded.",
                (unsigned long long)va);
+    if (at > VM_PAGE_SIZE || len > VM_PAGE_SIZE - at)
+        panicf("uspace_map_page(0x%016llx): %llu bytes at %llu do not fit the page.",
+               (unsigned long long)va, (unsigned long long)len, (unsigned long long)at);
     uint32_t frame = memory_alloc_page();
     if (!frame)
         return UVM_ERR_NO_FRAME;
     volatile uint8_t *w = vmm_window_map(frame);
     const uint8_t *s = src;
     for (size_t i = 0; i < VM_PAGE_SIZE; i++)
-        w[i] = (s && i < len) ? s[i] : 0;
+        w[i] = (s && i >= at && i - at < len) ? s[i - at] : 0;
     vmm_window_unmap();
     enum uvm_result r = uvm_map(&as->uvm, va, frame, flags);
     if (r != UVM_OK) {

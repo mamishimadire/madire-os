@@ -3,6 +3,7 @@
 #include "kernel/arch/x86/gdt_desc.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/kprintf.h"
+#include "kernel/console/console.h"
 #include "kernel/memory/usercopy.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
@@ -16,10 +17,6 @@ static struct syscall_counts counts;
 static struct syscall_sleep_stats sleep_stats;
 
 /* ---- write (stage 5b) ---- */
-
-/* One kernel buffer for every write: the copy and the logging run with
- * preemption off, so two processes never share it at the same time. */
-static uint8_t write_buf[SYSCALL_WRITE_MAX];
 
 static void emit_line(void *ctx, const char *line, size_t len)
 {
@@ -43,12 +40,25 @@ static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t count)
         return 0;                   /* nothing touched, whatever buf is */
     if (!user_readable(buf, n))
         return -MADIRE_EFAULT;
+    uint8_t write_buf[SYSCALL_WRITE_MAX];
     preempt_disable();
     bool ok = copy_from_user(write_buf, buf, n);
-    if (ok)
-        syscall_write_lines(process_current_pid(), write_buf, n, emit_line, 0);
     preempt_enable();
-    return ok ? (int64_t)n : -MADIRE_EFAULT;
+    if (!ok)
+        return -MADIRE_EFAULT;
+
+    /* Keep newlines as line breaks; every other control or non-ASCII byte
+     * is shown as '?', both on screen and in the existing serial record. */
+    for (uint64_t i = 0; i < n; i++)
+        if (write_buf[i] != '\n' && (write_buf[i] < 0x20 || write_buf[i] > 0x7E))
+            write_buf[i] = '?';
+
+    int32_t pid = process_current_pid();
+    size_t written = console_program_write(pid, write_buf, (size_t)n);
+    preempt_disable();
+    syscall_write_lines(pid, write_buf, written, emit_line, 0);
+    preempt_enable();
+    return (int64_t)written;
 }
 
 /* ---- nanosleep (stage 5b) ---- */
@@ -77,7 +87,8 @@ static int64_t sys_nanosleep(uint64_t req)
     sleep_stats.last_ticks = ticks;
     sleep_stats.last_slept = slept;
     irq_restore(f);
-    return 0;                       /* rem is never written: nothing interrupts a sleep */
+    return 0;                       /* rem is never written: only a kill cuts a sleep short
+                                     * (0.11), and the process then ends on the way out */
 }
 
 static uint64_t rdmsr(uint32_t msr)

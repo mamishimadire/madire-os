@@ -17,6 +17,11 @@
 /* ---- preemption-disable count (preempt.h) ---- */
 
 volatile uint32_t preempt_count_value;
+/* 0.11, policy (b): a copy of sched.need_resched, refreshed whenever the
+ * scheduler may change it with a switch pending (each tick, each switch
+ * point); preempt_enable() reads it to decide whether to call
+ * preempt_resched. A stale "true" costs one call that finds nothing to do. */
+volatile uint8_t preempt_resched_pending;
 
 void preempt_underflow(void)
 {
@@ -33,6 +38,7 @@ struct kthread {
     uint64_t cr3;               /* 0.10: its address space's PML4; 0 = the kernel's */
     uint64_t preempted;         /* 0.10: times it was switched out at the preemption point */
     uint64_t turn_longest;      /* 0.10: its own longest turn, in ticks (test=userpreempt) */
+    int32_t pid;                /* 0.11: its process's ID; 0 = a kernel thread */
 };
 
 /* All scheduler state is changed with interrupts disabled (irq_save). */
@@ -44,6 +50,7 @@ static struct kthread threads[SCHED_MAX_THREADS];
 static volatile bool ready;
 static volatile uint64_t preemptions;
 static volatile uint64_t turn_max;      /* longest turn of a thread other than 0 */
+static struct sched_longest longest;    /* 0.11: that turn and its owner */
 static volatile bool log_exits = true;
 static volatile uint32_t peak_max;      /* highest final stack peak since reset */
 static uint64_t kernel_cr3;             /* 0.10: the kernel's PML4 (thread_init) */
@@ -74,8 +81,10 @@ void thread_init(void)
         threads[i].slot = -1;
         threads[i].cr3 = 0;
         threads[i].preempted = 0;
+        threads[i].pid = 0;
     }
     copy_name(threads[0].name, "kernel");
+    sched_longest_reset(&longest);
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kernel_cr3));
     loaded_cr3 = kernel_cr3;
     ready = true;
@@ -149,8 +158,11 @@ static void switch_threads(int32_t prev, int32_t next)
     uint64_t now = timer_ticks();
     if (now - threads[prev].turn_start > threads[prev].turn_longest)
         threads[prev].turn_longest = now - threads[prev].turn_start;
-    if (prev != 0 && now - threads[prev].turn_start > turn_max)
+    if (prev != 0 && now - threads[prev].turn_start > turn_max) {
         turn_max = now - threads[prev].turn_start;
+        sched_longest_note(&longest, turn_max, prev, threads[prev].pid, threads[prev].cr3 != 0,
+                           threads[prev].name);
+    }
     threads[next].turn_start = now;
     gdt_set_rsp0(thread_kstack_top(next));
     /* 0.10: each thread runs in its own address space (kernel threads in
@@ -201,6 +213,7 @@ void thread_turn_reset(void)
 {
     uint32_t f = irq_save();
     turn_max = 0;
+    sched_longest_reset(&longest);
     peak_max = 0;
     threads[sched.current].turn_start = timer_ticks();
     irq_restore(f);
@@ -209,6 +222,31 @@ void thread_turn_reset(void)
 uint64_t thread_turn_max(void)
 {
     return turn_max;
+}
+
+void thread_set_pid(int32_t pid)
+{
+    uint32_t f = irq_save();
+    threads[sched.current].pid = pid;
+    irq_restore(f);
+}
+
+void thread_turn_owner(char *buf, size_t size)
+{
+    uint32_t f = irq_save();
+    struct sched_longest l = longest;
+    irq_restore(f);
+    if (l.tid < 0)
+        ksnprintf(buf, size, "no thread (no turn of 1 tick or more)");
+    else if (l.pid > 0)
+        ksnprintf(buf, size, "thread %d '%s' (user process %d): %llu ticks", (int)l.tid,
+                  l.name, (int)l.pid, (unsigned long long)l.ticks);
+    else if (l.own_space)
+        ksnprintf(buf, size, "thread %d '%s' (ring-3 thread, no process): %llu ticks",
+                  (int)l.tid, l.name, (unsigned long long)l.ticks);
+    else
+        ksnprintf(buf, size, "thread %d '%s' (kernel thread): %llu ticks", (int)l.tid,
+                  l.name, (unsigned long long)l.ticks);
 }
 
 static void require_preemption(const char *fn)
@@ -301,6 +339,7 @@ int32_t thread_create(const char *name, thread_fn fn, void *arg, bool detached)
     threads[tid].cr3 = 0;                           /* 0.10: starts in the kernel's address space */
     threads[tid].preempted = 0;
     threads[tid].turn_longest = 0;
+    threads[tid].pid = 0;                           /* 0.11: a kernel thread until set */
 
     copy_name(threads[tid].name, name);
     threads[tid].slot = slot;
@@ -439,6 +478,15 @@ void thread_sleep(uint32_t ticks)
     irq_restore(f);
 }
 
+bool thread_wake(int32_t tid)
+{
+    uint32_t f = irq_save();
+    bool woke = ready && sched_wake(&sched, tid) == SCHED_OK;
+    preempt_resched_pending = sched.need_resched;
+    irq_restore(f);
+    return woke;
+}
+
 void thread_idle(void)
 {
     while (thread_reap())
@@ -448,14 +496,18 @@ void thread_idle(void)
 
 void thread_tick(void)
 {
-    if (ready)
+    if (ready) {
         sched_tick(&sched, timer_ticks());
+        preempt_resched_pending = sched.need_resched;
+    }
 }
 
 /* Interrupts are off (interrupt gate). The switch happens only after the
  * EOI, and only with preemption enabled: a request made while it was
  * disabled stays pending (sched_preempt keeps need_resched) and is taken
- * at the first interrupt after preempt_enable() brings the count to 0. */
+ * by the preempt_enable() that brings the count to 0 (0.11, policy (b);
+ * preempt_resched below), or at the first interrupt after it when that
+ * preempt_enable() ran with interrupts off. */
 void thread_preempt_point(void)
 {
     if (!ready)
@@ -466,6 +518,33 @@ void thread_preempt_point(void)
         threads[prev].preempted++;
         switch_threads(prev, next);
     }
+    preempt_resched_pending = sched.need_resched;
+}
+
+/* 0.11, policy (b): called by preempt_enable() when it brought the count to
+ * zero with a switch pending. Switches as the IRQ preemption point would
+ * (counted as a preemption), but only with interrupts on: inside an
+ * interrupt handler (interrupt gates clear IF), with interrupts disabled by
+ * irq_save, before the scheduler is ready or during a panic it does
+ * nothing, and the switch is taken at the next interrupt as before. The
+ * switch runs with interrupts off, so a preempt_enable() inside it cannot
+ * come back here. */
+void preempt_resched(void)
+{
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(rflags));
+    if (!sched_switch_on_enable(preempt_count(), preempt_resched_pending,
+                                (rflags & 0x200) != 0, ready, panic_active))
+        return;
+    uint32_t f = irq_save();
+    int32_t prev = sched.current, next = prev;
+    if (sched_preempt(&sched, preempt_count(), &next)) {
+        preemptions++;
+        threads[prev].preempted++;
+        switch_threads(prev, next);
+    }
+    preempt_resched_pending = sched.need_resched;
+    irq_restore(f);                 /* this thread's own IF state (on) */
 }
 
 bool thread_screen_allowed(void)

@@ -117,6 +117,7 @@ const char *proc_end_str(enum proc_end end)
     case PROC_END_EXIT:   return "exited";
     case PROC_END_FAULT:  return "killed by a CPU exception";
     case PROC_END_KILLED: return "killed";
+    case PROC_END_LOAD_FAILED: return "load failed";
     }
     return "unknown";
 }

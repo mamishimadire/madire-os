@@ -75,6 +75,14 @@
  *   test=smap  with RFLAGS.AC clear, the kernel reads a present user page:
  *              with SMAP on, #PF (read, kernel mode) and the crash screen
  *              naming SMAP.
+ * 0.11 stage 3 (ELF programs from boot modules):
+ *   test=elfrun  each kept module with a built-in twin (hello, exitcode,
+ *                nullptr, getpid, sleep, spin) gives the same result as
+ *                the twin; two isolate instances at once; every refused
+ *                file refused again at load (no address space built);
+ *                no user frame inside a boot module; module checksums
+ *                unchanged; cleanup exact. What it runs depends on the
+ *                modules the boot was given.
  * Each returns true on PASS and logs the details.
  */
 
@@ -95,5 +103,6 @@ bool usertest_userpreempt(void);
 bool usertest_userchurn(void);
 void usertest_smep(void);
 void usertest_smap(void);
+bool usertest_elfrun(void);
 
 #endif

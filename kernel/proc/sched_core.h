@@ -111,6 +111,12 @@ bool sched_preempt(struct sched *s, uint32_t preempt_count, int32_t *next);
 /* Sleep until tick `wake` (>= now + 1). Thread 0: SCHED_WOULD_BLOCK. */
 enum sched_result sched_sleep(struct sched *s, uint32_t preempt_count, uint64_t wake,
                               int32_t *next);
+/* 0.11: wakes thread `tid` early if it is sleeping (SCHED_BLOCK_SLEEP): to
+ * the tail of the run queue, need_resched set, as when its tick comes. A
+ * kill (process_kill, Ctrl+C) uses it so a sleeping process ends at once.
+ * SCHED_ERR_STATE: it is not sleeping (running, ready, joining, zombie);
+ * SCHED_ERR_NO_THREAD: no such thread. tests/unit/test_wake011.c. */
+enum sched_result sched_wake(struct sched *s, int32_t tid);
 /* Join `tid`: if it is a zombie, reap it (*code, SCHED_OK); otherwise block
  * (SCHED_BLOCKED_NOW; call again once woken) or, for thread 0,
  * SCHED_WOULD_BLOCK. */
@@ -198,5 +204,44 @@ uint64_t kstack_top(int slot);          /* one past the highest stack byte */
 int kstack_guard_slot(uint64_t addr);
 /* The slot whose stack contains addr, or -1. */
 int kstack_stack_slot(uint64_t addr);
+
+/*
+ * 0.11: the longest turn together with the thread that took it
+ * (tests/unit/test_longest011.c). A 0.10 watch item: one VirtualBox boot
+ * measured a 10-tick turn, and the record did not say whose it was. The
+ * owner is captured when the turn is noted, because by the time a test
+ * logs it the thread slot may be reused and the process gone. pid > 0:
+ * the thread was a user process's; pid 0 with own_space: a thread running
+ * in its own address space without a process entry (test=userspin's);
+ * otherwise a kernel thread.
+ */
+/*
+ * 0.11, policy (b) (an approved deviation from the 0.9 policy (a)): when
+ * preempt_enable() brings the count to 0 and a switch is due, it switches
+ * at once, provided interrupts are on (so never inside an interrupt
+ * handler: interrupt gates clear IF), the scheduler is ready and no panic
+ * is in progress. Wherever this holds, a timer interrupt could already
+ * have switched, so no new interleaving appears; the switch only stops
+ * waiting for the next interrupt. tests/unit/test_preemptb.c.
+ */
+bool sched_switch_on_enable(uint32_t count, bool pending, bool interrupts_on, bool ready,
+                            bool panicking);
+
+#define SCHED_LONGEST_NAME_MAX 16       /* including the terminating 0 */
+
+struct sched_longest {
+    uint64_t ticks;
+    int32_t tid;                        /* -1: no turn noted yet */
+    int32_t pid;
+    bool own_space;
+    char name[SCHED_LONGEST_NAME_MAX];
+};
+
+void sched_longest_reset(struct sched_longest *l);
+/* Records the turn if it is longer than the one held (a tie keeps the
+ * first). name may be NULL; it is cut to SCHED_LONGEST_NAME_MAX - 1
+ * characters. Returns true if the turn was recorded. */
+bool sched_longest_note(struct sched_longest *l, uint64_t ticks, int32_t tid, int32_t pid,
+                        bool own_space, const char *name);
 
 #endif

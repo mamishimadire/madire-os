@@ -32,6 +32,8 @@ enum proc_end {
     PROC_END_EXIT,                  /* exit / exit_group: code = status & 0xFF */
     PROC_END_FAULT,                 /* a CPU exception in user mode: code = vector */
     PROC_END_KILLED,                /* proc_request_kill: code = 0 */
+    PROC_END_LOAD_FAILED,           /* 0.11: its file was refused at load (never ran):
+                                     * code = the elf_check result */
 };
 
 struct proc_result {

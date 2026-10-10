@@ -44,6 +44,11 @@ void uspace_leave(void);
  * the frame. Anything but UVM_OK gives the frame back. */
 enum uvm_result uspace_map_page(struct uspace *as, uint64_t va, const void *src, size_t len,
                                 uint64_t flags, uint64_t *frame_out);
+/* 0.11: the same, with the len bytes placed at offset `at` in the page (the
+ * rest zero): an ELF segment may start inside a page. at + len must fit the
+ * page (else panic). uspace_map_page is the at = 0 case. */
+enum uvm_result uspace_map_page_at(struct uspace *as, uint64_t va, const void *src, size_t len,
+                                   size_t at, uint64_t flags, uint64_t *frame_out);
 
 /* While entered: gives back every user frame and lower-half table, leaves,
  * and frees the PML4 frame. */

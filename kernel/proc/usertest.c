@@ -5,6 +5,7 @@
 #include "kernel/arch/x86/gdt.h"
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/pagefault.h"
+#include "kernel/bootmod.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/memory.h"
@@ -14,7 +15,9 @@
 #include "kernel/memory/uspace.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
+#include "kernel/proc/progmod.h"
 #include "kernel/proc/syscall.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/usertest.h"
@@ -584,6 +587,9 @@ bool usertest_userspin(void)
           (unsigned long long)turn, (unsigned)SCHED_SLICE_TICKS, (unsigned)US_MAX_TURN,
           line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    char who[80];                   /* 0.11: whose turn it was */
+    thread_turn_owner(who, sizeof(who));
+    klogf("User-mode test: longest turn taken by %s\n", who);
 
     klogf("User-mode test: spin keeps running in ring 3 (no exit or kill before stage 4b)\n");
     klogf("User-mode test: %s\n", ok ? "PASS" : "FAIL");
@@ -734,6 +740,9 @@ bool usertest_userkill(void)
           (unsigned long long)turn, (unsigned)SCHED_SLICE_TICKS, (unsigned)US_MAX_TURN,
           line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    char who[80];                   /* 0.11: whose turn it was (the 0.10 watch item) */
+    thread_turn_owner(who, sizeof(who));
+    klogf("User kill test: longest turn taken by %s\n", who);
 
     klogf("User kill test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
@@ -1259,8 +1268,10 @@ static volatile bool upr_stop;
 static volatile uint32_t upr_ops;
 
 /* A kernel thread that allocates, tags, checks and frees frames until told
- * to stop: preemption is off inside the allocator and the window, so its
- * turns can run longer (the deferred switch, policy (a)). */
+ * to stop: preemption is off inside the allocator and the window. 0.9
+ * policy (a) let its turns run long (the switch waited for an interrupt
+ * outside those sections); 0.11 policy (b) switches at the preempt_enable()
+ * that ends a section, so its turns stay within a slice plus one section. */
 static int32_t upr_frames(void *arg)
 {
     (void)arg;
@@ -1310,26 +1321,42 @@ bool usertest_userpreempt(void)
     uint32_t free0 = pmm_free_pages(), tables0 = paging_stats()->page_tables;
     uint32_t stacks0 = thread_stacks_in_use(), live0 = thread_live();
     int32_t pid[UPR_CASES];
+    /* 0.11: the turn record is reset before any of the test's threads
+     * exists, so it covers exactly the threads whose figures are logged. */
+    thread_turn_reset();
     for (int i = 0; i < UPR_CASES; i++)
         pid[i] = process_start("spin", upr_cases[i].arg);
     upr_stop = false;
     int32_t kt = thread_create("frames", upr_frames, 0, false);
-    thread_turn_reset();
     thread_sleep(UPR_TICKS);            /* thread 0 polls: everything else runs */
 
+    /* 0.11: every figure, and the longest turn's owner, read at one moment:
+     * with preemption off no switch happens, so no turn ends in between. */
+    int32_t tids[UPR_CASES];
+    uint64_t longest[UPR_CASES], ran[UPR_CASES], preempted[UPR_CASES], returns[UPR_CASES];
+    char who[80];
+    preempt_disable();
     for (int i = 0; i < UPR_CASES; i++) {
-        int32_t tid = process_tid(pid[i]);
-        uint64_t longest = thread_turn_longest(tid), returns = process_user_returns(pid[i]);
-        line_ok = pid[i] > 0 && tid > 0 && longest <= UPR_MAX_TURN && returns > 0;
-        klogf("%s: spin %llu (%s): process %d, thread %d: longest turn %llu ticks (at most %u), "
-              "%llu ticks run, preempted %llu times, back in ring 3 %llu times: %s\n", t,
-              (unsigned long long)upr_cases[i].arg, upr_cases[i].what, (int)pid[i], (int)tid,
-              (unsigned long long)longest, (unsigned)UPR_MAX_TURN,
-              (unsigned long long)thread_ticks_run(tid), (unsigned long long)thread_preempted(tid),
-              (unsigned long long)returns, line_ok ? "OK" : "MISMATCH");
-        ok = ok && line_ok;
+        tids[i] = process_tid(pid[i]);
+        longest[i] = thread_turn_longest(tids[i]);
+        ran[i] = thread_ticks_run(tids[i]);
+        preempted[i] = thread_preempted(tids[i]);
+        returns[i] = process_user_returns(pid[i]);
     }
     uint64_t klongest = thread_turn_longest(kt), kticks = thread_ticks_run(kt);
+    thread_turn_owner(who, sizeof(who));
+    preempt_enable();
+
+    for (int i = 0; i < UPR_CASES; i++) {
+        line_ok = pid[i] > 0 && tids[i] > 0 && longest[i] <= UPR_MAX_TURN && returns[i] > 0;
+        klogf("%s: spin %llu (%s): process %d, thread %d: longest turn %llu ticks (at most %u), "
+              "%llu ticks run, preempted %llu times, back in ring 3 %llu times: %s\n", t,
+              (unsigned long long)upr_cases[i].arg, upr_cases[i].what, (int)pid[i], (int)tids[i],
+              (unsigned long long)longest[i], (unsigned)UPR_MAX_TURN, (unsigned long long)ran[i],
+              (unsigned long long)preempted[i], (unsigned long long)returns[i],
+              line_ok ? "OK" : "MISMATCH");
+        ok = ok && line_ok;
+    }
 
     for (int i = 0; i < UPR_CASES; i++) {
         struct proc_result res;
@@ -1340,11 +1367,13 @@ bool usertest_userpreempt(void)
     upr_stop = true;
     int32_t kbad = kt > 0 ? thread_join(kt) : -1;
     line_ok = kt > 0 && kbad == 0 && upr_ops > 0;
-    klogf("%s: kernel frame thread: longest turn %llu ticks (the deferred switch, policy (a); "
-          "not bound by the user-process rule), %llu ticks run, %u rounds of %u frames, %d tag "
-          "mismatches: %s\n", t, (unsigned long long)klongest, (unsigned long long)kticks,
-          (unsigned)upr_ops, (unsigned)UPR_FRAMES, (int)kbad, line_ok ? "OK" : "MISMATCH");
+    klogf("%s: kernel frame thread: longest turn %llu ticks (thread %d 'frames'; policy (b): "
+          "the switch comes at the end of its guarded section), %llu ticks run, %u rounds of %u "
+          "frames, %d tag mismatches: %s\n", t, (unsigned long long)klongest, (int)kt,
+          (unsigned long long)kticks, (unsigned)upr_ops, (unsigned)UPR_FRAMES, (int)kbad,
+          line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    klogf("%s: longest turn taken by %s\n", t, who);    /* 0.11: read with the figures above */
 
     uint32_t free1 = pmm_free_pages(), tables1 = paging_stats()->page_tables;
     uint32_t stacks1 = thread_stacks_in_use(), live1 = thread_live(), left = process_live();
@@ -1506,4 +1535,181 @@ void usertest_smap(void)
     uint64_t value = *user_data;
     panicf("SMAP test: the kernel read a user page without a fault (0x%016llx).",
            (unsigned long long)value);
+}
+
+/* ---- test=elfrun (0.11 stage 3) ---- */
+
+/* One program run to its end: a built-in image (module == false) or the
+ * program module of the same name. spin is preempted in ring 3 first,
+ * then killed. *returns: its returns to ring 3 seen before the end. */
+static bool er_run(const char *name, uint64_t arg, bool module, int32_t *pid_out,
+                   struct proc_result *res, uint64_t *returns)
+{
+    int32_t pid = module ? process_start_program(name, arg) : process_start(name, arg);
+    *pid_out = pid;
+    *returns = 0;
+    if (pid <= 0)
+        return false;
+    bool is_spin = name[0] == 's' && name[1] == 'p' && name[2] == 'i' && name[3] == 'n' &&
+                   name[4] == '\0';
+    if (is_spin) {
+        uint64_t t0 = timer_ticks();
+        while (timer_ticks() - t0 < 50 && process_user_returns(pid) < 3)
+            thread_sleep(1);
+        *returns = process_user_returns(pid);
+        process_kill(pid);
+    }
+    return process_wait(pid, res) == PROC_OK;
+}
+
+static const char *er_kind(bool module)
+{
+    return module ? "module" : "built-in";
+}
+
+bool usertest_elfrun(void)
+{
+    const char *t = "ELF run test";
+    bool ok = true, line_ok;
+    uint32_t free0 = pmm_free_pages(), tables0 = paging_stats()->page_tables;
+    uint32_t stacks0 = thread_stacks_in_use(), live0 = thread_live();
+    struct process_load_totals lt0;
+    process_load_totals(&lt0);
+    thread_turn_reset();
+
+    uint32_t ncand;
+    const struct progmod_candidate *cand = progmod_candidates(&ncand);
+    static uint32_t sum0[PROGMOD_CANDIDATES_MAX];
+    for (uint32_t i = 0; i < ncand; i++)
+        sum0[i] = bootmod_fnv1a(cand[i].bytes, (uint32_t)cand[i].size);
+    klogf("%s: %u program module candidates, %u kept\n", t, ncand, progmod_table()->count);
+
+    /* Each kept module with a built-in twin: the same result from both. */
+    static const struct { const char *name; uint64_t arg; } twins[] = {
+        { "hello", 0 }, { "exitcode", 0 }, { "nullptr", 0 }, { "getpid", 0 }, { "sleep", 0 },
+        { "spin", 0 },
+    };
+    uint32_t compared = 0;
+    for (uint32_t i = 0; i < sizeof(twins) / sizeof(twins[0]); i++) {
+        const char *n = twins[i].name;
+        if (!progmod_find(progmod_table(), n))
+            continue;
+        int32_t pid[2];
+        struct proc_result res[2] = { { PROC_END_FAULT, -1 }, { PROC_END_FAULT, -1 } };
+        uint64_t ret[2];
+        struct process_fault flt[2];
+        bool ran[2];
+        for (int m = 0; m < 2; m++) {
+            ran[m] = er_run(n, twins[i].arg, m == 1, &pid[m], &res[m], &ret[m]);
+            process_last_fault(&flt[m]);
+        }
+        bool same = ran[0] && ran[1] && res[0].end == res[1].end;
+        if (n[0] == 'h')                                    /* hello */
+            same = same && res[0].end == PROC_END_EXIT && res[0].code == 0 && res[1].code == 0;
+        else if (n[0] == 'e')                               /* exitcode */
+            same = same && res[0].end == PROC_END_EXIT && res[0].code == 42 && res[1].code == 42;
+        else if (n[0] == 'n')                               /* nullptr: the same fault */
+            same = same && res[0].end == PROC_END_FAULT && res[0].code == 14 &&
+                   res[1].code == 14 && flt[0].pid == pid[0] && flt[1].pid == pid[1] &&
+                   flt[0].rip == flt[1].rip && flt[0].cr2 == 0 && flt[1].cr2 == 0 &&
+                   flt[0].op.n > 0 && flt[0].op.n == flt[1].op.n &&
+                   faultop_match(&flt[1].op, &flt[0].op);
+        else if (n[0] == 'g')                               /* getpid: its own ID */
+            same = same && res[0].end == PROC_END_EXIT && res[0].code == (pid[0] & 0xFF) &&
+                   res[1].code == (pid[1] & 0xFF);
+        else if (n[0] == 's' && n[1] == 'l')                /* sleep */
+            same = same && res[0].end == PROC_END_EXIT && res[0].code == 0 && res[1].code == 0;
+        else                                                /* spin: preempted, then killed */
+            same = same && res[0].end == PROC_END_KILLED && res[1].end == PROC_END_KILLED &&
+                   ret[0] >= 3 && ret[1] >= 3;
+        if (n[0] == 'n')
+            klogf("%s: %s: %s process %d %s (%d) at RIP 0x%016llx; %s process %d %s (%d) at RIP "
+                  "0x%016llx, the same instruction: %s\n", t, n, er_kind(false), (int)pid[0],
+                  proc_end_str(res[0].end), (int)res[0].code, (unsigned long long)flt[0].rip,
+                  er_kind(true), (int)pid[1], proc_end_str(res[1].end), (int)res[1].code,
+                  (unsigned long long)flt[1].rip, same ? "OK" : "MISMATCH");
+        else
+            klogf("%s: %s: %s process %d %s (%d); %s process %d %s (%d); ring-3 returns %llu, %llu: "
+                  "%s\n", t, n, er_kind(false), (int)pid[0], proc_end_str(res[0].end),
+                  (int)res[0].code, er_kind(true), (int)pid[1], proc_end_str(res[1].end),
+                  (int)res[1].code, (unsigned long long)ret[0], (unsigned long long)ret[1],
+                  same ? "OK" : "MISMATCH");
+        ok = ok && same;
+        compared++;
+    }
+    /* (A boot with only fixtures has no twin to compare: the count says so.) */
+    klogf("%s: %u module programs compared with their built-in twins\n", t, compared);
+
+    /* Two instances of one module program, at the same addresses, at once. */
+    if (progmod_find(progmod_table(), "isolate")) {
+        int32_t a = process_start_program("isolate", 1), b = process_start_program("isolate", 2);
+        struct proc_result ra = { PROC_END_FAULT, -1 }, rb = { PROC_END_FAULT, -1 };
+        enum proc_status sa = a > 0 ? process_wait(a, &ra) : PROC_ERR_NO_SUCH;
+        enum proc_status sb = b > 0 ? process_wait(b, &rb) : PROC_ERR_NO_SUCH;
+        line_ok = sa == PROC_OK && sb == PROC_OK && ra.end == PROC_END_EXIT && ra.code == 0 &&
+                  rb.end == PROC_END_EXIT && rb.code == 0;
+        klogf("%s: isolate 1 and isolate 2 (module, same addresses, at once): processes %d and %d "
+              "%s (%d) and %s (%d), each saw only its own data: %s\n", t, (int)a, (int)b,
+              proc_end_str(ra.end), (int)ra.code, proc_end_str(rb.end), (int)rb.code,
+              line_ok ? "OK" : "MISMATCH");
+        ok = ok && line_ok;
+    }
+
+    /* Refused files: checked again at load, refused for the same reason,
+     * and no address space is ever built for them. */
+    struct process_load_totals ltr0, ltr1;
+    process_load_totals(&ltr0);
+    uint32_t tried = 0, refused_again = 0;
+    for (uint32_t i = 0; i < ncand; i++) {
+        if (cand[i].accepted || !cand[i].name[0] || cand[i].elf == ELF_OK)
+            continue;
+        tried++;
+        int32_t pid = process_start_file(cand[i].name, cand[i].bytes, cand[i].size, 0);
+        struct proc_result res = { PROC_END_EXIT, -1 };
+        enum proc_status st = pid > 0 ? process_wait(pid, &res) : PROC_ERR_NO_SUCH;
+        line_ok = st == PROC_OK && res.end == PROC_END_LOAD_FAILED &&
+                  res.code == (int32_t)cand[i].elf;
+        klogf("%s: refused file '%s' (module %u): process %d %s: %s (at boot: %s): %s\n", t,
+              cand[i].name, cand[i].module, (int)pid, proc_end_str(res.end),
+              res.end == PROC_END_LOAD_FAILED ? elf_result_str((enum elf_result)res.code) : "-",
+              elf_result_str(cand[i].elf), line_ok ? "OK" : "MISMATCH");
+        refused_again += line_ok;
+    }
+    process_load_totals(&ltr1);
+    line_ok = refused_again == tried && ltr1.loads == ltr0.loads;
+    klogf("%s: %u refused files refused again at load, %u address spaces built for them: %s\n", t,
+          refused_again, ltr1.loads - ltr0.loads, line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+
+    /* Every page a fresh frame; the modules untouched. */
+    struct process_load_totals lt1;
+    process_load_totals(&lt1);
+    /* (A boot with only fixtures loads nothing: then there is no frame to check.) */
+    line_ok = lt1.in_modules == lt0.in_modules;
+    klogf("%s: %u loads, %u pages mapped, %u of them inside a boot module: %s\n", t,
+          lt1.loads - lt0.loads, lt1.pages - lt0.pages, lt1.in_modules - lt0.in_modules,
+          line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < ncand; i++)
+        if (bootmod_fnv1a(cand[i].bytes, (uint32_t)cand[i].size) != sum0[i])
+            changed++;
+    line_ok = changed == 0;
+    klogf("%s: checksums of %u modules after the programs ran and wrote their data: %u changed: "
+          "%s\n", t, ncand, changed, line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+
+    char who[80];
+    thread_turn_owner(who, sizeof(who));
+    klogf("%s: longest turn taken by %s\n", t, who);
+
+    uint32_t free1 = pmm_free_pages(), tables1 = paging_stats()->page_tables;
+    uint32_t stacks1 = thread_stacks_in_use(), live1 = thread_live(), left = process_live();
+    line_ok = free1 == free0 && tables1 == tables0 && stacks1 == stacks0 && live1 == live0 && left == 0;
+    klogf("%s: cleanup: free pages %u -> %u, kernel page tables %u -> %u, stack slots %u -> %u, "
+          "live threads %u -> %u, processes left %u: %s\n", t, free0, free1, tables0, tables1,
+          stacks0, stacks1, live0, live1, left, line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+    klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
+    return ok;
 }

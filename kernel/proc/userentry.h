@@ -28,13 +28,20 @@ struct user_iret {
 #define USER_RFLAGS_IOPL     0x3000ull
 #define USER_RFLAGS_START    (USER_RFLAGS_IF | USER_RFLAGS_RESERVED)
 
-static inline void user_iret_build(struct user_iret *f, const struct userimg *img)
+/* 0.11: the frame for any entry point (a load plan's; elf_core has checked
+ * it lies in executable bytes). */
+static inline void user_iret_build_entry(struct user_iret *f, uint64_t entry)
 {
-    f->rip = img->entry;
+    f->rip = entry;
     f->cs = GDT_USER_CODE_SEL;
     f->rflags = USER_RFLAGS_START;
     f->rsp = VM_USER_STACK_TOP;
     f->ss = GDT_USER_DATA_SEL;
+}
+
+static inline void user_iret_build(struct user_iret *f, const struct userimg *img)
+{
+    user_iret_build_entry(f, img->entry);
 }
 
 /* True if RIP lies inside the image's code: [VM_USER_TEXT, + text_size). */

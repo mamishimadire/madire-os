@@ -12,6 +12,23 @@ LOGO_PIXELS=293      # from: python3 scripts/logo-preview.py
 MEMCHECK=$(dirname "$0")/memory_check.py
 QMPKEYS=$(dirname "$0")/qmp_keys.py
 QMPSCREEN=$(dirname "$0")/qmp_screen.py   # 0.9.2: reads the VGA text screen through QMP
+
+# 0.11: stall watch, a harness diagnostic that decides no check. Every QEMU
+# boot below runs through tests/qemu-watch.sh ("qemu-system-x86_64" first
+# in PATH): a boot whose serial log stays silent for 6 s is captured
+# (registers, PIC, IRQ counts, local APIC; tests/qemu_capture.py) before
+# QEMU stops. The captures are listed at the end of the run.
+QEMU_REAL=$(command -v qemu-system-x86_64)
+QEMU_WATCH_DIR=$OUT/stall
+QEMU_WATCH_ELF=$OUT/madire.elf
+export QEMU_REAL QEMU_WATCH_DIR QEMU_WATCH_ELF
+rm -rf "$QEMU_WATCH_DIR"
+mkdir -p "$QEMU_WATCH_DIR/bin"
+: > "$QEMU_WATCH_DIR/stalls.txt"
+printf '#!/bin/sh\nexec bash "%s" "$@"\n' "$(cd "$(dirname "$0")" && pwd)/qemu-watch.sh" \
+    > "$QEMU_WATCH_DIR/bin/qemu-system-x86_64"
+chmod +x "$QEMU_WATCH_DIR/bin/qemu-system-x86_64"
+PATH=$QEMU_WATCH_DIR/bin:$PATH
 failures=0
 passes=0
 passes_new=0         # checks added in 0.4, tagged "[0.4]"
@@ -23,6 +40,7 @@ passes_09=0          # checks added in 0.9, tagged "[0.9]"
 passes_091=0         # checks added in 0.9.1, tagged "[0.9.1]"
 passes_092=0         # checks added in 0.9.2, tagged "[0.9.2]"; the rest are 0.3 regression
 passes_010=0         # checks added in 0.10, tagged "[0.10]"
+passes_011=0         # checks added in 0.11, tagged "[0.11]"
 
 # 0.10: the version is read once, from kernel/kernel.h, and every check that
 # contains the version builds its regex from VRE, so a new version changes no
@@ -47,6 +65,7 @@ pass() {
     "[0.9.1]"*) passes_091=$((passes_091 + 1)) ;;
     "[0.9.2]"*) passes_092=$((passes_092 + 1)) ;;
     "[0.10]"*) passes_010=$((passes_010 + 1)) ;;
+    "[0.11]"*) passes_011=$((passes_011 + 1)) ;;
     esac
 }
 fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
@@ -92,16 +111,21 @@ boot() {
 boot_keys() {
     local log=$1 secs=$2 ready=$3 keys=$4 gap=$5 sock=$OUT/qmp.sock
     shift 5
-    rm -f "$log" "$sock"
-    timeout "$secs" qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
+    rm -f "$log" "$sock" "${log%.log}.keys.txt" "${log%.log}.irq1.txt"
+    QEMU_WATCH_IRQ1=1 timeout "$secs" qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
         -qmp unix:"$sock",server=on,wait=off "$@" >/dev/null 2>&1 &
     local qpid=$!
     local out
     out=$(python3 "$QMPKEYS" "$sock" "$log" "$ready" "$keys" --gap "$gap" 2>&1)
     echo "$out"
+    # 0.11 (harness addition, decides no check): the injector's output and
+    # the IRQ 1 counts (stall watch, at the time limit) are kept next to
+    # the serial log, so a boot with missing keys can be classified.
+    echo "$out" > "${log%.log}.keys.txt"
     case "$out" in *ERROR*) fail "[0.4] key injection into $log" ;; esac
     wait "$qpid"
     [ -f "$log" ] || : > "$log"
+    if [ -f "${log%.log}.irq1.txt" ]; then sed 's/^/      /' "${log%.log}.irq1.txt"; fi
 }
 
 # boot_text <log> <seconds> <ready text> <text> <gap> <done text> <qemu args...>
@@ -171,6 +195,7 @@ KLOG=$OUT/serial-boot-keylog.log
 KISO=$OUT/madire-os-keylog.iso
 rm -rf "$OUT/isokeylog" && mkdir -p "$OUT/isokeylog/boot/grub"
 cp "$KERNEL" "$OUT/isokeylog/boot/madire.kernel"
+cp -r "$OUT/isodir/boot/prog" "$OUT/isokeylog/boot/prog"   # 0.11: the modules the default entry loads
 sed '0,/^\( *multiboot \/boot\/madire\.kernel\)$/s//\1 keylog/' \
     "$(dirname "$0")/../iso/boot/grub/grub.cfg" > "$OUT/isokeylog/boot/grub/grub.cfg"
 grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
@@ -1018,6 +1043,29 @@ expect "$OUT/serial-nonx.log" "^Scheduler self-test: PASS " "[0.9] no NX: schedu
 expect "$LOG" "^Scheduler self-test: longest turn: [0-9]+ ticks \(slice 5\); highest thread stack peak: [0-9]+ of 16384 bytes$" \
                                                       "[0.9] self-test: longest turn and highest stack peak logged"
 
+# owner_check <label> <line prefix regex> <ticks>: 0.11, the line "<prefix>:
+# longest turn taken by ..." exists, names the thread (with its process, or
+# "kernel thread", or "ring-3 thread, no process") and gives exactly the
+# ticks the existing longest-turn line reported. The last such line in $LOG
+# is the one checked (a diagnostic's own lines come after the boot's).
+owner_check() {
+    local ow
+    ow=$(grep -E "^$2: longest turn taken by " "$LOG" | tail -1)
+    echo "      ${ow:-no owner line}"
+    if [ -n "$3" ] && { grep -qE ": longest turn taken by thread [0-9]+ '[^']+' \((kernel thread|user process [0-9]+|ring-3 thread, no process)\): $3 ticks$" <<< "$ow" ||
+         { [ "$3" = 0 ] && grep -qE ": longest turn taken by no thread \(no turn of 1 tick or more\)$" <<< "$ow"; }; }; then
+        pass "[0.11] $1: the longest turn's owner logged, with the $3 ticks reported"
+    else
+        fail "[0.11] $1: owner line missing or inconsistent (${ow:-none}; reported ${3:-?} ticks)"
+    fi
+}
+
+echo "== [0.11] The longest turn's owner (the 0.10 watch item)"
+expect "$LOG" "^Scheduler self-test: longest turn taken by thread [0-9]+ '[^']+' \(kernel thread\)" \
+                                                      "[0.11] self-test: its longest turn was a kernel thread's (no process exists yet)"
+LT=$(grep -m1 -E "^Scheduler self-test: longest turn: [0-9]+ ticks" "$LOG" | sed -nE 's/.*longest turn: ([0-9]+) ticks.*/\1/p')
+owner_check "self-test" "Scheduler self-test" "$LT"
+
 # thread_diag <name> <seconds>: boots test=<name> into serial-<name>.log.
 thread_diag() {
     LOG=$OUT/serial-$1.log
@@ -1031,6 +1079,9 @@ diag_clean() {
     expect "$LOG" ": longest turn: [0-9]+ ticks \(slice 5\); highest thread stack peak: [0-9]+ of 16384 bytes$" \
                                                       "[0.9] $1: longest turn and highest stack peak logged"
     grep -E ": longest turn: " "$LOG" | tail -1 | sed 's/^/      /'
+    local lt
+    lt=$(grep -E ": longest turn: [0-9]+ ticks" "$LOG" | tail -1 | sed -nE 's/.*: longest turn: ([0-9]+) ticks.*/\1/p')
+    owner_check "$1" ".*" "$lt"
 }
 
 echo "== [0.9] Cooperative context switches (test=threads)"
@@ -1261,7 +1312,7 @@ expect_in_order "$LOG" "[0.9] ps: header, thread 0 'kernel' running, count" \
     "^madire> ps$" "^TID  STATE      TICKS    STACK PEAK    NAME$" \
     "^  0  running +[0-9]+ +[0-9]+/16384   kernel$" "^1 thread$"
 expect_in_order "$LOG" "[0.9] help: ps listed after the seven commands" \
-    "^madire> help$" "^  echo     Print text: echo <text>$" "^  ps       Show threads$"
+    "^madire> help$" "^  echo     Print text: echo <text>$" "^  ps       Show threads and processes$"
 w=$(max_width "$LOG" "^madire> ps$" "^madire> help$")
 if grep -q "^madire> ps$" "$LOG" && [ "$w" -le 79 ]; then pass "[0.9] ps: every line at most 79 characters (longest $w)"
 else fail "[0.9] ps: a line of $w characters (limit 79)"; fi
@@ -1334,7 +1385,7 @@ S+="echo end-of-091-test{ret}"
 boot_text "$LOG" 120 "System ready." "$S" 0.03 $'\nend-of-091-test\n' -kernel "$KERNEL" -append "keylog"
 
 expect_in_order "$LOG" "[0.9.1] help lists the six new commands after ps, in order" \
-    "^madire> help$" "^  ps       Show threads$" \
+    "^madire> help$" "^  ps       Show threads and processes$" \
     "^  history  Show previous commands \(Up/Down recall\)$" "^  uname    Show the system name: uname \[-a\]$" \
     "^  hostname Show the computer's name$" "^  date     Show the date and time \(RTC\)$" \
     "^  dmesg    Show kernel messages: dmesg \[lines\]$" "^  reboot   Restart the computer \(asks first\)$"
@@ -1824,6 +1875,8 @@ if grep -qE '^User-mode test: spin preempted [0-9]+ times from ring 3 and back i
 else
     fail "[0.10] userspin: preemption evidence missing (${PR:-no line})"
 fi
+LT=$(sed -nE 's/.*; longest turn ([0-9]+) ticks .*/\1/p' <<< "$PR")
+owner_check "userspin" "User-mode test" "$LT"
 expect "$LOG" "^User-mode test: PASS$"                "[0.10] userspin: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userspin: no panic"
 expect "$LOG" "System ready\."                        "[0.10] userspin: System ready while spin keeps running"
@@ -1853,6 +1906,8 @@ else
 fi
 expect "$LOG" "^User kill test: longest turn [0-6] ticks \(slice 5, at most 6\): OK$" \
                                                       "[0.10] userkill: longest turn at most 6 ticks"
+LT=$(grep -m1 -E "^User kill test: longest turn [0-9]+ ticks" "$LOG" | sed -nE 's/.*longest turn ([0-9]+) ticks.*/\1/p')
+owner_check "userkill" "User kill test" "$LT"
 expect "$LOG" "^User kill test: PASS$"                "[0.10] userkill: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userkill: no panic"
 expect "$LOG" "System ready\."                        "[0.10] userkill: System ready afterwards"
@@ -2167,6 +2222,11 @@ if [ "$n" -eq 5 ]; then pass "[0.10] userpreempt: each of the 5 user processes (
 else fail "[0.10] userpreempt: $n of 5 user processes within 6 ticks (policy (a) rule: STOP and report)"; fi
 expect "$LOG" "^User preemption test: kernel frame thread: longest turn [0-9]+ ticks .*, 0 tag mismatches: OK$" \
                                                       "[0.10] userpreempt: the frame-allocating kernel thread ran alongside, no frame handed out twice (its longest turn logged)"
+# 0.11: the record covers every thread the test started (it is reset at the
+# start), so its ticks must be the largest of the six per-thread figures.
+LT=$(grep -E "^User preemption test: (spin [0-9]+ \(.*\): process [0-9]+, thread [0-9]+|kernel frame thread): longest turn [0-9]+ ticks" "$LOG" |
+     sed -nE 's/.*: longest turn ([0-9]+) ticks.*/\1/p' | sort -n | tail -1)
+owner_check "userpreempt" "User preemption test" "$LT"
 expect "$LOG" "^User preemption test: all killed; free pages ([0-9]+) -> \1, .*processes left 0: OK$" \
                                                       "[0.10] userpreempt: all killed; free pages, tables, stacks, threads and process table restored"
 expect "$LOG" "^User preemption test: PASS$"          "[0.10] userpreempt: PASS"
@@ -2299,9 +2359,646 @@ done <<< "$SENTRIES"
 if [ "$(wc -l <<< "$DIAGS")" -eq 27 ]; then pass "[0.10] GRUB Diagnostics: 27 entries (16 earlier, 9 user-mode, smep and smap)"
 else fail "[0.10] GRUB Diagnostics: $(wc -l <<< "$DIAGS") entries, expected 27"; fi
 
+echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
+# The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
+# 20 built programs (19 until stage 2b added lines) and on fixtures made from hello.elf by
+# tests/elf-fixtures.py (one broken rule each; manifest.txt holds the exact
+# reason each must be refused with). No kernel uses elf_core yet (stage 1).
+ELFCHECK=$OUT/elfcheck
+FIX=$OUT/elf-fixtures
+EC=$("$ELFCHECK" "$OUT"/user/*.elf 2>&1)
+nprog=$(ls "$OUT"/user/*.elf 2>/dev/null | wc -l)
+nok=$(grep -cE '^[a-z0-9_]+\.elf: OK, [1-4] segments, [0-9]+ pages, entry 0x400[0-9a-f]{3}$' <<< "$EC")
+if [ "$nprog" -eq 20 ] && [ "$nok" -eq 20 ]; then pass "[0.11] elfcheck: all 20 built programs accepted"
+else fail "[0.11] elfcheck: $nok of $nprog built programs accepted: $(grep -v ': OK' <<< "$EC" | head -3)"; fi
+expect_line=$(grep -E '^hello\.elf: ' <<< "$EC")
+echo "      $expect_line"
+if [ "$expect_line" = "hello.elf: OK, 2 segments, 3 pages, entry 0x400000" ]; then
+    pass "[0.11] elfcheck: hello's load plan exact (2 segments, 3 pages, entry 0x400000)"
+else
+    fail "[0.11] elfcheck: hello's plan: ${expect_line:-none}"
+fi
+rm -rf "$FIX"
+if python3 "$(dirname "$0")/elf-fixtures.py" "$OUT/user/hello.elf" "$FIX" && [ "$(wc -l < "$FIX/manifest.txt")" -eq 30 ]; then
+    pass "[0.11] elf-fixtures.py: 30 fixtures made from hello.elf (29 malformed, 1 unchanged)"
+else
+    fail "[0.11] elf-fixtures.py: fixtures not made"
+fi
+while IFS=$'\t' read -r name want; do
+    got=$("$ELFCHECK" "$FIX/$name.elf" 2>&1)
+    if [ "$want" = "OK" ]; then
+        ok=0; grep -qE "^$name\.elf: OK, " <<< "$got" && ok=1
+    else
+        ok=0; [ "$got" = "$name.elf: refused: $want" ] && ok=1
+    fi
+    if [ "$ok" -eq 1 ]; then pass "[0.11] elfcheck fixture $name: ${want}"
+    else fail "[0.11] elfcheck fixture $name: got '${got}', expected '${want}'"; fi
+done < "$FIX/manifest.txt"
+
+echo "== [0.11] Program modules found at boot (QEMU -initrd; nothing loaded yet)"
+# Every boot module that is not a test module is a program candidate: named
+# from its command line, checked by elf_core, kept (at most 8) or refused,
+# one line each on serial and in dmesg, never on the screen.
+PROGS7="hello spin exitcode nullptr sleep getpid yield"
+PM=""
+for p in $PROGS7; do PM+="${PM:+,}$OUT/user/$p.elf"; done
+LOG=$OUT/serial-progmod.log
+boot_text "$LOG" 60 "System ready." "x{ret}dmesg 9999{ret}echo end-of-progmod-test{ret}" 0.05 \
+    $'\nend-of-progmod-test\n' -m 32M -kernel "$KERNEL" -initrd "$PM"
+grep -E '^Program module' "$LOG" | head -8 | sed 's/^/      /'
+n=1
+for p in $PROGS7; do
+    size=$(stat -c%s "$OUT/user/$p.elf")
+    hp=$("$ELFCHECK" "$OUT/user/$p.elf" | sed -nE 's/^[a-z0-9_]+\.elf: OK, ([0-9]+) segments, ([0-9]+) pages, entry (0x[0-9a-f]+)$/\1 segments, \2 pages, entry \3/p')
+    if [ -n "$hp" ] && grep -qxF "Program module $n '$p': $size bytes, ELF checked: $hp" "$LOG"; then
+        pass "[0.11] program module $n '$p' accepted ($size bytes), its plan the same as the host elfcheck's ($hp)"
+    else
+        fail "[0.11] program module $n '$p': no line 'Program module $n '$p': $size bytes, ELF checked: ${hp:-?}'"
+    fi
+    n=$((n + 1))
+done
+expect "$LOG" "^Program modules: 7 accepted, 0 refused \(at most 8\)$" "[0.11] program modules: 7 accepted, 0 refused"
+reject "$LOG" "^Boot module [0-9]"                   "[0.11] program modules: no 'Boot module' line (they are not test modules)"
+expect_in_order "$LOG" "[0.11] program modules: the lines are in dmesg" \
+    "^madire> dmesg 9999$" "^Program module 1 'hello': " "^Program module 7 'yield': " "^Program modules: 7 accepted"
+reject "$LOG" "PANIC"                                "[0.11] program modules: no panic"
+expect "$LOG" "System ready\."                       "[0.11] program modules: System ready"
+
+# The screen's message line (row 23) shows nothing about program modules.
+LOG=$OUT/serial-progmod-screen.log
+SOCK=$OUT/qmp.sock
+rm -f "$LOG" "$SOCK"
+timeout 40 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
+    -qmp unix:"$SOCK",server=on,wait=off -m 32M -kernel "$KERNEL" -initrd "$PM" >/dev/null 2>&1 &
+QPID=$!
+for i in $(seq 60); do grep -q "System ready\." "$LOG" 2>/dev/null && break; sleep 0.5; done
+if python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-progmod.bin" --log "$LOG" --wait '^System ready\.' 1 \
+       --not-row 23 'Program module|Boot module|ELF' > "$OUT/screen-progmod.txt" 2>&1 &&
+   grep -q "^Program modules: 7 accepted" "$LOG"; then
+    pass "[0.11] program modules: nothing about them on the screen (row 23 read from the VGA buffer)"
+else
+    fail "[0.11] program modules: screen check failed (see $OUT/screen-progmod.txt)"
+fi
+kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+
+# The 30 fixtures as modules, 10 per boot (each module takes 2 of the 32
+# reserved ranges): each refused with its exact reason, the kernel going on.
+mapfile -t FXN < <(cut -f1 "$FIX/manifest.txt")
+mapfile -t FXW < <(cut -f2 "$FIX/manifest.txt")
+for batch in 0 1 2; do
+    PM=""
+    for k in $(seq 0 9); do PM+="${PM:+,}$FIX/${FXN[$((batch * 10 + k))]}.elf"; done
+    LOG=$OUT/serial-progmod-fixtures-$batch.log
+    boot "$LOG" 20 -m 32M -kernel "$KERNEL" -initrd "$PM"
+    acc=0; ref=0
+    for k in $(seq 0 9); do
+        name=${FXN[$((batch * 10 + k))]}; want=${FXW[$((batch * 10 + k))]}; n=$((k + 1))
+        size=$(stat -c%s "$FIX/$name.elf")
+        if [ "$want" = "OK" ]; then
+            acc=$((acc + 1)); line="Program module $n '$name': $size bytes, ELF checked: "
+            got=$(grep -F "$line" "$LOG" | head -1)
+        else
+            ref=$((ref + 1)); line="Program module $n '$name': $size bytes, refused: $want"
+            got=$(grep -xF "$line" "$LOG" | head -1)
+        fi
+        if [ -n "$got" ]; then pass "[0.11] fixture module $name: ${want}"
+        else fail "[0.11] fixture module $name: no line '$line'"; fi
+    done
+    if grep -qxF "Program modules: $acc accepted, $ref refused (at most 8)" "$LOG" &&
+       grep -q "System ready\." "$LOG" && ! grep -q "PANIC" "$LOG"; then
+        pass "[0.11] fixture modules, boot $((batch + 1)) of 3: $acc accepted, $ref refused; System ready, no panic"
+    else
+        fail "[0.11] fixture modules, boot $((batch + 1)) of 3: summary, System ready or no-panic missing"
+    fi
+done
+
+# Names: a duplicate and three bad names refused; the rest kept.
+LOG=$OUT/serial-progmod-names.log
+U=$OUT/user
+boot "$LOG" 20 -m 32M -kernel "$KERNEL" \
+    -initrd "$U/hello.elf,$U/spin.elf hello,$U/spin.elf Bad-Name,$U/spin.elf abcdefghijklmnop,$U/spin.elf one two,$U/getpid.elf"
+grep -E '^Program module' "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Program module 1 'hello': [0-9]+ bytes, ELF checked: " "[0.11] names: 'hello' from the path accepted"
+expect "$LOG" "^Program module 2 'hello': [0-9]+ bytes, refused: duplicate name$" "[0.11] names: a second 'hello' (second word) refused as a duplicate"
+expect "$LOG" "^Program module 3: refused: bad name \('.*Bad-Name'\)$" "[0.11] names: 'Bad-Name' (capitals, '-') refused"
+expect "$LOG" "^Program module 4: refused: bad name \('.*'\)$" "[0.11] names: a 16-character name refused"
+expect "$LOG" "^Program module 5: refused: bad name \('.*one two'\)$" "[0.11] names: three words refused"
+expect "$LOG" "^Program module 6 'getpid': [0-9]+ bytes, ELF checked: " "[0.11] names: 'getpid' after the refusals accepted"
+expect "$LOG" "^Program modules: 2 accepted, 4 refused \(at most 8\)$" "[0.11] names: 2 accepted, 4 refused"
+
+# The most modules a boot can take: 32 reserved ranges, of which a -kernel
+# boot without modules uses BASE; each module adds 2 (itself and its name)
+# and the module table 1. 13 programs: 8 kept, 5 refused (at most 8); one
+# module more no longer fits the reservation table (the protected
+# reserve.c refuses it at boot: a documented limit, unchanged).
+BASE=$(sed -nE 's/^Memory initialization: .*\(([0-9]+) reserved ranges.*/\1/p' "$OUT/serial-mem-32M.log" | head -1)
+MAXMOD=$(( (32 - ${BASE:-32} - 1) / 2 ))
+echo "      reserved ranges without modules: ${BASE:-?}; modules that fit: $MAXMOD"
+ALL13="badptr enosys exitcode fpu getpid hello int80 isolate kread kwrite nullptr privileged sleep"
+PM=""
+for p in $(echo $ALL13 | cut -d' ' -f1-"$MAXMOD"); do PM+="${PM:+,}$U/$p.elf"; done
+LOG=$OUT/serial-progmod-max.log
+boot "$LOG" 20 -m 32M -kernel "$KERNEL" -initrd "$PM"
+RR=$(sed -nE 's/^Memory initialization: .*\(([0-9]+) reserved ranges.*/\1/p' "$LOG" | head -1)
+echo "      $MAXMOD modules: ${RR:-?} reserved ranges (limit 32)"
+if [ "$MAXMOD" -eq 13 ] && [ -n "$RR" ] && [ "$RR" -eq $(( BASE + 1 + 2 * MAXMOD )) ] && [ "$RR" -le 32 ]; then
+    pass "[0.11] most modules: 13 modules take $RR of the 32 reserved ranges ($BASE + 1 + 2 x 13)"
+else
+    fail "[0.11] most modules: $MAXMOD modules, ${RR:-?} reserved ranges (base ${BASE:-?})"
+fi
+na=$(grep -cE "^Program module [0-9]+ '[a-z0-9_]+': [0-9]+ bytes, ELF checked: " "$LOG")
+nf=$(grep -cE "^Program module (9|1[0-3]) '[a-z0-9_]+': [0-9]+ bytes, refused: more than 8 program modules$" "$LOG")
+if [ "$na" -eq 8 ] && [ "$nf" -eq 5 ] && grep -q "^Program modules: 8 accepted, 5 refused (at most 8)$" "$LOG" &&
+   grep -q "System ready\." "$LOG"; then
+    pass "[0.11] most modules: the first 8 programs kept, modules 9-13 refused (more than 8 program modules); System ready"
+else
+    fail "[0.11] most modules: $na kept, $nf refused as over the limit"
+fi
+LOG=$OUT/serial-progmod-over.log
+boot "$LOG" 15 -m 32M -kernel "$KERNEL" -initrd "$PM,$U/stackover.elf"
+if grep -q "Memory: cannot reserve kernel and boot data: too many reserved ranges\." "$LOG" &&
+   ! grep -q "System ready" "$LOG"; then
+    pass "[0.11] most modules: a 14th module exceeds the 32 reserved ranges and is stopped at boot (documented limit)"
+else
+    fail "[0.11] most modules: 14 modules did not stop at the reservation limit"
+fi
+
+echo "== [0.11] The default GRUB entry loads 7 programs (the real ISO)"
+# grub.cfg's default entry has "module /boot/prog/<name>.elf <name>" lines;
+# make iso copies exactly those files. The normal-boot logs (the real ISO
+# and the keylog test ISO) must show all 7 accepted, nothing refused.
+ISOPROGS="hello spin exitcode nullptr sleep getpid lines"
+CFGPROGS=$(grep -oE '^ *module /boot/prog/[a-z0-9_]+\.elf [a-z0-9_]+$' "$(dirname "$0")/../iso/boot/grub/grub.cfg" |
+           awk '{print $3}' | tr '\n' ' ' | sed 's/ $//')
+ISOFILES=$(ls "$OUT/isodir/boot/prog" 2>/dev/null | sed 's/\.elf$//' | sort | tr '\n' ' ' | sed 's/ $//')
+if [ "$CFGPROGS" = "$ISOPROGS" ] && [ "$ISOFILES" = "$(tr ' ' '\n' <<< "$ISOPROGS" | sort | tr '\n' ' ' | sed 's/ $//')" ]; then
+    pass "[0.11] ISO: grub.cfg loads the 7 programs ($CFGPROGS) and the ISO holds exactly those files"
+else
+    fail "[0.11] ISO: grub.cfg modules '$CFGPROGS', ISO files '$ISOFILES'"
+fi
+LOG=$OUT/serial-boot.log
+grep -E '^Program module|^Memory initialization|^Free pages|^Paging tables|walk-check: PASS|Paging self-test: PASS' "$LOG" | sed 's/^/      /'
+n=1
+for p in $ISOPROGS; do
+    size=$(stat -c%s "$OUT/user/$p.elf")
+    expect "$LOG" "^Program module $n '$p': $size bytes, ELF checked: [1-4] segments, [0-9]+ pages, entry 0x400000$" \
+                                                  "[0.11] normal boot: module $n '$p' accepted ($size bytes)"
+    n=$((n + 1))
+done
+expect "$LOG" "^Program modules: 7 accepted, 0 refused \(at most 8\)$" "[0.11] normal boot: 7 program modules accepted, none refused"
+expect "$KLOG" "^Program modules: 7 accepted, 0 refused \(at most 8\)$" "[0.11] keylog test ISO: the same 7 program modules accepted"
+RR=$(sed -nE 's/^Memory initialization: .*\(([0-9]+) reserved ranges.*/\1/p' "$LOG" | head -1)
+if [ "${RR:-0}" -eq $(( 5 + 1 + 2 * 7 )) ]; then
+    pass "[0.11] normal boot: 20 reserved ranges (5 without modules + the module table + 2 x 7)"
+else
+    fail "[0.11] normal boot: ${RR:-?} reserved ranges, expected 20"
+fi
+LOG=$OUT/serial-iso-screen.log
+SOCK=$OUT/qmp.sock
+rm -f "$LOG" "$SOCK"
+timeout 40 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
+    -qmp unix:"$SOCK",server=on,wait=off -cdrom "$ISO" >/dev/null 2>&1 &
+QPID=$!
+for i in $(seq 80); do grep -q "System ready\." "$LOG" 2>/dev/null && break; sleep 0.5; done
+if python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-iso.bin" --log "$LOG" --wait '^System ready\.' 1 \
+       --not-row 23 'Program module|Boot module|ELF' > "$OUT/screen-iso.txt" 2>&1 &&
+   grep -q "^Program modules: 7 accepted" "$LOG"; then
+    pass "[0.11] normal boot: no module line on the screen (row 23 read from the VGA buffer)"
+else
+    fail "[0.11] normal boot: screen check failed (see $OUT/screen-iso.txt)"
+fi
+kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+
+echo "== [0.11] ELF programs loaded into processes (test=elfrun)"
+# One loading path: built-in images and ELF modules both become load plans.
+# Each module program with a built-in twin must give the twin's result; two
+# isolate instances run at once; no user page is a module page; the modules
+# are unchanged afterwards; every fixture is refused again at load.
+ER8="hello spin exitcode nullptr getpid sleep isolate lines"
+PM=""
+for p in $ER8; do PM+="${PM:+,}$OUT/user/$p.elf"; done
+for cpu in default smep; do
+    LOG=$OUT/serial-elfrun.log
+    CPUARG=()
+    label="elfrun"
+    if [ "$cpu" = "smep" ]; then
+        LOG=$OUT/serial-elfrun-smap.log
+        CPUARG=(-cpu qemu64,+smep,+smap)
+        label="elfrun with SMEP and SMAP on"
+    fi
+    boot "$LOG" 60 -m 32M "${CPUARG[@]}" -kernel "$KERNEL" -initrd "$PM" -append "test=elfrun"
+    grep -E "^ELF run test: " "$LOG" | grep -vE ': (PASS|FAIL)$|against their built-in twins\.\.\.$' | sed 's/^/      /'
+    if [ "$cpu" = "default" ]; then
+        for n in hello exitcode getpid sleep spin; do
+            expect "$LOG" "^ELF run test: $n: built-in process [0-9]+ [a-z ]+ \(-?[0-9]+\); module process [0-9]+ [a-z ]+ \(-?[0-9]+\); ring-3 returns [0-9]+, [0-9]+: OK$" \
+                                              "[0.11] elfrun: '$n' from its module gives the same result as the built-in image"
+        done
+        expect "$LOG" "^ELF run test: nullptr: built-in process [0-9]+ killed by a CPU exception \(14\) at RIP (0x[0-9a-f]{16}); module process [0-9]+ killed by a CPU exception \(14\) at RIP \1, the same instruction: OK$" \
+                                              "[0.11] elfrun: 'nullptr' from its module faults at the same instruction as the built-in image (#PF at address 0)"
+        HL=$(grep -m1 -E '^ELF run test: hello: ' "$LOG")
+        P1=$(sed -nE 's/.*built-in process ([0-9]+) .*/\1/p' <<< "$HL"); P2=$(sed -nE 's/.*module process ([0-9]+) .*/\1/p' <<< "$HL")
+        if [ -n "$P1" ] && [ -n "$P2" ] && grep -qx "\[pid $P1\] Hello from user mode" "$LOG" &&
+           grep -qx "\[pid $P2\] Hello from user mode" "$LOG"; then
+            pass "[0.11] elfrun: hello's output the same from both (processes $P1 and $P2)"
+        else
+            fail "[0.11] elfrun: hello's output missing (processes ${P1:-?} and ${P2:-?})"
+        fi
+        expect "$LOG" "^ELF run test: 6 module programs compared with their built-in twins$" \
+                                              "[0.11] elfrun: all 6 twins compared"
+        expect "$LOG" "^ELF run test: isolate 1 and isolate 2 \(module, same addresses, at once\): processes [0-9]+ and [0-9]+ exited \(0\) and exited \(0\), each saw only its own data: OK$" \
+                                              "[0.11] elfrun: two instances of one module program isolated"
+        expect "$LOG" "^ELF run test: [1-9][0-9]* loads, [1-9][0-9]* pages mapped, 0 of them inside a boot module: OK$" \
+                                              "[0.11] elfrun: every user page a fresh frame, none inside a boot module"
+        expect "$LOG" "^ELF run test: checksums of 8 modules after the programs ran and wrote their data: 0 changed: OK$" \
+                                              "[0.11] elfrun: all 8 modules unchanged after the programs ran"
+        expect "$LOG" "^ELF run test: cleanup: free pages ([0-9]+) -> \1, kernel page tables ([0-9]+) -> \2, stack slots ([0-9]+) -> \3, live threads ([0-9]+) -> \4, processes left 0: OK$" \
+                                              "[0.11] elfrun: cleanup exact"
+    fi
+    expect "$LOG" "^ELF run test: longest turn taken by thread [0-9]+ '[^']+' \(user process [0-9]+\): [0-6] ticks$" \
+                                              "[0.11] $label: longest turn a user process's, at most 6 ticks (owner shown)"
+    expect "$LOG" "^ELF run test: PASS$"     "[0.11] $label: PASS"
+    reject "$LOG" "PANIC"                    "[0.11] $label: no panic"
+done
+
+# The fixtures as modules once more, now with test=elfrun: every file refused
+# at boot is refused again at load, for the same reason, and never gets an
+# address space (so never reaches ring 3); the kernel goes on.
+for batch in 0 1 2; do
+    PM=""
+    for k in $(seq 0 9); do PM+="${PM:+,}$FIX/${FXN[$((batch * 10 + k))]}.elf"; done
+    LOG=$OUT/serial-elfrun-fixtures-$batch.log
+    boot "$LOG" 30 -m 32M -kernel "$KERNEL" -initrd "$PM" -append "test=elfrun"
+    nref=0
+    for k in $(seq 0 9); do
+        name=${FXN[$((batch * 10 + k))]}; want=${FXW[$((batch * 10 + k))]}
+        [ "$want" = "OK" ] && continue
+        nref=$((nref + 1))
+        if grep -qxF "ELF run test: refused file '$name' (module $((k + 1))): process $(grep -m1 -oE "^ELF run test: refused file '$name' \(module [0-9]+\): process [0-9]+" "$LOG" | grep -oE '[0-9]+$') load failed: $want (at boot: $want): OK" "$LOG" &&
+           grep -qE "^Process [0-9]+ '$name': load failed: " "$LOG"; then
+            pass "[0.11] elfrun fixture $name: refused again at load ($want)"
+        else
+            fail "[0.11] elfrun fixture $name: not refused again at load with '$want'"
+        fi
+    done
+    expect "$LOG" "^ELF run test: $nref refused files refused again at load, 0 address spaces built for them: OK$" \
+                                              "[0.11] elfrun fixtures, boot $((batch + 1)) of 3: $nref refused again, no address space built"
+    expect "$LOG" "^ELF run test: PASS$"     "[0.11] elfrun fixtures, boot $((batch + 1)) of 3: PASS"
+    reject "$LOG" "PANIC"                    "[0.11] elfrun fixtures, boot $((batch + 1)) of 3: no panic"
+done
+
+echo "== [0.11] Policy (b): preempt_enable switches at once, turns stay within 6 ticks"
+# turn_bound <label> <log> <line prefix>: the "longest turn taken by" line
+# names the thread, and its turn is at most 6 ticks (a slice of 5 plus the
+# rest of one guarded section). Policy (b) rule: a turn over 6 ticks is a
+# STOP, never a relaxed bound.
+turn_bound() {
+    local ow t
+    ow=$(grep -E "^$3: longest turn taken by " "$2" | tail -1)
+    echo "      ${ow:-no owner line}"
+    t=$(sed -nE "s/^$3: longest turn taken by thread [0-9]+ '[^']+' \((kernel thread|user process [0-9]+)\): ([0-9]+) ticks$/\2/p" <<< "$ow")
+    if [ -n "$t" ] && [ "$t" -le 6 ]; then
+        pass "[0.11] $1: longest turn $t ticks (at most 6), its owner named"
+    else
+        fail "[0.11] $1: longest turn ${t:-?} ticks or no owner (${ow:-none}); over 6 is a STOP"
+    fi
+}
+# Logs of the [0.9] and [0.10] groups above, read again.
+turn_bound framethreads "$OUT/serial-framethreads.log" "Frame threads test"
+turn_bound heapthreads "$OUT/serial-heapthreads.log" "Heap threads test"
+LOG=$OUT/serial-userpreempt.log
+kf=$(grep -E "^User preemption test: kernel frame thread: longest turn " "$LOG")
+echo "      ${kf:-no kernel frame thread line}"
+t=$(sed -nE "s/^User preemption test: kernel frame thread: longest turn ([0-9]+) ticks \(thread [0-9]+ 'frames'; policy \(b\): .*: OK$/\1/p" <<< "$kf")
+if [ -n "$t" ] && [ "$t" -le 6 ]; then
+    pass "[0.11] userpreempt: the kernel frame thread's longest turn $t ticks (at most 6), the thread named"
+else
+    fail "[0.11] userpreempt: the kernel frame thread's longest turn ${t:-?} ticks or not named; over 6 is a STOP"
+fi
+LOG=$OUT/serial-preemptoff.log
+# 0.11 stage 4a (test-only change): 0 or 1 tick after the release, and the
+# switch recorded at the release (by preempt_enable, or by the timer
+# interrupt right after it, as a preemption). A tick that lands at the
+# release must not fail a correct kernel; the strict proof of policy (b)
+# is the next check.
+po=$(grep -E "^Preemptoff test: switch at the release: by " "$LOG")
+echo "      ${po:-no switch-at-release line}"
+pa=$(sed -nE "s/^Preemptoff test: switch at the release: by (preempt_enable|the timer interrupt right after it); preemptions ([0-9]+) -> ([0-9]+)$/\2 \3/p" <<< "$po")
+if grep -qE "^Preemptoff test: switch within one tick after the release: released at tick [0-9]+, other thread ran at tick [0-9]+: [01] tick\(s\) later \(at most 1\): OK$" "$LOG" &&
+   [ -n "$pa" ] && [ "${pa#* }" -gt "${pa% *}" ]; then
+    pass "[0.11] preemptoff: the other thread runs 0 or 1 tick after the release, the switch recorded at the release"
+else
+    fail "[0.11] preemptoff: no switch recorded at the release within 1 tick (${po:-none})"
+fi
+expect "$LOG" "^Preemptoff test: switch inside preempt_enable at the release \(policy \(b\)\): yes: OK$" \
+                                              "[0.11] preemptoff: the switch happens inside the releasing preempt_enable"
+po=$(grep -E "^Preemptoff test: thread [0-9]+ 'other': longest turn " "$LOG")
+echo "      ${po:-no per-thread line}"
+t=$(sed -nE "s/^Preemptoff test: thread [0-9]+ 'other': longest turn ([0-9]+) ticks; .*/\1/p" <<< "$po")
+if [ -n "$t" ] && [ "$t" -le 6 ]; then pass "[0.11] preemptoff: the other thread's longest turn $t ticks (at most 6)"
+else fail "[0.11] preemptoff: the other thread's longest turn ${t:-?} ticks; over 6 is a STOP"; fi
+# The holder's turn is the test's own guarded section: exempt, by name.
+ow=$(grep -E "^Preemptoff test: longest turn taken by " "$LOG")
+t=$(sed -nE "s/^Preemptoff test: longest turn taken by thread [0-9]+ 'holder' \(kernel thread\): ([0-9]+) ticks$/\1/p" <<< "$ow")
+if [ -n "$t" ] && [ "$t" -ge 20 ] && [ "$t" -le 21 ]; then
+    pass "[0.11] preemptoff holder: deliberate 20-tick hold, exempt (its turn $t ticks, the test's own guarded section)"
+else
+    fail "[0.11] preemptoff holder: the longest turn is not the holder's 20-tick hold (${ow:-none})"
+fi
+
+echo "== [0.11] Threads that live in guarded sections (test=preemptlong)"
+thread_diag preemptlong 15
+grep -E "^Preemptlong test: " "$LOG" | grep -vE ': (PASS|FAIL)$|for 3 seconds\.\.\.$' | sed 's/^/      /'
+expect "$LOG" "^Preemptlong test: create: 4 threads that keep preemption disabled until each next tick: OK$" \
+                                              "[0.11] preemptlong: 4 threads created"
+for i in 0 1 2 3; do
+    expect "$LOG" "^Preemptlong test: long$i: thread [0-9]+: (9[5-9]|100)\.[0-9]% in guarded sections \([0-9]+\), ([5-9]|[1-9][0-9]+) turns, longest turn [0-6] ticks \(at most 6\): OK$" \
+                                              "[0.11] preemptlong: long$i over 95% in guarded sections, at least 5 turns, longest turn at most 6 ticks"
+done
+expect "$LOG" "^Preemptlong test: everything returned: free pages ([0-9]+) -> \1, .*: OK$" \
+                                              "[0.11] preemptlong: everything returned"
+turn_bound preemptlong "$LOG" "Preemptlong test"
+expect "$LOG" "^Preemptlong test: PASS \("   "[0.11] preemptlong: PASS"
+reject "$LOG" "PANIC|MISMATCH"               "[0.11] preemptlong: no panic, no mismatch"
+expect "$LOG" "System ready\."               "[0.11] preemptlong: System ready afterwards"
+
+echo "== [0.11] Console: run, run -b and ps (a console session through QMP)"
+# Four program modules; the console waits for a foreground program (keys
+# are ignored meanwhile, hence the pauses) and collects it, then prompts.
+LOG=$OUT/serial-run.log
+PM=""
+for p in hello exitcode nullptr spin; do PM+="${PM:+,}$OUT/user/$p.elf"; done
+S="x{ret}"
+S+="run hello{ret}{wait:1}"
+S+="run exitcode{ret}{wait:1}"
+S+="run nullptr{ret}{wait:1}"
+S+="run -b spin{ret}{wait:1}"
+S+="ps{ret}"
+S+="run nosuch{ret}"
+S+="run hello x{ret}"
+S+="echo end-of-run-test{ret}"
+boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-run-test\n' -m 32M -kernel "$KERNEL" -initrd "$PM"
+grep -E "^madire> (run|ps)|^\[process |^run: |^PID |^ *[0-9]+  (running|ended) |^[0-9]+ process|Hello from user mode|'nullptr' ended by" "$LOG" | sed 's/^/      /'
+expect_in_order "$LOG" "[0.11] run hello: its line in the log, then 'exited, status 0', then the prompt" \
+    "^madire> run hello$" "^\[pid [0-9]+\] Hello from user mode$" "^\[process [0-9]+ 'hello' exited, status 0\]$" \
+    "^madire> run exitcode$"
+expect_in_order "$LOG" "[0.11] run exitcode: 'exited, status 42'" \
+    "^madire> run exitcode$" "^\[process [0-9]+ 'exitcode' exited, status 42\]$" "^madire> run nullptr$"
+NP=$(sed -nE "s/^\[process ([0-9]+) 'nullptr' ended by #PF at (0x[0-9a-f]{16})\]$/\1 \2/p" "$LOG")
+KA=$(sed -nE "s/^Process ${NP% *} 'nullptr' ended by CPU exception 14 \(#PF Page Fault\) at RIP 0x[0-9a-f]+: address (0x[0-9a-f]{16}),.*/\1/p" "$LOG")
+if [ -n "$NP" ] && [ "${NP#* }" = "0x0000000000000000" ] && [ "$KA" = "${NP#* }" ]; then
+    pass "[0.11] run nullptr: 'ended by #PF at 0x0000000000000000', the address the kernel logged"
+else
+    fail "[0.11] run nullptr: end line '${NP:-none}', kernel address '${KA:-none}'"
+fi
+BP=$(sed -nE "s/^\[process ([0-9]+) 'spin' started in the background\]$/\1/p" "$LOG")
+expect_in_order "$LOG" "[0.11] run -b spin: started in the background, the prompt at once" \
+    "^madire> run -b spin$" "^\[process [0-9]+ 'spin' started in the background\]$" "^madire> ps$"
+expect_in_order "$LOG" "[0.11] ps: the thread table as before, then the processes with PID, state and name" \
+    "^madire> ps$" "^TID  STATE      TICKS    STACK PEAK    NAME$" "^  0  running +[0-9]+ +[0-9]+/16384   kernel$" \
+    "^[0-9]+ threads?$" "^PID  STATE    TID  NAME$" "^ *${BP:-x}  running +[0-9]+  spin$" "^1 process$" \
+    "^madire> run nosuch$"
+expect_next "$LOG" "[0.11] run nosuch: refused, no program of that name" \
+    "^madire> run nosuch$" "^run: no program named 'nosuch'\.$"
+expect_next "$LOG" "[0.11] run hello x: a bad argument refused" \
+    "^madire> run hello x$" "^run: 'x' is not a number from 0 to 4294967295\.$"
+# (after the first "run hello": the boot self-test runs hello once too)
+n=$(sed -n '/^madire> run hello$/,$p' "$LOG" | grep -cE "^\[pid [0-9]+\] Hello from user mode$")
+if [ "$n" -eq 1 ]; then pass "[0.11] run: hello ran exactly once (the refused lines started nothing)"
+else fail "[0.11] run: hello's line $n times, expected 1"; fi
+# The console's own lines (the serial log also holds kernel log lines,
+# which never reach the screen).
+w=$(grep -E "^madire> |^\[process |^run: |^PID |^TID |^ *[0-9]+  |^[0-9]+ (threads?|process(es)?)$|^end-of-run-test$" "$LOG" |
+    awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+if grep -q "^end-of-run-test$" "$LOG" && [ "$w" -le 79 ]; then pass "[0.11] run session: every line at most 79 characters (longest $w)"
+else fail "[0.11] run session: a line of $w characters (limit 79), or the session did not end"; fi
+reject "$LOG" "^key: "                             "[0.11] run session: no key events logged (keylog off)"
+reject "$LOG" "PANIC|Screen output from thread"    "[0.11] run session: no panic, no screen-rule violation"
+
+echo "== [0.11] Console: kill (asks first) and Ctrl+C (a console session through QMP)"
+# The boot self-test uses process IDs 1-3, so the first program is 4.
+LOG=$OUT/serial-kill.log
+PM=""
+for p in spin sleep lines; do PM+="${PM:+,}$OUT/user/$p.elf"; done
+S="x{ret}"
+S+="mem{ret}"
+S+="run -b spin{ret}{wait:1}"                        # process 4, in the background
+S+="kill 4{ret}no{ret}"
+S+="ps{ret}"
+S+="kill 4{ret}yes{ret}{wait:1}"
+S+="kill 0{ret}kill 99{ret}"
+S+="run spin{ret}{wait:1}{ctrl+c}{wait:1}"           # process 5
+S+="run sleep 2{ret}{wait:1}{ctrl+c}{wait:1}"        # process 6: a 10 s nanosleep
+S+="run lines 65636{ret}{wait:1}{ctrl+c}{wait:1}"    # process 7: 100 lines, 100 ms apart
+S+="ps{ret}mem{ret}"
+S+="echo end-of-kill-test{ret}"
+boot_text "$LOG" 120 "System ready." "$S" 0.05 $'\nend-of-kill-test\n' -m 32M -kernel "$KERNEL" -initrd "$PM"
+grep -E "^madire> (run|kill|ps)|^yes/no> |^End process|^Kill cancelled|^kill: |^\[process |^console: (Ctrl\+C|kill confirmed|process [0-9]+ collected)|kill requested while asleep|^ *[0-9]+  (running|ended) |^[0-9]+ process|^Free pages \(now\)" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^\[process 4 'spin' started in the background\]$" \
+                                              "[0.11] kill session: spin started in the background as process 4"
+expect_next "$LOG" "[0.11] kill 4: asks first" \
+    "^madire> kill 4$" "^End process 4 'spin'\? Type 'yes' to confirm:$"
+expect_in_order "$LOG" "[0.11] kill 4, then 'no': cancelled, and ps still shows process 4 running" \
+    "^madire> kill 4$" "^yes/no> no$" "^Kill cancelled\.$" "^madire> ps$" "^PID  STATE    TID  NAME$" \
+    "^  4  running +[0-9]+  spin$" "^1 process$"
+expect_in_order "$LOG" "[0.11] kill 4, then 'yes': kill confirmed, then its end line before the prompt" \
+    "^madire> ps$" "^madire> kill 4$" "^yes/no> yes$" "^console: kill confirmed for process 4$" \
+    "^\[process 4 'spin' killed\]$" "^madire> kill 0$"
+expect_next "$LOG" "[0.11] kill 0: refused (the kernel, not a process)" \
+    "^madire> kill 0$" "^kill: PID 0 is the kernel, not a process\.$"
+expect_next "$LOG" "[0.11] kill 99: refused (no such process)" \
+    "^madire> kill 99$" "^kill: no process with PID 99\.$"
+expect_in_order "$LOG" "[0.11] Ctrl+C on spin: kill requested, then 'killed'" \
+    "^madire> run spin$" "^console: Ctrl\+C: kill requested for process 5$" "^\[process 5 'spin' killed\]$" \
+    "^madire> run sleep 2$"
+expect_in_order "$LOG" "[0.11] Ctrl+C on sleep: its 10 s nanosleep woken early, then 'killed'" \
+    "^madire> run sleep 2$" "^Process 6: kill requested while asleep; woken early$" \
+    "^console: Ctrl\+C: kill requested for process 6$" "^\[process 6 'sleep' killed\]$"
+expect_in_order "$LOG" "[0.11] Ctrl+C on lines: kill requested, then 'killed'" \
+    "^madire> run lines 65636$" "^console: Ctrl\+C: kill requested for process 7$" "^\[process 7 'lines' killed\]$"
+for p in 5 6 7; do
+    t=$(sed -nE "s/^console: process $p collected ([0-9]+) ticks after Ctrl\+C$/\1/p" "$LOG")
+    if [ -n "$t" ] && [ "$t" -le 2 ]; then pass "[0.11] Ctrl+C on process $p: the prompt back $t tick(s) later (at most 2)"
+    else fail "[0.11] Ctrl+C on process $p: collected ${t:-?} ticks after Ctrl+C (at most 2)"; fi
+done
+n=$(grep -cE "^\[pid 7\] line [0-9]+ of 100$" "$LOG")
+if [ "$n" -lt 100 ]; then pass "[0.11] Ctrl+C on lines: it stopped early ($n of 100 lines written)"
+else fail "[0.11] Ctrl+C on lines: all 100 lines written (not stopped)"; fi
+expect_in_order "$LOG" "[0.11] ps afterwards: no process left" \
+    "^madire> ps$" "^madire> ps$" "^PID  STATE    TID  NAME$" "^0 processes$"
+F=$(grep -E "^Free pages \(now\):" "$LOG" | awk '{print $NF}')
+F1=$(sed -n 1p <<< "$F"); F2=$(sed -n 2p <<< "$F")
+echo "      free pages before the first program ${F1:-?}, after the last ${F2:-?}"
+if [ -n "$F1" ] && [ "$F1" = "$F2" ]; then pass "[0.11] kill session: free pages the same before and after (teardown exact)"
+else fail "[0.11] kill session: free pages ${F1:-?} before, ${F2:-?} after"; fi
+w=$(grep -E "^madire> |^yes/no> |^End process|^Kill cancelled|^kill: |^\[process |^PID |^TID |^ *[0-9]+  |^[0-9]+ (threads?|process(es)?)$|^end-of-kill-test$" "$LOG" |
+    awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+if grep -q "^end-of-kill-test$" "$LOG" && [ "$w" -le 79 ]; then pass "[0.11] kill session: every line at most 79 characters (longest $w)"
+else fail "[0.11] kill session: a line of $w characters (limit 79), or the session did not end"; fi
+reject "$LOG" "^key: "                             "[0.11] kill session: no key events logged (keylog off; Ctrl+C never logged as a key)"
+reject "$LOG" "PANIC|Screen output from thread"    "[0.11] kill session: no panic, no screen-rule violation"
+
+echo "== [0.11] Foreground program output on screen, scrollback and Q8 back-pressure"
+LOG=$OUT/serial-program-output.log
+SOCK=$OUT/qmp-program-output.sock
+PM="$OUT/user/hello.elf,$OUT/user/lines.elf,$OUT/test-user/flood.elf"
+rm -f "$LOG" "$SOCK" "$OUT"/screen-program-*.bin
+timeout 240 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
+    -qmp unix:"$SOCK",server=on,wait=off -m 32M -kernel "$KERNEL" -initrd "$PM" \
+    >/dev/null 2>&1 &
+QPID=$!
+program_text() {
+    python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "$1" --gap 0.05 \
+        --done "$2" --done-timeout 90
+}
+program_keys() {
+    python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." "$1" --gap 0.05 \
+        --done "$2" --done-timeout 90
+}
+program_screen() {
+    local name=$1 pattern=$2
+    python3 "$QMPSCREEN" "$SOCK" "$OUT/$name.bin" --log "$LOG" --wait "$pattern" 1 \
+        > "$OUT/$name.txt" 2>&1
+}
+screen_width_ok() {
+    awk -F'|' '$1 ~ /^row [0-9][0-9]$/ { if (length($2) > 79) bad=1 } END { exit bad }' \
+        "$OUT/$1.txt"
+}
+
+program_text "x{ret}run hello{ret}" "[process 4 'hello' exited, status 0]"
+if program_screen screen-program-hello "^\\[process 4 'hello' exited, status 0\\]$" &&
+   grep -qF "Hello from user mode" "$OUT/screen-program-hello.txt" &&
+   screen_width_ok screen-program-hello; then
+    pass "[0.11] run hello: qmp_screen sees its text on the VGA screen"
+else
+    fail "[0.11] run hello: text missing from the VGA screen (see $OUT/screen-program-hello.txt)"
+fi
+if [ "$(grep -cFx '[pid 4] Hello from user mode' "$LOG")" -eq 1 ] &&
+   ! grep -qF '[pid 4]' "$OUT/screen-program-hello.txt"; then
+    pass "[0.11] run hello: one unchanged [pid 4] serial line, no prefixed duplicate on screen"
+else
+    fail "[0.11] run hello: serial line missing/duplicated or [pid] prefix reached screen"
+fi
+program_text "dmesg 100{ret}echo dmesg-output-seen{ret}" "dmesg-output-seen"
+expect_in_order "$LOG" "[0.11] run hello: its existing [pid 4] line remains in dmesg" \
+    "^madire> dmesg 100$" "^\\[pid 4\\] Hello from user mode$" "^madire> echo dmesg-output-seen$"
+
+program_text "clear{ret}run lines{ret}" "[process 5 'lines' exited, status 0]"
+if program_screen screen-program-lines "^\\[process 5 'lines' exited, status 0\\]$" &&
+   python3 - "$OUT/screen-program-lines.txt" <<'PY'
+import re
+import sys
+
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    match = re.match(r"row (\d\d)\|(.*)\|$", line.rstrip("\n"))
+    if match:
+        rows[int(match.group(1))] = match.group(2)
+numbered = {row for row in rows.values() if re.fullmatch(r"line (?:[1-9]|10) of 10", row)}
+long_rows = [(row, text) for row, text in rows.items() if text.startswith("long: ")]
+letters = "".join(chr(ord("a") + i % 26) for i in range(200))
+expected = ["long: " + letters[:73], letters[73:152], letters[152:]]
+long_ok = len(long_rows) == 1
+if long_ok:
+    first = long_rows[0][0]
+    long_ok = [rows.get(first + i) for i in range(3)] == expected
+controls = "ctl: tab?here bell? esc?[31mred cr?end del?"
+ok = ("line 1 of 10" in numbered and "line 10 of 10" in numbered and long_ok and
+      controls in rows.values() and max(map(len, rows.values()), default=0) <= 79)
+print(f"screen rows: {len(rows)}, longest {max(map(len, rows.values()), default=0)} columns")
+print(f"numbered lines: {len(numbered)}, exact 79-column wrapping: {long_ok}, controls: {controls in rows.values()}")
+sys.exit(0 if ok else 1)
+PY
+then
+    pass "[0.11] run lines: numbered text, exact 79-column wrap, controls as '?', all screen rows at most 79"
+else
+    fail "[0.11] run lines: numbered output, wrapping, controls or screen width failed (see $OUT/screen-program-lines.txt)"
+fi
+if [ "$(grep -cFx '[pid 5] line 1 of 10' "$LOG")" -eq 1 ] &&
+   [ "$(grep -cFx '[pid 5] line 10 of 10' "$LOG")" -eq 1 ] &&
+   [ "$(grep -cFx '[pid 5] ctl: tab?here bell? esc?[31mred cr?end del?' "$LOG")" -eq 1 ] &&
+   [ "$(grep -cFx '[pid 5] lines: done' "$LOG")" -eq 1 ]; then
+    pass "[0.11] run lines: serial [pid 5] records each appear once, with no doubled screen copy"
+else
+    fail "[0.11] run lines: serial records missing or duplicated"
+fi
+
+program_text "clear{ret}run -b hello{ret}" "[process 6 'hello' exited, status 0]"
+if program_screen screen-program-background "^\\[process 6 'hello' exited, status 0\\]$" &&
+   ! grep -qF "Hello from user mode" "$OUT/screen-program-background.txt" &&
+   screen_width_ok screen-program-background; then
+    pass "[0.11] run -b hello: background program payload never reaches the VGA screen"
+else
+    fail "[0.11] run -b hello: background output appeared on screen (see $OUT/screen-program-background.txt)"
+fi
+if [ "$(grep -cFx '[pid 6] Hello from user mode' "$LOG")" -eq 1 ]; then
+    pass "[0.11] run -b hello: its serial [pid 6] line remains unchanged and appears once"
+else
+    fail "[0.11] run -b hello: serial output missing or duplicated"
+fi
+
+program_text "clear{ret}run lines 60{ret}" "[process 7 'lines' exited, status 0]"
+program_screen screen-program-scroll-bottom "^\\[process 7 'lines' exited, status 0\\]$"
+program_keys "shift+pgup" "console: scrolled back:"
+if program_screen screen-program-scrollback "^console: scrolled back: " &&
+   python3 - "$OUT/screen-program-scroll-bottom.txt" "$OUT/screen-program-scrollback.txt" <<'PY'
+import re
+import sys
+
+def numbers(path):
+    found = []
+    for line in open(path, encoding="utf-8"):
+        match = re.match(r"row \d\d\|line (\d+) of 60\|$", line.rstrip("\n"))
+        if match:
+            found.append(int(match.group(1)))
+    return found
+
+bottom, back = numbers(sys.argv[1]), numbers(sys.argv[2])
+widths = []
+for path in sys.argv[1:]:
+    for line in open(path, encoding="utf-8"):
+        match = re.match(r"row \d\d\|(.*)\|$", line.rstrip("\n"))
+        if match:
+            widths.append(len(match.group(1)))
+ok = bool(bottom and back and min(back) < min(bottom) and max(widths, default=0) <= 79)
+print(f"live lines start at {min(bottom) if bottom else 'none'}; scrolled view starts at {min(back) if back else 'none'}")
+print(f"longest captured scrollback screen row: {max(widths, default=0)} columns")
+sys.exit(0 if ok else 1)
+PY
+then
+    pass "[0.11] Shift+PgUp shows earlier numbered program output from scrollback"
+else
+    fail "[0.11] Shift+PgUp did not show earlier program output (see $OUT/screen-program-scrollback.txt)"
+fi
+
+program_text "x{bs}run flood{ret}" "console: process 8 waiting for output queue"
+program_text "{ctrl+c}" "[process 8 'flood' killed]"
+expect_in_order "$LOG" "[0.11] Q8 FLOOD: queue filled, then Ctrl+C ended the waiting writer" \
+    "^console: process 8 waiting for output queue$" "^console: Ctrl\\+C: kill requested for process 8$" \
+    "^\\[process 8 'flood' killed\\]$"
+if program_screen screen-program-flood "^\\[process 8 'flood' killed\\]$"; then
+    if screen_width_ok screen-program-flood; then
+        pass "[0.11] Q8 FLOOD: screen remains readable and every screen row is at most 79 columns"
+    else
+        fail "[0.11] Q8 FLOOD: a screen row exceeded 79 columns"
+    fi
+else
+    fail "[0.11] Q8 FLOOD: no final screen capture (see $OUT/screen-program-flood.txt)"
+fi
+program_text "echo q8-console-responsive{ret}ps{ret}" "0 processes"
+expect "$LOG" "^q8-console-responsive$" "[0.11] Q8 FLOOD: the prompt accepts another command after Ctrl+C"
+expect_in_order "$LOG" "[0.11] Q8 FLOOD: ps shows no leftover process" "^madire> ps$" "^0 processes$"
+reject "$LOG" "^key: " "[0.11] program output session: no key events logged"
+reject "$LOG" "PANIC|Screen output from thread" "[0.11] program output session: no panic or screen-rule violation"
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
+
+echo "== Stall watch (harness diagnostic; decides no check)"
+echo "      $(grep -c '^STALL CAPTURE' "$QEMU_WATCH_DIR/stalls.txt") capture(s) in $QEMU_WATCH_DIR"
+sed 's/^/      /' "$QEMU_WATCH_DIR/stalls.txt"
+
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 new in 0.10)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 new in 0.11)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

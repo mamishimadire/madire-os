@@ -156,6 +156,19 @@ enum sched_result sched_sleep(struct sched *s, uint32_t preempt_count, uint64_t 
     return SCHED_BLOCKED_NOW;
 }
 
+enum sched_result sched_wake(struct sched *s, int32_t tid)
+{
+    if (!valid_tid(tid) || s->t[tid].state == SCHED_FREE)
+        return SCHED_ERR_NO_THREAD;
+    struct sched_thread *t = &s->t[tid];
+    if (t->state != SCHED_BLOCKED || t->block != SCHED_BLOCK_SLEEP)
+        return SCHED_ERR_STATE;
+    t->block = SCHED_BLOCK_NONE;
+    enqueue(s, tid);
+    s->need_resched = true;                 /* as for a sleeper whose tick came */
+    return SCHED_OK;
+}
+
 enum sched_result sched_join(struct sched *s, uint32_t preempt_count, int32_t tid,
                              int32_t *code, int32_t *next)
 {
@@ -442,4 +455,39 @@ int kstack_stack_slot(uint64_t addr)
     uint64_t within;
     int slot = slot_of(addr, &within);
     return (slot >= 0 && within >= KSTACK_GUARD_SIZE) ? slot : -1;
+}
+
+/* ---- the longest turn and its owner (0.11) ---- */
+
+void sched_longest_reset(struct sched_longest *l)
+{
+    l->ticks = 0;
+    l->tid = -1;
+    l->pid = 0;
+    l->own_space = false;
+    l->name[0] = '\0';
+}
+
+bool sched_longest_note(struct sched_longest *l, uint64_t ticks, int32_t tid, int32_t pid,
+                        bool own_space, const char *name)
+{
+    if (ticks <= l->ticks)
+        return false;
+    l->ticks = ticks;
+    l->tid = tid;
+    l->pid = pid > 0 ? pid : 0;
+    l->own_space = own_space;
+    unsigned i = 0;
+    for (; name && name[i] && i < SCHED_LONGEST_NAME_MAX - 1; i++)
+        l->name[i] = name[i];
+    l->name[i] = '\0';
+    return true;
+}
+
+/* ---- policy (b): switch at preempt_enable (0.11) ---- */
+
+bool sched_switch_on_enable(uint32_t count, bool pending, bool interrupts_on, bool ready,
+                            bool panicking)
+{
+    return count == 0 && pending && interrupts_on && ready && !panicking;
 }

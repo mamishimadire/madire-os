@@ -1,6 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.5
+# Madire OS Command Standard (MOCS) v0.6
 
-**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`.
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned).
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -24,9 +24,9 @@ Madire OS provides the foundations that applications need (processes, files, dev
 | **PLANNED** | Planned; the entry names the foundation it needs first |
 | **APPLICATION** | An installable application, not part of Madire OS |
 
-**Implemented today (since Madire OS 0.9.1; unchanged in 0.9.2 and 0.10):** 14 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9), and `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1). `ps` lists the kernel threads; it becomes the process list in 0.11. Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
+**Implemented today (Madire OS 0.11):** 16 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9; processes too since 0.11), `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1), and `run`, `kill` (0.11). Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
 
-**In this standard (v0.5):** 182 commands: 14 IMPLEMENTED, 155 PLANNED and 13 APPLICATION (by level: 20 CORE, 149 SYSTEM, 13 APPLICATION).
+**In this standard (v0.6):** 182 commands: 16 IMPLEMENTED, 153 PLANNED and 13 APPLICATION (by level: 20 CORE, 149 SYSTEM, 13 APPLICATION).
 
 **Notes on the 0.9.1 commands:**
 
@@ -35,12 +35,12 @@ Madire OS provides the foundations that applications need (processes, files, dev
 - `dmesg` shows only what the kernel wrote through `kprintf`/`klogf` (a 32 KiB log). The boot screen's status lines and the console's command output go to the serial port directly and aren't in it (a boot-screen line can therefore appear joined to the next one). Since 0.9.2 key events aren't logged by default, so `dmesg` holds no typed keys (they are logged only with the boot option `keylog`, for tests, or during the keyboard diagnostics).
 - `help <unknown>` prints only `No help for 'X': unknown command.`, without a second sentence, so that every line fits 79 columns (names longer than 40 characters are shortened).
 
-**Today: where the commands run.** Since 0.10 Madire OS runs user processes, but only its built-in test programs, and no command starts one; so all 14 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Once programs can be loaded and managed (0.11: ELF programs from boot modules, `run`, `kill`, `ps` with process numbers), SYSTEM commands are expected to move out into separate user programs; CORE commands stay in the shell.
+**Today: where the commands run.** Since 0.11 `run` starts programs (ELF files delivered as boot modules), but all 16 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Now that programs can be loaded and managed, SYSTEM commands are expected to move out into separate user programs (once a filesystem holds them, 1.0); CORE commands stay in the shell.
 
 | Command | Level | Today |
 |---|---|---|
 | `help`, `echo`, `history` | CORE | in the kernel console; stays in the shell |
-| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot` | SYSTEM | in the kernel console; expected to become separate programs after 0.11 |
+| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `run`, `kill` | SYSTEM | in the kernel console; expected to become separate programs once a filesystem holds them |
 
 **Foundations** named below: processes (0.10 user processes, 0.11 programs and process management), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
 
@@ -99,9 +99,9 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `ps` | List what is running (kernel threads today; processes from 0.11) | SYSTEM | IMPLEMENTED |
-| `run` | Start a program | SYSTEM | PLANNED (processes, 0.11) |
-| `kill` ⚠ | End a process by its number | SYSTEM | PLANNED (processes, 0.11) |
+| `ps` | List what is running: the kernel threads, then the processes (PID, state, TID, name) | SYSTEM | IMPLEMENTED (0.9; processes 0.11) |
+| `run` | Start a program: `run <name> [n]` in the foreground (its output on the screen; Ctrl+C ends it), `run -b <name> [n]` in the background (output to the serial log and `dmesg` only) | SYSTEM | IMPLEMENTED (0.11) |
+| `kill` ⚠ | End a process by its number: `kill <pid>` asks first (`yes/no>`; only exactly "yes" ends it). Planned: `kill -y <pid>` without the question, for scripts | SYSTEM | IMPLEMENTED (0.11; `-y` PLANNED) |
 | `pkill` ⚠ | End processes by name | SYSTEM | PLANNED (processes) |
 | `top` | Show running processes and their resource use, updated live | SYSTEM | PLANNED (processes) |
 | `nice` | Start a program with a given priority | SYSTEM | PLANNED (processes, scheduler priorities) |
@@ -356,6 +356,7 @@ Keys the console handles itself. They aren't commands, so they have no level or 
 | Shift+PgUp / Shift+PgDn | page back and forward through the scrollback (the last 1000 lines that left the screen), 24 lines at a time; a reverse-colour indicator on the bottom row shows the position; paging back stops at line 1 | 0.9.2 |
 | Any other key, **while scrolled back** | returns to the live screen and is then handled as usual (typed, or Enter runs the line); key releases and modifier keys on their own (Shift, Ctrl, Alt, the locks) don't return | 0.9.2 |
 | PgUp / PgDn without Shift, **when not scrolled back** | do nothing | 0.9.2 |
+| Ctrl+C, **while a program runs in the foreground** | ends the program (and wakes it if it sleeps); logged only as `console: Ctrl+C: kill requested for process N`, never as a key; at the prompt it does nothing | 0.11 |
 
 Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, because Num Lock is assumed on. `clear` keeps the screen's lines in the scrollback. The scrollback and the history are lost at restart.
 
@@ -409,7 +410,7 @@ These are features of the shell, not commands:
 ## 7. Priority order
 
 1. Kernel, memory, shell: **done** (0.1–0.9).
-2. Processes: kernel threads (0.9, done), user processes (0.10), programs and process management (0.11).
+2. Processes: kernel threads (0.9), user processes (0.10), programs and process management (0.11): **done**.
 3. Filesystem (1.0).
 4. Drivers.
 5. Networking.
