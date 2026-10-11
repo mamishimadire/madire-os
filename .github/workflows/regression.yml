@@ -1,28 +1,51 @@
-# Madire OS full regression on a GitHub-hosted runner (manual trigger only).
-# Runs `make unit test iso` on ubuntu-24.04 with the same toolchain as the
-# Codespace (scripts/install-deps.sh), under QEMU's software emulation (TCG;
-# KVM is never enabled). No secrets; read-only access to the repository.
-# Start it with: gh workflow run regression.yml --ref main -f ref=<commit>
+# Madire OS full regression on GitHub-hosted runners (manual trigger only).
+#
+# mode=sharded (default): five jobs in parallel, one per part of the QEMU
+# tests (make test-shard SHARD=<part>; "static" also runs make unit, make
+# repro and the symbol, SSE/x87 and 2 MiB margin checks), then the job
+# "combine" (tests/combine-shards.sh): same commit, files and kernel in
+# every job, every part run once, the part "final" over every job's serial
+# logs, the counts against tests/expected-checks.txt, the helper replay.
+# mode=full: `make unit test iso` in one job, as before.
+#
+# QEMU's software emulation only (TCG; KVM is never enabled). No secrets;
+# read-only access to the repository; the actions are pinned to commit SHAs.
+# Start it with (the commit as a full 40-character SHA):
+#   gh workflow run regression.yml --ref main -f ref=<sha> [-f mode=full]
 name: regression
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Commit, branch or tag to test (for example wip/0.12)"
+        description: "Full 40-character SHA of the commit to test"
         required: true
         type: string
+      mode:
+        description: "sharded (parallel jobs) or full (one job)"
+        required: true
+        default: sharded
+        type: choice
+        options:
+          - sharded
+          - full
 
 permissions:
   contents: read
 
 jobs:
-  regression:
+  full:
+    if: inputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
+      - name: Refuse anything but a full commit SHA
+        env:
+          REF: ${{ inputs.ref }}
+        run: printf '%s\n' "$REF" | grep -qxE '[0-9a-f]{40}'
+
       - name: Check out the commit under test
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -34,8 +57,10 @@ jobs:
                -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum > manifest.sha256
           echo "files: $(wc -l < manifest.sha256)"
 
-      - name: Install the toolchain (as the devcontainer does)
-        run: bash scripts/install-deps.sh
+      - name: Install the toolchain (as the devcontainer does), and mawk and gawk for the replay
+        run: |
+          bash scripts/install-deps.sh
+          sudo apt-get install -y -qq mawk gawk > /dev/null
 
       - name: Tool versions
         run: |
@@ -62,7 +87,7 @@ jobs:
             find ./Makefile ./boot ./drivers ./iso ./kernel ./linker ./scripts ./tests ./user \
                  -type f ! -path './build/*' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum > final.sha256
             if cmp -s manifest.sha256 final.sha256; then echo FINAL_SNAPSHOT_HASH_MATCH=PASS; else echo FINAL_SNAPSHOT_HASH_MATCH=FAIL; fi
-            grep -E 'ALL TESTS|FAILED|MAKE EXIT|Reproducible build:' regression.log || true
+            grep -E 'ALL TESTS|FAILED|MAKE EXIT|Reproducible build:|EXPECTED_CHECKS' regression.log || true
             echo "UNIT_SUITES_PASS=$(grep -c -- '-> PASS' regression.log || true)"
             echo "FAIL_LINES=$(grep -c '^FAIL' regression.log || true)"
             echo "UNDEFINED_SYMBOLS=$(nm -u build/madire.elf | wc -l)"
@@ -75,9 +100,15 @@ jobs:
             sha256sum build/madire.elf build/madire.kernel build/madire-os.iso
           } 2>&1 | tee checks.txt
 
-      - name: Upload the log, the per-boot serial logs and the stall captures
+      - name: Helper replay under mawk and gawk (evidence only; decides no check)
         if: always()
-        uses: actions/upload-artifact@v4
+        run: |
+          if [ -f tests/helper-replay.sh ]; then bash tests/helper-replay.sh mawk gawk | tee replay.txt
+          else echo "no tests/helper-replay.sh in this commit" | tee replay.txt; fi
+
+      - name: Upload the log, the per-boot serial logs, the stall captures and the replay
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: regression-${{ github.run_id }}
           retention-days: 7
@@ -90,12 +121,167 @@ jobs:
             duration.txt
             make-exit.txt
             checks.txt
+            replay.txt
             regression.log
             build/serial-*.log
             build/*.keys.txt
             build/*.irq1.txt
             build/stall/
+            build/helper-calls.trace
+            build/helper-logs/
+            build/replay-*.txt
 
       - name: Fail the job if the regression failed
         if: always()
         run: test "$(cat make-exit.txt 2>/dev/null)" = 0
+
+  shard:
+    if: inputs.mode == 'sharded'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [static, "1", "2", "3", "4"]
+    steps:
+      - name: Refuse anything but a full commit SHA
+        env:
+          REF: ${{ inputs.ref }}
+        run: printf '%s\n' "$REF" | grep -qxE '[0-9a-f]{40}'
+
+      - name: Check out the commit under test
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Record the commit and the SHA-256 manifest of the files under test
+        run: |
+          git rev-parse HEAD | tee commit.txt
+          find ./Makefile ./boot ./drivers ./iso ./kernel ./linker ./scripts ./tests ./user \
+               -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum > manifest.sha256
+          echo "files: $(wc -l < manifest.sha256)"
+
+      - name: Install the toolchain (as the devcontainer does)
+        run: bash scripts/install-deps.sh
+
+      - name: Tool versions
+        run: |
+          { gcc --version | head -n 1; ld --version | head -n 1; nasm -v;
+            grub-mkrescue --version | head -n 1; qemu-system-x86_64 --version | head -n 1;
+            python3 --version; nproc; free -m | sed -n 2p; } | tee tools.txt
+
+      - name: make test-shard SHARD=${{ matrix.part }} (TCG)
+        env:
+          PART: ${{ matrix.part }}
+        run: |
+          start=$(date +%s)
+          set +e
+          make test-shard SHARD="$PART" > regression.log 2>&1
+          rc=$?
+          set -e
+          printf '\nMAKE EXIT %s\n' "$rc" >> regression.log
+          echo "seconds: $(( $(date +%s) - start ))" | tee duration.txt
+          echo "$rc" > make-exit.txt
+          tail -n 3 regression.log
+
+      - name: Checks (source unchanged, build hashes; part static also symbols, SSE, 2 MiB margin)
+        if: always()
+        env:
+          PART: ${{ matrix.part }}
+        run: |
+          {
+            find ./Makefile ./boot ./drivers ./iso ./kernel ./linker ./scripts ./tests ./user \
+                 -type f ! -path './build/*' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum > final.sha256
+            if cmp -s manifest.sha256 final.sha256; then echo FINAL_SNAPSHOT_HASH_MATCH=PASS; else echo FINAL_SNAPSHOT_HASH_MATCH=FAIL; fi
+            grep -E '^SHARD |MAKE EXIT|Reproducible build:' regression.log || true
+            if [ "$PART" = static ]; then
+              echo "UNDEFINED_SYMBOLS=$(nm -u build/madire.elf | wc -l)"
+              echo "LIBGCC_LIBC_HELPERS=$(find build -name '*.o' -not -path 'build/unit/*' -not -path 'build/repro*' -print0 |
+                   xargs -0 -n1 nm -u | grep -cE '__(udiv|div|mod|umod|mul|popcount|stack_chk)|^ *U (memset|memcpy|memmove|memcmp|strlen)$' || true)"
+              echo "SSE_X87_REGISTER_USES=$(objdump -d build/madire.elf | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]' || true)"
+              end=$(nm -n build/madire.elf | awk '$3 == "__kernel_end" {print $1; exit}')
+              echo "KERNEL_END_VIRTUAL=0x$end"
+              echo "TWO_MIB_MARGIN_BYTES=$(( 0x200000 - (0x$end - 0xffffffff80000000) ))"
+            fi
+          } 2>&1 | tee checks.txt
+          sha256sum build/madire.elf build/madire.kernel build/madire-os.iso | tee hashes.txt
+
+      - name: Upload this job's results for the combining job (kept 1 day)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shard-${{ matrix.part }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            commit.txt
+            manifest.sha256
+            final.sha256
+            tools.txt
+            duration.txt
+            make-exit.txt
+            checks.txt
+            hashes.txt
+            regression.log
+            build/serial-*.log
+            build/*.keys.txt
+            build/*.irq1.txt
+            build/stall/
+            build/helper-calls.trace
+            build/helper-logs/
+
+      - name: Fail the job if its part failed
+        if: always()
+        run: test "$(cat make-exit.txt 2>/dev/null)" = 0
+
+  combine:
+    needs: shard
+    if: always() && inputs.mode == 'sharded'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Refuse anything but a full commit SHA
+        env:
+          REF: ${{ inputs.ref }}
+        run: printf '%s\n' "$REF" | grep -qxE '[0-9a-f]{40}'
+
+      - name: Check out the commit under test (for the test scripts)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Install mawk and gawk (helper replay)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mawk gawk > /dev/null
+
+      - name: Download every job's results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: shard-*
+          path: shards
+
+      - name: Combine (tests/combine-shards.sh)
+        run: |
+          start=$(date +%s)
+          set +e
+          bash tests/combine-shards.sh shards
+          rc=$?
+          set -e
+          echo "seconds: $(( $(date +%s) - start ))" > shards/combine-duration.txt
+          echo "$rc" > shards/combine-exit.txt
+
+      - name: Upload the combined report and every job's results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regression-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: shards/
+
+      - name: Fail the job if the combined regression failed
+        if: always()
+        run: test "$(cat shards/combine-exit.txt 2>/dev/null)" = 0
