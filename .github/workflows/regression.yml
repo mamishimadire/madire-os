@@ -6,7 +6,8 @@
 # "combine" (tests/combine-shards.sh): same commit, files and kernel in
 # every job, every part run once, the part "final" over every job's serial
 # logs, the counts against tests/expected-checks.txt, the helper replay.
-# mode=full: `make unit test iso` in one job, as before.
+# mode=full: `make unit test iso` in one job, as before; since 0.12 stage 4
+# its artifact also holds build/madire-os.iso, for the VirtualBox acceptance.
 # parts=all (default): the regression as above. parts=stress (0.12 stage
 # 2b, on request only): one job, `make test-shard SHARD=stress`, the
 # kill-path stress test; the mode is then ignored and no other job runs.
@@ -141,6 +142,7 @@ jobs:
             build/helper-calls.trace
             build/helper-logs/
             build/replay-*.txt
+            build/madire-os.iso
 
       - name: Fail the job if the regression failed
         if: always()
