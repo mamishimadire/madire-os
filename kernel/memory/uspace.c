@@ -1,4 +1,5 @@
 /* Address spaces (see uspace.h). */
+#include "kernel/arch/x86/irq.h"
 #include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pte.h"
@@ -14,6 +15,56 @@ static uint64_t read_cr3(void)
     return v;
 }
 
+/* 0.12 stage 2b (self-check): every user address space's PML4 frame from
+ * uspace_create until uspace_destroy frees it. Global, so the stall capture
+ * (tests/qemu_capture.py) can read it. Changed with interrupts off. */
+uint64_t uspace_live_pml4[USPACE_LIVE_MAX];
+uint32_t uspace_live_count;
+
+static bool live_add(uint64_t pml4)
+{
+    uint32_t f = irq_save();
+    bool ok = uspace_live_count < USPACE_LIVE_MAX;
+    if (ok)
+        uspace_live_pml4[uspace_live_count++] = pml4;
+    irq_restore(f);
+    return ok;
+}
+
+static void live_remove(uint64_t pml4)
+{
+    uint32_t f = irq_save();
+    for (uint32_t i = 0; i < uspace_live_count; i++) {
+        if (uspace_live_pml4[i] == pml4) {
+            uspace_live_pml4[i] = uspace_live_pml4[--uspace_live_count];
+            uspace_live_pml4[uspace_live_count] = 0;
+            irq_restore(f);
+            return;
+        }
+    }
+    irq_restore(f);
+    panicf("uspace_destroy: PML4 0x%016llx is not a live\n address space.",
+           (unsigned long long)pml4);
+}
+
+bool uspace_live(uint64_t pml4)
+{
+    pml4 &= PTE_ADDR_MASK;
+    for (uint32_t i = 0; i < uspace_live_count; i++)
+        if (uspace_live_pml4[i] == pml4)
+            return true;
+    return false;
+}
+
+void uspace_test_forget(uint64_t pml4)
+{
+    uint32_t f = irq_save();
+    for (uint32_t i = 0; i < uspace_live_count; i++)
+        if (uspace_live_pml4[i] == pml4)
+            uspace_live_pml4[i] = uspace_live_pml4[--uspace_live_count];
+    irq_restore(f);
+}
+
 bool uspace_is_current(const struct uspace *as)
 {
     return as->pml4 && (read_cr3() & PTE_ADDR_MASK) == as->pml4;
@@ -25,6 +76,10 @@ bool uspace_create(struct uspace *as)
     uint32_t frame = memory_alloc_page();
     if (!frame)
         return false;
+    if (!live_add(frame)) {                 /* 0.12 stage 2b: never expected */
+        memory_free_page(frame);
+        return false;
+    }
     /* The kernel half as the kernel's PML4 has it. Read through the
      * recursive mapping of whatever PML4 is loaded: every PML4 has the same
      * kernel half (the freeze), except entry 510, which is replaced. */
@@ -93,6 +148,7 @@ void uspace_destroy(struct uspace *as, struct uvm_teardown_stats *out)
         panic("uspace_destroy: the address space is not loaded.");
     uvm_teardown(&as->uvm, out);
     uspace_leave();                 /* CR3 = the kernel's: nothing uses this PML4 now */
+    live_remove(as->pml4);          /* 0.12 stage 2b: before the frame is free */
     memory_free_page((uint32_t)as->pml4);
     as->pml4 = 0;
 }

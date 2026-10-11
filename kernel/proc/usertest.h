@@ -87,6 +87,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 bool usertest_rsp0(void);
 bool usertest_clac(void);
@@ -104,5 +105,16 @@ bool usertest_userchurn(void);
 void usertest_smep(void);
 void usertest_smap(void);
 bool usertest_elfrun(void);
+/* 0.12 stage 2b: each must panic (test=selfcheckcr3, selfcheckswitch,
+ * selfcheckpick, selfcheckring3, selfcheckring3cr3; see usertest.c). */
+void usertest_selfcheck_cr3(void);
+void usertest_selfcheck_switch(void);
+void usertest_selfcheck_pick(void);
+void usertest_selfcheck_ring3(void);
+void usertest_selfcheck_ring3cr3(void);
+/* 0.12 stage 2b: test=killrace (only in the stress part). 0.12 stage 3:
+ * with seeded (boot option seed=N), each kill comes after a pseudo-random
+ * amount of extra work derived from seed; without, the delays are fixed. */
+bool usertest_killrace(bool seeded, uint32_t seed);
 
 #endif

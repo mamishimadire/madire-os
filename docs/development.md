@@ -116,19 +116,32 @@ user/                     built-in user programs (0.10)
   prog/*.c                one file per program (19 in 0.10)
 linker/linker.ld          kernel memory layout (64-bit; loaded at 1 MiB, linked and
                           run at 0xFFFFFFFF80000000 + physical since 0.8)
-iso/boot/grub/grub.cfg    GRUB menu (normal boot + Diagnostics)
+iso/boot/grub/grub.cfg    GRUB menu (normal boot + Diagnostics); since 0.12 the default
+                          entry's title holds @MADIRE_OS_VERSION@, replaced from
+                          kernel/kernel.h into build/grub.cfg (one version source)
 scripts/
   install-deps.sh         installs the toolchain on Ubuntu (run by .devcontainer/)
   user-images.sh          checks each built-in program and writes the image
                           table, build/user/images.asm (0.10)
   build.ps1               Windows: build + test inside the GitHub Codespace
+  actions-regress.ps1     Windows: the official regression on GitHub Actions
+                          (dispatch, collect; 0.12)
+  remote-regress.ps1      Windows: the full regression in the Codespace (fallback)
   run.ps1                 Windows: boot the ISO in VirtualBox
   vbox-acceptance.ps1     Windows: scripted VirtualBox acceptance test (0.9)
   check-bootscreen.sh     build check: boot screen only via BOOTSCREEN_SAFE() (0.9)
   logo-preview.py         reference model + PNG preview of the logo
 tests/
   unit/                   host unit tests for the pure modules (`make unit`)
-  qemu-tests.sh           automated QEMU tests (`make test`)
+  qemu-tests.sh           automated QEMU tests (`make test`); since 0.12 the
+                          checks are in parts, sourced in order:
+  qemu-lib.sh             helpers and the normal-boot fixture that parts share
+  qemu-part-*.sh          the parts: static, 1-4, final (`make test-shard
+                          SHARD=<part>` runs one)
+  expected-checks.txt     the agreed checks per tag and unit suites (0.12)
+  check-counts.sh         compares a run's counts with expected-checks.txt
+  combine-shards.sh       combines a sharded Actions run (0.12)
+  helper-replay.sh        replays the pattern helpers under mawk and gawk
   memory_check.py         independent recomputation of the kernel's memory figures
   qmp_keys.py             types scripted keys or text into QEMU over QMP
   qmp_screen.py           reads QEMU's VGA text screen over QMP and checks rows (0.9.2)
@@ -317,15 +330,48 @@ From PowerShell, put the remote command in single quotes (or a script file): ins
 
 `scripts/build.ps1` still runs `make iso test` in the foreground. That's fine when nothing can cut it off, but its result is not the evidence for a stage or a milestone.
 
-### `scripts/remote-regress.ps1` (since 0.11: the regression tool)
+### GitHub Actions (since 0.12: the official regression environment)
+
+Since 0.12 the official regression runs on GitHub-hosted runners (`.github/workflows/regression.yml` on `main`; owner's decision after stage 0, when the Codespace and Actions gave the same kernel and the same 1071 results on one commit). The Codespace (`scripts/remote-regress.ps1`, below) is the fallback: for environmental failures on Actions, or on the owner's request. From PowerShell, in the repository:
+
+```powershell
+.\scripts\actions-regress.ps1 -Dispatch              # sharded (default): about 20 minutes
+.\scripts\actions-regress.ps1 -Dispatch -Mode full   # one job, as before: about 48 minutes
+.\scripts\actions-regress.ps1 -Dispatch -Parts stress  # only the kill-path stress test (0.12 stage 2b)
+.\scripts\actions-regress.ps1 -Collect <run id>      # after the run has finished
+```
+
+- **Dispatch** refuses a working tree with changes and a commit that isn't on GitHub, then starts the workflow with the commit as a full 40-character SHA (`gh workflow run regression.yml --ref main -f ref=<sha> -f mode=<mode>`), prints the run id and returns. It doesn't wait: collect the run when it has finished (or when asked for its status).
+- **Collect** downloads the run's artifact into `build\regression\<run id>\results\` (git-ignored), checks the commit and prints the summary; the per-boot logs of the last 3 collected runs are kept. **Every Actions run used as evidence is collected.**
+- **The workflow:** started by hand only (`workflow_dispatch`; no push, pull-request or scheduled trigger), `permissions: contents: read`, no secrets, `persist-credentials: false`, QEMU's software emulation only (TCG; KVM is never enabled), every action pinned to a full commit SHA with its version in a comment, the result artifact kept 7 days (the per-job artifacts of a sharded run, 1 day). Free plan: 2,000 minutes a month; a sharded run uses about 70 job minutes, a full run about 48. Changing the workflow is a change to `main` and needs the owner's approval.
+- **Sharded mode** (the default): five jobs in parallel, one per part of the QEMU tests (`make test-shard SHARD=<part>`; the parts are listed by `bash tests/qemu-tests.sh --list-parts`): `static` (also `make unit`, `make repro` and the symbol, libgcc/libc, SSE/x87 and 2 MiB margin checks) and `1` to `4`. Every job checks out the same commit, builds the kernel itself and records its hashes and the SHA-256 manifest of the files under test. The job `combine` then runs `tests/combine-shards.sh`: the same commit, the same files and the same `madire.elf` and `madire.kernel` in every job (whether the ISO is identical too is reported, not required); every part run exactly once, in its own job, to its end; the part `final` over every job's serial logs; the unit suites and `make repro` run once; the counts against `tests/expected-checks.txt`; the helper replay under mawk and gawk. Its `regression.log` holds every job's log in order and the combined summary, with the same `ALL TESTS PASSED (… checks: …)` line as a full run.
+- **Full mode:** `make unit test iso` in one job, as on the Codespace, plus the helper replay. Used to compare with a sharded run, and for commits from before the split.
+- **Stress (0.12 stage 2b, on request only):** the workflow input `parts` is `all` by default (the regression above, unchanged) or `stress`: then a single job runs `make test-shard SHARD=stress` (`tests/qemu-part-stress.sh`: `test=killrace` boots and console kill sessions) and no other job runs. The part is not in `--list-parts`, so no full or sharded run includes it; its checks are tagged `[stress]` and kept out of `tests/expected-checks.txt` (the run prints `STRESS_COUNTS`). About 20 job minutes.
+
+The split is proven before it is used (stage 0c): a one-off script checks that every line of the single script was moved, none deleted or changed; and one full and one sharded run on the same commit must give identical counts per tag, identical sorted lists of passed checks and the same kernel in every build.
+
+### `scripts/remote-regress.ps1` (since 0.11; since 0.12 the fallback)
 
 Since 0.11 the procedure above is automated, and the full suite takes **about 50 minutes** (0.11: 1071 QEMU checks, 51 unit suites). From PowerShell, in the repository:
 
 ```powershell
-.\scripts\remote-regress.ps1          # Codespace target (the only one approved)
+.\scripts\remote-regress.ps1          # Codespace target (the fallback since 0.12)
 ```
 
-It requires the Codespace to be **Shutdown** and 2-core, then: hashes every file under test (`Makefile`, `boot/`, `drivers/`, `iso/`, `kernel/`, `linker/`, `scripts/`, `tests/`, `user/`) into a manifest; packs the snapshot and checks the archive against the manifest; **starts the Codespace**; checks that no earlier regression is still running; uploads the snapshot into a fresh `/workspaces/madire-regression-<run id>`; **proves its own hash guard** (a deliberately altered copy must be rejected before anything runs, and the correct copy must pass); starts `make unit test iso` detached; polls every 60 s until `MAKE EXIT`; runs the checks (the summary, every unit suite, no `grub.cfg` repro notices, no undefined symbols, no libgcc/libc helpers, 0 SSE/x87 uses, the kernel end and the 2 MiB margin, failing below 32 KiB); confirms the remote snapshot's hashes still match; downloads `regression.log` and the stage 5 screen evidence; and **stops the Codespace** (also after a failure), printing the session's length. The last line `RESULTS=<folder>` names the local copy. Run it in the background and read its output when it ends; a pass prints `REMOTE_REGRESSION_RESULT=PASS` and `CODESPACE_SHUTDOWN=CONFIRMED`. Planned: it should also download the per-boot serial logs.
+It requires the Codespace to be **Shutdown** and 2-core, then: hashes every file under test (`Makefile`, `boot/`, `drivers/`, `iso/`, `kernel/`, `linker/`, `scripts/`, `tests/`, `user/`) into a manifest; packs the snapshot and checks the archive against the manifest; **starts the Codespace**; checks that no earlier regression is still running; uploads the snapshot into a fresh `/workspaces/madire-regression-<run id>`; **proves its own hash guard** (a deliberately altered copy must be rejected before anything runs, and the correct copy must pass); starts `make unit test iso` detached; polls every 60 s until `MAKE EXIT`; runs the checks (the summary, every unit suite, no `grub.cfg` repro notices, no undefined symbols, no libgcc/libc helpers, 0 SSE/x87 uses, the kernel end and the 2 MiB margin, failing below 32 KiB); confirms the remote snapshot's hashes still match; downloads `regression.log` and the stage 5 screen evidence; and **stops the Codespace** (also after a failure), printing the session's length. The last line `RESULTS=<folder>` names the local copy (`build\regression\<run id>\results\`). Run it in the background and read its output when it ends; a pass prints `REMOTE_REGRESSION_RESULT=PASS` and `CODESPACE_SHUTDOWN=CONFIRMED`. It runs the full mode (`make unit test iso`, every part in order), which also checks the counts against `tests/expected-checks.txt`.
+
+**The local Kali target (`-Target Kali`; optional, not used).** GitHub Actions is the official test environment (the Codespace until 0.12). The first full run on Kali (after 0.11) did not pass: VirtualBox runs every VM on this laptop through the Windows Hypervisor Platform (NEM, because Windows VBS is running; see [testing.md](testing.md)), and under that backend the Kali VM's CPUs were starved during the long run (boots too slow for the fixed time limits, RCU stalls in Kali). **Correction (0.12):** part of those failures were not the VM's slowness but a harness bug: Kali's `awk` is gawk, which processes escape sequences in `awk -v` values (`\(` became `(`, so some patterns were wrong or invalid), while the Codespace's mawk keeps them; the same failures appeared on GitHub Actions (also gawk). Since 0.12 the helpers read their patterns from the environment (see [testing.md](testing.md)). The time-outs and RCU stalls remain the NEM starvation. **Kali is for builds and unit tests only** (AGENTS.md, since 0.12): its QEMU timing, stress and kernel-margin results are never evidence; only GitHub Actions results (QEMU 8.2.2, gcc 13) count. Kali therefore stays powered off; the target stays in the script, documented here, and no step requires it. What it does: the same run on the local Kali Linux VM in VirtualBox (`kali-linux-2026.2-virtualbox-amd64`: 4 CPUs, 6 GB, NAT with SSH forwarded to `127.0.0.1:2222`), so builds and tests cost no Codespace time:
+
+```powershell
+.\scripts\remote-regress.ps1 -Target Kali
+```
+
+- **Login by key only:** the dedicated key `%USERPROFILE%\.ssh\madire_kali_ed25519` (no passphrase; in Kali's `authorized_keys` restricted with `from="10.0.2.2"`, the NAT gateway, so it works only through the port forward) and Kali's host key pinned in `%USERPROFILE%\.ssh\known_hosts_madire_kali` (`StrictHostKeyChecking=yes`, `BatchMode`, password login refused by the client). No password, token or GitHub credential is in any script, file or the VM: the snapshot is uploaded with `scp`, never cloned.
+- **The VM:** the script refuses to run while `MadireOS-Test` is running; it starts Kali headless (unless it is already running, in which case it is left running afterwards), waits for SSH, runs in `/home/kali/madire-regression-<run id>`, and afterwards shuts Kali down with the ACPI power button (a hard power-off after 2 minutes if needed), also after a failure. The preflight logs every tool's version (gcc, ld, nasm, grub-mkrescue, QEMU, Python, the OS) and refuses with less than 2 GiB free.
+- **Toolchain:** Kali is a rolling distribution, so its toolchain is held during a milestone (`apt-mark hold` on gcc, binutils, nasm, grub, qemu and python3) and upgraded only between milestones; every run logs the versions.
+- **Kernel hashes depend on the toolchain:** each environment has its own byte-identical kernel (`make repro` within it). [PROGRESS.md](PROGRESS.md) records the reference environment, its tool versions and kernel hash per milestone.
+
+Local results (both targets) go to `build\regression\<run id>\results\` (git-ignored), never to the system temp folder. Since 0.12 they include `boot-logs.tar.gz`: every per-boot QEMU serial log (`build/serial-*.log`), the key evidence (`*.keys.txt`, `*.irq1.txt`) and the stall captures; the tars of the last 3 runs are kept, older ones deleted. The tar also holds `helper-calls.trace` (every `expect_next`, `expect_in_order` and `max_width` call with its patterns and its log, saved in `helper-logs/` under its SHA-256 as it was at the call) and the output of `tests/helper-replay.sh`, which replays every call under mawk and gawk with the helpers before 0.12 (`awk -v`) and since (`ENVIRON`) and counts differing verdicts and awk errors; it decides no check. `scripts/compare-serial.py VBOX_DIR QEMU_DIR PREFIX` compares VirtualBox's serial logs (from `vbox-acceptance.ps1`) with the unpacked QEMU logs: result lines with numbers and addresses masked, listing what appears in only one of them. The checks script's summary (`UNDEFINED_SYMBOLS`, `SSE_X87_REGISTER_USES`, `KERNEL_END_*`, `TWO_MIB_MARGIN`) is now printed in the tool's output.
 
 **Codespaces is a paid resource.** Start a Codespace for a task and stop it as soon as the results are collected (the tool does both); don't leave one idle, and keep extra sessions (for example to fetch an ISO) short. An idle Codespace also stops itself after a while, which once cut off a regression that nothing polled.
 

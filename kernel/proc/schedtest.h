@@ -25,6 +25,9 @@ bool schedtest_preemptlong(void);   /* test=preemptlong: policy (b), 0.11 */
 bool schedtest_threadleak(void);    /* test=threadleak: 2000 threads, stack peaks */
 bool schedtest_pingpong_preempt(void); /* test=pingpongpreempt: relaxed order branch */
 bool schedtest_pingpong_bad(void);  /* test=pingpongbad: a wrong order still fails */
+/* test=waitstall (0.12 stage 3): with the timer stopped (interrupts off), a
+ * bounded wait and thread 0's bounded sleep end as stalls, each logged. */
+bool schedtest_waitstall(void);
 
 /* Deliberate kernel bugs; each must end on the crash screen. */
 void schedtest_preempt_yield(void); /* test=preemptyield */

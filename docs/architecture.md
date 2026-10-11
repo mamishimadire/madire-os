@@ -542,7 +542,7 @@ After "System ready.", `kernel.c` runs the idle loop on thread 0. It sleeps unti
   - While the boot screen shows, a pressed key updates "Last key" and **opens the console** (if it was offered). That key isn't typed.
   - Once the console is active, every key event goes to `console_handle_key()`.
 - **Counters:** new drops and unexpected IRQs are reported to serial.
-- **Uptime:** when the seconds counter changes, "Uptime" is redrawn while the boot screen shows, and every 5 s `uptime: N s` goes to serial.
+- **Uptime:** when the seconds counter changes, "Uptime" is redrawn while the boot screen shows, and every 5 s `uptime: N s` goes to serial (since 0.12 through `kserialf`, serial only: it is not in the kernel log, so it never fills `dmesg`).
 
 All screen output happens here, on thread 0, and no output at all happens in interrupt context. The shell runs here too, one command at a time. A key arriving just before `hlt` waits at most one timer tick (10 ms).
 
@@ -938,7 +938,7 @@ Built-in images and ELF files are both turned into a **load plan**, and `process
 - `klogf`: writes to serial only, for diagnostics that shouldn't appear on screen.
 - `ksnprintf`: formats into a buffer.
 
-**Kernel log (0.9.1):** every character `kputc` and `klogf` send to the serial port is also copied into a 32 KiB ring buffer in `kprintf.c` (`klog_buffer()`, pure logic in `kernel/logbuf.c`), inside their existing preemption guard; `dmesg` shows it. Text sent to the serial port directly isn't in it: the boot screen's status lines (`bootscreen.c`, protected) and the console's copy of each command's output. Key events are in it only when key logging is on (since 0.9.2: the boot option `keylog` or a keyboard diagnostic), so a normal boot's log holds no typed keys. Because a boot-screen status line's newline goes to serial only, such a line can appear joined to the next one in the log (a documented gap; a fix through `kernel.c` and a log-only call in `kprintf.c` is proposed in [PROGRESS.md](PROGRESS.md)).
+**Kernel log (0.9.1):** every character `kputc` and `klogf` send to the serial port is also copied into a 32 KiB ring buffer in `kprintf.c` (`klog_buffer()`, pure logic in `kernel/logbuf.c`), inside their existing preemption guard; `dmesg` shows it. Text sent to the serial port directly isn't in it: the boot screen's status lines (`bootscreen.c`, protected), the console's copy of each command's output and, since 0.12, the `uptime: N s` heartbeat (`kserialf`, serial only). Key events are in it only when key logging is on (since 0.9.2: the boot option `keylog` or a keyboard diagnostic), so a normal boot's log holds no typed keys. Because a boot-screen status line's newline goes to serial only, such a line can appear joined to the next one in the log (a documented gap; a fix through `kernel.c` and a log-only call in `kprintf.c` is proposed in [PROGRESS.md](PROGRESS.md)).
 
 All of them share one formatter. `panicf` builds on it. Since 0.9 each `kputc`, `kputs`, `kprintf` and `klogf` call runs with preemption off, so lines from different threads never interleave (`ksnprintf` writes only to the caller's buffer and needs no guard). `kputc` also enforces the screen rule: if a thread other than 0 writes to the screen, it panics, naming the thread (the crash screen is exempt). Since 0.7 it also takes the `l` and `ll` length modifiers (`%llx`, `%lu`, …) for 64-bit values, and `%p` prints all 16 hex digits; it has its own unit test (`test_kprintf`).
 

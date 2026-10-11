@@ -57,4 +57,18 @@ void uspace_destroy(struct uspace *as, struct uvm_teardown_stats *out);
 /* True if the address space is the one loaded in CR3. */
 bool uspace_is_current(const struct uspace *as);
 
+/* 0.12 stage 2b (self-check): true if `pml4` (a CR3 value; the low flag
+ * bits are ignored) is the PML4 of an address space between uspace_create
+ * and uspace_destroy. The scheduler and the return to ring 3 refuse any
+ * other user CR3. At most USPACE_LIVE_MAX at once (processes are at most
+ * 63, the 0.10 tests add a few); uspace_create fails beyond that. */
+#define USPACE_LIVE_MAX 80
+bool uspace_live(uint64_t pml4);
+extern uint64_t uspace_live_pml4[USPACE_LIVE_MAX];  /* read by the stall capture */
+extern uint32_t uspace_live_count;
+
+/* test=selfcheckring3cr3 only: drops `pml4` from the live table while it
+ * is still in use, so the next return to ring 3 must panic. */
+void uspace_test_forget(uint64_t pml4);
+
 #endif

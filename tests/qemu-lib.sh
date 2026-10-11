@@ -1,0 +1,121 @@
+# Madire OS QEMU tests: what more than one part uses (0.12, stage 0c).
+# tests/qemu-tests.sh sources this file after its own helpers and before the
+# parts. Apart from this header, the fixtures' comments, fixture_log, the
+# first three lines and the closing brace of fixture_normal_boot and blank
+# lines, every line below was moved unchanged from the single script.
+
+# fixture_normal_boot: the normal boot through GRUB (serial-boot.log) and the
+# boot of the keylog test ISO (KLOG), whose logs parts 1, 2 and 3 read. A full
+# run boots them once, in part 1; a shard run of part 2 or 3 boots them
+# itself. A boot is not a check: the checks on these logs stay in their
+# sections and run once. (The body keeps its original indentation.)
+fixture_normal_boot() {
+[ -z "${FIXTURE_NORMAL_BOOT:-}" ] || return 0
+FIXTURE_NORMAL_BOOT=done
+LOG=$OUT/serial-boot.log
+# 0.4: also type one key after boot, to prove input works in normal mode.
+boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
+# 0.9.2: key events are logged only with the boot option "keylog" (off by
+# default). The checks below that read key lines use a test-only ISO: the
+# same kernel and grub.cfg, with "keylog" added to the default entry only.
+KLOG=$OUT/serial-boot-keylog.log
+KISO=$OUT/madire-os-keylog.iso
+rm -rf "$OUT/isokeylog" && mkdir -p "$OUT/isokeylog/boot/grub"
+cp "$KERNEL" "$OUT/isokeylog/boot/madire.kernel"
+cp -r "$OUT/isodir/boot/prog" "$OUT/isokeylog/boot/prog"   # 0.11: the modules the default entry loads
+sed '0,/^\( *multiboot \/boot\/madire\.kernel\)$/s//\1 keylog/' \
+    "$OUT/grub.cfg" > "$OUT/isokeylog/boot/grub/grub.cfg"
+grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
+boot_keys "$KLOG" 15 "System ready." "x" 0.15 -cdrom "$KISO"
+}
+
+# fixture_log <log> <seconds> <qemu args...>: a boot whose log a part reads
+# but an earlier part makes (the same command as there). A full run made it
+# already, so only a shard run boots it. A boot is not a check.
+fixture_log() {
+    [ "$SHARD" = all ] && return 0
+    boot "$@"
+}
+
+# max_width <log> <start regex> <end regex>: longest line from the first
+# line matching <start> to the next line matching <end> (both included).
+max_width() {
+    helper_trace width "$1" "$2" "$3"
+    S="$2" E="$3" awk '
+        !on && $0 ~ ENVIRON["S"] { on = 1 }
+        on { if (length($0) > m) m = length($0) }
+        on && $0 ~ ENVIRON["E"] && !($0 ~ ENVIRON["S"]) { on = 0 }
+        END { print m + 0 }' "$1"
+}
+
+# count_lines <log> <regex> <expected count> <description>
+count_lines() {
+    local n
+    n=$(grep -cE -- "$2" "$1")
+    if [ "$n" -eq "$3" ]; then pass "$4"; else fail "$4 ($n lines, expected $3)"; fi
+}
+
+# owner_check <label> <line prefix regex> <ticks>: 0.11, the line "<prefix>:
+# longest turn taken by ..." exists, names the thread (with its process, or
+# "kernel thread", or "ring-3 thread, no process") and gives exactly the
+# ticks the existing longest-turn line reported. The last such line in $LOG
+# is the one checked (a diagnostic's own lines come after the boot's).
+owner_check() {
+    local ow
+    ow=$(grep -E "^$2: longest turn taken by " "$LOG" | tail -1)
+    echo "      ${ow:-no owner line}"
+    if [ -n "$3" ] && { grep -qE ": longest turn taken by thread [0-9]+ '[^']+' \((kernel thread|user process [0-9]+|ring-3 thread, no process)\): $3 ticks$" <<< "$ow" ||
+         { [ "$3" = 0 ] && grep -qE ": longest turn taken by no thread \(no turn of 1 tick or more\)$" <<< "$ow"; }; }; then
+        pass "[0.11] $1: the longest turn's owner logged, with the $3 ticks reported"
+    else
+        fail "[0.11] $1: owner line missing or inconsistent (${ow:-none}; reported ${3:-?} ticks)"
+    fi
+}
+
+# boot_until <log> <seconds> <line> <qemu args...>: like boot, but stops QEMU
+# as soon as a line of the log is exactly <line> (the whole line, compared as
+# text), so a deliberate halt need not wait for its time limit (0.12 stage
+# 2b). If the line never comes, QEMU runs to its time limit as with boot, and
+# the checks on the log fail.
+boot_until() {
+    local log=$1 secs=$2 line=$3
+    shift 3
+    rm -f "$log"
+    timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
+        -serial file:"$log" "$@" >/dev/null 2>&1 &
+    local qpid=$!
+    while kill -0 "$qpid" 2>/dev/null; do
+        if [ -f "$log" ] && grep -qxF -- "$line" "$log"; then
+            sleep 0.5                   # anything still in flight reaches the log
+            kill "$qpid" 2>/dev/null
+            break
+        fi
+        sleep 0.2
+    done
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+}
+
+# thread_diag <name> <seconds>: boots test=<name> into serial-<name>.log.
+thread_diag() {
+    LOG=$OUT/serial-$1.log
+    boot "$LOG" "$2" -m 32M -kernel "$KERNEL" -append "test=$1"
+}
+
+# expect_lines <log> <description> <start regex> <regex>...: the lines right
+# after the first line matching <start>, ignoring "key:" event lines, must
+# match the regexes one by one. (The regexes go through the environment, so
+# awk does not process their backslashes.)
+expect_lines() {
+    local log=$1 desc=$2 start=$3
+    shift 3
+    if START="$start" PATS="$(printf '%s\034' "$@")" awk '
+            BEGIN { n = split(ENVIRON["PATS"], p, "\034") - 1 }
+            on && !/^key: / { i++; if ($0 !~ p[i]) exit; if (i == n) { ok = 1; exit } }
+            !on && $0 ~ ENVIRON["START"] { on = 1 }
+            END { exit !ok }' "$log"; then
+        pass "$desc"
+    else
+        fail "$desc (the lines after /$start/ in $log do not match)"
+    fi
+}

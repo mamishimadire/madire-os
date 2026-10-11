@@ -30,7 +30,9 @@ void console_start(const struct memory_stats *mem);
 bool console_active(void);
 
 /* One key event from the keyboard queue. While a program runs in the
- * foreground (0.11, "run") key events are ignored. */
+ * foreground (0.11, "run") or "sleep" waits (0.12) key events are ignored
+ * except Ctrl+C; while "presskey" waits (0.12) the next key press ends the
+ * wait and is not typed. */
 void console_handle_key(const struct key_event *e);
 
 /* 0.11: called from the idle loop (thread 0) on every pass: collects the

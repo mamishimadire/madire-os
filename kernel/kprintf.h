@@ -18,6 +18,10 @@ void kvprintf(const char *fmt, va_list ap);
 /* Kernel log: formatted output to the serial port only (not the screen). */
 void klogf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* 0.12: the serial port only, not the kernel log either (dmesg never shows
+ * it); for periodic lines such as the uptime heartbeat. */
+void kserialf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 /* Formats into buf (always NUL-terminated when size > 0; output that does
  * not fit is cut off). Returns the number of characters stored. */
 size_t ksnprintf(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));

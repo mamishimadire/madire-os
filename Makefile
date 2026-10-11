@@ -6,6 +6,7 @@
 #   make unit   host unit tests for the pure kernel modules (tests/unit/)
 #   make test   unit tests, then tests/qemu-tests.sh: Multiboot header,
 #               normal boot, logo, memory and crash-screen tests in QEMU
+#   make test-shard SHARD=<part>   one part of the QEMU tests (0.12)
 #   make run    boot the ISO in QEMU with a window (on Windows use
 #               scripts/run.ps1 to boot in VirtualBox instead)
 #   make clean  remove build output
@@ -58,10 +59,10 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c \
                             kernel/console/scrollback.c kernel/memory/uvm_core.c                             kernel/memory/usercopy_core.c kernel/proc/syscall_core.c                             kernel/proc/proc_core.c kernel/proc/userimg.c \
                             kernel/proc/elf_core.c kernel/proc/progmod_core.c \
-                            kernel/proc/loadplan.c)
+                            kernel/proc/loadplan.c kernel/proc/diagwait_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test unit user elfcheck repro clean
+.PHONY: all iso run test test-shard unit user elfcheck repro clean
 
 all: $(KERNEL)
 
@@ -139,12 +140,22 @@ $(BUILD)/test-user/flood.elf: $(BUILD)/user/crt0.o $(BUILD)/test-user/flood.o us
 # 0.11: the programs the default entry loads as modules are the ELF files
 # named in grub.cfg's "module /boot/prog/<name>.elf" lines (one list only).
 ISO_PROGS := $(sort $(patsubst /boot/prog/%.elf,%,$(shell if test -f iso/boot/grub/grub.cfg; then grep -o '/boot/prog/[a-z0-9_]*\.elf' iso/boot/grub/grub.cfg; fi)))
-$(ISO): $(KERNEL) iso/boot/grub/grub.cfg $(ISO_PROGS:%=$(BUILD)/user/%.elf)
+# 0.12: one version source. grub.cfg's default entry is titled
+# "Madire OS v@MADIRE_OS_VERSION@"; the build fills in MADIRE_OS_VERSION from
+# kernel/kernel.h, and the ISO and the tests use the generated file.
+MADIRE_VERSION := $(shell sed -n 's/^#define MADIRE_OS_VERSION "\([0-9.]*\)"$$/\1/p' kernel/kernel.h)
+$(BUILD)/grub.cfg: iso/boot/grub/grub.cfg kernel/kernel.h
+	@mkdir -p $(BUILD)
+	@test -n "$(MADIRE_VERSION)" || { echo "cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1; }
+	sed 's/@MADIRE_OS_VERSION@/$(MADIRE_VERSION)/g' iso/boot/grub/grub.cfg > $@
+	@! grep -q '@MADIRE_OS_VERSION@' $@
+
+$(ISO): $(KERNEL) $(BUILD)/grub.cfg $(ISO_PROGS:%=$(BUILD)/user/%.elf)
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
 	mkdir -p $(BUILD)/isodir/boot/grub $(BUILD)/isodir/boot/prog
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
-	cp iso/boot/grub/grub.cfg $(BUILD)/isodir/boot/grub/grub.cfg
+	cp $(BUILD)/grub.cfg $(BUILD)/isodir/boot/grub/grub.cfg
 	for p in $(ISO_PROGS); do cp $(BUILD)/user/$$p.elf $(BUILD)/isodir/boot/prog/$$p.elf || exit 1; done
 	grub-mkrescue -o $@ $(BUILD)/isodir 2>/dev/null
 	@echo "ISO ready: $@"
@@ -194,8 +205,16 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
-test: unit user elfcheck $(ISO) repro
+test: unit user elfcheck $(ISO) $(BUILD)/grub.cfg repro
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
+
+# 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
+# the parts: bash tests/qemu-tests.sh --list-parts), for the parallel jobs
+# of .github/workflows/regression.yml. The unit tests and make repro run
+# only with SHARD=static, so a sharded run runs them once.
+SHARD ?= static
+test-shard: user elfcheck $(ISO) $(BUILD)/grub.cfg $(if $(filter static,$(SHARD)),unit repro)
+	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)
 	qemu-system-x86_64 -cdrom $(ISO) -serial stdio

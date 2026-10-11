@@ -4,6 +4,7 @@
 #include "kernel/arch/x86/gdt_desc.h"
 #include "kernel/arch/x86/gdt.h"
 #include "kernel/arch/x86/interrupts.h"
+#include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pagefault.h"
 #include "kernel/bootmod.h"
 #include "kernel/kprintf.h"
@@ -15,6 +16,7 @@
 #include "kernel/memory/uspace.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/diagwait.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
 #include "kernel/proc/progmod.h"
@@ -22,6 +24,14 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/usertest.h"
 #include "kernel/timer.h"
+
+/* 0.12 stage 3: a test with bounded waits (diagwait.h) fails if any of them
+ * logged a MISMATCH. One diagnostic runs per boot, after the boot self-tests,
+ * which panic on any such line, so the count since boot is this test's. */
+static bool waits_ok(void)
+{
+    return diag_wait_failures() == 0;
+}
 
 /* ---- test=rsp0 ---- */
 
@@ -48,7 +58,9 @@ static int32_t rsp0_worker(void *arg)
 {
     int index = (int)(intptr_t)arg;
     uint32_t round = 0;
-    while (!rsp0_stop) {
+    struct diag_site w;                     /* 0.12 stage 3: thread 0 stops it after 40 ticks */
+    diag_wait_begin(&w, 400);
+    while (!rsp0_stop && diag_wait_poll_strict(&w)) {
         rsp0_check(index);
         volatile uint32_t work = 0;         /* real work: TCG delivers interrupts between blocks */
         for (uint32_t i = 0; i < 4000; i++)
@@ -75,8 +87,9 @@ bool usertest_rsp0(void)
             return false;
         }
     }
-    uint64_t start = timer_ticks();
-    while (timer_ticks() - start < RSP0_TICKS) {
+    struct diag_site w;
+    diag_wait_begin(&w, RSP0_TICKS);
+    while (diag_wait_poll(&w)) {
         rsp0_check(0);
         thread_yield();
     }
@@ -100,6 +113,7 @@ bool usertest_rsp0(void)
           "%u distinct RSP0 values, %u mismatches\n", (unsigned)rsp0_checks, RSP0_WORKERS + 1,
           (unsigned long long)switches, (unsigned long long)preempted, distinct,
           (unsigned)rsp0_mismatches);
+    ok = ok && waits_ok();
     klogf("RSP0 test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -123,8 +137,9 @@ bool usertest_clac(void)
     uint64_t clac0 = cpuprot_clac_count;
     interrupts_ac_probe_start();
     set_ac(true);
-    uint64_t start = timer_ticks();
-    while (timer_ticks() - start < CLAC_TICKS) {
+    struct diag_site w;
+    diag_wait_begin(&w, CLAC_TICKS);
+    while (diag_wait_poll(&w)) {
         volatile uint32_t work = 0;
         for (uint32_t i = 0; i < 4000; i++)
             work += i;
@@ -139,6 +154,7 @@ bool usertest_clac(void)
     klogf("clac test: SMAP %s; %u interrupts taken with AC=1 in the interrupted code; "
           "AC=1 seen by the handler %u times; clac executed %llu times\n",
           st->smap_on ? "on" : "off", total, with_ac, (unsigned long long)clacs);
+    ok = ok && waits_ok();
     klogf("clac test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -181,8 +197,9 @@ static void ua_work(uint32_t n)
 
 static void ua_spin_ticks(uint64_t ticks)
 {
-    uint64_t t0 = timer_ticks();
-    while (timer_ticks() - t0 < ticks)
+    struct diag_site w;
+    diag_wait_begin(&w, ticks);
+    while (diag_wait_poll(&w))
         ua_work(2000);
 }
 
@@ -469,6 +486,7 @@ bool usertest_uaspace(void)
           line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
 
+    ok = ok && waits_ok();
     klogf("Address-space test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -531,7 +549,7 @@ bool usertest_userspin(void)
         klogf("User-mode test: FAIL (could not create the spin thread)\n");
         return false;
     }
-    thread_sleep(US_TICKS);             /* thread 0 polls: spin runs, and is preempted */
+    diag_sleep(US_TICKS);               /* thread 0 polls: spin runs, and is preempted */
     struct user_irq_probe p;
     interrupts_user_probe_stop(&p);
     uint64_t switches = thread_switches() - switches0, turn = thread_turn_max();
@@ -592,6 +610,7 @@ bool usertest_userspin(void)
     klogf("User-mode test: longest turn taken by %s\n", who);
 
     klogf("User-mode test: spin keeps running in ring 3 (no exit or kill before stage 4b)\n");
+    ok = ok && waits_ok();
     klogf("User-mode test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -610,7 +629,8 @@ static bool uk_wait_returns(int32_t pid, uint64_t after)
     while (process_user_returns(pid) <= after) {
         if (timer_ticks() - t0 > UK_WAIT)
             return false;
-        thread_sleep(1);
+        if (!diag_sleep(1))                     /* 0.12 stage 3: stalled (logged) */
+            return false;
     }
     return true;
 }
@@ -744,6 +764,7 @@ bool usertest_userkill(void)
     thread_turn_owner(who, sizeof(who));
     klogf("User kill test: longest turn taken by %s\n", who);
 
+    ok = ok && waits_ok();
     klogf("User kill test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -890,6 +911,7 @@ static bool uf_run(const char *t, const struct uf_case *cases, int count, bool (
     if (extra && !extra(t))
         ok = false;
 
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -1094,6 +1116,7 @@ bool usertest_usersys(void)
           live1, left, line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
 
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -1191,6 +1214,7 @@ bool usertest_userio(void)
           live1, left, line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
 
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -1254,6 +1278,7 @@ bool usertest_boot(void)
           procs, bad, free0, free1, tables0, tables1, stacks0, stacks1, live0, live1, left,
           line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -1276,7 +1301,9 @@ static int32_t upr_frames(void *arg)
 {
     (void)arg;
     uint32_t bad = 0, ops = 0, frames[UPR_FRAMES];
-    while (!upr_stop) {
+    struct diag_site w;                     /* 0.12 stage 3: stopped after about 300 ticks */
+    diag_wait_begin(&w, 1000);
+    while (!upr_stop && diag_wait_poll_strict(&w)) {
         for (unsigned i = 0; i < UPR_FRAMES; i++) {
             frames[i] = memory_alloc_page();
             if (frames[i]) {
@@ -1328,7 +1355,7 @@ bool usertest_userpreempt(void)
         pid[i] = process_start("spin", upr_cases[i].arg);
     upr_stop = false;
     int32_t kt = thread_create("frames", upr_frames, 0, false);
-    thread_sleep(UPR_TICKS);            /* thread 0 polls: everything else runs */
+    diag_sleep(UPR_TICKS);              /* thread 0 polls: everything else runs */
 
     /* 0.11: every figure, and the longest turn's owner, read at one moment:
      * with preemption off no switch happens, so no turn ends in between. */
@@ -1382,6 +1409,7 @@ bool usertest_userpreempt(void)
           "%u, live threads %u -> %u, processes left %u: %s\n", t, free0, free1, tables0, tables1,
           stacks0, stacks1, live0, live1, left, line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -1469,6 +1497,7 @@ bool usertest_userchurn(void)
           tables, bad, free0, free1, tables0, tables1, stacks0, stacks1, live0, live1, left,
           line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -1555,7 +1584,8 @@ static bool er_run(const char *name, uint64_t arg, bool module, int32_t *pid_out
     if (is_spin) {
         uint64_t t0 = timer_ticks();
         while (timer_ticks() - t0 < 50 && process_user_returns(pid) < 3)
-            thread_sleep(1);
+            if (!diag_sleep(1))                 /* 0.12 stage 3: stalled (logged) */
+                break;
         *returns = process_user_returns(pid);
         process_kill(pid);
     }
@@ -1710,6 +1740,251 @@ bool usertest_elfrun(void)
           "live threads %u -> %u, processes left %u: %s\n", t, free0, free1, tables0, tables1,
           stacks0, stacks1, live0, live1, left, line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
+    ok = ok && waits_ok();
+    klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* ---- test=selfcheck* (0.12 stage 2b): the always-on self-check ---- */
+
+/* Each mode creates one state the kernel must never reach and must panic on
+ * it, naming it: a destroyed address space loaded (thread_set_cr3), or
+ * switched to (switch_threads), a thread taken off the run queue that was
+ * not ready (switch_threads), and a return to ring 3 by a thread whose
+ * process has ended, or without a live address space
+ * (process_return_to_user). Nothing returns; a line with "(WRONG)" means
+ * the check did not fire. */
+
+/* A destroyed address space: its PML4 frame is freed, no longer live. */
+static uint64_t sc_dead_pml4(void)
+{
+    struct uspace as;
+    struct uvm_teardown_stats st;
+    if (!uspace_create(&as))
+        panic("Self-check test: no frame for the address space.");
+    uspace_enter(&as);
+    uint64_t pml4 = as.pml4;
+    uspace_destroy(&as, &st);
+    return pml4;
+}
+
+static int32_t sc_victim(void *arg)
+{
+    (void)arg;
+    klogf("Self-check test: the victim thread ran (WRONG)\n");
+    return 0;
+}
+
+void usertest_selfcheck_cr3(void)
+{
+    uint64_t pml4 = sc_dead_pml4();
+    klogf("Self-check test: loading the destroyed PML4 0x%016llx (must panic)\n",
+          (unsigned long long)pml4);
+    thread_set_cr3(pml4);
+    klogf("Self-check test: thread_set_cr3 returned (WRONG)\n");
+}
+
+void usertest_selfcheck_switch(void)
+{
+    uint64_t pml4 = sc_dead_pml4();
+    int32_t t = thread_create("victim", sc_victim, 0, false);
+    thread_test_set_cr3(t, pml4);
+    klogf("Self-check test: thread %d set to the destroyed PML4 0x%016llx; yielding to it "
+          "(must panic)\n", (int)t, (unsigned long long)pml4);
+    thread_yield();
+    klogf("Self-check test: the switch returned (WRONG)\n");
+}
+
+void usertest_selfcheck_pick(void)
+{
+    int32_t t = thread_create("victim", sc_victim, 0, false);
+    thread_test_mark_blocked(t);
+    klogf("Self-check test: thread %d marked blocked while on the run queue; yielding "
+          "(must panic)\n", (int)t);
+    thread_yield();
+    klogf("Self-check test: the switch returned (WRONG)\n");
+}
+
+static struct uspace sc_as;         /* static: the ring-3 thread never returns */
+static struct user_iret sc_frame;
+static struct process_load_stats sc_load;
+static volatile int sc_mode;        /* 1: claims a process; 2: PML4 dropped from the live table */
+
+static int32_t sc_ring3_thread(void *arg)
+{
+    const struct userimg *img = arg;
+    if (!uspace_create(&sc_as))
+        panic("Self-check test: no frame for the address space.");
+    uspace_enter(&sc_as);
+    if (!process_load(&sc_as, img, &sc_load))
+        panic("Self-check test: spin did not load.");
+    user_iret_build(&sc_frame, img);
+    if (sc_mode == 1) {
+        thread_set_pid(4242);       /* as if it had been process 4242, now ended */
+        klogf("Self-check test: thread %d claims process 4242, which does not exist; entering "
+              "ring 3 (must panic at its first interrupt)\n", (int)thread_current());
+    } else {
+        klogf("Self-check test: thread %d's PML4 0x%016llx dropped from the live table; "
+              "entering ring 3 (must panic at its first interrupt)\n", (int)thread_current(),
+              (unsigned long long)sc_as.pml4);
+        /* A fresh slice (5 ticks), then interrupts off from here to iretq
+         * (enter_user keeps them off): no switch can see the dropped PML4
+         * first, so the check that fires is the one on the way back to
+         * ring 3, at the first tick. */
+        thread_yield();
+        (void)irq_save();
+        uspace_test_forget(sc_as.pml4);
+    }
+    enter_user(&sc_frame, 0);       /* arg 0: spin's pure loop, no system calls */
+}
+
+static void sc_ring3(int mode)
+{
+    const struct userimg *img = userimg_find(user_images, user_images_count, "spin");
+    if (!img)
+        panic("Self-check test: no built-in spin image.");
+    sc_mode = mode;
+    if (thread_create("ghost", sc_ring3_thread, (void *)img, true) < 0)
+        panic("Self-check test: no thread.");
+    diag_sleep(300);                /* thread 0 polls; the panic comes long before */
+    klogf("Self-check test: the ring-3 thread kept running for 300 ticks (WRONG)\n");
+}
+
+void usertest_selfcheck_ring3(void)
+{
+    sc_ring3(1);
+}
+
+void usertest_selfcheck_ring3cr3(void)
+{
+    sc_ring3(2);
+}
+
+/* ---- test=killrace (0.12 stage 2b): kills at every point of a start ---- */
+
+/* KR_CYCLES processes are started and killed, each at one of KR_MODES
+ * points: before its thread ran at all (0), after 1 or 2 yields (1, 2:
+ * usually while it is being loaded), after 1, 2 or 3 ticks (3-5), once it
+ * has come back to ring 3 from an interrupt (6), and asleep in nanosleep
+ * (7: sleep's 10 s sleep). spin's argument cycles through its four loops.
+ * Each must end "killed" (or, for a kill that lands after a normal exit,
+ * which cannot happen here, it counts as wrong); at the end no process,
+ * no extra thread, stack, live address space or frame may remain. The
+ * always-on self-check panics on any bad switch, CR3 or return to ring 3. */
+#define KR_CYCLES 400
+#define KR_MODES  8
+/* 0.12 stage 3, with seed=N only: after its wait, each cycle of modes 1-7
+ * does 0 to KR_JITTER_MAX extra work steps (ua_work) before the kill, drawn
+ * from the seed, so the kills move within a tick from one seed to the next
+ * (without a seed every boot repeated the same timings). The modes and
+ * their counts are unchanged; mode 0 kills with preemption off, where
+ * extra work would change nothing. */
+#define KR_JITTER_MAX 500000u
+
+static uint32_t kr_next(uint32_t *s)
+{
+    *s = *s * 1103515245u + 12345u;
+    return *s >> 8;
+}
+
+bool usertest_killrace(bool seeded, uint32_t seed)
+{
+    const char *t = "Kill race test";
+    uint32_t free0 = pmm_free_pages(), stacks0 = thread_stacks_in_use(), live0 = thread_live();
+    uint32_t spaces0 = uspace_live_count;
+    uint32_t done[KR_MODES] = { 0 }, before[KR_MODES] = { 0 }, wrong = 0, start_bad = 0;
+    uint32_t not_ring3 = 0, rng = seed;
+    uint64_t jitter_sum = 0;
+    if (seeded)
+        klogf("%s: seed %u: 0 to %u extra work steps before each kill of modes 1-7\n", t,
+              (unsigned)seed, (unsigned)KR_JITTER_MAX);
+    for (uint32_t i = 0; i < KR_CYCLES; i++) {
+        uint32_t mode = i % KR_MODES;
+        uint32_t jitter = seeded ? kr_next(&rng) % (KR_JITTER_MAX + 1) : 0;
+        if (mode == 0)                              /* no switch until the kill: it never ran */
+            preempt_disable();
+        int32_t pid = mode == 7 ? process_start("sleep", 2) : process_start("spin", (i / KR_MODES) % 4);
+        if (pid <= 0) {
+            if (mode == 0)
+                preempt_enable();
+            start_bad++;
+            continue;
+        }
+        enum proc_status ks = PROC_OK;
+        switch (mode) {
+        case 0:
+            if (process_user_returns(pid) == 0)
+                before[mode]++;
+            ks = process_kill(pid);
+            preempt_enable();
+            break;
+        case 1:
+            thread_yield();
+            break;
+        case 2:
+            thread_yield();
+            thread_yield();
+            break;
+        case 3: case 4: case 5:
+            diag_sleep(mode - 2);
+            break;
+        case 6:
+            if (!uk_wait_returns(pid, 0))
+                not_ring3++;
+            break;
+        case 7:
+            diag_sleep(5);                          /* inside its 10 s nanosleep */
+            break;
+        }
+        if (mode != 0 && jitter) {
+            ua_work(jitter);
+            jitter_sum += jitter;
+        }
+        if (mode != 0) {
+            if (process_user_returns(pid) == 0)
+                before[mode]++;
+            ks = process_kill(pid);
+        }
+        struct proc_result res = { PROC_END_EXIT, 0 };
+        enum proc_status ws = process_wait(pid, &res);
+        if (ks == PROC_OK && uk_killed(ws, &res))
+            done[mode]++;
+        else
+            wrong++;
+        if ((i + 1) % 50 == 0)                      /* the harness tells slow from stuck */
+            klogf("%s: progress: %u of %u cycles, tick %llu\n", t, (unsigned)(i + 1),
+                  (unsigned)KR_CYCLES, (unsigned long long)timer_ticks());
+    }
+    bool ok = true, line_ok;
+    if (seeded)
+        klogf("%s: seed %u: %llu extra work steps in all\n", t, (unsigned)seed,
+              (unsigned long long)jitter_sum);
+    for (uint32_t m = 0; m < KR_MODES; m++)
+        klogf("%s: mode %u: %u of %u killed, %u before any return to ring 3\n", t, (unsigned)m,
+              (unsigned)done[m], (unsigned)(KR_CYCLES / KR_MODES), (unsigned)before[m]);
+    uint32_t killed = 0;
+    for (uint32_t m = 0; m < KR_MODES; m++)
+        killed += done[m];
+    line_ok = killed == KR_CYCLES && wrong == 0 && start_bad == 0 && not_ring3 == 0;
+    klogf("%s: %u started and killed, %u wrong, %u not started, %u never reached ring 3: %s\n",
+          t, (unsigned)killed, (unsigned)wrong, (unsigned)start_bad, (unsigned)not_ring3,
+          line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+    line_ok = before[0] == KR_CYCLES / KR_MODES && before[6] == 0;
+    klogf("%s: kills before the first return to ring 3: mode 0 all (%u), mode 6 none (%u): %s\n",
+          t, (unsigned)before[0], (unsigned)before[6], line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+    while (thread_reap())
+        ;
+    uint32_t free1 = pmm_free_pages(), stacks1 = thread_stacks_in_use(), live1 = thread_live();
+    line_ok = process_live() == 0 && free1 == free0 && stacks1 == stacks0 && live1 == live0 &&
+              uspace_live_count == spaces0;
+    klogf("%s: cleanup: %u processes left, free pages %u -> %u, stacks %u -> %u, threads %u -> %u, "
+          "live address spaces %u -> %u: %s\n", t, (unsigned)process_live(), (unsigned)free0,
+          (unsigned)free1, (unsigned)stacks0, (unsigned)stacks1, (unsigned)live0, (unsigned)live1,
+          (unsigned)spaces0, (unsigned)uspace_live_count, line_ok ? "OK" : "MISMATCH");
+    ok = ok && line_ok;
+    ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");
     return ok;
 }

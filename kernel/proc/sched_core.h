@@ -91,6 +91,12 @@ struct sched {
     bool need_resched;
     uint64_t switches;          /* times `current` changed */
     uint32_t live;              /* threads not FREE (thread 0 included) */
+    /* 0.12 stage 2b (self-check): a thread taken off the run queue that was
+     * not READY; thread.c panics before switching to it. Appended, so the
+     * offsets above (read by tests/qemu_capture.py) do not move. */
+    uint32_t bad_picks;
+    int32_t bad_pick_tid;
+    enum sched_state bad_pick_state;
 };
 
 void sched_init(struct sched *s);

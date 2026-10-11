@@ -132,6 +132,13 @@ void thread_turn_owner(char *buf, size_t size);
  * process's thread starts). Kept until the thread slot is reused, so a
  * turn that ends at the process's exit is still attributed to it. */
 void thread_set_pid(int32_t pid);
+/* 0.12 stage 2b: the process ID a thread ran (0: a kernel thread or a
+ * ring-3 test thread without a process). */
+int32_t thread_pid(int32_t tid);
+/* 0.12 stage 2b, test=selfcheck* only: create the bad states the
+ * self-check must catch (see kernel/proc/usertest.c). */
+void thread_test_set_cr3(int32_t tid, uint64_t cr3);
+void thread_test_mark_blocked(int32_t tid);
 
 /* kputc's check: true while only thread 0 runs, or during a panic. */
 bool thread_screen_allowed(void);

@@ -25,8 +25,7 @@
 #include "kernel/shell/shell.h"
 #include "kernel/timer.h"
 
-#define PROMPT       "madire> "
-#define PROMPT_LEN   8
+#define PROMPT_LEN   SHELL_PROMPT_WIDTH /* 0.12: the prompt is in the shell state */
 #define CONFIRM_PROMPT "yes/no> "   /* 0.9.1: answering "reboot"; also 8 wide */
 
 /* Colours: only VGA slots the boot logo does not reprogram. */
@@ -44,7 +43,8 @@ static const struct memory_stats *boot_mem;
 static struct cpu_info cpu;
 static struct history hist;             /* 0.9.1 */
 static bool confirming;                 /* 0.9.1: the next line answers "reboot" */
-static const char *prompt = PROMPT;
+static struct shell_state shell_st;     /* 0.12: the prompt and the aliases */
+static const char *prompt = shell_st.prompt;
 static struct scrollback sb;            /* 0.9.2: 1000 lines, about 156 KiB */
 static int32_t fg_pid;                  /* 0.11: the foreground program (0: none) */
 static int32_t kill_pid;                /* 0.11: the process "kill" asked about (0: none) */
@@ -52,6 +52,12 @@ static bool ctrl_c_sent;                /* 0.11: Ctrl+C sent to the foreground p
 static uint64_t ctrl_c_tick;
 static int32_t bg_list[PROC_MAX];       /* 0.11: background programs to collect */
 static uint32_t bg_count;
+static struct shell_session session;    /* 0.12 stage 2: variables, waits, time */
+static bool sleeping;                   /* 0.12 stage 2: "sleep" waits */
+static uint64_t sleep_start, sleep_until;
+static bool awaiting_key;               /* 0.12 stage 2: "presskey" waits */
+static bool timing;                     /* 0.12 stage 2: "time": a line is due */
+static uint64_t timing_start;
 static struct outq program_outq;          /* 0.11 stage 5: foreground output */
 static int32_t outq_wait_logged_pid;
 static uint8_t outq_drain[256];
@@ -194,7 +200,7 @@ static void show_prompt(void)
 {
     if (screen.col != 0)
         grid_putc('\n');
-    prompt = confirming ? CONFIRM_PROMPT : PROMPT;
+    prompt = confirming ? CONFIRM_PROMPT : shell_st.prompt;
     write_screen(prompt, ATTR_PROMPT);
     prompt_row = screen.row;
     lineedit_reset(&input);
@@ -348,6 +354,50 @@ static void build_context(struct shell_context *c)
     extras.log = log_copy;
     extras.history = &hist;
     c->extras = &extras;
+
+    /* 0.12: prompt, alias and unalias change this state. */
+    c->state = &shell_st;
+    /* 0.12 stage 2: variables, sleep, presskey, time and kill -y. */
+    c->session = &session;
+}
+
+/* 0.12 stage 2: Ctrl held with c (as for a foreground program). */
+static bool is_ctrl_c(const struct key_event *e)
+{
+    return (e->flags & KEY_PRESSED) && (e->flags & KEY_CTRL) && e->keycode == KEY_CHAR &&
+           (e->ascii == 'c' || e->ascii == 'C' || e->ascii == 3);
+}
+
+/* 0.12 stage 2: the next prompt, after "time"'s line if one is due (not
+ * while a question waits for its answer: the time then covers the answer). */
+static void next_prompt(void)
+{
+    if (timing && !confirming) {
+        char t[SHELL_TIME_LINE_MAX + 1];
+        uint32_t n = 0;
+        timing = false;
+        shell_time_line(t, timer_ticks() - timing_start, TIMER_HZ);
+        while (t[n])
+            n++;
+        t[n] = '\n';
+        t[n + 1] = '\0';
+        if (screen.col != 0)
+            grid_putc('\n');
+        shell_sink(0, t, SHELL_TEXT);
+    }
+    show_prompt();
+    render_all();
+    place_cursor();
+}
+
+/* 0.12 stage 2: a "sleep" or "presskey" wait ends (`text`: why, or 0). */
+static void end_wait(const char *text)
+{
+    sleeping = false;
+    awaiting_key = false;
+    if (text)
+        shell_sink(0, text, SHELL_TEXT);
+    next_prompt();
 }
 
 /* 0.9.1: the answer to "reboot". Only exactly "yes" restarts. */
@@ -363,6 +413,8 @@ static void answer_reboot(const char *answer)
     shell_sink(0, SHELL_REBOOT_CANCELLED "\n", SHELL_TEXT);
 }
 
+static bool end_process(int32_t pid, const char *how);
+
 /* 0.11: the answer to "kill". Only exactly "yes" ends the process; the
  * console then waits for it like a foreground program (its end line, then
  * the prompt). Returns true while it waits. */
@@ -374,13 +426,20 @@ static bool answer_kill(const char *answer)
         shell_sink(0, SHELL_KILL_CANCELLED "\n", SHELL_TEXT);
         return false;
     }
+    return end_process(pid, "kill confirmed");
+}
+
+/* Ends `pid` ("kill" answered "yes", or "kill -y"); the console then waits
+ * for it like a foreground program. Returns true while it waits. */
+static bool end_process(int32_t pid, const char *how)
+{
     if (process_kill(pid) != PROC_OK) {         /* it ended meanwhile */
         char t[64];
         ksnprintf(t, sizeof(t), "kill: process %d has already ended.\n", (int)pid);
         shell_sink(0, t, SHELL_ERROR);
         return false;
     }
-    klogf("console: kill confirmed for process %d\n", (int)pid);
+    klogf("console: %s for process %d\n", how, (int)pid);
     for (uint32_t i = 0; i < bg_count; i++) {
         if (bg_list[i] == pid) {
             bg_list[i] = bg_list[--bg_count];
@@ -415,11 +474,29 @@ static void submit(void)
         history_add(&hist, line);           /* before it runs: "history" lists itself */
         struct shell_context ctx;
         build_context(&ctx);
+        uint64_t started = timer_ticks();
         r = shell_execute(line, &ctx, &sink);
         confirming = r == SHELL_REBOOT || r == SHELL_KILL;
+        if (session.timed) {                /* 0.12 stage 2: "time <command>" */
+            timing = true;
+            timing_start = started;
+        }
+        if (r == SHELL_KILL_NOW) {          /* 0.12 stage 2: "kill -y" */
+            int32_t pid = kill_pid;
+            kill_pid = 0;
+            r = end_process(pid, "kill -y") ? SHELL_RUN : SHELL_OK;
+        } else if (r == SHELL_SLEEP) {
+            sleeping = true;
+            sleep_start = timer_ticks();
+            sleep_until = sleep_start + (uint64_t)session.sleep_seconds * TIMER_HZ;
+            klogf("console: sleep %u s\n", (unsigned)session.sleep_seconds);
+        } else if (r == SHELL_PRESSKEY) {
+            awaiting_key = true;
+            klogf("console: presskey: waiting for a key\n");
+        }
     }
-    if (r == SHELL_RUN) {                   /* 0.11: no prompt until it ends */
-        render_all();
+    if (r == SHELL_RUN || r == SHELL_SLEEP || r == SHELL_PRESSKEY) {
+        render_all();                       /* 0.11: no prompt until it ends */
         place_cursor();
         return;
     }
@@ -431,9 +508,7 @@ static void submit(void)
         klogf("console: scrolled %u lines\n", screen.scrolls - scrolls_before);
     }
 
-    show_prompt();
-    render_all();
-    place_cursor();
+    next_prompt();
 }
 
 /* 0.9.1: Up/Down recall a line from the history into the input line,
@@ -469,6 +544,9 @@ void console_start(const struct memory_stats *mem)
 
     vga_cursor_show(true);
     history_init(&hist);
+    shell_state_init(&shell_st);
+    shell_session_init(&session);
+    sleeping = awaiting_key = timing = false;
     confirming = false;
     active = true;
     show_prompt();
@@ -486,11 +564,45 @@ void console_handle_key(const struct key_event *e)
 {
     if (!active)
         return;
+    if (sleeping) {
+        /* 0.12 stage 2: only Ctrl+C reaches "sleep" (it ends the wait). */
+        if (is_ctrl_c(e)) {
+            klogf("console: Ctrl+C: sleep cancelled after %u ticks\n",
+                  (unsigned)(timer_ticks() - sleep_start));
+            end_wait(SHELL_SLEEP_CANCELLED "\n");
+        }
+        return;
+    }
+    if (awaiting_key) {
+        /* 0.12 stage 2: "presskey" ends at the next key press, which is not
+         * typed; Ctrl+C cancels it. Releases and Shift, Ctrl, Alt, the lock
+         * keys and the Windows keys alone are ignored. The key itself is
+         * never logged. */
+        if (!(e->flags & KEY_PRESSED))
+            return;
+        if (is_ctrl_c(e)) {
+            klogf("console: Ctrl+C: presskey cancelled\n");
+            end_wait(SHELL_PRESSKEY_CANCELLED "\n");
+            return;
+        }
+        switch (e->keycode) {
+        case KEY_NONE: case KEY_LSHIFT: case KEY_RSHIFT: case KEY_LCTRL: case KEY_RCTRL:
+        case KEY_LALT: case KEY_RALT: case KEY_CAPSLOCK: case KEY_NUMLOCK:
+        case KEY_SCROLLLOCK: case KEY_LGUI: case KEY_RGUI:
+            return;
+        default:
+            break;
+        }
+        if (e->flags & KEY_CTRL)            /* Ctrl held with another key */
+            return;
+        klogf("console: presskey: key pressed\n");
+        end_wait(0);
+        return;
+    }
     if (fg_pid) {
         /* 0.11: a program runs in the foreground; only Ctrl+C reaches it
          * (it ends the program). The key is never logged. */
-        if ((e->flags & KEY_PRESSED) && (e->flags & KEY_CTRL) && e->keycode == KEY_CHAR &&
-            (e->ascii == 'c' || e->ascii == 'C' || e->ascii == 3) && !ctrl_c_sent) {
+        if (is_ctrl_c(e) && !ctrl_c_sent) {
             ctrl_c_sent = true;
             ctrl_c_tick = timer_ticks();
             if (process_kill(fg_pid) == PROC_OK)
@@ -543,6 +655,10 @@ void console_poll(void)
 {
     if (!active)
         return;
+    if (sleeping && timer_ticks() >= sleep_until) {     /* 0.12 stage 2 */
+        klogf("console: sleep done after %u ticks\n", (unsigned)(timer_ticks() - sleep_start));
+        end_wait(0);
+    }
     drain_program_output();
     char line[SHELL_END_LINE_MAX];
     for (uint32_t i = 0; i < bg_count; ) {
@@ -574,9 +690,7 @@ void console_poll(void)
         if (screen.col != 0)
             grid_putc('\n');
         shell_sink(0, line, SHELL_TEXT);
-        show_prompt();
-        render_all();
-        place_cursor();
+        next_prompt();
     }
 }
 

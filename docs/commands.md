@@ -1,6 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.6
+# Madire OS Command Standard (MOCS) v0.7
 
-**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned).
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned). v0.7 (Madire OS 0.12): `prompt`, `alias`, `unalias`, `set`, `export`, `env` (listing only), `sleep`, `presskey` and `time` IMPLEMENTED, the new `unset` IMPLEMENTED, `kill -y <pid>` IMPLEMENTED; "Did you mean" suggestions and help sections (`help shell`, `help system`, `help programs`) IMPLEMENTED; Ctrl+C also cancels `sleep` and `presskey`; `env` running a program with a changed environment, and `$NAME` expansion, stay PLANNED.
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -24,9 +24,9 @@ Madire OS provides the foundations that applications need (processes, files, dev
 | **PLANNED** | Planned; the entry names the foundation it needs first |
 | **APPLICATION** | An installable application, not part of Madire OS |
 
-**Implemented today (Madire OS 0.11):** 16 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9; processes too since 0.11), `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1), and `run`, `kill` (0.11). Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
+**Implemented today (Madire OS 0.12):** 26 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9; processes too since 0.11), `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1), `run`, `kill` (0.11; `kill -y` 0.12), and `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `env`, `sleep`, `presskey`, `time` (0.12). Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
 
-**In this standard (v0.6):** 182 commands: 16 IMPLEMENTED, 153 PLANNED and 13 APPLICATION (by level: 20 CORE, 149 SYSTEM, 13 APPLICATION).
+**In this standard (v0.7):** 183 commands: 26 IMPLEMENTED, 144 PLANNED and 13 APPLICATION (by level: 21 CORE, 149 SYSTEM, 13 APPLICATION).
 
 **Notes on the 0.9.1 commands:**
 
@@ -35,12 +35,24 @@ Madire OS provides the foundations that applications need (processes, files, dev
 - `dmesg` shows only what the kernel wrote through `kprintf`/`klogf` (a 32 KiB log). The boot screen's status lines and the console's command output go to the serial port directly and aren't in it (a boot-screen line can therefore appear joined to the next one). Since 0.9.2 key events aren't logged by default, so `dmesg` holds no typed keys (they are logged only with the boot option `keylog`, for tests, or during the keyboard diagnostics).
 - `help <unknown>` prints only `No help for 'X': unknown command.`, without a second sentence, so that every line fits 79 columns (names longer than 40 characters are shortened).
 
-**Today: where the commands run.** Since 0.11 `run` starts programs (ELF files delivered as boot modules), but all 16 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Now that programs can be loaded and managed, SYSTEM commands are expected to move out into separate user programs (once a filesystem holds them, 1.0); CORE commands stay in the shell.
+**Notes on the 0.12 commands** (the decisions are in the decision log of [PROGRESS.md](PROGRESS.md)):
+
+- **Everything is in memory and lost at restart:** the prompt, the aliases and the variables. Every limit below is an error message, never a silent cut.
+- **Help sections:** `help` keeps its list and order (the 0.12 commands are appended) and ends with `Sections: shell system programs (help <section>)`; `help <name>` looks up a section first, then a command. The full list is 28 lines since 0.12, so its first lines scroll into the scrollback (a one-screen design is a follow-up in PROGRESS.md).
+- **"Did you mean":** an unknown command keeps its line `Unknown command: X. Type 'help' for a list of commands.` and gets a second line `Did you mean: …?` with up to 3 names at edit distance at most 2 (case-sensitive; nearest first, then alphabetical), from the commands offered and the current aliases. Nothing is run. `help <unknown>` suggests over sections and commands.
+- **`prompt <text>`:** 1–8 printable ASCII characters, no spaces, not starting with `-`, filling the 8 prompt columns (so the 71-character input line still fits 79 columns); `prompt --reset` restores `madire> `.
+- **`alias <name> <command...>`:** at most 16 aliases; names `[a-z0-9_]{1,15}`, never a built-in's name; the command at most 63 characters and starting with a built-in (so no alias names another); only the first word of a line is expanded, once, and the line is split again under the 8-word limit. `alias` lists them, `alias <name>` shows one.
+- **`set NAME=value`, `set NAME`, `set`:** at most 32 variables; names `[A-Za-z_][A-Za-z0-9_]{0,15}`, case-sensitive, listed in byte order; values at most 63 characters (the value is the rest of the word and the words after it, joined with single spaces; `set A=` gives an empty value). `unset NAME` removes a variable and its export mark. `export NAME` marks a set variable (`export NAME=value` is refused); `env` lists the exported ones. **No variable reaches a program yet**, and there is no `$NAME` expansion: both are PLANNED (passing an environment needs the System V start-up layout, see the follow-ups in PROGRESS.md).
+- **`sleep <seconds>`** waits 1–3600 whole seconds without blocking the kernel; **`presskey`** prints `Press any key to continue...` and waits for a key, which is not typed (Shift, Ctrl, Alt, the lock keys and the Windows keys alone don't count). Ctrl+C cancels either (`sleep: cancelled.`, `presskey: cancelled.`); both are logged only as fixed lines, never as typed keys.
+- **`time <command...>`** runs a built-in command and then prints `time: N ticks (X.XX s)`, after a program's end line, a wait or a question's answer. It doesn't expand aliases (`time: 'll' is an alias; time runs built-in commands only.`), and `time time` is refused.
+- **`kill -y <pid>`** ends a process without asking; the refusals are the same as for `kill <pid>` (usage `kill [-y] <pid>`).
+
+**Today: where the commands run.** Since 0.11 `run` starts programs (ELF files delivered as boot modules), but all 26 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Now that programs can be loaded and managed, SYSTEM commands are expected to move out into separate user programs (once a filesystem holds them, 1.0); CORE commands stay in the shell.
 
 | Command | Level | Today |
 |---|---|---|
-| `help`, `echo`, `history` | CORE | in the kernel console; stays in the shell |
-| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `run`, `kill` | SYSTEM | in the kernel console; expected to become separate programs once a filesystem holds them |
+| `help`, `echo`, `history`, `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `time` | CORE | in the kernel console; stays in the shell |
+| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `run`, `kill`, `env`, `sleep`, `presskey` | SYSTEM | in the kernel console; expected to become separate programs once a filesystem holds them |
 
 **Foundations** named below: processes (0.10 user processes, 0.11 programs and process management), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
 
@@ -52,26 +64,26 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `help` | List the commands; `help <command>` shows one command's purpose and usage | CORE | IMPLEMENTED (0.5; `help <command>` and `<command> --help`: 0.9.1) |
+| `help` | List the commands; `help <command>` shows one command's purpose and usage; `help <section>` lists one section (`shell`, `system`, `programs`) | CORE | IMPLEMENTED (0.5; `help <command>` and `<command> --help`: 0.9.1; sections: 0.12) |
 | `clear` | Clear the screen | SYSTEM | IMPLEMENTED |
 | `echo` | Print text | CORE | IMPLEMENTED |
 | `history` | Show the commands entered since boot (the last 16, numbered); Up/Down recall them | CORE | IMPLEMENTED (0.9.1; kept across restarts once the filesystem exists) |
-| `alias` | Create a short name for a command | CORE | PLANNED (shell language; kept across restarts once the filesystem exists) |
-| `unalias` | Remove a short name | CORE | PLANNED (shell language) |
+| `alias` | Create, list or show short names for commands: `alias [name [command...]]` | CORE | IMPLEMENTED (0.12, in memory; kept across restarts: PLANNED, filesystem) |
+| `unalias` | Remove a short name: `unalias <name>` | CORE | IMPLEMENTED (0.12) |
 | `which` | Show which program a command name runs | CORE | PLANNED (filesystem) |
 | `man` | Show the manual page of a command | SYSTEM | PLANNED (filesystem) |
 | `exit` | Leave the shell | CORE | PLANNED (processes: a shell running as a process) |
 | `cd` | Change the current folder | CORE | PLANNED (filesystem) |
 | `pwd` | Show the current folder | CORE | PLANNED (filesystem) |
-| `sleep` | Wait for a given time | SYSTEM | PLANNED (shell language, for scripts) |
+| `sleep` | Wait for a given time: `sleep <seconds>` (1–3600; Ctrl+C cancels) | SYSTEM | IMPLEMENTED (0.12; fractions of a second: PLANNED) |
 | `jobs` | List programs running in the background | CORE | PLANNED (processes, job control) |
 | `fg` | Bring a background program to the foreground | CORE | PLANNED (processes, job control) |
 | `bg` | Continue a stopped program in the background | CORE | PLANNED (processes, job control) |
-| `time` | Measure how long a command takes to run | CORE | PLANNED (processes) |
+| `time` | Measure how long a command takes to run: `time <command...>` (in ticks and seconds) | CORE | IMPLEMENTED (0.12; built-in commands, and `run` until the program's end) |
 | `pushd` | Change to a folder and remember the previous one on a stack | CORE | PLANNED (filesystem; shell state) |
 | `popd` | Return to the folder last remembered by `pushd` | CORE | PLANNED (filesystem; shell state) |
-| `prompt` | Show or change the shell prompt | CORE | PLANNED (shell language) |
-| `presskey` | Wait until a key is pressed (in scripts) | SYSTEM | PLANNED (shell language, for scripts) |
+| `prompt` | Show or change the shell prompt: `prompt [text \| --reset]` | CORE | IMPLEMENTED (0.12, in memory) |
+| `presskey` | Wait until a key is pressed (in scripts; Ctrl+C cancels) | SYSTEM | IMPLEMENTED (0.12) |
 | `colors` | Show or set the console's colour scheme (text and background colours) | SYSTEM | PLANNED (terminal app, graphics) |
 | `wintitle` | Set the terminal window's title | SYSTEM | PLANNED (terminal app, graphics) |
 
@@ -101,7 +113,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 |---|---|---|---|
 | `ps` | List what is running: the kernel threads, then the processes (PID, state, TID, name) | SYSTEM | IMPLEMENTED (0.9; processes 0.11) |
 | `run` | Start a program: `run <name> [n]` in the foreground (its output on the screen; Ctrl+C ends it), `run -b <name> [n]` in the background (output to the serial log and `dmesg` only) | SYSTEM | IMPLEMENTED (0.11) |
-| `kill` ⚠ | End a process by its number: `kill <pid>` asks first (`yes/no>`; only exactly "yes" ends it). Planned: `kill -y <pid>` without the question, for scripts | SYSTEM | IMPLEMENTED (0.11; `-y` PLANNED) |
+| `kill` ⚠ | End a process by its number: `kill <pid>` asks first (`yes/no>`; only exactly "yes" ends it); `kill -y <pid>` ends it without the question, for scripts | SYSTEM | IMPLEMENTED (0.11; `-y`: 0.12) |
 | `pkill` ⚠ | End processes by name | SYSTEM | PLANNED (processes) |
 | `top` | Show running processes and their resource use, updated live | SYSTEM | PLANNED (processes) |
 | `nice` | Start a program with a given priority | SYSTEM | PLANNED (processes, scheduler priorities) |
@@ -164,9 +176,10 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `env` | Show the environment, or run a program with a changed one | SYSTEM | PLANNED (processes) |
-| `export` | Make a variable available to programs started from the shell | CORE | PLANNED (processes, shell language) |
-| `set` | Show or change shell variables and options | CORE | PLANNED (shell language) |
+| `env` | Show the environment (the exported variables), or run a program with a changed one | SYSTEM | IMPLEMENTED (0.12, the listing; running a program with a changed environment: PLANNED, processes: the System V start-up layout) |
+| `export` | Make a variable available to programs started from the shell: `export <NAME>` | CORE | IMPLEMENTED (0.12, marks the variable; programs receiving it: PLANNED, processes) |
+| `set` | Show or change shell variables and options: `set [NAME[=value]]` | CORE | IMPLEMENTED (0.12, variables; options: PLANNED, shell language) |
+| `unset` | Remove a shell variable (and its export mark): `unset <NAME>` | CORE | IMPLEMENTED (0.12) |
 
 ### Storage (needs disk drivers)
 
@@ -357,6 +370,7 @@ Keys the console handles itself. They aren't commands, so they have no level or 
 | Any other key, **while scrolled back** | returns to the live screen and is then handled as usual (typed, or Enter runs the line); key releases and modifier keys on their own (Shift, Ctrl, Alt, the locks) don't return | 0.9.2 |
 | PgUp / PgDn without Shift, **when not scrolled back** | do nothing | 0.9.2 |
 | Ctrl+C, **while a program runs in the foreground** | ends the program (and wakes it if it sleeps); logged only as `console: Ctrl+C: kill requested for process N`, never as a key; at the prompt it does nothing | 0.11 |
+| Ctrl+C, **during `sleep` or `presskey`** | cancels the wait (`sleep: cancelled.`, `presskey: cancelled.`); logged only as a fixed line | 0.12 |
 
 Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, because Num Lock is assumed on. `clear` keeps the screen's lines in the scrollback. The scrollback and the history are lost at restart.
 
@@ -380,13 +394,14 @@ Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, b
 | `sleep` / `presskey` | `sleep` waits for a given time; `presskey` waits for a key press |
 | `disk label` / `disk info` | `disk label` names a volume (shows or changes the name); `disk info` only shows a volume's name and serial number |
 | `disk info` / `volume` | `disk info` is about storage volumes; `volume` is the sound volume |
-| `chmod` / `fileattr` | `chmod` sets who may read, write or run a file (permissions); `fileattr` sets a file's own attributes (read-only, hidden) || `open` / `defaults` | `open` opens one file with its default app; `defaults` chooses which app is the default |
+| `chmod` / `fileattr` | `chmod` sets who may read, write or run a file (permissions); `fileattr` sets a file's own attributes (read-only, hidden) |
+| `open` / `defaults` | `open` opens one file with its default app; `defaults` chooses which app is the default |
 
 ## 5. Shell language
 
 These are features of the shell, not commands:
 
-- variables (`name=value`, `$name`);
+- variables (`name=value`, `$name`); since 0.12 the shell holds variables (`set NAME=value`), but `$name` expansion is still PLANNED;
 - `if` / `else`;
 - loops;
 - pipes (`|`), passing one command's output to the next;
@@ -400,8 +415,8 @@ These are features of the shell, not commands:
 - **Design principles:** simple, predictable, safe, scriptable, documented, consistent.
 - **Names (since v0.5):** Madire commands use Madire's own names or open Unix/POSIX names, never Microsoft/DOS-specific command names. Windows names appear only in the "Windows equivalents" table (section 8).
 - **Help everywhere:** every official command eventually supports `command --help` and `man command`. Both document the purpose, syntax, options, examples, exit status and the permissions required. Since 0.9.1 every implemented command answers `<command> --help` and `help <command>` (its purpose and usage, so far); `man` needs the filesystem.
-- **"Did you mean" (PLANNED, candidate for the shell milestone after 0.11):** when a command name is not found, the shell suggests the closest implemented command or commands by edit distance (for example `hlep` → `help`), in lines of at most 79 columns. A suggestion is only text: nothing is ever run automatically.
-- **Help sections (PLANNED, same candidate):** like the Linux manual's sections (1 user commands, 8 administration commands, 2 system calls), future Madire help separates user commands, administration commands and the system-call reference.
+- **"Did you mean" (IMPLEMENTED, 0.12):** when a command name is not found, the shell suggests the closest commands by edit distance (for example `hlep` → `help`; at most 3 names, distance at most 2, aliases included), in lines of at most 79 columns. A suggestion is only text: nothing is ever run automatically.
+- **Help sections (IMPLEMENTED, 0.12; manual sections PLANNED):** since 0.12 `help` groups the commands into the sections `shell`, `system` and `programs` (`help <section>`). Later, like the Linux manual's sections (1 user commands, 8 administration commands, 2 system calls), `man` separates user commands, administration commands and the system-call reference (needs the filesystem).
 - **Destructive commands** (marked ⚠: for example `rm`, `format`, `partition`, `userdel`, `reboot`) require confirmation or show a clear warning first.
 - **Madire AI** never changes the system without informing the user first.
 - **Keeping this standard current:** whenever a milestone adds, changes or removes a command, this file is updated in the same milestone (status, level, purpose, foundation) and the MOCS version goes up by one step (v0.1 → v0.2 → …). New commands follow these rules: one meaning per name, a level (CORE, SYSTEM or APPLICATION), `--help`, and a confirmation or a clear warning before destructive actions. The same rule is in [AGENTS.md](../AGENTS.md).
@@ -409,7 +424,7 @@ These are features of the shell, not commands:
 
 ## 7. Priority order
 
-1. Kernel, memory, shell: **done** (0.1–0.9).
+1. Kernel, memory, shell: **done** (0.1–0.9; shell improvements in 0.12).
 2. Processes: kernel threads (0.9), user processes (0.10), programs and process management (0.11): **done**.
 3. Filesystem (1.0).
 4. Drivers.

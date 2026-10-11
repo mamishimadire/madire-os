@@ -1,0 +1,17 @@
+# The agreed number of QEMU-test checks per tag, and of host unit suites
+# (0.12, stage 0c). A full run (tests/qemu-tests.sh) and a sharded run
+# (tests/combine-shards.sh) fail on any difference, missing or extra. Every
+# stage that adds or changes checks updates this file in the same diff.
+0.3 150
+0.4 30
+0.5 32
+0.6 49
+0.7 96
+0.8 32
+0.9 139
+0.9.1 32
+0.9.2 25
+0.10 253
+0.11 233
+0.12 151
+unit-suites 55

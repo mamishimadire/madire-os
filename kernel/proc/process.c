@@ -112,6 +112,18 @@ static uint64_t fault_addresses[PROC_MAX];          /* 0.11: "run" */
 static uint8_t slot_of_tid[SCHED_MAX_THREADS];  /* slot + 1; 0 = not a process */
 static struct process_teardown_totals totals;
 
+/* 0.12 stage 2b: what the stall capture (tests/qemu_capture.py) needs to
+ * decode the process table, the address spaces and slot_of_tid from guest
+ * memory, in this order. It decides nothing in the kernel. */
+__attribute__((used)) const uint64_t process_capture_layout[] = {
+    (uint64_t)(uintptr_t)&table, sizeof(struct proc_entry), PROC_MAX,
+    offsetof(struct proc_entry, state), offsetof(struct proc_entry, pid),
+    offsetof(struct proc_entry, tid), offsetof(struct proc_entry, name),
+    offsetof(struct proc_entry, kill_pending),
+    (uint64_t)(uintptr_t)spaces, sizeof(struct uspace), offsetof(struct uspace, pml4),
+    (uint64_t)(uintptr_t)slot_of_tid,
+};
+
 static void table_init(void)
 {
     if (!table_ready) {
@@ -284,10 +296,33 @@ enum proc_status process_wait(int32_t pid, struct proc_result *out)
  * thread would; the interrupt frame is abandoned with the stack. */
 void process_return_to_user(const struct interrupt_frame *frame)
 {
-    (void)frame;
-    int slot = (int)slot_of_tid[thread_current()] - 1;
-    if (slot < 0)
+    int32_t tid = thread_current();
+    int slot = (int)slot_of_tid[tid] - 1;
+    /* 0.12 stage 2b self-check (always on): ring 3 only in a live address
+     * space; a process's thread only while its process lives, in its own
+     * address space. (Before 0.12 a thread without a process returned here
+     * silently; only the 0.10 ring-3 test threads may, and they never had
+     * a process.) */
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    cr3 &= PTE_ADDR_MASK;
+    if (!uspace_live(cr3))
+        panicf("process_return_to_user: thread %d returns to ring 3 at\n RIP 0x%016llx "
+               "without a live address space\n (CR3 0x%016llx).", (int)tid,
+               (unsigned long long)frame->rip, (unsigned long long)cr3);
+    if (slot < 0) {
+        int32_t pid = thread_pid(tid);
+        if (pid > 0)
+            panicf("process_return_to_user: thread %d returns to ring 3 at\n RIP 0x%016llx, "
+                   "but its process %d has ended.", (int)tid, (unsigned long long)frame->rip,
+                   (int)pid);
         return;
+    }
+    if (spaces[slot].pml4 != cr3 || table.e[slot].state != PROC_ALIVE)
+        panicf("process_return_to_user: thread %d of process %d returns\n to ring 3 in CR3 "
+               "0x%016llx (its own: 0x%016llx),\n process state %d.", (int)tid,
+               (int)table.e[slot].pid, (unsigned long long)cr3,
+               (unsigned long long)spaces[slot].pml4, (int)table.e[slot].state);
     user_returns[slot]++;
     if (!proc_kill_pending(&table, slot))
         return;

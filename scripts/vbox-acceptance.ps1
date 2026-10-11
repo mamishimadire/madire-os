@@ -22,9 +22,10 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, user, smx, memexhaust, module, repeat
+    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, user, smx, memexhaust, module, shell, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
-    [int]$Repeat = 0                    # extra normal boots (self-test result of each)
+    [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
+    [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64"   # must not be running (0.11)
 )
 $ErrorActionPreference = "Stop"
 $root = (Get-Item (Split-Path $PSScriptRoot -Parent)).FullName
@@ -102,6 +103,10 @@ if ($problems.Count) {
     $problems | ForEach-Object { Write-Host "VM check: $_" }
     throw "The VM does not match the documented settings; refusing to run (no setting was changed)."
 }
+# Rule (since 0.11): no acceptance run while the Kali build VM runs (a
+# regression there would distort this run's timing evidence).
+$running = @(VBox list runningvms | ForEach-Object { if ($_ -match '^"(.+)" \{') { $Matches[1] } })
+if ($running -contains $KaliVM) { throw "The Kali build VM '$KaliVM' is running; refusing to run (power it off first)." }
 foreach ($f in @($Iso, $ModuleIso)) { if (-not (Test-Path $f)) { throw "Not found: $f" } }
 $Iso = (Get-Item $Iso).FullName
 $ModuleIso = (Get-Item $ModuleIso).FullName
@@ -524,6 +529,308 @@ if (Want "module") {
     Shot "module"
     Stop-Run "module" @("^Boot module 1: .*test pattern intact", "^Boot module 1: test pattern intact \(14016 bytes\)$")
     Attach $Iso
+}
+
+# 0.12 (stage 4): every 0.12 shell command and its error paths, typed
+# through keyboardputscancode (set 1 scancodes, US layout) in short bursts
+# with pauses, as in the QEMU [0.12] sessions. Each command's line and its
+# expected output lines are checked IN ORDER in the serial log (a pattern
+# must match after the previous one). The boot calibration is recorded
+# (report only), and the uptime heartbeat must stay out of dmesg.
+$Scan = New-Object 'System.Collections.Generic.Dictionary[char,int[]]'
+foreach ($row in @(@('1234567890-=', '!@#$%^&*()_+', 0x02), @('qwertyuiop[]', 'QWERTYUIOP{}', 0x10),
+                   @("asdfghjkl;'``", 'ASDFGHJKL:"~', 0x1e), @('zxcvbnm,./', 'ZXCVBNM<>?', 0x2c))) {
+    for ($i = 0; $i -lt $row[0].Length; $i++) {
+        $Scan[$row[0][$i]] = @(($row[2] + $i), 0)
+        $Scan[$row[1][$i]] = @(($row[2] + $i), 1)
+    }
+}
+$Scan[[char]'\'] = @(0x2b, 0); $Scan[[char]'|'] = @(0x2b, 1); $Scan[[char]' '] = @(0x39, 0)
+function ScanCodes([string]$s) {
+    $codes = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $s.ToCharArray()) {
+        if (-not $Scan.ContainsKey($c)) { throw "no scancode for '$c'" }
+        $k = $Scan[$c]
+        if ($k[1]) { $codes.Add("2a") }
+        $codes.Add("{0:x2}" -f $k[0]); $codes.Add("{0:x2}" -f ($k[0] -bor 0x80))
+        if ($k[1]) { $codes.Add("aa") }
+    }
+    return $codes.ToArray()
+}
+# Types `s` in bursts of `chunk` characters, `pauseMs` apart.
+function TypeScan([string]$s, [int]$chunk = 8, [int]$pauseMs = 80) {
+    for ($p = 0; $p -lt $s.Length; $p += $chunk) {
+        $a = @('controlvm', $VM, 'keyboardputscancode') + (ScanCodes $s.Substring($p, [Math]::Min($chunk, $s.Length - $p)))
+        VBox @a | Out-Null
+        Start-Sleep -Milliseconds $pauseMs
+    }
+}
+$shellSeq = New-Object System.Collections.Generic.List[string]
+$shellPrompt = "madire> "
+function Expect([string[]]$p) { foreach ($x in $p) { $script:shellSeq.Add($x) } }
+# Types a command and Enter; expects its logged line, then `out` in order.
+function Cmd([string]$c, [string[]]$out = @()) {
+    TypeScan $c; Enter
+    Expect (@("^" + [regex]::Escape($script:shellPrompt + $c) + "$") + $out)
+}
+# Checks the patterns in order in a kept serial log, one row each.
+function InOrder([string]$name, $patterns) {
+    $log = Join-Path $OutDir "$Prefix-$name.serial.log"
+    if (-not (Test-Path $log)) { return }
+    $lines = @(Get-Content -LiteralPath $log)
+    $pos = 0
+    foreach ($p in $patterns) {
+        $hit = -1
+        for ($i = $pos; $i -lt $lines.Count; $i++) { if ([regex]::IsMatch($lines[$i], $p)) { $hit = $i; break } }
+        if ($hit -ge 0) { $pos = $hit + 1 }
+        Note ("{0,-16} {1,-8} /{2}/" -f $name, $(if ($hit -ge 0) { "OK" } else { "MISSING" }), $p)
+    }
+}
+# Waits until `pattern` has matched more than `before` lines; returns the
+# last match's first group (a process ID), or "0".
+function WaitPid([string]$pattern, [int]$before, [int]$seconds) {
+    for ($i = 0; $i -lt $seconds * 2; $i++) {
+        $m = @(Select-String -Path $serial -Pattern $pattern -CaseSensitive)
+        if ($m.Count -gt $before) { return $m[-1].Matches[0].Groups[1].Value }
+        Start-Sleep -Milliseconds 500
+    }
+    return "0"
+}
+function CountLines([string]$pattern) { return @(Select-String -Path $serial -Pattern $pattern -CaseSensitive).Count }
+
+if (Want "shell") {
+    $ctrlC = { Key 1d 2e ae 9d; Start-Sleep -Seconds 1 }
+    $TL = "^time: [0-9]+ ticks? \([0-9]+\.[0-9]{2} s\)$"
+    $NOSUCH = "^Unknown command: {0}\. Type 'help' for a list of commands\.$"
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Shot "shell-boot"
+    Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    Cmd "dmesg 40"; Start-Sleep -Seconds 1
+    Key 2a e0 49 e0 c9 aa; Start-Sleep -Seconds 1      # Shift+PgUp: the calibration line is above
+    Shot "shell-calibration"                           # the next key returns to the bottom
+
+    # help, its sections, "Did you mean"
+    Cmd "clear"
+    Cmd "help" @("^  time     Time a command: time <command>$", "^Sections: shell system programs \(help <section>\)$")
+    Start-Sleep -Seconds 1; Shot "shell-help"
+    Cmd "clear"
+    Cmd "help shell" @("^shell: The shell's own commands$", "^  help     Show this list$", "^  time     Time a command: time <command>$")
+    Cmd "help system" @("^system: Information about the system$", "^  version  Show the Madire OS version$",
+                        "^  reboot   Restart the computer \(asks first\)$")
+    Cmd "help programs" @("^programs: Programs and processes$", "^  ps       Show threads and processes$",
+                          "^  run      Run a program: run \[-b\] <name> \[n\]$", "^  kill     End a process: kill <pid> \(asks first\)$")
+    Start-Sleep -Seconds 1; Shot "shell-help-sections"
+    Cmd "clear"
+    Cmd "help shel" @("^No help for 'shel': unknown command\.$", "^Did you mean: shell, help, set\?$")
+    Cmd "help nosuch" @("^No help for 'nosuch': unknown command\.$")
+    Cmd "hlep" @(($NOSUCH -f "hlep"), "^Did you mean: help, sleep\?$")
+    Cmd "ru" @(($NOSUCH -f "ru"), "^Did you mean: run, cpu, ps\?$")
+    Cmd "Echo x" @(($NOSUCH -f "Echo"), "^Did you mean: echo\?$")
+    Cmd "kil 5" @(($NOSUCH -f "kil"), "^Did you mean: kill\?$")
+    Start-Sleep -Seconds 1; Shot "shell-didyoumean"
+
+    # prompt
+    Cmd "clear"
+    Cmd "prompt" @("^Prompt: 'madire> ' \(the default\)$")
+    Cmd "prompt abc>" @("^Prompt set to 'abc>    '\.$")
+    $shellPrompt = "abc>    "
+    Cmd "echo under-new-prompt" @("^under-new-prompt$")
+    Cmd "prompt" @("^Prompt: 'abc>    '$")
+    Cmd "prompt 123456789" @("^prompt: at most 8 characters \(this text has 9\)\.$")
+    Cmd "prompt -x" @("^prompt: the text may not start with '-' \(to reset: prompt --reset\)\.$")
+    Cmd "prompt a b" @("^Usage: prompt \[text \| --reset\]$")
+    Start-Sleep -Seconds 1; Shot "shell-prompt"
+    Cmd "prompt --reset" @("^Prompt reset to 'madire> '\.$")
+    $shellPrompt = "madire> "
+    Cmd "prompt" @("^Prompt: 'madire> ' \(the default\)$")
+
+    # alias, unalias
+    Cmd "clear"
+    Cmd "alias" @("^0 aliases \(at most 16\)$")
+    Cmd "alias ll echo hi there" @("^Alias 'll' added\.$")
+    Cmd "ll" @("^hi there$")
+    Cmd "ll more" @("^hi there more$")
+    Cmd "alias ll echo replaced" @("^Alias 'll' replaced\.$")
+    Cmd "ll" @("^replaced$")
+    Cmd "alias echo echo x" @("^alias: 'echo' is a built-in command\.$")
+    Cmd "alias zz ll" @("^alias: 'll' is not a built-in command\.$")
+    Cmd "alias abcdefghijklmnop echo x" @("^alias: a name has at most 15 characters \(this one has 16\)\.$")
+    Cmd "alias Bad echo x" @("^alias: a name uses only a-z, 0-9 and _\.$")
+    Cmd "unalias nosuch" @("^unalias: no alias named 'nosuch'\.$")
+    Cmd "unalias" @("^Usage: unalias <name>$")
+    Cmd "alias e5 echo 1 2 3 4 5" @("^Alias 'e5' added\.$")
+    Cmd "e5 6 7" @("^1 2 3 4 5 6 7$")
+    Cmd "e5 6 7 8" @("^Too many arguments \(max 8\)\.$")
+    Cmd "lll" @(($NOSUCH -f "lll"), "^Did you mean: ll, kill\?$")
+    Cmd "alias" @("^e5 +echo 1 2 3 4 5$", "^ll +echo replaced$", "^2 aliases \(at most 16\)$")
+    Start-Sleep -Seconds 1; Shot "shell-alias"
+    Cmd "unalias ll" @("^Alias 'll' removed\.$")
+    Cmd "alias" @("^e5 +echo 1 2 3 4 5$", "^1 alias \(at most 16\)$")
+    Cmd "clear"
+    for ($n = 2; $n -le 16; $n++) { Cmd ("alias t{0:D2} echo {0:D2}" -f $n) @("^Alias 't{0:D2}' added\.$" -f $n) }
+    Cmd "alias t17 echo 17" @("^alias: the table is full \(16 aliases\); remove one with unalias\.$")
+    Cmd "unalias t16" @("^Alias 't16' removed\.$")
+    Cmd "t15" @("^15$")
+
+    # set, unset, export, env
+    Cmd "clear"
+    Cmd "set" @("^No variables\.$")
+    Cmd "env" @("^No exported variables\.$")
+    Cmd "set A=1"
+    Cmd "set A" @("^A=1$")
+    Cmd "set B=b=c"
+    Cmd "set E="
+    Cmd "set W=x   y  z"
+    Cmd "set W" @("^W=x y z$")
+    Cmd "set a=small"
+    Cmd "set _u=under"
+    Cmd "set" @("^A=1$", "^B=b=c$", "^E=$", "^W=x y z$", "^_u=under$", "^a=small$")
+    Cmd "set nosuch" @("^set: nosuch is not set$")
+    Cmd "set A b" @("^Usage: set \[NAME\[=value\]\] \(names are case-sensitive\)$")
+    Cmd "set 1abc=v" @("^set: invalid name: 1abc$")
+    Cmd "set =v" @("^set: invalid name: \(empty\)$")
+    Cmd "set abcdefghijklmnopq=v" @("^set: invalid name: abcdefghijklmnopq$")
+    Cmd ("set V=" + ("v" * 64)) @("^set: value longer than 63 characters$")
+    Start-Sleep -Seconds 1; Shot "shell-set"
+    Cmd "clear"
+    Cmd "export A"
+    Cmd "export a"
+    Cmd "env" @("^A=1$", "^a=small$")
+    Cmd "set A=2"
+    Cmd "env" @("^A=2$", "^a=small$")
+    Cmd "unset a"
+    Cmd "env" @("^A=2$")
+    Cmd "unset nosuch" @("^unset: nosuch is not set$")
+    Cmd "unset" @("^Usage: unset <NAME>$")
+    Cmd "export nosuch" @("^export: nosuch is not set$")
+    Cmd "export B=2" @("^export: NAME=value is not supported; use set NAME=value, then export NAME\.$")
+    Cmd "export" @("^Usage: export <NAME>$")
+    Cmd "env x" @("^Usage: env$")
+    Start-Sleep -Seconds 1; Shot "shell-env"
+    Cmd "clear"
+    for ($n = 0; $n -le 26; $n++) { Cmd ("set V{0:D2}={0}" -f $n) }     # 5 + 27 = 32 variables
+    Cmd "set V27=27" @("^set: no room \(32 variables\)$")
+
+    # sleep, presskey, time (keys typed during a wait are ignored: pauses)
+    Cmd "clear"
+    Cmd "sleep 1" @("^console: sleep 1 s$", "^console: sleep done after [0-9]+ ticks$"); Start-Sleep -Seconds 2
+    Cmd "sleep 0" @("^sleep: give whole seconds from 1 to 3600$")
+    Cmd "sleep 3601" @("^sleep: give whole seconds from 1 to 3600$")
+    Cmd "sleep x" @("^sleep: give whole seconds from 1 to 3600$")
+    Cmd "sleep" @("^Usage: sleep <seconds>$")
+    Cmd "sleep 3" @("^console: sleep 3 s$"); Start-Sleep -Seconds 1
+    & $ctrlC
+    Expect @("^console: Ctrl\+C: sleep cancelled after [0-9]+ ticks$", "^sleep: cancelled\.$")
+    Cmd "sleep 3" @("^console: sleep 3 s$", "^console: sleep done after [0-9]+ ticks$"); Start-Sleep -Seconds 4
+    Cmd "time sleep 1" @("^console: sleep 1 s$", "^console: sleep done after [0-9]+ ticks$", $TL); Start-Sleep -Seconds 2
+    Cmd "presskey" @("^Press any key to continue\.\.\.$", "^console: presskey: waiting for a key$"); Start-Sleep -Seconds 1
+    Key 10 90; Start-Sleep -Seconds 1        # "q": ends the wait, not typed
+    Expect @("^console: presskey: key pressed$")
+    Cmd "echo after-presskey" @("^after-presskey$")
+    Cmd "presskey" @("^Press any key to continue\.\.\.$"); Start-Sleep -Seconds 1
+    & $ctrlC
+    Expect @("^console: Ctrl\+C: presskey cancelled$", "^presskey: cancelled\.$")
+    Cmd "presskey x" @("^Usage: presskey$")
+    Cmd "time echo hi" @("^hi$", $TL)
+    Cmd "time time echo x" @("^time: cannot time time$")
+    Cmd "time nosuch" @("^time: 'nosuch' is not a built-in command\.$")
+    Cmd "alias ll echo hi" @("^Alias 'll' added\.$")
+    Cmd "time ll" @("^time: 'll' is an alias; time runs built-in commands only\.$")
+    Cmd "time" @("^Usage: time <command\.\.\.>$")
+    Start-Sleep -Seconds 1; Shot "shell-wait"
+
+    # run, ps, kill, kill -y, Ctrl+C
+    Cmd "clear"
+    Cmd "run hello" @("^\[process [0-9]+ 'hello' exited, status 0\]$"); Start-Sleep -Seconds 2
+    Shot "shell-run-hello"
+    $bgPat = "^\[process ([0-9]+) 'spin' started in the background\]$"
+    $before = CountLines $bgPat
+    Cmd "run -b spin"
+    $p1 = WaitPid $bgPat $before 10
+    Expect @("^\[process $p1 'spin' started in the background\]$")
+    Cmd "ps" @("^ +$p1  running +[0-9]+  spin$")
+    Cmd "kill $p1" @("^End process $p1 'spin'\? Type 'yes' to confirm:$")
+    TypeScan "no"; Enter
+    Expect @("^yes/no> no$", "^Kill cancelled\.$")
+    Cmd "kill $p1" @("^End process $p1 'spin'\? Type 'yes' to confirm:$")
+    TypeScan "yes"; Enter; Start-Sleep -Seconds 1
+    Expect @("^yes/no> yes$", "^console: kill confirmed for process $p1$", "^\[process $p1 'spin' killed\]$")
+    $before = CountLines $bgPat
+    Cmd "run -b spin"
+    $p2 = WaitPid $bgPat $before 10
+    Cmd "kill -y $p2" @("^console: kill -y for process $p2$", "^\[process $p2 'spin' killed\]$"); Start-Sleep -Seconds 1
+    Cmd "kill -y 0" @("^kill: PID 0 is the kernel, not a process\.$")
+    Cmd "kill -y 99" @("^kill: no process with PID 99\.$")
+    Cmd "kill -y $p2" @("^kill: no process with PID $p2\.$")
+    Cmd "kill -y x" @("^kill: 'x' is not a process ID\.$")
+    Cmd "kill -y" @("^Usage: kill \[-y\] <pid>$")
+    $before = CountLines $bgPat
+    Cmd "run -b spin"
+    $p3 = WaitPid $bgPat $before 10
+    Cmd "time kill -y $p3" @("^console: kill -y for process $p3$", "^\[process $p3 'spin' killed\]$", $TL); Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 1; Shot "shell-kill"
+    Cmd "clear"
+    Cmd "run spin"; Start-Sleep -Seconds 2
+    & $ctrlC
+    Expect @("^console: Ctrl\+C: kill requested for process [0-9]+$", "^\[process [0-9]+ 'spin' killed\]$")
+    Start-Sleep -Seconds 1; Shot "shell-ctrlc-spin"
+    Cmd "ps" @("^0 processes$")
+
+    # Typing test: 451 characters in bursts; Shift must not stick (the
+    # lowercase lines after the Shift-heavy ones come back exactly).
+    Cmd "clear"
+    foreach ($t in @("The-quick-brown-fox-jumps-over-the-lazy-dog. 0123456789 Done1",
+                     "PACK-MY-BOX-WITH-FIVE-DOZEN-LIQUOR-JUGS! ABCDEFGHIJKLM Done2",
+                     "MiXeD:CaSe_TeSt+aBcDeF=GhIjKl(MnOpQr)?StUvWx@YZ%123 Done3",
+                     "sphinx-of-black-quartz,judge-my-vow;how-vexingly-quick Done4",
+                     "!@#%^&*()_+-=:;,.?~ ZYXWVUTSRQPONMLKJIHGFEDCBA 9876543210 Done5",
+                     "all-lowercase-now:abcdefghijklmnopqrstuvwxyz-0123456789 Done6",
+                     "shift-is-not-stuck-if-this-line-is-lowercase.end Done7")) {
+        Cmd "echo $t" @("^" + [regex]::Escape($t) + "$")
+    }
+    Start-Sleep -Seconds 1; Shot "shell-typing"
+
+    # The uptime heartbeat: serial only, never in dmesg (option B).
+    Cmd "clear"
+    Cmd "echo before-idle" @("^before-idle$")
+    Start-Sleep -Seconds 15
+    Cmd "dmesg 5"
+    Start-Sleep -Seconds 1; Shot "shell-dmesg-idle"
+    Cmd "echo end-of-shell-test" @("^end-of-shell-test$")
+    Wait-Serial "^end-of-shell-test$" 30 | Out-Null
+    Stop-Run "shell" @("^System ready\.")
+    InOrder "shell" $shellSeq
+    $log = Join-Path $OutDir "$Prefix-shell.serial.log"
+    if (Test-Path $log) {
+        $lines = @(Get-Content -LiteralPath $log)
+        $cal = Select-String -Path $log -Pattern '^Diagnostic waits: calibrated: at most ([0-9]+) polls per tick' -CaseSensitive |
+               Select-Object -First 1
+        Note ("{0,-16} {1,-8} /boot calibration logged (report only): {2} polls per tick/" -f "shell",
+              $(if ($cal) { "OK" } else { "MISSING" }), $(if ($cal) { $cal.Matches[0].Groups[1].Value } else { "none" }))
+        $script:results.Add(("calibration report: {0}" -f $(if ($cal) { $cal.Line } else { "none" })))
+        # dmesg 5's 5 lines follow the first "madire> dmesg 5" line.
+        $at = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -ceq "madire> dmesg 5") { $at = $i; break } }
+        $dm = if ($at -ge 0) { @($lines[($at + 1)..([Math]::Min($at + 5, $lines.Count - 1))]) } else { @() }
+        $ok = $dm.Count -eq 5 -and -not ($dm | Where-Object { $_ -cmatch '^uptime: ' }) -and
+              $dm[3] -ceq "madire> echo before-idle" -and $dm[4] -ceq "madire> dmesg 5"
+        Note ("{0,-16} {1,-8} /dmesg 5 after 15 s idle: no uptime line, ends with the command before the pause and dmesg 5/" -f
+              "shell", $(if ($ok) { "OK" } else { "MISSING" }))
+        $hb = 0; $in = $false
+        foreach ($l in $lines) {
+            if ($l -ceq "madire> echo before-idle") { $in = $true; continue }
+            if ($in -and $l -ceq "madire> dmesg 5") { break }
+            if ($in -and $l -cmatch '^uptime: [0-9]+ s$') { $hb++ }
+        }
+        Note ("{0,-16} {1,-8} /the heartbeat is still in the serial log during the idle period: {2} lines/" -f "shell",
+              $(if ($hb -ge 2) { "OK" } else { "MISSING" }), $hb)
+        $t = Select-String -Path $log -Pattern '^time: ([0-9]+) ticks? \(' -CaseSensitive | ForEach-Object { $_.Matches[0].Groups[1].Value }
+        $script:results.Add(("time report (ticks): {0}" -f ($t -join ", ")))
+    }
+    Absent "shell" "^key: "
+    Absent "shell" "PANIC|Screen output from thread|events dropped|Unexpected IRQ"
 }
 # Repeated normal boots (-Repeat N): the scheduler self-test runs at every
 # boot; each boot's result, ping-pong verdict and the preemptions during

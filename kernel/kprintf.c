@@ -45,8 +45,9 @@ void kputs(const char *s)
     preempt_enable();
 }
 
-/* Output target for the formatter. */
-enum sink_kind { SINK_CONSOLE, SINK_SERIAL, SINK_BUFFER };
+/* Output target for the formatter. SINK_SERIAL_ONLY (0.12): the serial
+ * port without the kernel log. */
+enum sink_kind { SINK_CONSOLE, SINK_SERIAL, SINK_SERIAL_ONLY, SINK_BUFFER };
 
 struct sink {
     enum sink_kind kind;
@@ -64,6 +65,9 @@ static void sink_putc(struct sink *out, char c)
     case SINK_SERIAL:
         serial_putc(c);
         logbuf_putc(&klog, c);
+        break;
+    case SINK_SERIAL_ONLY:
+        serial_putc(c);
         break;
     case SINK_BUFFER:
         if (out->len + 1 < out->size)
@@ -222,6 +226,19 @@ void kvprintf(const char *fmt, va_list ap)
 void klogf(const char *fmt, ...)
 {
     struct sink out = { SINK_SERIAL, NULL, 0, 0 };
+    va_list ap;
+    va_start(ap, fmt);
+    preempt_disable();
+    format(&out, fmt, ap);
+    preempt_enable();
+    va_end(ap);
+}
+
+/* 0.12: like klogf, but kept out of the kernel log, so a periodic line (the
+ * uptime heartbeat) never fills dmesg. */
+void kserialf(const char *fmt, ...)
+{
+    struct sink out = { SINK_SERIAL_ONLY, NULL, 0, 0 };
     va_list ap;
     va_start(ap, fmt);
     preempt_disable();

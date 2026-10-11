@@ -37,6 +37,7 @@
 #include "kernel/memory/vmtest.h"
 #include "kernel/multiboot.h"
 #include "kernel/panic.h"
+#include "kernel/proc/diagwait.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/progmod.h"
 #include "kernel/proc/schedtest.h"
@@ -112,6 +113,39 @@ static int cmdline_word(const char *word)
             return 1;
     }
     return 0;
+}
+
+/*
+ * 0.12 stage 3: the value of a whole word "<name>N" (name with its "=",
+ * N decimal, 0 to 4294967295; for example "seed=42"). False if no such
+ * word, or if N is empty, not all digits or too large.
+ */
+static bool cmdline_u32(const char *name, uint32_t *out)
+{
+    const char *p = cmdline;
+    while (*p) {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t')
+            p++;
+        size_t len = (size_t)(p - start), i = 0;
+        while (i < len && name[i] && start[i] == name[i])
+            i++;
+        if (name[i] || i == len)
+            continue;
+        uint64_t v = 0;
+        for (; i < len; i++) {
+            if (start[i] < '0' || start[i] > '9')
+                return false;
+            v = v * 10 + (uint64_t)(start[i] - '0');
+            if (v > 0xFFFFFFFFull)
+                return false;
+        }
+        *out = (uint32_t)v;
+        return true;
+    }
+    return false;
 }
 
 /*
@@ -387,6 +421,33 @@ static void run_diagnostics(void)
          * controller. QEMU (-no-reboot) exits when the machine resets. */
         diag_message("Restart test: forcing a triple fault (no keyboard controller)");
         reset_machine(false);
+    } else if (cmdline_has("test=waitstall")) {
+        diag_message("Wait-bound test: bounded waits with the timer stopped...");
+        diag_message(schedtest_waitstall() ? "Wait-bound test: PASS"
+                                           : "Wait-bound test: FAIL (see serial log)");
+    } else if (cmdline_has("test=killrace")) {
+        diag_message("Kill race test: 400 processes killed at 8 points of their start...");
+        uint32_t seed = 0;
+        bool seeded = cmdline_u32("seed=", &seed);  /* 0.12 stage 3 */
+        diag_message(usertest_killrace(seeded, seed) ? "Kill race test: PASS"
+                                                     : "Kill race test: FAIL (see serial log)");
+    } else if (cmdline_has("test=selfcheckcr3")) {
+        /* 0.12 stage 2b: each self-check test must panic, naming the state.
+         * cmdline_has matches substrings: ring3cr3 before ring3. */
+        diag_message("Self-check test: loading a destroyed address space (must panic)");
+        usertest_selfcheck_cr3();
+    } else if (cmdline_has("test=selfcheckswitch")) {
+        diag_message("Self-check test: switching to a destroyed address space (must panic)");
+        usertest_selfcheck_switch();
+    } else if (cmdline_has("test=selfcheckpick")) {
+        diag_message("Self-check test: running a thread that is not ready (must panic)");
+        usertest_selfcheck_pick();
+    } else if (cmdline_has("test=selfcheckring3cr3")) {
+        diag_message("Self-check test: ring 3 without a live address space (must panic)");
+        usertest_selfcheck_ring3cr3();
+    } else if (cmdline_has("test=selfcheckring3")) {
+        diag_message("Self-check test: ring 3 after the process ended (must panic)");
+        usertest_selfcheck_ring3();
     } else if (cmdline_has("test=preemptyield")) {
         diag_message("Thread test: yield with preemption disabled (must panic)");
         schedtest_preempt_yield();
@@ -620,8 +681,8 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
             shown_seconds = seconds;
             if (!console_active())
                 BOOTSCREEN_SAFE(bootscreen_uptime(seconds));
-            if (seconds && seconds % 5 == 0)
-                klogf("uptime: %u s\n", seconds);
+            if (seconds && seconds % 5 == 0)    /* 0.12: serial only, not in dmesg */
+                kserialf("uptime: %u s\n", seconds);
         }
 
         /* 0.9: free exited detached threads, then let another thread run
@@ -743,6 +804,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bool console_ok = console_selftest();
     bootscreen_status("Console & shell:", console_ok ? BOOT_OK : BOOT_FAILED,
                       "pure self-test of line editor, parser, shell, text grid; not a hardware test");
+
+    /* 0.12 stage 3: the stall bound of the diagnostic waits, measured while
+     * the timer works and thread 0 is alone (before the self-test's threads). */
+    diag_wait_calibrate();
 
     /* 0.9: scheduler self-test (serial only; the boot screen's rows are
      * fixed). A failure is fatal, as for the paging self-test. */

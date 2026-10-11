@@ -7,6 +7,7 @@
 #include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pte.h"
+#include "kernel/memory/uspace.h"
 #include "kernel/panic.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/sched_core.h"
@@ -45,6 +46,17 @@ struct kthread {
 static struct sched sched;
 static struct kstack_pool stacks;
 static struct kthread threads[SCHED_MAX_THREADS];
+/* 0.12 stage 2b: what the stall capture (tests/qemu_capture.py) needs to
+ * decode the thread table from guest memory: addresses, entry sizes and
+ * field offsets, in this order. It decides nothing in the kernel. */
+__attribute__((used)) const uint64_t thread_capture_layout[] = {
+    (uint64_t)(uintptr_t)threads, sizeof(struct kthread), SCHED_MAX_THREADS,
+    offsetof(struct kthread, name), offsetof(struct kthread, slot),
+    offsetof(struct kthread, cr3), offsetof(struct kthread, pid),
+    (uint64_t)(uintptr_t)&sched, sizeof(struct sched_thread),
+    offsetof(struct sched_thread, state),
+};
+
 /* Set by thread_init(). Until then the interrupt hooks do nothing: the
  * zero-initialised `sched` is not a valid state (its empty queue is -1). */
 static volatile bool ready;
@@ -153,6 +165,18 @@ uint64_t thread_kstack_top(int32_t tid)
  * always lands on the stack of the thread that was running. */
 static void switch_threads(int32_t prev, int32_t next)
 {
+    /* 0.12 stage 2b self-check (always on): never run a thread that was
+     * not ready, a thread without its kernel stack, or a user address
+     * space that is not live (destroyed, or never created). */
+    if (sched.bad_picks)
+        panicf("switch_threads: thread %d was taken off the run queue\n while %s (not ready).",
+               (int)sched.bad_pick_tid, sched_state_str(sched.bad_pick_state));
+    if (next != 0 && threads[next].slot < 0)
+        panicf("switch_threads: thread %d '%s' has no kernel stack (freed).", (int)next,
+               threads[next].name);
+    if (threads[next].cr3 && !uspace_live(threads[next].cr3))
+        panicf("switch_threads: thread %d '%s' would run in\n CR3 0x%016llx, not a live address "
+               "space.", (int)next, threads[next].name, (unsigned long long)threads[next].cr3);
     if (next == prev)
         return;
     uint64_t now = timer_ticks();
@@ -563,12 +587,38 @@ void thread_set_cr3(uint64_t cr3)
 {
     uint32_t f = irq_save();
     int32_t me = sched.current;
+    if (cr3 && !uspace_live(cr3))           /* 0.12 stage 2b self-check */
+        panicf("thread_set_cr3: thread %d '%s': CR3 0x%016llx\n is not a live address space.",
+               (int)me, threads[me].name, (unsigned long long)cr3);
     threads[me].cr3 = cr3;
     uint64_t want = cr3 ? cr3 : kernel_cr3;
     if (want != loaded_cr3) {
         __asm__ volatile ("mov %0, %%cr3" : : "r"(want) : "memory");
         loaded_cr3 = want;
     }
+    irq_restore(f);
+}
+
+int32_t thread_pid(int32_t tid)
+{
+    return (tid >= 0 && tid < SCHED_MAX_THREADS) ? threads[tid].pid : 0;
+}
+
+/* test=selfcheckswitch: a READY thread's CR3 points at a destroyed address
+ * space; the next switch to it must panic. */
+void thread_test_set_cr3(int32_t tid, uint64_t cr3)
+{
+    uint32_t f = irq_save();
+    threads[tid].cr3 = cr3;
+    irq_restore(f);
+}
+
+/* test=selfcheckpick: a thread still on the run queue is marked BLOCKED
+ * (a corrupted queue); taking it off must panic before it runs. */
+void thread_test_mark_blocked(int32_t tid)
+{
+    uint32_t f = irq_save();
+    sched.t[tid].state = SCHED_BLOCKED;
     irq_restore(f);
 }
 

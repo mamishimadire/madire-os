@@ -1,9 +1,16 @@
 [CmdletBinding()]
 param(
-    # Kali remains unavailable until separately approved.
-    [ValidateSet('Codespace')]
+    # Codespace: the GitHub Codespace (paid). Kali: the local Kali Linux VM in
+    # VirtualBox, reached over SSH through its NAT port forward (key login).
+    [ValidateSet('Codespace', 'Kali')]
     [string]$Target = 'Codespace',
-    [string]$Codespace = 'madire-os-0-8-devcontainer-test-9vrr95qjqj63rg6'
+    [string]$Codespace = 'madire-os-0-8-devcontainer-test-9vrr95qjqj63rg6',
+    [string]$KaliVM = 'kali-linux-2026.2-virtualbox-amd64',
+    [string]$KaliUser = 'kali',
+    [int]$KaliPort = 2222,
+    [string]$KaliKey = (Join-Path $env:USERPROFILE '.ssh\madire_kali_ed25519'),
+    [string]$KaliKnownHosts = (Join-Path $env:USERPROFILE '.ssh\known_hosts_madire_kali'),
+    [string]$VBoxManage = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,13 +21,18 @@ $snapshotRoots = @('Makefile', 'boot', 'drivers', 'include', 'iso', 'kernel', 'l
     Where-Object { Test-Path -LiteralPath (Join-Path $repoRoot $_) }
 $codespaceTouched = $false
 $codespaceAvailableAt = $null
+$kaliStarted = $false
+$kaliAvailableAt = $null
 $guardStartedAt = $null
 $guardFinishedAt = $null
 $regressionStartedAt = $null
 $regressionFinishedAt = $null
 $runId = ([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')) + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
-$remoteRoot = "/workspaces/madire-regression-$runId"
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) "madire-regression-$runId"
+$remoteRoot = if ($Target -eq 'Kali') { "/home/$KaliUser/madire-regression-$runId" } else { "/workspaces/madire-regression-$runId" }
+# The local working folder and the results live under the git-ignored
+# build\ folder, never in the system temp folder (a temp clean-up once
+# removed a run's results folder while the run was going).
+$tempRoot = Join-Path $repoRoot "build\regression\$runId"
 $resultsRoot = Join-Path $tempRoot 'results'
 $snapshotArchive = Join-Path $tempRoot 'snapshot.tar'
 $manifestPath = Join-Path $tempRoot 'snapshot.sha256'
@@ -53,23 +65,98 @@ function Invoke-Gh {
     return [pscustomobject]@{ ExitCode = $exitCode; Output = $lines }
 }
 
+function Invoke-Native {
+    param([Parameter(Mandatory = $true)][string]$Exe, [Parameter(Mandatory = $true)][string[]]$Arguments,
+          [switch]$AllowFailure)
+    $oldPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Exe @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldPreference
+    }
+    $lines = @($output | ForEach-Object { [string]$_ })
+    if ($exitCode -ne 0 -and -not $AllowFailure) {
+        throw "$Exe $($Arguments -join ' ') failed ($exitCode): $($lines -join [Environment]::NewLine)"
+    }
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = $lines }
+}
+
+# Kali: key login only (no password ever), the host key pinned in its own
+# known_hosts file.
+function Get-KaliSshOptions {
+    return @('-i', $KaliKey, '-o', "UserKnownHostsFile=$KaliKnownHosts", '-o', 'StrictHostKeyChecking=yes',
+             '-o', 'BatchMode=yes', '-o', 'PasswordAuthentication=no', '-o', 'ConnectTimeout=10')
+}
+
 function Invoke-Remote {
     param([Parameter(Mandatory = $true)][string[]]$RemoteArguments, [switch]$AllowFailure)
+    if ($Target -eq 'Kali') {
+        $arguments = @('-p', [string]$KaliPort) + (Get-KaliSshOptions) + @("$KaliUser@127.0.0.1") + $RemoteArguments
+        return Invoke-Native -Exe 'ssh.exe' -Arguments $arguments -AllowFailure:$AllowFailure
+    }
     $arguments = @('codespace', 'ssh', '-c', $Codespace, '--') + $RemoteArguments
     return Invoke-Gh -Arguments $arguments -AllowFailure:$AllowFailure
 }
 
 function Copy-ToRemote {
     param([string]$LocalPath, [string]$RemotePath)
+    if ($Target -eq 'Kali') {
+        $arguments = @('-q', '-P', [string]$KaliPort) + (Get-KaliSshOptions) + @($LocalPath, "${KaliUser}@127.0.0.1:$RemotePath")
+        return Invoke-Native -Exe 'scp.exe' -Arguments $arguments
+    }
     return Invoke-Gh -Arguments @('codespace', 'cp', '-e', '-c', $Codespace, $LocalPath, "remote:$RemotePath")
 }
 
 function Copy-FromRemote {
     param([string]$RemotePath, [string]$LocalPath, [switch]$Recursive)
+    if ($Target -eq 'Kali') {
+        $arguments = @('-q', '-P', [string]$KaliPort) + (Get-KaliSshOptions)
+        if ($Recursive) { $arguments += '-r' }
+        $arguments += @("${KaliUser}@127.0.0.1:$RemotePath", $LocalPath)
+        return Invoke-Native -Exe 'scp.exe' -Arguments $arguments
+    }
     $arguments = @('codespace', 'cp', '-e')
     if ($Recursive) { $arguments += '-r' }
     $arguments += @('-c', $Codespace, "remote:$RemotePath", $LocalPath)
     return Invoke-Gh -Arguments $arguments
+}
+
+# ---- VirtualBox (Kali target) ----
+function Find-VBoxManage {
+    if ($VBoxManage) { return $VBoxManage }
+    $dirs = @()
+    if ($env:VBOX_MSI_INSTALL_PATH) { $dirs += $env:VBOX_MSI_INSTALL_PATH }
+    try { $dirs += (Get-ItemProperty 'HKLM:\SOFTWARE\Oracle\VirtualBox' -ErrorAction Stop).InstallDir } catch {}
+    if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles 'Oracle\VirtualBox') }
+    foreach ($d in $dirs) {
+        $exe = Join-Path $d 'VBoxManage.exe'
+        if (Test-Path $exe) { return $exe }
+    }
+    throw 'VBoxManage.exe not found (set VBOX_MSI_INSTALL_PATH or pass -VBoxManage).'
+}
+
+function Get-RunningVMs {
+    $r = Invoke-Native -Exe $script:vbox -Arguments @('list', 'runningvms')
+    return @($r.Output | ForEach-Object { if ($_ -match '^"(.+)" \{') { $Matches[1] } })
+}
+
+function Get-VMState([string]$name) {
+    $r = Invoke-Native -Exe $script:vbox -Arguments @('showvminfo', $name, '--machinereadable')
+    $line = $r.Output | Where-Object { $_ -match '^VMState=' } | Select-Object -First 1
+    return ($line -replace '^VMState="(.*)"$', '$1')
+}
+
+function Wait-KaliShutdown {
+    param([int]$TimeoutSeconds)
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ((Get-VMState $KaliVM) -eq 'poweroff') { return $true }
+        Start-Sleep -Seconds 3
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    return $false
 }
 
 function Get-CodespaceInfo {
@@ -122,8 +209,19 @@ function Wait-CodespaceShutdown {
     return $false
 }
 
-if ($Target -ne 'Codespace') { throw "Unsupported target: $Target" }
-if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI (gh) is required.' }
+if ($Target -eq 'Codespace') {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI (gh) is required.' }
+}
+else {
+    foreach ($tool in @('ssh.exe', 'scp.exe')) {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool (Windows OpenSSH) is required." }
+    }
+    if (-not (Test-Path -LiteralPath $KaliKey)) { throw "SSH key not found: $KaliKey" }
+    if (-not (Test-Path -LiteralPath $KaliKnownHosts)) { throw "Pinned host key file not found: $KaliKnownHosts" }
+    $script:vbox = Find-VBoxManage
+    # Rule: never a local regression while the acceptance VM runs.
+    if ((Get-RunningVMs) -contains 'MadireOS-Test') { throw 'MadireOS-Test is running: a Kali regression is refused while it runs.' }
+}
 if (-not (Get-Command tar.exe -ErrorAction SilentlyContinue)) { throw 'tar.exe is required to create the source snapshot.' }
 if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'Makefile'))) { throw "Not a Madire OS repository: $repoRoot" }
 
@@ -157,22 +255,48 @@ try {
         Write-Host "SNAPSHOT_HASHES=$($manifestLines.Count)"
         Write-Host 'LOCAL_ARCHIVE_MANIFEST_MATCH=PASS'
 
-        $info = Get-CodespaceInfo
-        if ([int]$info.cpus -ne 2) { throw "Codespace must be 2-core; found $($info.machine) with $($info.cpus) CPUs." }
-        if ($info.state -ne 'Shutdown') { throw "Codespace must be Shutdown before the regression; found $($info.state)." }
-        $codespaceTouched = $true
-        $null = Invoke-Gh -Arguments @('api', '-X', 'POST', "/user/codespaces/$Codespace/start")
-
-        $startDeadline = [DateTimeOffset]::UtcNow.AddMinutes(5)
-        do {
+        if ($Target -eq 'Codespace') {
             $info = Get-CodespaceInfo
-            if ($info.state -eq 'Available') { break }
-            if ([DateTimeOffset]::UtcNow -ge $startDeadline) { throw 'Timed out waiting for Codespace startup.' }
-            Start-Sleep -Seconds 5
-        } while ($true)
-        if ([int]$info.cpus -ne 2) { throw "Codespace changed machine size: $($info.machine), $($info.cpus) CPUs." }
-        $codespaceAvailableAt = [DateTimeOffset]::UtcNow
-        Write-Host "CODESPACE_AVAILABLE=$($codespaceAvailableAt.ToString('u')) machine=$($info.machine) cpus=$($info.cpus)"
+            if ([int]$info.cpus -ne 2) { throw "Codespace must be 2-core; found $($info.machine) with $($info.cpus) CPUs." }
+            if ($info.state -ne 'Shutdown') { throw "Codespace must be Shutdown before the regression; found $($info.state)." }
+            $codespaceTouched = $true
+            $null = Invoke-Gh -Arguments @('api', '-X', 'POST', "/user/codespaces/$Codespace/start")
+
+            $startDeadline = [DateTimeOffset]::UtcNow.AddMinutes(5)
+            do {
+                $info = Get-CodespaceInfo
+                if ($info.state -eq 'Available') { break }
+                if ([DateTimeOffset]::UtcNow -ge $startDeadline) { throw 'Timed out waiting for Codespace startup.' }
+                Start-Sleep -Seconds 5
+            } while ($true)
+            if ([int]$info.cpus -ne 2) { throw "Codespace changed machine size: $($info.machine), $($info.cpus) CPUs." }
+            $codespaceAvailableAt = [DateTimeOffset]::UtcNow
+            Write-Host "CODESPACE_AVAILABLE=$($codespaceAvailableAt.ToString('u')) machine=$($info.machine) cpus=$($info.cpus)"
+        }
+        else {
+            # Start Kali headless unless it is already running (then it is
+            # left running at the end, so an interactive session survives).
+            if ((Get-RunningVMs) -contains $KaliVM) {
+                Write-Host "KALI_VM=ALREADY_RUNNING (left running afterwards)"
+            }
+            else {
+                $null = Invoke-Native -Exe $script:vbox -Arguments @('startvm', $KaliVM, '--type', 'headless')
+                $kaliStarted = $true
+                Write-Host "KALI_VM=STARTED_HEADLESS"
+            }
+            $sshDeadline = [DateTimeOffset]::UtcNow.AddMinutes(3)
+            do {
+                $probe = Invoke-Remote -RemoteArguments @('true') -AllowFailure
+                if ($probe.ExitCode -eq 0) { break }
+                if ([DateTimeOffset]::UtcNow -ge $sshDeadline) { throw "Kali SSH not reachable: $($probe.Output -join ' ')" }
+                Start-Sleep -Seconds 5
+            } while ($true)
+            $kaliAvailableAt = [DateTimeOffset]::UtcNow
+            $vmInfo = Invoke-Native -Exe $script:vbox -Arguments @('showvminfo', $KaliVM, '--machinereadable')
+            $cpus = ($vmInfo.Output | Where-Object { $_ -match '^cpus=' }) -replace '^cpus=', ''
+            $mem = ($vmInfo.Output | Where-Object { $_ -match '^memory=' }) -replace '^memory=', ''
+            Write-Host "KALI_AVAILABLE=$($kaliAvailableAt.ToString('u')) vm=$KaliVM cpus=$cpus memory_mb=$mem"
+        }
 
         $remoteCreate = Invoke-Remote -RemoteArguments @('test', '!', '-e', $remoteRoot) -AllowFailure
         if ($remoteCreate.ExitCode -ne 0) { throw "Remote run directory already exists: $remoteRoot" }
@@ -198,6 +322,19 @@ for path in "$root/source" "$root/altered" "$root/regression.log"; do
 done
 echo ABORTED_REGRESSION_PROCESS=NONE
 echo FRESH_REMOTE_SNAPSHOT=ABSENT
+for tool in gcc ld nasm grub-mkrescue xorriso qemu-system-x86_64 qemu-system-i386 python3 make objdump nm; do
+    if ! command -v "$tool" >/dev/null 2>&1; then echo "MISSING_TOOL=$tool"; exit 38; fi
+done
+echo "TOOL_GCC=$(gcc --version | head -n 1)"
+echo "TOOL_LD=$(ld --version | head -n 1)"
+echo "TOOL_NASM=$(nasm -v)"
+echo "TOOL_GRUB=$(grub-mkrescue --version | head -n 1)"
+echo "TOOL_QEMU=$(qemu-system-x86_64 --version | head -n 1)"
+echo "TOOL_PYTHON=$(python3 --version)"
+echo "TOOL_OS=$(. /etc/os-release && echo "$PRETTY_NAME")"
+avail_kb=$(df -Pk "$root" | awk 'NR == 2 { print $4 }')
+echo "DISK_FREE_KB=$avail_kb"
+if [ "$avail_kb" -lt 2097152 ]; then echo DISK_FREE_BELOW_2_GIB; exit 39; fi
 echo REMOTE_PREFLIGHT_PASS
 '@
         $guardBody = @'
@@ -313,8 +450,9 @@ grep -E 'ALL TESTS|FAILED|MAKE EXIT|Reproducible build:' "$log" || true
 echo "== unit suite PASS lines =="
 grep -- '-> PASS' "$log" || true
 echo "UNIT_SUITE_COUNT=$(grep -c -- '-> PASS' "$log" || true)"
-echo "== [0.11] result lines =="
-grep -F 'PASS: [0.11]' "$log" | tail -20 || true
+tag=$(sed -n 's/^#define MADIRE_OS_VERSION "\(.*\)"$/\1/p' kernel/kernel.h)
+echo "== [$tag] result lines =="
+grep -F "PASS: [$tag]" "$log" | tail -20 || true
 if grep -Eiq 'iso/boot/grub/grub\.cfg.*(no such file|cannot stat|not found)|no such file.*grub\.cfg' "$log"; then
     echo REPRO_GRUB_CFG_NOTICES=FOUND
     exit 50
@@ -351,6 +489,16 @@ root=__ROOT__
 cd "$root/source/build"
 tar -cf "$root/stage5-evidence.tar" serial-program-output.log screen-program-*.txt
 echo STAGE5_QMP_SCREEN_EVIDENCE=PACKED
+# Replay every pattern-helper call under mawk and gawk, old (-v) and new
+# (ENVIRON) helpers (tests/helper-replay.sh; evidence only, decides no check).
+command -v gawk >/dev/null || sudo apt-get install -y -qq gawk >/dev/null 2>&1 || true
+command -v mawk >/dev/null || sudo apt-get install -y -qq mawk >/dev/null 2>&1 || true
+(cd "$root/source" && bash tests/helper-replay.sh mawk gawk) || echo REPLAY_FAILED
+# Every per-boot serial log, the key evidence, the stall captures and the
+# helper trace and replay (for scripts/compare-serial.py and later diagnosis).
+shopt -s nullglob
+tar -czf "$root/boot-logs.tar.gz" serial-*.log *.keys.txt *.irq1.txt helper-calls.trace helper-logs replay-*.txt $( [ -d stall ] && echo stall )
+echo "BOOT_LOGS_PACKED=$(tar -tzf "$root/boot-logs.tar.gz" | wc -l) files"
 '@
 
         $remoteFiles = [ordered]@{
@@ -427,9 +575,20 @@ echo STAGE5_QMP_SCREEN_EVIDENCE=PACKED
         Copy-FromRemote -RemotePath "$remoteRoot/regression.log" -LocalPath (Join-Path $resultsRoot 'regression.log') | Out-Null
         $null = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/final-hash.sh")
         Copy-FromRemote -RemotePath "$remoteRoot/final.sha256" -LocalPath (Join-Path $resultsRoot 'final.sha256') | Out-Null
-        $null = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/checks.sh")
-        $null = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/evidence.sh")
+        $checks = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/checks.sh")
+        $checks.Output | Where-Object { $_ -match '^(REPRO_GRUB|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|TWO_MIB)' } | ForEach-Object { Write-Host $_ }
+        $evidence = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/evidence.sh")
+        $evidence.Output | ForEach-Object { Write-Host $_ }
         Copy-FromRemote -RemotePath "$remoteRoot/stage5-evidence.tar" -LocalPath (Join-Path $resultsRoot 'stage5-evidence.tar') | Out-Null
+        Copy-FromRemote -RemotePath "$remoteRoot/boot-logs.tar.gz" -LocalPath (Join-Path $resultsRoot 'boot-logs.tar.gz') | Out-Null
+        # Keep the per-boot log tars of the last 3 runs only (0.12, Q9).
+        $runs = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'build\regression') -Directory | Sort-Object Name)
+        if ($runs.Count -gt 3) {
+            foreach ($old in $runs[0..($runs.Count - 4)]) {
+                $tarPath = Join-Path $old.FullName 'results\boot-logs.tar.gz'
+                if (Test-Path -LiteralPath $tarPath) { Remove-Item -LiteralPath $tarPath -Force }
+            }
+        }
 
         $downloadedFinal = [IO.File]::ReadAllText((Join-Path $resultsRoot 'final.sha256'))
         if ($downloadedFinal -cne $manifestText) { throw 'Final remote source hashes differ from the snapshot manifest.' }
@@ -452,6 +611,7 @@ echo STAGE5_QMP_SCREEN_EVIDENCE=PACKED
         Write-Host "RESULT_BY_TAG=$summary"
         Write-Host "UNIT_SUITES_PASS=$(@([regex]::Matches($logText, '(?m)^.*-> PASS$')).Count)"
         Write-Host "STAGE5_EVIDENCE=$evidenceRoot"
+        Write-Host "BOOT_LOGS=$(Join-Path $resultsRoot 'boot-logs.tar.gz')"
         if ($makeExit -ne 0) { throw "Regression failed: MAKE EXIT $makeExit." }
         Write-Host 'REMOTE_REGRESSION_RESULT=PASS'
     }
@@ -460,10 +620,28 @@ echo STAGE5_QMP_SCREEN_EVIDENCE=PACKED
     }
 }
 finally {
+    if ($kaliStarted) {
+        try {
+            $null = Invoke-Native -Exe $script:vbox -Arguments @('controlvm', $KaliVM, 'acpipowerbutton') -AllowFailure
+            if (Wait-KaliShutdown -TimeoutSeconds 120) { Write-Host 'KALI_SHUTDOWN=CONFIRMED (ACPI)' }
+            else {
+                $null = Invoke-Native -Exe $script:vbox -Arguments @('controlvm', $KaliVM, 'poweroff') -AllowFailure
+                if (Wait-KaliShutdown -TimeoutSeconds 60) { Write-Host 'KALI_SHUTDOWN=CONFIRMED (power off)' }
+                else { Write-Host 'KALI_SHUTDOWN=NOT_CONFIRMED' }
+            }
+        }
+        catch { Write-Host "KALI_STOP_ERROR=$($_.Exception.Message)" }
+    }
+    if ($null -ne $kaliAvailableAt) {
+        Write-Host "KALI_SESSION_STARTED=$($kaliAvailableAt.ToString('u'))"
+        Write-Host "KALI_SESSION_ELAPSED_SECONDS=$([math]::Round(([DateTimeOffset]::UtcNow - $kaliAvailableAt).TotalSeconds))"
+    }
     if ($codespaceTouched) {
         try {
-            $info = Get-CodespaceInfo
-            if ($info.state -ne 'Shutdown') {
+            $info = $null
+            try { $info = Get-CodespaceInfo }
+            catch { Write-Host "CODESPACE_STATE_CHECK_ERROR=$($_.Exception.Message)" }
+            if ($null -eq $info -or $info.state -ne 'Shutdown') {
                 $stop = Invoke-Gh -Arguments @('codespace', 'stop', '-c', $Codespace) -AllowFailure
                 if ($stop.ExitCode -ne 0) { Write-Host "CODESPACE_STOP_COMMAND_EXIT=$($stop.ExitCode) $($stop.Output -join ' ')" }
                 if (-not (Wait-CodespaceShutdown -TimeoutSeconds 180)) { Write-Host 'CODESPACE_SHUTDOWN=NOT_CONFIRMED' }

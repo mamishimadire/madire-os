@@ -6,7 +6,10 @@
  * (help, clear, version, uptime, mem, cpu, echo; ps when the context has
  * threads, 0.9; history, uname, hostname, date, dmesg, reboot, "help
  * <command>" and "<command> --help" when it has extras, 0.9.1; run, and
- * the processes in "ps", when it has procs, 0.11).
+ * the processes in "ps", when it has procs, 0.11; prompt, alias, unalias,
+ * help sections and "Did you mean" suggestions when it has state, 0.12;
+ * set, unset, export, env, sleep, presskey, time and "kill -y" when it also
+ * has a session, 0.12 stage 2).
  *
  * Pure module: every value it prints comes from a read-only shell_context
  * filled in by the caller, and all output goes through a shell_output
@@ -69,6 +72,64 @@ struct shell_procs {
     void *ctx;
 };
 
+/* 0.12: the shell's own changeable state (see shell_context.state). */
+#define SHELL_PROMPT_WIDTH      8           /* the prompt fills 8 columns */
+#define SHELL_PROMPT_DEFAULT    "madire> "
+#define SHELL_ALIAS_MAX         16          /* aliases at most */
+#define SHELL_ALIAS_NAME_MAX    15          /* [a-z0-9_]{1,15} */
+#define SHELL_ALIAS_VALUE_MAX   63          /* characters */
+
+struct shell_alias {
+    char name[SHELL_ALIAS_NAME_MAX + 1];
+    char value[SHELL_ALIAS_VALUE_MAX + 1];
+};
+
+struct shell_state {
+    char prompt[SHELL_PROMPT_WIDTH + 1];    /* always 8 characters, padded */
+    struct shell_alias aliases[SHELL_ALIAS_MAX];    /* sorted by name */
+    uint32_t alias_count;
+};
+
+/* The default prompt and no aliases. */
+void shell_state_init(struct shell_state *s);
+
+/* 0.12 stage 2: shell variables and the console's waits (see
+ * shell_context.session). */
+#define SHELL_VAR_MAX           32          /* variables at most */
+#define SHELL_VAR_NAME_MAX      16          /* [A-Za-z_][A-Za-z0-9_]{0,15} */
+#define SHELL_VAR_VALUE_MAX     63          /* characters */
+#define SHELL_SLEEP_MAX         3600        /* seconds; "sleep" takes 1-3600 */
+
+struct shell_var {
+    char name[SHELL_VAR_NAME_MAX + 1];
+    char value[SHELL_VAR_VALUE_MAX + 1];
+    bool exported;                          /* "export": listed by "env" */
+};
+
+struct shell_session {
+    struct shell_var vars[SHELL_VAR_MAX];   /* sorted by name, byte order */
+    uint32_t var_count;
+    /* Set by every shell_execute, for the console: */
+    uint32_t sleep_seconds;                 /* SHELL_SLEEP: how long */
+    bool timed;                             /* "time": the console prints the
+                                             * time line (shell_time_line) once
+                                             * the command is done, before the
+                                             * next prompt */
+};
+
+/* No variables, nothing pending. */
+void shell_session_init(struct shell_session *s);
+
+/* 0.12 stage 2: "time: 250 ticks (2.50 s)" (hz 0: the ticks only). `out`
+ * holds at least SHELL_TIME_LINE_MAX bytes; no newline. */
+#define SHELL_TIME_LINE_MAX 64
+void shell_time_line(char *out, uint64_t ticks, uint32_t hz);
+
+/* 0.12 stage 2: what the console prints when a wait ends early. */
+#define SHELL_PRESSKEY_TEXT         "Press any key to continue..."
+#define SHELL_SLEEP_CANCELLED       "sleep: cancelled."
+#define SHELL_PRESSKEY_CANCELLED    "presskey: cancelled."
+
 struct shell_context {
     const char *version;                    /* e.g. "0.5" */
     bool timer_ok;                          /* timer verified at boot */
@@ -108,6 +169,19 @@ struct shell_context {
      * before) and its help says "Show threads and processes". NULL leaves
      * every output exactly as before. */
     const struct shell_procs *procs;
+    /* 0.12, optional (the full shell): when set, "prompt", "alias" and
+     * "unalias" exist ("help" lists them last, then the section names),
+     * "help <section>" shows one section, an alias's name is replaced by
+     * its value (the first word only, one level), and an unknown command or
+     * help name adds "Did you mean: ...?". NULL leaves every output exactly
+     * as before. The commands change this state; nothing else does. */
+    struct shell_state *state;
+    /* 0.12 stage 2, optional (the full shell, with state): when set, "set",
+     * "unset", "export", "env", "sleep", "presskey" and "time" exist
+     * ("help" lists them after "unalias", all in the shell section), and
+     * "kill" also takes -y (no question; its usage becomes "kill [-y]
+     * <pid>"). NULL leaves every output exactly as before. */
+    struct shell_session *session;
 };
 
 enum shell_text {
@@ -135,6 +209,12 @@ enum shell_result {
     SHELL_KILL,         /* 0.11: "kill": the question was printed and the
                          * process handed to ask_kill; the console ends it
                          * only if the next line is "yes" */
+    SHELL_KILL_NOW,     /* 0.12: "kill -y": the process was handed to ask_kill;
+                         * the console ends it without asking */
+    SHELL_SLEEP,        /* 0.12: "sleep": the console waits session->sleep_seconds
+                         * (Ctrl+C cancels); no prompt until then */
+    SHELL_PRESSKEY,     /* 0.12: "presskey": the text was printed; the console
+                         * waits for one key press (Ctrl+C cancels) */
 };
 
 /* 0.11: what the console prints after the kill question. */

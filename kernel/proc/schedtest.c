@@ -7,6 +7,7 @@
 #include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/proc/diagwait.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/schedtest.h"
 #include "kernel/proc/thread.h"
@@ -16,11 +17,13 @@
 
 static const char *prefix;
 static unsigned items, failures;
+static uint32_t wait_failures0;     /* 0.12 stage 3: diag_wait_failures() at begin() */
 
 static void begin(const char *p)
 {
     prefix = p;
     items = failures = 0;
+    wait_failures0 = diag_wait_failures();
     thread_turn_reset();
 }
 
@@ -34,6 +37,9 @@ static void line(const char *what, const char *detail, bool ok)
 
 static bool finish(void)
 {
+    /* 0.12 stage 3: a bounded wait that stalled (or missed its limit) has
+     * logged its MISMATCH line; the test fails with it. */
+    failures += diag_wait_failures() - wait_failures0;
     /* Metrics (0.9): the deferred switch can stretch turns of threads that
      * live inside preempt-guarded sections; keep the effect visible. */
     klogf("%s: longest turn: %u ticks (slice %u); highest thread stack peak: %u of %u bytes\n",
@@ -117,8 +123,10 @@ static int32_t pingpong(void *arg)
         if (i == PP_SPECIAL_ROUND && me == pp_force_tid) {
             /* Runs past its slice before taking its turn: the timer must
              * preempt it (bounded by 50 ticks). */
-            uint64_t p0 = thread_preemptions(), t0 = timer_ticks();
-            while (thread_preemptions() == p0 && timer_ticks() < t0 + 50)
+            uint64_t p0 = thread_preemptions();
+            struct diag_site w;
+            diag_wait_begin(&w, 50);
+            while (thread_preemptions() == p0 && diag_wait_poll(&w))
                 __asm__ volatile ("pause");
         }
         if (i == PP_SPECIAL_ROUND && me == pp_bad_tid) {
@@ -240,11 +248,14 @@ static void report_pingpong(const struct pp_result *r)
 
 static volatile uint32_t spin_stop;
 
-/* Never yields: only the timer can take the CPU away from it. */
+/* Never yields: only the timer can take the CPU away from it. 0.12 stage
+ * 3: bounded (thread 0 stops it after its 30-tick sleep). */
 static int32_t spinner(void *arg)
 {
     (void)arg;
-    while (!spin_stop)
+    struct diag_site w;
+    diag_wait_begin(&w, 300);
+    while (!spin_stop && diag_wait_poll_strict(&w))
         __asm__ volatile ("pause");
     return 0;
 }
@@ -280,7 +291,7 @@ bool schedtest_boot(void)
         spin_stop = 0;
         uint64_t pre0 = thread_preemptions();
         int32_t sp = thread_create("spin", spinner, 0, false);
-        thread_sleep(30);                       /* thread 0 polls; the spinner runs */
+        diag_sleep(30);                         /* thread 0 polls; the spinner runs */
         spin_stop = 1;
         if (sp > 0)
             thread_join(sp);
@@ -528,8 +539,9 @@ static int32_t if_preempted_body(void *arg)
     (void)arg;
     uint64_t pre0 = thread_preemptions();
     __asm__ volatile ("pushfq\n\torq %0, (%%rsp)\n\tpopfq" :: "r"(RFLAGS_AC) : "cc", "memory");
-    uint64_t t0 = timer_ticks();
-    while (ifp_witness_runs == 0 && timer_ticks() < t0 + 50)
+    struct diag_site w;
+    diag_wait_begin(&w, 50);
+    while (ifp_witness_runs == 0 && diag_wait_poll(&w))
         __asm__ volatile ("pause");
     ifp_flags_after = read_rflags();
     __asm__ volatile ("pushfq\n\tandq %0, (%%rsp)\n\tpopfq" :: "r"(~RFLAGS_AC) : "cc", "memory");
@@ -541,7 +553,9 @@ static int32_t if_preempted_body(void *arg)
 static int32_t if_witness_body(void *arg)
 {
     (void)arg;
-    while (!ifp_done) {
+    struct diag_site w;                     /* 0.12 stage 3: the other ends within 50 ticks */
+    diag_wait_begin(&w, 300);
+    while (!ifp_done && diag_wait_poll_strict(&w)) {
         if (read_rflags() & RFLAGS_AC)
             ifp_witness_saw_ac++;
         ifp_witness_runs++;
@@ -652,7 +666,9 @@ static volatile uint64_t pt_work[PT_THREADS];
 static int32_t pt_spin(void *arg)
 {
     uint32_t idx = (uint32_t)(uintptr_t)arg;
-    while (timer_ticks() < pt_end)
+    struct diag_site w;
+    diag_wait_until(&w, pt_end);
+    while (diag_wait_poll(&w))
         for (int k = 0; k < 1000; k++)
             pt_work[idx]++;
     return 0;
@@ -680,7 +696,7 @@ bool schedtest_preempt(void)
     if (!created)
         return finish();
 
-    thread_sleep(PT_TICKS + 10);            /* thread 0 polls; all three have ended */
+    diag_sleep(PT_TICKS + 10);              /* thread 0 polls; all three have ended */
     uint64_t ticks[PT_THREADS], sum = 0;
     for (uint32_t i = 0; i < PT_THREADS; i++) {
         ticks[i] = thread_ticks_run(tids[i]);  /* kept until the thread is reaped */
@@ -735,7 +751,9 @@ static int32_t po_holder(void *arg)
     preempt_disable();
     uint64_t sw0 = thread_switches(), t0 = timer_ticks();
     uint32_t b0 = po_b_count;
-    while (timer_ticks() < t0 + PO_HOLD_TICKS)
+    struct diag_site w;
+    diag_wait_until(&w, t0 + PO_HOLD_TICKS);
+    while (diag_wait_poll(&w))
         __asm__ volatile ("pause");
     po_b_frozen = po_b_count == b0;
     po_no_switch = thread_switches() == sw0;
@@ -747,8 +765,8 @@ static int32_t po_holder(void *arg)
     po_enabling = 1;
     preempt_enable();                       /* 0.11, policy (b): switches here */
     po_enabling = 0;
-    uint64_t t1 = timer_ticks();
-    while (!po_b_resume_tick && timer_ticks() < t1 + 50)
+    diag_wait_begin(&w, 50);
+    while (!po_b_resume_tick && diag_wait_poll(&w))
         __asm__ volatile ("pause");
     po_stop = 1;
     return 0;
@@ -757,7 +775,9 @@ static int32_t po_holder(void *arg)
 static int32_t po_other(void *arg)
 {
     (void)arg;
-    while (!po_stop) {
+    struct diag_site w;                     /* 0.12 stage 3: the holder ends within about 70 */
+    diag_wait_begin(&w, 300);
+    while (!po_stop && diag_wait_poll_strict(&w)) {
         po_b_count++;
         if (po_released && !po_b_resume_tick) {
             po_b_saw_enabling = po_enabling;
@@ -835,7 +855,9 @@ static int32_t sl_sleeper(void *arg)
 static int32_t sl_spinner(void *arg)
 {
     (void)arg;
-    while (!sl_done)
+    struct diag_site w;                     /* 0.12 stage 3: the sleeper ends after 111 ticks */
+    diag_wait_begin(&w, 600);
+    while (!sl_done && diag_wait_poll_strict(&w))
         __asm__ volatile ("pause");
     return 0;
 }
@@ -871,7 +893,7 @@ bool schedtest_sleep(void)
               (unsigned)span, p);
     line("a sleeping thread uses no CPU", d, spin_ticks * 100 >= span * 95);
     uint64_t z0 = timer_ticks();
-    thread_sleep(10);
+    diag_sleep(10);
     uint64_t z = timer_ticks() - z0;
     ksnprintf(d, sizeof(d), "thread 0 slept 10 ticks: %u elapsed (10 or 11 expected)", (unsigned)z);
     line("thread 0 sleeps by polling", d, z == 10 || z == 11);
@@ -904,7 +926,9 @@ static int32_t ht_body(void *arg)
     struct { uint8_t *p; uint32_t size; uint8_t tag; } slot[HT_SLOTS];
     for (int i = 0; i < HT_SLOTS; i++)
         slot[i].p = 0;
-    while (timer_ticks() < ht_end) {
+    struct diag_site w;
+    diag_wait_until(&w, ht_end);
+    while (diag_wait_poll(&w)) {
         uint32_t i = rng_next(&rng) % HT_SLOTS;
         if (slot[i].p) {
             if (!block_ok(slot[i].p, slot[i].size, slot[i].tag))
@@ -1025,7 +1049,9 @@ static int32_t ft_body(void *arg)
     struct { uint32_t frame, tag; } slot[FT_SLOTS];
     for (int i = 0; i < FT_SLOTS; i++)
         slot[i].frame = 0;
-    while (timer_ticks() < ft_end) {
+    struct diag_site w;
+    diag_wait_until(&w, ft_end);
+    while (diag_wait_poll(&w)) {
         uint32_t i = rng_next(&rng) % FT_SLOTS;
         if (slot[i].frame) {
             if (!frame_tag(slot[i].frame, slot[i].tag, false))
@@ -1122,14 +1148,20 @@ static int32_t pl_body(void *arg)
 {
     uint32_t idx = (uint32_t)(uintptr_t)arg, turns = 1, sections = 0;
     uint64_t inside = 0, outside = 0, sw = thread_switches(), gap_start = 0;
-    while (timer_ticks() < pl_end) {
+    struct diag_site w, next;
+    diag_wait_until(&w, pl_end);
+    while (diag_wait_poll(&w)) {
         preempt_disable();
         uint64_t a = pl_tsc();
         if (gap_start && thread_switches() == sw)
             outside += a - gap_start;
-        uint64_t t = timer_ticks();
-        while (timer_ticks() == t)
+        diag_wait_begin(&next, 1);          /* until the next tick */
+        while (diag_wait_poll(&next))
             __asm__ volatile ("pause");
+        if (diag_wait_stalled(&next)) {     /* logged; one stall ends the thread's loop */
+            preempt_enable();
+            break;
+        }
         uint64_t b = pl_tsc();
         inside += b - a;
         sections++;
@@ -1344,6 +1376,56 @@ bool schedtest_pingpong_preempt(void)
     line("forced preemption accepted by the relaxed branch", d,
          pr.order == SCHED_ORDER_RELAXED && pr.breaks >= 1 && pr.preemptions >= 1);
     check_restored(&b);
+    return finish();
+}
+
+/* ---- test=waitstall (0.12 stage 3): bounded waits end when the timer stops ----
+ *
+ * With interrupts off on thread 0 (the only thread) the tick count cannot
+ * move: a wait for 50 ticks, and thread 0's sleep of 50 ticks, must each
+ * end as a stall after the calibrated bound (100 x the boot calibration,
+ * since neither sees a tick), each logging its MISMATCH line. Those two
+ * lines are expected here: they do not fail this test. */
+
+bool schedtest_waitstall(void)
+{
+    begin("Wait-bound test");
+    char d[160];
+    uint64_t cal = diag_wait_calibration();
+    ksnprintf(d, sizeof(d), "%u polls per tick at most", (unsigned)cal);
+    line("boot calibration", d, cal > 0);
+
+    uint32_t f0 = diag_wait_failures();
+    klogf("Wait-bound test: a wait for 50 ticks with interrupts off (the timer stopped)...\n");
+    uint32_t f = irq_save();
+    uint64_t t0 = timer_ticks();
+    struct diag_site w;
+    diag_wait_begin(&w, 50);
+    while (diag_wait_poll(&w))
+        __asm__ volatile ("pause");
+    bool stalled = diag_wait_stalled(&w);
+    uint64_t polls = w.w.polls, bound = diag_core_bound(&w.w);
+    irq_restore(f);
+    uint32_t logged1 = diag_wait_failures() - f0;
+    ksnprintf(d, sizeof(d), "ended %s after %u polls at tick %u (bound %u = 100 x %u); %u line(s) "
+              "logged", stalled ? "as a stall" : "otherwise", (unsigned)polls, (unsigned)t0,
+              (unsigned)bound, (unsigned)cal, logged1);
+    line("a wait with the timer stopped ends as a stall", d,
+         stalled && w.w.last == t0 && bound == cal * DIAG_STALL_FACTOR && logged1 == 1);
+
+    klogf("Wait-bound test: thread 0 sleeps 50 ticks with interrupts off (the timer stopped)...\n");
+    f = irq_save();
+    t0 = timer_ticks();
+    bool slept = diag_sleep(50);
+    uint64_t t1 = timer_ticks();
+    irq_restore(f);
+    uint32_t logged2 = diag_wait_failures() - f0 - logged1;
+    ksnprintf(d, sizeof(d), "%s at tick %u (began at tick %u); %u line(s) logged",
+              slept ? "slept" : "ended as a stall", (unsigned)t1, (unsigned)t0, logged2);
+    line("thread 0's sleep with the timer stopped ends as a stall", d,
+         !slept && t1 == t0 && logged2 == 1);
+
+    wait_failures0 += logged1 + logged2;    /* expected here */
     return finish();
 }
 

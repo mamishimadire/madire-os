@@ -53,6 +53,11 @@ static int32_t run_next(struct sched *s)
     int32_t n = dequeue(s);
     if (n == SCHED_NONE)
         n = 0;                              /* unreachable; see above */
+    if (s->t[n].state != SCHED_READY) {     /* 0.12 stage 2b: never expected */
+        s->bad_picks++;
+        s->bad_pick_tid = n;
+        s->bad_pick_state = s->t[n].state;
+    }
     s->t[n].state = SCHED_RUNNING;
     s->t[n].slice_left = SCHED_SLICE_TICKS;
     s->current = n;
@@ -78,6 +83,9 @@ void sched_init(struct sched *s)
     s->head = SCHED_NONE;
     s->tail = SCHED_NONE;
     s->need_resched = false;
+    s->bad_picks = 0;
+    s->bad_pick_tid = SCHED_NONE;
+    s->bad_pick_state = SCHED_FREE;
     s->switches = 0;
     s->live = 1;
 }

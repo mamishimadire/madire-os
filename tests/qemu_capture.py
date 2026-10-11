@@ -14,8 +14,10 @@ LINT1, TPR, ISR, IRR) and how far IRQ 0 (the timer line) advanced.
     python3 tests/qemu_capture.py SOCKET OUT ELF LABEL
     python3 tests/qemu_capture.py --irq1 SOCKET OUT ELF   (IRQ 1 counts only)
 """
+import os
 import re
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -101,6 +103,102 @@ def read_kvars(sock, dsyms):
     return " ".join(vals)
 
 
+SCHED_STATES = ("free", "new", "ready", "running", "blocked", "zombie")
+PROC_STATES = ("free", "alive", "zombie")
+
+
+def memsave(sock, addr, size, path=None):
+    """Guest virtual memory (under the CPU's current CR3; the kernel half
+    is the same in every address space), read with HMP "x /Ngx" in chunks
+    of 64 quadwords (HMP memsave refuses these addresses on QEMU 11)."""
+    del path                        # kept for the callers; no file is written
+    words = (size + 7) // 8
+    out = bytearray()
+    while len(out) < words * 8:
+        a = addr + len(out)
+        n = min(64, words - len(out) // 8)
+        text = hmp(sock, "x /%dgx 0x%x" % (n, a))
+        vals = []
+        for line in text.splitlines():
+            m = re.match(r"\s*([0-9a-fA-F]+):((?:\s+0x[0-9a-fA-F]+)+)\s*$", line)
+            if m:
+                vals += [int(v, 16) for v in m.group(2).split()]
+        if len(vals) != n:
+            raise ValueError("x /%dgx 0x%x gave %d values" % (n, a, len(vals)))
+        for v in vals:
+            out += struct.pack("<Q", v)
+    return bytes(out[:size])
+
+
+def u32(b, o):
+    return struct.unpack_from("<I", b, o)[0]
+
+
+def i32(b, o):
+    return struct.unpack_from("<i", b, o)[0]
+
+
+def u64(b, o):
+    return struct.unpack_from("<Q", b, o)[0]
+
+
+def cstr(b, o, n):
+    return b[o:o + n].split(b"\0")[0].decode(errors="replace")
+
+
+def read_tables(sock, dsyms, tmp):
+    """0.12 stage 2b: the thread table, the process table and the live
+    PML4 table, decoded with the layouts the kernel publishes
+    (thread_capture_layout, process_capture_layout in kernel/proc/).
+    Returns (detail text, one summary part)."""
+    if "thread_capture_layout" not in dsyms or "process_capture_layout" not in dsyms:
+        return "tables: not published by this kernel", "tables -"
+    tl = struct.unpack("<10Q", memsave(sock, dsyms["thread_capture_layout"], 80, tmp))
+    t_addr, t_size, t_n, o_name, o_slot, o_cr3, o_pid, s_addr, st_size, o_state = tl
+    pl = struct.unpack("<12Q", memsave(sock, dsyms["process_capture_layout"], 96, tmp))
+    (p_addr, p_size, p_n, op_state, op_pid, op_tid, op_name, op_kill,
+     sp_addr, sp_size, osp_pml4, sot_addr) = pl
+    threads = memsave(sock, t_addr, t_size * t_n, tmp)
+    sched_t = memsave(sock, s_addr, st_size * t_n, tmp)
+    procs = memsave(sock, p_addr, p_size * p_n, tmp)
+    spaces = memsave(sock, sp_addr, sp_size * p_n, tmp)
+    slot_of = memsave(sock, sot_addr, t_n, tmp)
+    lines, tparts, pparts = [], [], []
+    for tid in range(t_n):
+        st = u32(sched_t, tid * st_size + o_state)
+        if st == 0:
+            continue
+        b = tid * t_size
+        sname = SCHED_STATES[st] if st < len(SCHED_STATES) else str(st)
+        line = "thread %d '%s' %s slot %d cr3 0x%x pid %d process-slot %d" % (
+            tid, cstr(threads, b + o_name, 16), sname, i32(threads, b + o_slot),
+            u64(threads, b + o_cr3), i32(threads, b + o_pid), slot_of[tid] - 1)
+        lines.append(line)
+        tparts.append("%d:%s/cr3=%x/pid=%d" % (tid, sname, u64(threads, b + o_cr3),
+                                               i32(threads, b + o_pid)))
+    for slot in range(p_n):
+        b = slot * p_size
+        st = u32(procs, b + op_state)
+        if st == 0:
+            continue
+        sname = PROC_STATES[st] if st < len(PROC_STATES) else str(st)
+        pml4 = u64(spaces, slot * sp_size + osp_pml4)
+        lines.append("process slot %d pid %d tid %d '%s' %s kill %d pml4 0x%x" % (
+            slot, i32(procs, b + op_pid), i32(procs, b + op_tid), cstr(procs, b + op_name, 16),
+            sname, procs[b + op_kill], pml4))
+        pparts.append("%d:%s/tid=%d/pml4=%x" % (i32(procs, b + op_pid), sname,
+                                               i32(procs, b + op_tid), pml4))
+    live = "-"
+    if "uspace_live_pml4" in dsyms and "uspace_live_count" in dsyms:
+        n = u32(memsave(sock, dsyms["uspace_live_count"], 4, tmp), 0)
+        arr = memsave(sock, dsyms["uspace_live_pml4"], 8 * min(n, 80), tmp) if n else b""
+        live = ",".join("%x" % u64(arr, 8 * i) for i in range(min(n, 80))) or "none"
+        lines.append("live PML4 (%d): %s" % (n, live))
+    summary = "threads [%s] processes [%s] live-PML4 [%s]" % (
+        " ".join(tparts) or "none", " ".join(pparts) or "none", live)
+    return "\n".join(lines), summary
+
+
 def lapic_summary(text):
     def grab(pat):
         m = re.search(pat, text, re.M)
@@ -174,6 +272,7 @@ def main():
         pass
     syms = code_symbols(elf)
     dsyms = data_symbols(elf)
+    tmp = os.path.abspath(out) + ".mem"     # QEMU writes memsave files here
     samples = []
     with open(out, "w") as f:
         f.write("Stall capture: %s\n" % label)
@@ -185,15 +284,21 @@ def main():
             irq = hmp(s, "info irq")
             lapic = hmp(s, "info lapic")
             kv = read_kvars(s, dsyms)
+            # 0.12 stage 2b: the thread, process and live-PML4 tables.
+            try:
+                tables, tsum = read_tables(s, dsyms, tmp)
+            except Exception as e:
+                tables, tsum = "tables: not read (%s)" % e, "tables ?"
             for name, text in (("info registers", regs), ("info pic", pic),
                                ("info irq", irq), ("info lapic", lapic),
-                               ("kernel variables", kv)):
+                               ("kernel variables", kv), ("tables", tables)):
                 f.write("--- sample %d: %s ---\n%s\n" % (i + 1, name, text))
             p0 = re.search(r"^pic0: (irr=\w+ imr=\w+ isr=\w+)", pic, re.M)
-            samples.append((regs, irq0(irq), kv, p0.group(1) if p0 else "?",
-                            lapic_summary(lapic)))
+            p1 = re.search(r"^pic1: (irr=\w+ imr=\w+ isr=\w+)", pic, re.M)
+            pics = "%s PIC1 %s" % (p0.group(1) if p0 else "?", p1.group(1) if p1 else "?")
+            samples.append((regs, irq0(irq), kv, pics, lapic_summary(lapic), tsum))
     parts = []
-    for i, (regs, ticks, kv, p0, lap) in enumerate(samples):
+    for i, (regs, ticks, kv, p0, lap, tsum) in enumerate(samples):
         rip, rsp, rfl = field(regs, "RIP"), field(regs, "RSP"), field(regs, "RFL")
         cr3 = field(regs, "CR3")
         cs = re.search(r"^CS =([0-9a-f]+)", regs, re.M)
@@ -211,6 +316,7 @@ def main():
             ticks if ticks is not None else "?", kv, p0)
         if i == 0:
             text += " LAPIC " + lap
+        text += " " + tsum
         parts.append(text)
     t = [x[1] for x in samples]
     delta = "IRQ0 +%d, +%d" % (t[1] - t[0], t[2] - t[1]) if None not in t else "IRQ0 counts ?"

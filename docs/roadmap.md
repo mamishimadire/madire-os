@@ -17,14 +17,38 @@ Each milestone must build, pass `make test`, boot in VirtualBox, and update the 
 | **0.9.2** | Console scrollback: the last 1000 lines with their colours, Shift+PgUp / Shift+PgDn (24 lines a page), a reverse-colour indicator on the last row while scrolled back, `clear` keeping the screen in scrollback. Key-event logging off by default: only with the boot option `keylog` or during the keyboard diagnostics, before any password input exists; a binding secret-input rule for future prompts. `commands.md` at MOCS v0.3 | done (booted in VirtualBox 2026-10-06) |
 | **0.10** | Processes, part 2: user processes. User mode (ring 3) with SMEP, SMAP and CR0.EM; one address space per process, the kernel half frozen at boot; `SYSCALL` with six Linux x86-64 system calls (`write`, `sched_yield`, `nanosleep`, `getpid`, `exit`, `exit_group`; for porting Linux applications, Chromium and Wine later), returning with `IRETQ`; `copy_from_user`; faults in a program contained to that program; 19 built-in test programs; a user-mode self-test at every boot; Diagnostics entries 16–26; the crash screen names SMEP/SMAP faults; the tests read the version once; `commands.md` at MOCS v0.5 | done (booted in VirtualBox 2026-10-09) |
 | **0.11** | Processes, part 3: programs and process management. A strict ELF64 loader; programs delivered as boot modules (7 on the default GRUB entry) and loaded through one path; `run`, `run -b`, `kill` (asks first), `ps` with process numbers, Ctrl+C; program output on the screen through a queue drained by thread 0, with back-pressure; policy (b) (turns at most 5 ticks); `timer_ticks()` without `cli`/`sti`; a stall-capture test harness and `scripts/remote-regress.ps1`; `commands.md` at MOCS v0.6 | done (booted in VirtualBox 2026-10-10) |
-| (option) | A shell milestone before 1.0: scripts, a non-interactive `kill -y <pid>`, "Did you mean" suggestions, help in sections | option (needs its own plan and approval) |
-| 1.0 | Filesystem: a virtual filesystem layer from the start and an initial RAM disk, then disk filesystems | next (needs its own plan and approval) |
+| **0.12** | Shell improvements, no filesystem: "Did you mean" suggestions, help in sections, `prompt`, `alias`/`unalias`, `set`/`unset`/`export`/`env` (in memory), `sleep`, `presskey`, `time`, `kill -y`; bounded diagnostic waits; GitHub Actions as the official, sharded regression; an automated VirtualBox `shell` group; `commands.md` at MOCS v0.7 | in progress (stage 5 of 6) |
+| 0.13 | The bootloader: GRUB → Limine, as its own small milestone (pending the owner's decision on [evaluations/limine.md](evaluations/limine.md)) | planned (needs its own plan and approval) |
+| 1.0 | Filesystem: a virtual filesystem layer, a RAM filesystem first, a Live mode | planned (needs its own plan and approval) |
 
-**Next options after 0.11:** an optional shell milestone first (below), then **1.0, the filesystem**, designed with a virtual file system (VFS) layer from the start: every filesystem (the initial RAM disk first, disk filesystems later) is reached through it, never directly. Programs could then also be loaded from files, not only from boot modules.
+The milestones after 0.12 are listed below under [Planned milestones](#planned-milestones-after-012).
 
-**Candidates for the optional shell milestone** (not yet planned; recorded in [commands.md](commands.md)): a non-interactive `kill -y <pid>` for scripts; "Did you mean" suggestions when a command name is not found (the closest implemented commands by edit distance, for example `hlep` → `help`; at most 79 columns; nothing run automatically); and help organised in sections like the Linux manual's (user commands, administration commands, the system-call reference).
+**Test infrastructure milestone** (planned for when a full regression exceeds about 60 minutes; 0.11's runs took 46–53): test tiers (a quick set per stage, the full set before TESTED), consider a KVM-capable runner, and screenshot-comparison tests for graphics. **Done in 0.12:** the regression runs on GitHub Actions, sharded in parallel jobs (about 15–20 minutes); `scripts/remote-regress.ps1` downloads the per-boot serial logs; every diagnostic wait for ticks is bounded (the documented exceptions are in [PROGRESS.md](PROGRESS.md)). The local Kali VM is for builds and unit tests only ([AGENTS.md](../AGENTS.md)).
 
-**Test infrastructure milestone** (planned for when a full regression exceeds about 60 minutes; 0.11's runs took 46–53): parallel QEMU runs, test tiers (a quick set per stage, the full set before TESTED), consider a larger Codespace or a KVM-capable runner (or the local Kali build VM), and screenshot-comparison tests for graphics. Also: `scripts/remote-regress.ps1` downloading the per-boot serial logs, and bounded waits in every diagnostic.
+## Planned milestones after 0.12
+
+In this order. Only 0.13 has a number; the others are unscheduled. Each needs its own plan and the owner's approval. The references are in [references.md](references.md), each read under its rule (READ FULLY, STUDY ONLY or INSPIRATION ONLY).
+
+1. **0.13: the bootloader, GRUB → Limine** (pending the Limine evaluation, [evaluations/limine.md](evaluations/limine.md); the owner decides after the v0.12 tag). Its own small milestone. Reference: [Limine](references.md#ref-limine). GRUB is today's only GPL exception (a separate, unmodified boot tool), until this switch.
+2. **1.0: the filesystem.** A VFS layer with a RAM filesystem first. A **Live mode**: booting from the ISO with a RAM filesystem, clearly labelled as Live, with no saving. New system calls use Linux numbers and behaviour from the start. Decided at the 1.0 planning: whether program start-up moves to the System V layout (argc, argv, envp, auxv; see the follow-ups in [PROGRESS.md](PROGRESS.md)), and how to handle the kernel size (the margin below 2 MiB fell from 164 KiB to 128 KiB during 0.12). References: [xv6](references.md#ref-xv6), [SerenityOS](references.md#ref-serenity), [Linux](references.md#ref-linux) (documents only).
+3. **Graphics.** A design stage first: the **Madire Design Guide**, written clean-room from published human interface guidelines and screenshots. Then a framebuffer, fonts and text rendering, and the mouse.
+   - **Desktop:** taskbar, start menu with app search, widgets, notifications, system tray, file manager, right-click menus.
+   - **Settings categories:** Home, System, Display, Sound, Network, Bluetooth & devices, Apps, Accounts, Personalization, Time & language, Accessibility, Privacy & security (Madire Security Center), Updates, Developer.
+   - References: [elementary](references.md#ref-elementary) (HIG), [KDE](references.md#ref-kde), [GNOME](references.md#ref-gnome), [XFCE](references.md#ref-xfce) and the other desktop entries, [Apple Open Source](references.md#ref-apple), [SerenityOS](references.md#ref-serenity), [Dunst](references.md#ref-dunst) (notifications), [Plank](references.md#ref-plank) (dock); icons: [Fluent UI System Icons](references.md#ref-fluent) (inspiration only) and [Papirus](references.md#ref-papirus) (study only, never shipped); Madire designs its own icon set.
+4. **Storage:** a disk driver, a writable disk filesystem and partitioning; later the disk filesystem keeps files across reboots.
+5. **Installer.**
+   - First a **text installer**: erase-the-whole-disk only, with a typed confirmation, on **VirtualBox virtual disks only**. It creates a small FAT boot partition (Limine reads only FAT and ISO 9660) and a Madire filesystem partition.
+   - Then real-hardware USB boot (after UEFI), Secure Boot later, a graphical installer, and dual boot next to Windows last.
+   - Installer and disk-writing code only ever runs against virtual disks, never the development laptop's real disks ([AGENTS.md](../AGENTS.md)).
+6. **Networking:** a virtual network card driver, TCP/IP, DNS, HTTP. The first stack candidate is [lwIP](references.md#ref-lwip) (BSD), used **only behind Madire's own Linux-compatible socket layer**: applications never call lwIP directly, so it can be replaced later.
+7. **The Linux-compatible foundation** (the C library / POSIX milestone): system calls that match Linux exactly (numbers and behaviour), [musl](references.md#ref-musl) (MIT) as the C library, System V program start-up, and timeouts or non-blocking forms for `thread_join` and `process_wait`. Reference: [Linux](references.md#ref-linux) (man pages and the system-call table only).
+8. **TLS:** [Mbed TLS](references.md#ref-mbedtls) (Apache-2.0), licence-checked, in `third_party/`.
+9. **Audio and video playback:** a sound driver and decoders. H.264 needs patent licensing; DRM (Widevine) is a business matter, much later.
+10. **The Madire Browser:** a text-mode browser (Madire's own), then [Ladybird](references.md#ref-ladybird), then a [Chromium](references.md#ref-chromium)-based Madire Browser. At that milestone: choose between a native Chromium port and running Linux Chrome through the compatibility layer. [WebKit](references.md#ref-webkit) and [NetSurf](references.md#ref-netsurf) are study only (LGPL/GPL).
+11. **Linux apps** through the same compatibility layer, to fill the Madire Store.
+12. **Long-term direction: Windows apps** through [Wine](references.md#ref-wine) running **on top of the Linux layer**. Wine is installed separately by users and is never part of Madire's code. Reference for Windows itself: Microsoft's public documentation ([ReactOS](references.md#ref-reactos) entry).
+
+**The modernisation track continues alongside** (see below): UEFI (with Limine's own protocol: framebuffer, all CPU cores, ACPI), APIC, multi-core, USB, all RAM, Wi-Fi and Bluetooth; ARM64 later, for the phone version.
 
 Order decided in 0.7 planning: 64-bit long mode (0.7), then the higher-half kernel (0.8), then processes and the filesystem (1.0). In 0.9 planning, processes were split in two: kernel threads and scheduling (0.9), then user processes (0.10); in 0.10 planning, programs and process management were split off into 0.11 (done 2026-10-10). The small 0.9.1 (shell commands) and 0.9.2 (scrollback, key logging off by default) were added afterwards, before 0.10.
 
@@ -53,6 +77,7 @@ Phones (likely ARM64) come after computers and laptops, which is why CPU-specifi
 
 | Today (simple, legacy) | Modern replacement (later) |
 |---|---|
+| GRUB, Multiboot 1 | Limine (0.13, if approved), then Limine's own boot protocol: framebuffer, all CPU cores, ACPI |
 | BIOS boot | UEFI boot, plus Secure Boot |
 | PIC interrupt controller (8259) | APIC / x2APIC |
 | PIT timer | APIC timer / HPET / TSC |
@@ -61,6 +86,7 @@ Phones (likely ARM64) come after computers and laptops, which is why CPU-specifi
 | PS/2 keyboard | USB keyboards, mice and touchpads; Bluetooth |
 | RAM below 4 GiB only | All RAM |
 | No storage, no network | NVMe and SATA disks, Wi-Fi, Ethernet, Bluetooth |
+| x86-64 only | ARM64 later, for the phone version |
 
 These legacy pieces were chosen **deliberately, as the simplest starting point**: each is small, well documented and works in QEMU and VirtualBox without drivers for complex hardware, so the kernel's foundations could be built and tested one step at a time. They are temporary by design: each one must be replaced over time.
 
@@ -85,7 +111,7 @@ These legacy pieces were chosen **deliberately, as the simplest starting point**
 
 | Layer | How | Depends on |
 |---|---|---|
-| **Windows apps** | Port Wine (LGPL; licence to be verified), with Proton-style improvements for games, to run Windows `.exe` and `.msi` programs | Linux/POSIX compatibility (the next layer), graphics, audio |
+| **Windows apps** | Wine (LGPL-2.1-or-later), with Proton-style improvements for games, running **on top of the Linux layer** to run Windows `.exe` and `.msi` programs. Users install Wine separately; it is never part of Madire's code (changed in 0.12 stage 5 from "port Wine") | Linux/POSIX compatibility (the next layer), graphics, audio |
 | **Linux apps** | Run Linux programs through the Linux x86-64 system-call interface chosen in 0.10, extended over time | Processes and system calls (0.10), the filesystem, then more of the Linux interface |
 | **Virtualisation** | Run a complete Windows or Linux guest inside Madire OS (with the user's own licence), for the apps nothing else can run | Hardware virtualisation support (Intel VT-x / AMD-V) |
 | **Web apps** | The Madire Browser (Chromium-based) and installable web apps, such as Teams, Outlook, Gmail, Microsoft 365 online, WhatsApp and Zoom | Graphics, networking, the browser port (through the Linux layer) |
@@ -104,6 +130,7 @@ These legacy pieces were chosen **deliberately, as the simplest starting point**
 ### 3. Open-source policy
 
 - Open source is the main early source of apps, for example Chromium, LibreOffice, VLC, Thunderbird, GIMP and development tools.
+- Inside Madire OS itself, the code-origin rules of [AGENTS.md](../AGENTS.md) apply: Madire's own code is written from scratch, and only approved libraries with a permissive licence are included (in `third_party/`). Applications that users install are separate programs.
 - Every project included needs a licence check and approval first. GPL source obligations and trademark rules (for example Firefox's) are respected.
 - The browser and every other internet-facing app must receive regular security updates.
 - Madire's identity lives in the system: the kernel, the desktop, the Madire Store, the security platform, Madire AI and the settings.
