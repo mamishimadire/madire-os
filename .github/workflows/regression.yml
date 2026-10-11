@@ -7,11 +7,14 @@
 # every job, every part run once, the part "final" over every job's serial
 # logs, the counts against tests/expected-checks.txt, the helper replay.
 # mode=full: `make unit test iso` in one job, as before.
+# parts=all (default): the regression as above. parts=stress (0.12 stage
+# 2b, on request only): one job, `make test-shard SHARD=stress`, the
+# kill-path stress test; the mode is then ignored and no other job runs.
 #
 # QEMU's software emulation only (TCG; KVM is never enabled). No secrets;
 # read-only access to the repository; the actions are pinned to commit SHAs.
 # Start it with (the commit as a full 40-character SHA):
-#   gh workflow run regression.yml --ref main -f ref=<sha> [-f mode=full]
+#   gh workflow run regression.yml --ref main -f ref=<sha> [-f mode=full] [-f parts=stress]
 name: regression
 
 on:
@@ -29,13 +32,21 @@ on:
         options:
           - sharded
           - full
+      parts:
+        description: "all (the regression) or stress (only the kill-path stress test)"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - stress
 
 permissions:
   contents: read
 
 jobs:
   full:
-    if: inputs.mode == 'full'
+    if: inputs.mode == 'full' && inputs.parts != 'stress'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -136,7 +147,7 @@ jobs:
         run: test "$(cat make-exit.txt 2>/dev/null)" = 0
 
   shard:
-    if: inputs.mode == 'sharded'
+    if: inputs.mode == 'sharded' && inputs.parts != 'stress'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -237,7 +248,7 @@ jobs:
 
   combine:
     needs: shard
-    if: always() && inputs.mode == 'sharded'
+    if: always() && inputs.mode == 'sharded' && inputs.parts != 'stress'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -285,3 +296,83 @@ jobs:
       - name: Fail the job if the combined regression failed
         if: always()
         run: test "$(cat shards/combine-exit.txt 2>/dev/null)" = 0
+
+  # 0.12 stage 2b: the kill-path stress test, only with parts=stress.
+  stress:
+    if: inputs.parts == 'stress'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Refuse anything but a full commit SHA
+        env:
+          REF: ${{ inputs.ref }}
+        run: printf '%s\n' "$REF" | grep -qxE '[0-9a-f]{40}'
+
+      - name: Check out the commit under test
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Record the commit and the SHA-256 manifest of the files under test
+        run: |
+          git rev-parse HEAD | tee commit.txt
+          find ./Makefile ./boot ./drivers ./iso ./kernel ./linker ./scripts ./tests ./user \
+               -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum > manifest.sha256
+          echo "files: $(wc -l < manifest.sha256)"
+
+      - name: Install the toolchain (as the devcontainer does)
+        run: bash scripts/install-deps.sh
+
+      - name: Tool versions
+        run: |
+          { gcc --version | head -n 1; ld --version | head -n 1; nasm -v;
+            grub-mkrescue --version | head -n 1; qemu-system-x86_64 --version | head -n 1;
+            python3 --version; nproc; free -m | sed -n 2p; } | tee tools.txt
+
+      - name: make test-shard SHARD=stress (TCG)
+        run: |
+          start=$(date +%s)
+          set +e
+          make test-shard SHARD=stress > regression.log 2>&1
+          rc=$?
+          set -e
+          printf '\nMAKE EXIT %s\n' "$rc" >> regression.log
+          echo "seconds: $(( $(date +%s) - start ))" | tee duration.txt
+          echo "$rc" > make-exit.txt
+          tail -n 3 regression.log
+
+      - name: Checks (source unchanged, the stress counts, build hashes)
+        if: always()
+        run: |
+          {
+            find ./Makefile ./boot ./drivers ./iso ./kernel ./linker ./scripts ./tests ./user \
+                 -type f ! -path './build/*' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum > final.sha256
+            if cmp -s manifest.sha256 final.sha256; then echo FINAL_SNAPSHOT_HASH_MATCH=PASS; else echo FINAL_SNAPSHOT_HASH_MATCH=FAIL; fi
+            grep -E '^SHARD |^STRESS_COUNTS|MAKE EXIT|^FAIL' regression.log || true
+            sha256sum build/madire.elf build/madire.kernel
+          } 2>&1 | tee checks.txt
+
+      - name: Upload the log, the per-boot serial logs and the stall captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regression-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            commit.txt
+            manifest.sha256
+            final.sha256
+            tools.txt
+            duration.txt
+            make-exit.txt
+            checks.txt
+            regression.log
+            build/serial-*.log
+            build/*.keys.txt
+            build/stall/
+
+      - name: Fail the job if the stress test failed
+        if: always()
+        run: test "$(cat make-exit.txt 2>/dev/null)" = 0
