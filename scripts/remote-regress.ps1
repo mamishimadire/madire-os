@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$snapshotRoots = @('Makefile', 'boot', 'drivers', 'include', 'iso', 'kernel', 'linker', 'scripts', 'tests', 'user') |
+$snapshotRoots = @('Makefile', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'boot', 'drivers', 'include', 'iso', 'kernel', 'linker', 'scripts', 'tests', 'user') |
     Where-Object { Test-Path -LiteralPath (Join-Path $repoRoot $_) }
 $codespaceTouched = $false
 $codespaceAvailableAt = $null

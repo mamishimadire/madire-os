@@ -4,7 +4,8 @@
 # --shard static). Apart from this header, every line was moved unchanged
 # from the single script. 0.13 stage 3a: the Multiboot header check uses
 # scripts/check-multiboot.py, the default-entry title comes from limine.conf,
-# and the [0.13] checks of the Limine ISO are added at the end.
+# and the [0.13] checks of the Limine ISO are added at the end. 1.0 stage 0a:
+# the [1.0] check of Madire's licence files at the ISO root.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -88,6 +89,22 @@ if grep -qx '/boot/limine/LICENSE' <<< "$ISOLIST" && grep -qx '/boot/limine/3RDP
 else
     fail "[0.13] ISO: notices missing or a file of the previous boot loader present ($(grep -ci grub <<< "$ISOLIST") paths)"
 fi
+
+echo "== [1.0] The ISO: Madire's licence files at its root"
+# 1.0 stage 0a (Apache 2.0, section 4): each file extracted from the ISO root
+# must have the SHA-256 of the repository's copy.
+REPO=$(dirname "$0")/..
+rm -rf "$OUT/iso-root" && mkdir -p "$OUT/iso-root"
+RBAD=""
+for f in LICENSE NOTICE THIRD_PARTY_NOTICES; do
+    xorriso -osirrox on -indev "$ISO" -extract "/$f" "$OUT/iso-root/$f" >/dev/null 2>&1
+    got=$(sha256sum < "$OUT/iso-root/$f" 2>/dev/null | cut -d' ' -f1)
+    want=$(sha256sum < "$REPO/$f" | cut -d' ' -f1)
+    echo "      /$f: ${got:-missing} (repository: $want)"
+    [ -n "$got" ] && [ "$got" = "$want" ] || RBAD="$RBAD $f"
+done
+if [ -z "$RBAD" ]; then pass "[1.0] ISO: /LICENSE, /NOTICE and /THIRD_PARTY_NOTICES present and byte-identical to the repository's"
+else fail "[1.0] ISO: missing or different from the repository's:$RBAD"; fi
 
 echo "== [0.13] limine.conf: every program module names itself"
 # Limine passes only module_string to the kernel, so every program module of

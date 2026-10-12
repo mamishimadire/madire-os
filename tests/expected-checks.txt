@@ -17,4 +17,6 @@
 # 0.13: the 11 checks of the plan (7 in part static, 2 in part 1, 2 in part 4;
 # the 7 temporary A/B checks of stages 1-3a were removed in stage 3b).
 0.13 11
+# 1.0 stage 0a: the ISO root's licence files (part static).
+1.0 1
 unit-suites 55

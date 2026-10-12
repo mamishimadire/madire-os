@@ -159,13 +159,16 @@ $(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 # -partition_offset 16 gives one starting at sector 64. SOURCE_DATE_EPOCH
 # (fixed, 2026-10-12 00:00 UTC) was the 0.13 attempt (D5) at a reproducible
 # ISO; the ISO still differs between builds (a watch item, docs/PROGRESS.md).
+# 1.0 (stage 0a): Madire's own LICENSE, NOTICE and THIRD_PARTY_NOTICES go to
+# the ISO root (Apache 2.0, section 4); Limine's stay in /boot/limine/.
 LIMINE_DIR ?= /usr/local/share/limine
 LIMINE ?= limine
 ISO_EPOCH := 1791763200
-$(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf)
+$(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
 	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog
+	cp LICENSE NOTICE THIRD_PARTY_NOTICES $(BUILD)/isodir/
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
 	cp $(BUILD)/limine.conf $(BUILD)/isodir/boot/limine/limine.conf
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/LICENSE \
