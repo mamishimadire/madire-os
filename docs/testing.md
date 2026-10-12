@@ -313,8 +313,10 @@ Commands that were run (`VBoxManage` is in `C:\PFiles\Oracle\VirtualBox\`):
 ```
 VBoxManage modifyvm MadireOS-Test --firmware bios --ostype Other
 VBoxManage modifyvm MadireOS-Test --ostype Other_64                      # 0.7
-VBoxManage modifyvm MadireOS-Test --uart1 0x3F8 4 --uartmode1 file C:\Users\Mamishi.Madire\Desktop\madire-os\build\vbox-serial.log   # 0.7
+VBoxManage modifyvm MadireOS-Test --uart1 0x3F8 4 --uartmode1 file <repo-root>\build\vbox-serial.log   # 0.7
 ```
+
+`<repo-root>` stands for the absolute path of the repository on the host (VirtualBox needs an absolute path here).
 
 **The serial log is the VirtualBox evidence** (since 0.7): the kernel writes the same lines QEMU's tests read (boot markers, CPU mode, walk-check, self-tests, crash details, the boot-module result). VirtualBox recreates the file at every power-on, so copy it after each test (`scripts/vbox-acceptance.ps1` does this). **It is kept across a guest reboot** (0.9.1): after `reboot` then `yes`, VirtualBox goes on appending to the same file, so the log holds both boots (two `boot32: start` and two `System ready.` lines). Compare it with the QEMU run of the same kernel. The only differences, found in 0.7 and again in 0.8, 0.9 and 0.9.1, and why they are expected:
 
