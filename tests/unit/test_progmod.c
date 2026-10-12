@@ -20,7 +20,7 @@ static int refused(const char *cmdline)
 
 static void test_names_from_paths(void)
 {
-    CHECK(named("/boot/prog/hello.elf", "hello"));          /* GRUB: the path */
+    CHECK(named("/boot/prog/hello.elf", "hello"));          /* a path alone */
     CHECK(named("build/user/hello.elf", "hello"));          /* QEMU -initrd */
     CHECK(named("hello.elf", "hello"));
     CHECK(named("hello", "hello"));                          /* no ".elf" to strip */

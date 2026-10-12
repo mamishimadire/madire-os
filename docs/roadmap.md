@@ -18,7 +18,7 @@ Each milestone must build, pass `make test`, boot in VirtualBox, and update the 
 | **0.10** | Processes, part 2: user processes. User mode (ring 3) with SMEP, SMAP and CR0.EM; one address space per process, the kernel half frozen at boot; `SYSCALL` with six Linux x86-64 system calls (`write`, `sched_yield`, `nanosleep`, `getpid`, `exit`, `exit_group`; for porting Linux applications, Chromium and Wine later), returning with `IRETQ`; `copy_from_user`; faults in a program contained to that program; 19 built-in test programs; a user-mode self-test at every boot; Diagnostics entries 16–26; the crash screen names SMEP/SMAP faults; the tests read the version once; `commands.md` at MOCS v0.5 | done (booted in VirtualBox 2026-10-09) |
 | **0.11** | Processes, part 3: programs and process management. A strict ELF64 loader; programs delivered as boot modules (7 on the default GRUB entry) and loaded through one path; `run`, `run -b`, `kill` (asks first), `ps` with process numbers, Ctrl+C; program output on the screen through a queue drained by thread 0, with back-pressure; policy (b) (turns at most 5 ticks); `timer_ticks()` without `cli`/`sti`; a stall-capture test harness and `scripts/remote-regress.ps1`; `commands.md` at MOCS v0.6 | done (booted in VirtualBox 2026-10-10) |
 | **0.12** | Shell improvements, no filesystem: "Did you mean" suggestions, help in sections, `prompt`, `alias`/`unalias`, `set`/`unset`/`export`/`env` (in memory), `sleep`, `presskey`, `time`, `kill -y`; bounded diagnostic waits; GitHub Actions as the official, sharded regression; an automated VirtualBox `shell` group; `commands.md` at MOCS v0.7 | done (tag `v0.12`, `879342e`; booted in VirtualBox 2026-10-12) |
-| 0.13 | The bootloader: GRUB → Limine, as its own small milestone (pending the owner's decision on [evaluations/limine.md](evaluations/limine.md)) | planned (needs its own plan and approval) |
+| **0.13** | The bootloader: GRUB → Limine v12.9.3 (BIOS only, still Multiboot 1; [plans/0.13.md](plans/0.13.md)): the ISO built with `xorriso` and `limine bios-install` from the pinned binary package (SHA-256 checked); `limine.conf` with the default entry and the Diagnostics directory; the kernel unchanged except its version string; `scripts/check-multiboot.py` instead of `grub-file`; the checks renamed "boot menu"; GRUB removed from the build; the VirtualBox automation for Limine's menu; `THIRD_PARTY_NOTICES` | done (tag `v0.13`; booted in VirtualBox 2026-10-12) |
 | 1.0 | Filesystem: a virtual filesystem layer, a RAM filesystem first, a Live mode | planned (needs its own plan and approval) |
 
 The milestones after 0.12 are listed below under [Planned milestones](#planned-milestones-after-012).
@@ -27,9 +27,9 @@ The milestones after 0.12 are listed below under [Planned milestones](#planned-m
 
 ## Planned milestones after 0.12
 
-In this order. Only 0.13 has a number; the others are unscheduled. Each needs its own plan and the owner's approval. The references are in [references.md](references.md), each read under its rule (READ FULLY, STUDY ONLY or INSPIRATION ONLY).
+In this order. 0.13 is done; the others are unscheduled. Each needs its own plan and the owner's approval. The references are in [references.md](references.md), each read under its rule (READ FULLY, STUDY ONLY or INSPIRATION ONLY).
 
-1. **0.13: the bootloader, GRUB → Limine** (pending the Limine evaluation, [evaluations/limine.md](evaluations/limine.md); the owner decides after the v0.12 tag). Its own small milestone. Reference: [Limine](references.md#ref-limine). GRUB is today's only GPL exception (a separate, unmodified boot tool), until this switch.
+1. **0.13: the bootloader, GRUB → Limine: done** (tag `v0.13`; [plans/0.13.md](plans/0.13.md), [evaluations/limine.md](evaluations/limine.md)). Reference: [Limine](references.md#ref-limine). Limine replaced GRUB as the only separate boot tool (AGENTS.md section 11, item 5).
 2. **1.0: the filesystem.** A VFS layer with a RAM filesystem first. A **Live mode**: booting from the ISO with a RAM filesystem, clearly labelled as Live, with no saving. New system calls use Linux numbers and behaviour from the start. Decided at the 1.0 planning: whether program start-up moves to the System V layout (argc, argv, envp, auxv; see the follow-ups in [PROGRESS.md](PROGRESS.md)), and how to handle the kernel size (the margin below 2 MiB fell from 164 KiB to 128 KiB during 0.12). References: [xv6](references.md#ref-xv6), [SerenityOS](references.md#ref-serenity), [Linux](references.md#ref-linux) (documents only).
 3. **Graphics.** A design stage first: the **Madire Design Guide**, written clean-room from published human interface guidelines and screenshots. Then a framebuffer, fonts and text rendering, and the mouse.
    - **Desktop:** taskbar, start menu with app search, widgets, notifications, system tray, file manager, right-click menus.
@@ -77,7 +77,7 @@ Phones (likely ARM64) come after computers and laptops, which is why CPU-specifi
 
 | Today (simple, legacy) | Modern replacement (later) |
 |---|---|
-| GRUB, Multiboot 1 | Limine (0.13, if approved), then Limine's own boot protocol: framebuffer, all CPU cores, ACPI |
+| GRUB, Multiboot 1 (until 0.12; since 0.13 Limine with Multiboot 1) | Limine's own boot protocol: framebuffer, all CPU cores, ACPI |
 | BIOS boot | UEFI boot, plus Secure Boot |
 | PIC interrupt controller (8259) | APIC / x2APIC |
 | PIT timer | APIC timer / HPET / TSC |

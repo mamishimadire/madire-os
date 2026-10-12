@@ -4,8 +4,10 @@
 # and the fixture call after the first line, every line was moved
 # unchanged from the single script. 0.12 stage 2 adds the [0.12] stage 2
 # console session at the end (shard 1 is the shortest).
+# 0.13 adds the [0.13] checks of where Limine places the boot data (the
+# temporary stage 1 A/B section was removed again in stage 3b).
 
-echo "== Normal boot (ISO through GRUB)"
+echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
@@ -113,27 +115,26 @@ boot "$LOG" 10 -m 32M -kernel "$KERNEL" -initrd "$OUT/test-module-corrupt.bin"
 expect "$LOG" "^Boot module 1: .*: test pattern CORRUPTED \(FNV-1a 0x[0-9a-f]{8}, expected 0x[0-9a-f]{8}\)" \
                                                       "[0.7] module: a changed byte is reported as CORRUPTED"
 
-echo "== [0.7] Boot module through GRUB (ISO with a module line)"
-LOG=$OUT/serial-grub-module.log
-rm -rf "$OUT/isomod" && mkdir -p "$OUT/isomod/boot/grub"
-cp "$KERNEL" "$OUT/isomod/boot/madire.kernel"
+echo "== [0.7] Boot module through the boot menu (ISO with a module entry; 0.13: Limine)"
+LOG=$OUT/serial-bootmenu-module.log
+limine_tree "$OUT/isomod"
 cp "$OUT/test-module.bin" "$OUT/isomod/boot/test-module.bin"
-cat > "$OUT/isomod/boot/grub/grub.cfg" <<'CFG'
-set timeout=0
-set default=0
-menuentry "Madire OS (module test)" {
-    multiboot /boot/madire.kernel
-    module /boot/test-module.bin test-module
-    boot
-}
+cat > "$OUT/isomod/boot/limine/limine.conf" <<'CFG'
+timeout: 0
+
+/Madire OS (module test)
+    protocol: multiboot1
+    path: boot():/boot/madire.kernel
+    module_path: boot():/boot/test-module.bin
+    module_string: test-module
 CFG
-if grub-mkrescue -o "$OUT/madire-os-module.iso" "$OUT/isomod" >/dev/null 2>&1; then
+if limine_iso "$OUT/isomod" "$OUT/madire-os-module.iso"; then
     boot "$LOG" 12 -m 128M -cdrom "$OUT/madire-os-module.iso"
     expect "$LOG" "^Boot module 1: 0x[0-9a-f]{8}-0x[0-9a-f]{8} \(14016 bytes\): test pattern intact" \
-                                                      "[0.7] module (GRUB): contents intact after boot"
-    expect "$LOG" "System ready\."                    "[0.7] module (GRUB): boots to System ready"
+                                                      "[0.7] module (boot menu): contents intact after boot"
+    expect "$LOG" "System ready\."                    "[0.7] module (boot menu): boots to System ready"
 else
-    fail "[0.7] module (GRUB): grub-mkrescue failed"
+    fail "[0.7] module (boot menu): the test ISO could not be made"
 fi
 
 # exhaust_test <-m size>: allocate every free page, verify, free them all.
@@ -784,8 +785,8 @@ expect_in_order "$OUT/serial-console.log" "[0.8] mem: the stack row comes last" 
 echo "== [0.8] Boot module result on the screen"
 expect "$OUT/serial-mem-module.log" "^Boot module 1: test pattern intact \(14016 bytes\)$" \
                                                       "[0.8] module (QEMU): result on the message line"
-expect "$OUT/serial-grub-module.log" "^Boot module 1: test pattern intact \(14016 bytes\)$" \
-                                                      "[0.8] module (GRUB): result on the message line"
+expect "$OUT/serial-bootmenu-module.log" "^Boot module 1: test pattern intact \(14016 bytes\)$" \
+                                                      "[0.8] module (boot menu): result on the message line"
 expect "$OUT/serial-mem-module-corrupt.log" "^Boot module 1: test pattern CORRUPTED \(14016 bytes\)$" \
                                                       "[0.8] corrupted module: shown as CORRUPTED"
 reject "$OUT/serial-boot.log" "^Boot module [0-9]"     "[0.8] normal boot: no module message (screen unchanged)"
@@ -1102,11 +1103,16 @@ expect_in_order "$LOG" "[0.9.2] normal boot: the typed key still opened the cons
     "System ready\. Press any key" "^console: started$"
 expect "$KLOG" "^Key events: logged \(boot option 'keylog'\)$" \
                                                       "[0.9.2] keylog test ISO: 'Key events: logged (boot option 'keylog')'"
-KDIFF=$(diff "$OUT/grub.cfg" "$OUT/isokeylog/boot/grub/grub.cfg" | grep -c '^[<>]')
-if [ "$KDIFF" -eq 2 ] && grep -q '^ *multiboot /boot/madire\.kernel keylog$' "$OUT/isokeylog/boot/grub/grub.cfg"; then
-    pass "[0.9.2] keylog test ISO: its grub.cfg differs from the real one only by 'keylog' on one line"
+# 0.13: the boot menu is limine.conf; the keylog variant adds exactly one line,
+# "cmdline: keylog", right after the default entry's "path:" line.
+KDIFF=$(diff "$OUT/limine.conf" "$OUT/isokeylog/boot/limine/limine.conf" | grep -c '^[<>]')
+KADD=$(diff "$OUT/limine.conf" "$OUT/isokeylog/boot/limine/limine.conf" | grep '^[<>]')
+KAT=$(grep -n -m1 '^ *path: boot():/boot/madire\.kernel$' "$OUT/limine.conf" | cut -d: -f1)
+KNEXT=$(sed -n "$((KAT + 1))p" "$OUT/isokeylog/boot/limine/limine.conf")
+if [ "$KDIFF" -eq 1 ] && [ "$KADD" = ">     cmdline: keylog" ] && [ "$KNEXT" = "    cmdline: keylog" ]; then
+    pass "[0.9.2] keylog test ISO: its boot menu differs from the real one only by 'keylog' on one line"
 else
-    fail "[0.9.2] keylog test ISO: grub.cfg differs in $KDIFF diff lines"
+    fail "[0.9.2] keylog test ISO: limine.conf differs in $KDIFF diff lines ('$KADD')"
 fi
 LOG=$OUT/serial-nokeylog.log
 boot_keys "$LOG" 15 "System ready." "x,a" 0.15 -m 32M -kernel "$KERNEL" -append "nokeylog"
@@ -1321,4 +1327,34 @@ if [ "$HB" -ge 2 ]; then
     pass "[0.12] the heartbeat is still in the serial log during the idle period ($HB lines)"
 else
     fail "[0.12] the heartbeat is missing from the serial log during the idle period ($HB lines, at least 2 expected)"
+fi
+
+# ---- 0.13: where Limine places the boot data (the real ISO's normal boot) ----
+
+echo "== [0.13] Limine boot: the Multiboot information and the modules"
+LOG=$OUT/serial-boot.log
+# Every boot-data structure the kernel reserves (the information block, the
+# memory map, the command line, the module table, the module names) lies in
+# the low 1 MiB, which the kernel reserves whole anyway.
+BDBAD=$(awk '/^reserve: start=0x[0-9a-f]+ end=0x[0-9a-f]+ (multiboot info|multiboot memory map|kernel command line|boot module table|boot module name)$/ {
+                 s = $2; e = $3; sub(/start=0x/, "", s); sub(/end=0x/, "", e); n++
+                 if (length(e) > 16 || strtonum_hex(e) > 1048576) print $0 }
+             function strtonum_hex(h,   i, v) { v = 0; for (i = 1; i <= length(h); i++) v = v * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1; return v }
+             END { if (n < 5) print "only " n " boot-data lines" }' "$LOG")
+if [ -z "$BDBAD" ]; then
+    pass "[0.13] Limine boot: the Multiboot information (block, memory map, command line, module table and names) lies in the reserved low 1 MiB"
+else
+    fail "[0.13] Limine boot: boot data outside the low 1 MiB: ${BDBAD//$'\n'/; }"
+fi
+# The 7 program modules lie above the kernel image and below 4 GiB.
+MODBAD=$(awk 'function hex(h,   i, v) { v = 0; for (i = 1; i <= length(h); i++) v = v * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1; return v }
+              /^reserve: start=0x[0-9a-f]+ end=0x[0-9a-f]+ kernel image / { k = $3; sub(/end=0x/, "", k); kend = hex(k) }
+              /^reserve: start=0x[0-9a-f]+ end=0x[0-9a-f]+ boot module$/ {
+                  s = $2; e = $3; sub(/start=0x/, "", s); sub(/end=0x/, "", e); n++
+                  if (kend == 0 || hex(s) < kend || hex(e) > 4294967296) print $0 }
+              END { if (n != 7) print n " boot modules, expected 7" }' "$LOG")
+if [ -z "$MODBAD" ]; then
+    pass "[0.13] Limine boot: the 7 modules lie above the kernel image and below 4 GiB"
+else
+    fail "[0.13] Limine boot: module placement: ${MODBAD//$'\n'/; }"
 fi

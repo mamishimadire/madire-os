@@ -2,11 +2,21 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.12 (Milestone 0.12: shell improvements, no filesystem; tag `v0.12`, commit `879342e`)
+**Current version:** 0.13 (Milestone 0.13: the bootloader, GRUB → Limine; tag `v0.13`)
 
-![Madire OS v0.12 boot screen](docs/images/v0.12-boot.png)
+![Madire OS v0.13 boot screen](docs/images/v0.13-boot.png)
 
-0.12 makes the console shell easier to use, and the kernel checks itself:
+0.13 replaces the bootloader: the ISO now boots through **Limine** (v12.9.3, BSD-2-Clause) instead of GRUB:
+
+- **Limine's boot menu:** the default entry and a **Diagnostics** directory with the 27 test boots; it waits 3 s, as GRUB did.
+- **The same kernel:** still Multiboot 1; `madire.kernel` differs from v0.12's only in the three bytes of its version string.
+- **A pinned, checked tool:** the build fetches Limine's unmodified binary package and checks its SHA-256 every time; GRUB is no longer used.
+- **`THIRD_PARTY_NOTICES`:** Limine's licence and notices, which every ISO also carries.
+- **Tests:** a Madire-written Multiboot header check replaces GRUB's `grub-file`; new checks prove where Limine places the boot data and that a module without a name is refused; the VirtualBox automation drives Limine's menu.
+
+![Limine's boot menu (0.13)](docs/images/v0.13-boot-menu.png)
+
+0.12 made the console shell easier to use, and the kernel checks itself:
 
 - **"Did you mean":** a mistyped command suggests up to three close names (`hlep` → `Did you mean: help, sleep?`); nothing is run for you.
 - **Help in sections:** `help shell`, `help system` and `help programs` list one group each; `help` still lists everything.
@@ -17,9 +27,9 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 - **`kill -y <pid>`:** ends a process without asking (plain `kill` still asks first).
 - **Always-on kernel self-checks:** at every thread switch, every address-space (CR3) load and every return to user mode, the kernel checks that the thread, the address space and the process belong together; a broken rule stops the kernel with a panic instead of carrying on.
 
-Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that GRUB delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first; `kill -y <pid>` doesn't); **Ctrl+C** ends the program in the foreground:
+Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that the bootloader delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first; `kill -y <pid>` doesn't); **Ctrl+C** ends the program in the foreground:
 
-![run hello: the program's output on the screen (0.12)](docs/images/v0.12-run-hello.png)
+![run hello: the program's output on the screen (0.13)](docs/images/v0.13-run-hello.png)
 
 Programs run in **user mode** (since 0.10), each in its own address space, and talk to the kernel only through system calls; a program that makes a mistake is ended alone, and the kernel carries on. The Diagnostics menu runs the built-in test programs:
 
@@ -31,7 +41,7 @@ After the boot checks, press any key to open the console. Output that scrolls of
 
 `help` lists the commands and ends with the sections; `help <command>` or `<command> --help` explains one:
 
-![Madire OS v0.12 console: help](docs/images/v0.12-help.png)
+![Madire OS v0.13 console: help](docs/images/v0.13-help.png)
 
 `uname -a`, `hostname`, `date`, `dmesg`, Up-arrow recall and `history` (0.9.1):
 
@@ -39,13 +49,13 @@ After the boot checks, press any key to open the console. Output that scrolls of
 
 `ps` lists the threads and processes (after boot only thread 0, the console itself, is left, and no process), and `mem` shows the higher-half kernel, NX and the kernel stack's high-water mark:
 
-![Madire OS v0.12 console: ps and version](docs/images/v0.12-ps-version.png)
+![Madire OS v0.13 console: ps and version](docs/images/v0.13-ps-version.png)
 
-![Madire OS v0.12 console: mem](docs/images/v0.12-mem.png)
+![Madire OS v0.13 console: mem](docs/images/v0.13-mem.png)
 
-It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So far the kernel:
+It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written in C and NASM. So far the kernel:
 
-- checks that the CPU can run it (CPUID, long mode, PAE) and switches from GRUB's 32-bit protected mode into 64-bit long mode; a CPU without long mode gets a clear message and halts;
+- checks that the CPU can run it (CPUID, long mode, PAE) and switches from the bootloader's 32-bit protected mode into 64-bit long mode; a CPU without long mode gets a clear message and halts;
 - runs in the **higher half** (since 0.8): it is loaded at 1 MiB but runs at `0xFFFFFFFF80000000` and above, and once its own page tables are loaded **nothing in the lower half is mapped**, so any stray low address faults;
 - reaches the low 1 MiB (VGA) and the bootloader's data through a small **physical view**, which never includes free RAM, page 0 or the kernel image;
 - installs its own segment table (GDT, with a task-state segment) and interrupt table (IDT);
@@ -64,11 +74,11 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - **contains faults:** a program that reads NULL, runs an invalid or privileged instruction, touches kernel memory, overflows its stack, writes its code or executes its data (W^X) is ended alone, with one log line naming the exception and the exact instruction;
 - uses **SMEP and SMAP** when the CPU has them, so the kernel itself can't run or touch program memory by mistake (and the crash screen names such a fault); x87/MMX/SSE are off for programs (CR0.EM);
 - tests user mode at every boot (three programs as processes 1–3: output, an exit status, a contained NULL read);
-- **loads ELF programs** (since 0.11) delivered by GRUB as boot modules (7 on the default entry), after strict checks at boot and again at load (static x86-64 only, no writable code, at most 4 segments and 1 MiB), copying them into fresh pages through one loading path;
+- **loads ELF programs** (since 0.11) delivered by the bootloader as boot modules (7 on the default entry), after strict checks at boot and again at load (static x86-64 only, no writable code, at most 4 segments and 1 MiB), copying them into fresh pages through one loading path;
 - **runs and manages them from the console** (since 0.11): `run` and `run -b`, `ps` with process IDs, `kill` (which asks first) and Ctrl+C, which also wakes a sleeping program at once; a foreground program's output appears on the screen, drawn only by the console thread from a queue, and a program that floods it is slowed down rather than the console;
 - has a kernel heap (`kmalloc`, `kcalloc`, `kfree`) that catches double frees, invalid frees and corrupted blocks;
 - explains page faults on the crash screen (what kind of access, and the faulting address);
-- checks that boot modules loaded by GRUB arrive intact, and shows the result on the screen as well as the serial log;
+- checks that boot modules loaded by the bootloader arrive intact, and shows the result on the screen as well as the serial log;
 - handles hardware interrupts safely: only the timer (IRQ0) and keyboard (IRQ1) are enabled, each only after its handler is ready;
 - keeps time with the PIT at 100 Hz (uptime is shown on screen);
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel;
@@ -81,61 +91,64 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
-**Tested at v0.12:** 1222 QEMU checks and 55 unit-test suites pass in the official regression on GitHub Actions, together with the reproducible-build check; the automated VirtualBox acceptance test (`MadireOS-Test`) passes its boot and shell groups on the same ISO.
+**Tested at v0.13:** 1233 QEMU checks and 55 unit-test suites pass in the official regression on GitHub Actions, together with the reproducible-build check; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all its groups on the same ISO, booting all 27 Diagnostics entries through Limine's menu.
 
 ## Roadmap
 
 A summary of [docs/roadmap.md](docs/roadmap.md); each step needs its own plan and the owner's approval.
 
-- **0.1–0.12: done.** Boot, CPU and memory foundations, interrupts, the console and shell, paging and the heap, 64-bit long mode, the higher-half kernel, kernel threads and preemption, user processes, ELF programs and process management, and the shell improvements of 0.12.
-- **0.13: the bootloader, GRUB → Limine.** Planned, decision pending: the owner decides after the [Limine evaluation](docs/evaluations/limine.md).
+- **0.1–0.13: done.** Boot, CPU and memory foundations, interrupts, the console and shell, paging and the heap, 64-bit long mode, the higher-half kernel, kernel threads and preemption, user processes, ELF programs and process management, the shell improvements of 0.12, and in 0.13 the bootloader, GRUB → Limine ([plan](docs/plans/0.13.md), [evaluation](docs/evaluations/limine.md)).
 - **1.0: the filesystem.** A virtual filesystem layer with a RAM filesystem first, and a Live mode.
 - **Then, unscheduled and in this order:** graphics (a design guide first, then a framebuffer, fonts and the mouse), storage, an installer (virtual disks only at first), networking, the Linux-compatible foundation (system calls and a C library), TLS, audio and video, the Madire Browser, Linux apps, and in the long term Windows apps through Wine on top of the Linux layer.
 - **Alongside:** the modernisation track: UEFI, APIC, multi-core, USB, all RAM, Wi-Fi and Bluetooth; ARM64 later.
 
-## v0.12 in pictures
+## v0.13 in pictures
 
-Screenshots from the 0.12 VirtualBox acceptance run (`MadireOS-Test`, the v0.12 ISO of the final regression run).
+Screenshots from the 0.13 VirtualBox acceptance run (`MadireOS-Test`, the v0.13 ISO of the final regression run).
 
-The boot screen of v0.12, with the self-tests passed:
+Limine's menu with the **Diagnostics** directory open (the automation selects each entry by its position):
 
-![v0.12 boot screen](docs/images/v0.12-boot.png)
+![Limine's menu, Diagnostics open](docs/images/v0.13-boot-menu-diagnostics.png)
+
+The boot screen of v0.13, with the self-tests passed:
+
+![v0.13 boot screen](docs/images/v0.13-boot.png)
 
 `help` ends with the list of sections; `help system` and `help programs` show one group each:
 
-![help system and help programs](docs/images/v0.12-help-sections.png)
+![help system and help programs](docs/images/v0.13-help-sections.png)
 
 A mistyped command or help topic gets "Did you mean" suggestions:
 
-![Did you mean suggestions](docs/images/v0.12-didyoumean.png)
+![Did you mean suggestions](docs/images/v0.13-didyoumean.png)
 
 `prompt` changes the prompt and refuses text that is too long, starts with `-` or has spaces:
 
-![prompt](docs/images/v0.12-prompt.png)
+![prompt](docs/images/v0.13-prompt.png)
 
 `alias` makes short names for commands, with clear refusals for bad names:
 
-![alias and unalias](docs/images/v0.12-alias.png)
+![alias and unalias](docs/images/v0.13-alias.png)
 
 `set` keeps shell variables in memory, with its limits checked:
 
-![set](docs/images/v0.12-set.png)
+![set](docs/images/v0.13-set.png)
 
 `export` marks variables, and `env` lists the exported ones:
 
-![export, env and unset](docs/images/v0.12-env.png)
+![export, env and unset](docs/images/v0.13-env.png)
 
 `time sleep 1` takes 100 ticks (1.00 s); `presskey` waits for a key, and Ctrl+C cancels it:
 
-![sleep, presskey and time](docs/images/v0.12-wait.png)
+![sleep, presskey and time](docs/images/v0.13-wait.png)
 
 `kill` asks first; `kill -y` ends a process without asking, and `time kill -y` times it:
 
-![kill and kill -y](docs/images/v0.12-kill.png)
+![kill and kill -y](docs/images/v0.13-kill.png)
 
 **Ctrl+C** ends a program that never stops by itself (`run spin`):
 
-![Ctrl+C on spin](docs/images/v0.12-ctrlc-spin.png)
+![Ctrl+C on spin](docs/images/v0.13-ctrlc-spin.png)
 
 ## Development environment
 
@@ -145,7 +158,7 @@ A mistyped command or help topic gets "Did you mean" suggestions:
 | Build environment | Ubuntu Linux: a GitHub Codespace (current; created from `.devcontainer/`, proven on a fresh Codespace in 0.8), or WSL2 / CI |
 | Compiler | the host GCC in 64-bit freestanding mode (`gcc -m64 -ffreestanding -mno-red-zone -mgeneral-regs-only -mcmodel=kernel`) |
 | Assembler | NASM |
-| Bootloader / ISO | GRUB 2 (`grub-mkrescue`) + xorriso |
+| Bootloader / ISO | Limine 12.9.3 (since 0.13; the pinned binary package, SHA-256 checked) + xorriso (`limine bios-install`); GRUB 2 until 0.12 |
 | Automated tests | QEMU (`qemu-system-x86_64`, and `qemu-system-i386` for the "no 64-bit CPU" test), headless |
 | Official regression | GitHub Actions (since 0.12): started by hand, sharded into parallel jobs, QEMU 8.2.2 and gcc 13 (`scripts/actions-regress.ps1`); a GitHub Codespace is the fallback |
 | Target machine | Oracle VirtualBox 7.2, VM `MadireOS-Test` (BIOS firmware, OS type Other 64-bit) |
@@ -166,7 +179,8 @@ On Linux (Codespace terminal, WSL, CI):
 ```sh
 bash scripts/install-deps.sh   # once (a Codespace from .devcontainer/ runs it for you)
 make            # kernel: build/madire.elf (with symbols) and build/madire.kernel (bootable)
-make iso        # bootable ISO: build/madire-os.iso
+make iso        # bootable ISO: build/madire-os.iso (Limine; scripts/install-deps.sh
+                # fetches the pinned Limine package)
 make unit       # host unit tests, 55 suites (memory, 4-level page tables, heap,
                 # keyboard decoder and queue, PIT maths, console text grid, line
                 # editor, parser, shell, CPUID decoding, kprintf, NX and page-fault
@@ -181,10 +195,11 @@ make unit       # host unit tests, 55 suites (memory, 4-level page tables, heap,
                 # bounded diagnostic waits, the scheduler self-checks)
 make repro      # two clean builds in fresh directories: madire.elf and
                 # madire.kernel must be byte-identical (make test runs it too)
-make test       # unit tests + repro + 1222 QEMU checks (150 from 0.3 + 30 from 0.4 +
+make test       # unit tests + repro + 1233 QEMU checks (150 from 0.3 + 30 from 0.4 +
                 # 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from
                 # 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 from 0.10 + 233 from
-                # 0.11 + 151 new; the agreed counts are in tests/expected-checks.txt):
+                # 0.11 + 151 from 0.12 + 11 new; the agreed counts are in
+                # tests/expected-checks.txt):
                 # boot, long mode, CPUs without long mode, logo, memory at 5 RAM
                 # sizes, crash tests, timer rate, scripted keyboard input, a scripted
                 # console session, paging and heap self-tests, the higher-half kernel
@@ -196,10 +211,12 @@ make test       # unit tests + repro + 1222 QEMU checks (150 from 0.3 + 30 from 
                 # key logging off by default, scrollback read back from the VGA screen,
                 # user mode: segments, SMEP/SMAP, address spaces, programs in ring 3,
                 # kill, contained faults with their instructions, system calls, bad
-                # pointers, 1000 processes, the GRUB Diagnostics entries; ELF programs
+                # pointers, 1000 processes, the boot menu's Diagnostics entries; ELF programs
                 # from boot modules and malformed files, run/kill/ps and Ctrl+C in
                 # console sessions, screen output and a flooding program; the 0.12
-                # shell commands in console sessions, the self-checks' panics.
+                # shell commands in console sessions, the self-checks' panics; the
+                # Multiboot header (scripts/check-multiboot.py), Limine's files and
+                # notices in the ISO, where Limine places the boot data.
                 # The official run is on GitHub Actions, sharded, about 20 minutes:
                 # scripts/actions-regress.ps1 -Dispatch (see docs/development.md)
 make run        # boot in a QEMU window
@@ -214,14 +231,15 @@ make clean
 .\scripts\vbox-acceptance.ps1           # the automated acceptance test (since 0.9): checks
                                         # the VM settings (never changes them), boots each
                                         # test, keeps screenshots and serial logs; since
-                                        # 0.12 a scripted shell session too (-Only boot,shell)
+                                        # 0.12 a scripted shell session too (-Only boot,shell);
+                                        # since 0.13 it drives Limine's menu
 ```
 
 In the console, try `run hello`, `run -b spin`, `ps`, then `kill <pid>` (it asks first) or `kill -y <pid>`, and `run lines 65636` followed by **Ctrl+C**. From 0.12: `help shell`, a typo such as `hlep`, `alias ll echo hi`, `set A=1`, `time sleep 1`.
 
 When the boot screen says `System ready. Press any key to open the console.`, press a key. That key only opens the console; it isn't typed. Type `help` for the list of commands.
 
-The GRUB menu has a **Diagnostics** submenu:
+Limine's menu has a **Diagnostics** directory (press **↓**, then **Enter** to open it):
 
 - **Crash tests** that deliberately trigger CPU exceptions, including a **kernel stack overflow**.
 - **Page-fault tests:** read from NULL, read from an unmapped address, write to read-only kernel code, execute from a no-execute data page (NX), read the kernel's old low address `0x100000` (0.8: it must fault, because the lower half is empty).
@@ -234,9 +252,9 @@ The GRUB menu has a **Diagnostics** submenu:
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.12)
+## Limitations (v0.13)
 
-- 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
+- 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI; the ISO is BIOS-only, although Limine could also boot UEFI later).
 - **Only RAM below 4 GiB is used.** On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
 - The whole low 1 MiB is reserved on purpose, and ACPI-reclaimable memory isn't reclaimed yet.
 - **Paging:** 4 KiB pages; one kernel half, shared by every process and frozen at boot. There is no direct map of physical memory: the physical view covers only the low 1 MiB and the boot data, and other frames are reached one page at a time through the physical-access window. A page fault in the kernel is fatal (nothing is loaded on demand); one in a program ends that program.
@@ -261,7 +279,7 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - **Threads and scheduling:** at most 64 threads with 16 KiB stacks; round robin with a fixed 50 ms slice, no priorities. Only one CPU is used.
 - No filesystem yet (planned for 1.0).
 - The logo is blocky: text mode gives 80×50 pixels, each 9×8 screen pixels in size.
-- Building needs a Linux environment; there is no native Windows toolchain yet. The kernel build is reproducible (byte-identical), but the ISO isn't (`grub-mkrescue` records timestamps).
+- Building needs a Linux environment; there is no native Windows toolchain yet. The kernel build is reproducible (byte-identical), but the ISO isn't: it still differs between builds, although since 0.13 its build gives `xorriso` a fixed `SOURCE_DATE_EPOCH` (the cause is on the `xorriso` side; a watch item).
 
 ## Documentation
 
@@ -273,3 +291,4 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - [docs/PROGRESS.md](docs/PROGRESS.md): history, tests per milestone, decisions, future direction
 - [docs/references.md](docs/references.md): external projects used as references only
 - [AGENTS.md](AGENTS.md): the working rules for anyone, person or coding agent, changing the repository
+- [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES): the third-party software Madire OS ships (since 0.13: Limine)

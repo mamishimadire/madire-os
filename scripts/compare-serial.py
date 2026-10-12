@@ -25,7 +25,7 @@ QEMU_NAMES = {
     "scrollback": "serial-scroll.log",
     "commands": "serial-cmds091.log",
     "reboot": "serial-reboot.log",
-    "module": "serial-grub-module.log",
+    "module": "serial-bootmenu-module.log",
     "memexhaust": "serial-exhaust-128M.log",
     "procs": "serial-run.log",
 }
@@ -38,7 +38,7 @@ def qemu_name(name):
     if name in QEMU_NAMES:
         return QEMU_NAMES[name]
     if name.startswith("user") or name in ("smep", "smap"):
-        return "serial-grub-%s.log" % name
+        return "serial-bootmenu-%s.log" % name
     return "serial-%s.log" % name
 
 

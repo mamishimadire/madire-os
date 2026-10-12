@@ -7,8 +7,9 @@ Status key: **[built]** exists in the current version, **[planned]** is designed
 ```
 VirtualBox power-on
   -> BIOS firmware        finds the ISO in the optical drive (El Torito boot)
-  -> GRUB 2               reads iso/boot/grub/grub.cfg, shows menu (3 s)
-  -> Multiboot load       GRUB loads build/madire.kernel (a flat binary, through
+  -> Limine 12.9.3        reads /boot/limine/limine.conf, shows menu (3 s)
+                          (GRUB 2 until 0.12)
+  -> Multiboot load       Limine loads build/madire.kernel (a flat binary, through
                           the a.out kludge fields) at 1 MiB, in 32-bit protected mode
   -> boot/boot.asm        _start (32-bit stub, 0.7; runs at its load address):
                             zero .bss; serial marker "boot32: start"
@@ -121,17 +122,17 @@ VirtualBox power-on
 
 | Stage | File | Responsibility |
 |---|---|---|
-| Bootloader config | `iso/boot/grub/grub.cfg` | Normal entry plus a Diagnostics submenu (crash, page-fault, memory, timer, keyboard, since 0.9 thread tests, and since 0.10 the user-mode tests and the SMEP/SMAP crash tests: 27 entries) |
+| Bootloader config | `iso/boot/limine/limine.conf` (since 0.13; `grub.cfg` before) | Normal entry plus a Diagnostics directory (crash, page-fault, memory, timer, keyboard, since 0.9 thread tests, and since 0.10 the user-mode tests and the SMEP/SMAP crash tests: 27 entries) |
 | Multiboot header | `boot/boot.asm` (`.multiboot`) | Magic `0x1BADB002`, flags (page-aligned modules, memory map, a.out kludge), checksum, then the physical load addresses: `load_addr = __kernel_phys_start`, `load_end_addr = __data_end_phys`, `bss_end_addr = __kernel_end_phys`, `entry_addr = _start`; must be within the first 8 KiB of the file |
 | Entry point | `boot/boot.asm` (`_start`, `.boot32`) | 32-bit stub: CPU checks, temporary tables, switch to long mode, jump to the higher half; passes `eax` (magic) and `ebx` (info pointer) to C as the first two arguments |
 | Memory layout | `linker/linker.ld` | 64-bit ELF, loaded at 1 MiB; since 0.8 linked and run at `0xFFFFFFFF80000000` + physical (`.boot` alone is linked at its load address); `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; `.bss` ends with the boot tables and the stacks; exports `__kernel_start/end` and per-section start/end symbols (virtual), plus the `*_phys` symbols the loader and the stub need |
 | Start-up sequence | `kernel/kernel.c` | Calls each subsystem in order and reports each result on the boot screen |
 
-**Why GRUB/Multiboot:** GRUB already handles BIOS disk access, reading the ISO filesystem and switching the CPU into protected mode. That lets the project start with kernel code instead of a hand-written boot sector. A custom bootloader could replace it later without changing the kernel's entry contract.
+**Why GRUB/Multiboot:** GRUB already handles BIOS disk access, reading the ISO filesystem and switching the CPU into protected mode. That lets the project start with kernel code instead of a hand-written boot sector. A custom bootloader could replace it later without changing the kernel's entry contract. **Since 0.13 the boot loader is Limine** (BSD-2-Clause, a separate tool fetched at build time; AGENTS.md section 11, item 5), still with Multiboot 1 and the same kernel entry: only the version string of `madire.kernel` changed. See [evaluations/limine.md](evaluations/limine.md).
 
 **Why a 32-bit stub:** Multiboot (version 1) hands over in 32-bit protected mode, so the first instructions must be 32-bit. The stub does only what long mode needs: check the CPU, build temporary tables, switch. Everything else is 64-bit C. Up to 0.6 the whole kernel was 32-bit; 0.7 made it 64-bit and dropped the 32-bit build.
 
-**Why Multiboot 1 and a flat binary:** most QEMU tests boot with `-kernel … -append … -initrd`, and QEMU's `-kernel` loader supports Multiboot 1 (not Multiboot 2) and refuses 64-bit ELF files. The a.out kludge fields give the physical load addresses and the end of `.bss`, so GRUB and QEMU both load `objcopy`'s flat output directly, whatever the format. The ELF (`build/madire.elf`) is kept for symbols and debugging. The approach still works with the higher-half link (0.8): the kludge fields are physical addresses, and a stage-3 probe confirmed GRUB and QEMU `-kernel` both load the high-linked flat binary.
+**Why Multiboot 1 and a flat binary:** most QEMU tests boot with `-kernel … -append … -initrd`, and QEMU's `-kernel` loader supports Multiboot 1 (not Multiboot 2) and refuses 64-bit ELF files. The a.out kludge fields give the physical load addresses and the end of `.bss`, so the boot loader (Limine since 0.13, GRUB before) and QEMU both load `objcopy`'s flat output directly, whatever the format. The ELF (`build/madire.elf`) is kept for symbols and debugging. The approach still works with the higher-half link (0.8): the kludge fields are physical addresses, and a stage-3 probe confirmed GRUB and QEMU `-kernel` both load the high-linked flat binary.
 
 **CPUs that can't run it:** without CPUID, long mode or PAE, the stub prints `Madire OS needs a 64-bit (x86-64) CPU: … not supported. Halted.` on serial and in white on red on the screen's top row, and halts. No mode switch is attempted, so there is no triple fault.
 
@@ -329,7 +330,7 @@ Zero-length entries are skipped. The map is never copied, so there's no entry li
 
 Anything that isn't type 1 (firmware, ACPI, the interrupt controllers at `0xFEC00000` and `0xFEE00000`, ROM) is never usable, and neither is anything missing from the map entirely. Start-up also checks that the kernel lies inside a single type-1 region.
 
-**Why the explicit Multiboot reservations matter:** QEMU's loader puts the command line and modules immediately after the kernel (at `0x14A000`), and GRUB under VirtualBox also uses the two pages after the kernel. Both are ordinary usable RAM above 1 MiB, so reserving only the low 1 MiB and the kernel would not be enough.
+**Why the explicit Multiboot reservations matter:** QEMU's loader puts the command line and modules immediately after the kernel (at `0x14A000`), and GRUB under VirtualBox also used the two pages after the kernel (since 0.13 Limine puts its information block at `0x10000` and the modules right after the kernel). Both are ordinary usable RAM above 1 MiB, so reserving only the low 1 MiB and the kernel would not be enough.
 
 ### Page allocator (`pmm.c`)
 
@@ -389,7 +390,7 @@ MB values mean MiB (1,048,576 bytes), rounded to the nearest whole number. The s
 
 "Safe" is decided by `memory_page_is_safe()`, which re-reads the map and the reservation list rather than trusting the allocator's own bitmaps. Any failure goes to the crash screen, so **`OK` means verified**.
 
-**Diagnostics** (from the GRUB menu, or QEMU `-append`):
+**Diagnostics** (from the boot menu, or QEMU `-append`):
 
 - `test=memexhaust`: allocate every free page, then check each is safe, strictly increasing and tagged. After that, allocation must keep returning 0. Each page's tag is verified, every page is freed, and the free count must be restored. Since 0.6 each page is reached through the physical-access window (mapped, used, unmapped). Pages already in use before the test (page tables, the top-level table (the page directory up to 0.6, the PML4 since 0.7), heap pages; at most 256) are recorded first and left alone; the kernel logs how many it expects, and the QEMU test requires the two counts to match exactly.
 - `test=doublefree`: must end on the crash screen with `Double free of physical page 0x…`.
@@ -426,7 +427,7 @@ The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and I
 | Virtual range | PML4 slot | Maps to | Access |
 |---|---|---|---|
 | `0x0000000000000000–0x00007FFFFFFFFFFF` (the whole lower half) | 0–255 | – | **unmapped in the kernel's tables** (0.8): PML4[0] is not present, so every address in 0–4 GiB faults: page 0 (NULL), the kernel's old address `0x100000`, VGA's physical address, free RAM. Since 0.10 each process has its own lower half (user pages only; see *User processes*) |
-| `0xFFFF800000001000–0xFFFF8000000FFFFF` | 256 | physical `0x1000–0xFFFFF` (pages 1–255) | physical view: read/write, no-execute (VGA text buffer at `0xFFFF8000000B8000`, EBDA, ROM, GRUB data) |
+| `0xFFFF800000001000–0xFFFF8000000FFFFF` | 256 | physical `0x1000–0xFFFFF` (pages 1–255) | physical view: read/write, no-execute (VGA text buffer at `0xFFFF8000000B8000`, EBDA, ROM, the boot loader's data) |
 | `0xFFFF800000000000` + each boot-data reservation | 256 | that reservation | physical view: read/write, no-execute (Multiboot info, memory map, command line, module table, modules, module names) |
 | rest of slot 256 | 256 | – | unmapped: page 0 (`0xFFFF800000000000`), **free RAM** and the **kernel image** are deliberately not in the view |
 | `0xFFFFFD8000000000–0xFFFFFD80001FFFFF` (0.9) | 507 | thread stack frames | kernel thread stacks: 64 slots of 32 KiB; in each, a 16 KiB **unmapped guard**, then a 16 KiB stack (read/write, no-execute) mapped while its thread exists. Empty at boot; its page table is made at boot |
@@ -469,7 +470,7 @@ On `MadireOS-Test` and in QEMU this is 76 items (79 with one boot module); it wa
 
 Any mismatch frees the frames and leaves the temporary tables in place (`Paging & kernel heap: FAILED (paging)`, boot continues). Otherwise CR3 is loaded, and from then on the tables are reached only through the recursive mapping.
 
-**Paging self-test** (a failure is fatal): CR0.PG and WP set, CR3 is the PML4, CR4.PAE and EFER.LMA set, the recursive entry reads back correctly, the kernel, stack, VGA and boot data still translate, page 0 and both guard pages don't; since 0.8 also, on the live tables, the lower half is empty, the low addresses are unmapped, and neither the kernel image nor page 0 is in the physical view (26 checks with a GRUB boot, 27 with QEMU's `-kernel`). Then a test page is mapped to frame A, written and read back, unmapped; remapped A → B → A → B, each frame keeping its own pattern (a missing TLB flush would put B's data into A); the window is mapped to A, read and written, unmapped and must no longer translate; the free page count must return exactly to its start value.
+**Paging self-test** (a failure is fatal): CR0.PG and WP set, CR3 is the PML4, CR4.PAE and EFER.LMA set, the recursive entry reads back correctly, the kernel, stack, VGA and boot data still translate, page 0 and both guard pages don't; since 0.8 also, on the live tables, the lower half is empty, the low addresses are unmapped, and neither the kernel image nor page 0 is in the physical view (26 checks with a boot through the boot menu, GRUB or Limine, 27 with QEMU's `-kernel`). Then a test page is mapped to frame A, written and read back, unmapped; remapped A → B → A → B, each frame keeping its own pattern (a missing TLB flush would put B's data into A); the window is mapped to A, read and written, unmapped and must no longer translate; the free page count must return exactly to its start value.
 
 **TLB flushes:** `invlpg` on every unmap (one flush point, in `vmm_core`, counted by the unit tests). A new mapping needs no flush: the CPU never caches "not mapped".
 
@@ -485,7 +486,7 @@ Any mismatch frees the frames and leaves the temporary tables in place (`Paging 
 
 **Diagnostics:**
 
-| `test=` | GRUB entry | Result |
+| `test=` | Boot-menu entry | Result |
 |---|---|---|
 | `pfnull` | Page-fault test: read from NULL | address and CR2 `0x0000000000000000`, `not present, read, kernel mode` |
 | `pfunmapped` | Page-fault test: read from unmapped address | address and CR2 `0x0000000040000000`, `not present, read, kernel mode` |
@@ -504,7 +505,7 @@ Any mismatch frees the frames and leaves the temporary tables in place (`Paging 
 
 ## Boot modules [built: 0.3 reserved, 0.7 checked, 0.8 on screen]
 
-GRUB (`module` lines) or QEMU (`-initrd`) can load modules. Their ranges are reserved since 0.3. Since 0.7, after paging and the heap are set up, `check_boot_modules()` looks at each one: a **test module** (`kernel/bootmod.h`: `MADIRETM`, payload length, FNV-1a of the payload, then the payload) must still be intact, which proves the reservations kept it safe through memory set-up, the self-tests and the switch of page tables. The result goes to the serial log, e.g. `Boot module 1: 0x0016f000-0x001726c0 (14016 bytes): test pattern intact (FNV-1a 0x2feffe68, expected 0x2feffe68)`; a changed byte is reported as `CORRUPTED`. `kernel/bootmod.c` is pure and unit-tested. The module table and the modules are read through the physical view (0.8).
+The boot menu (Limine `module_path` lines since 0.13, GRUB `module` lines before) or QEMU (`-initrd`) can load modules. Their ranges are reserved since 0.3. Since 0.7, after paging and the heap are set up, `check_boot_modules()` looks at each one: a **test module** (`kernel/bootmod.h`: `MADIRETM`, payload length, FNV-1a of the payload, then the payload) must still be intact, which proves the reservations kept it safe through memory set-up, the self-tests and the switch of page tables. The result goes to the serial log, e.g. `Boot module 1: 0x0016f000-0x001726c0 (14016 bytes): test pattern intact (FNV-1a 0x2feffe68, expected 0x2feffe68)`; a changed byte is reported as `CORRUPTED`. `kernel/bootmod.c` is pure and unit-tested. The module table and the modules are read through the physical view (0.8).
 
 **On screen (0.8):** for machines without a serial port, the result also goes to the boot screen's message line (row 23), e.g. `Boot module 1: test pattern intact (14016 bytes)` or `… test pattern CORRUPTED (14016 bytes)`. Only when a module was loaded: a normal boot's screen is unchanged. With several modules, each result replaces the previous one on that line, so only the last stays visible; the serial log has all of them.
 
@@ -616,7 +617,7 @@ idle loop → console_handle_key → line editor → (Enter) → parser → shel
 2. **Fallback, a triple fault:** if the machine is still running, load an empty interrupt table (limit 0) and execute `int3`. The CPU can't deliver it (#GP, then #DF, then shutdown), and a shutdown resets the machine. No crash screen appears, because no handler can run.
 3. If even that returns, it halts.
 
-`test=reboottriple` (QEMU only, no GRUB entry) skips step 1 to test the fallback. In QEMU (`-no-reboot`) and VirtualBox the keyboard-controller reset works; the fallback is proven in QEMU.
+`test=reboottriple` (QEMU only, no boot-menu entry) skips step 1 to test the fallback. In QEMU (`-no-reboot`) and VirtualBox the keyboard-controller reset works; the fallback is proven in QEMU.
 
 ## Kernel threads and scheduler [built: 0.9]
 
@@ -725,9 +726,9 @@ It also logs the longest turn and the highest thread stack peak.
 
 ### Thread diagnostics (`test=…`)
 
-Each logs its details on serial and its result on the boot screen's message line, and ends with "everything returned" (free pages, stack slots and threads as before) and its longest turn. GRUB entries exist for the two meant for real hardware; the rest run in QEMU.
+Each logs its details on serial and its result on the boot screen's message line, and ends with "everything returned" (free pages, stack slots and threads as before) and its longest turn. Boot-menu entries exist for the two meant for real hardware; the rest run in QEMU.
 
-| `test=` | GRUB entry | Proves |
+| `test=` | Boot-menu entry | Proves |
 |---|---|---|
 | `threads` | – | 8 threads × 100 yields: strict round robin (or option (A) after a preemption); `rbx`, `rbp`, `r12`–`r15` and stack contents preserved across 800 switches; IF=1 after every switch |
 | `join` | – | exact exit codes (0, 1, 255, `0x7fffffff`, −1, `INT32_MIN`); a thread other than 0 blocks in a join and is woken; a detached thread reaped by thread 0 |
@@ -840,7 +841,7 @@ After the scheduler self-test, with paging on: `hello` (one line through `write`
 
 ### Diagnostics (`test=…`)
 
-| `test=` | GRUB position | Proves |
+| `test=` | Boot-menu position | Proves |
 |---|---|---|
 | `rsp0` | – | after every yield and preemption, RSP0 is the running thread's own stack top (4 threads, 4 distinct values, 0 mismatches) |
 | `clac` | – | with RFLAGS.AC set, interrupts are taken: with SMAP on every handler sees AC=0 and `clac` runs; without SMAP `clac` never runs (no #UD) |
@@ -891,7 +892,7 @@ The file is checked **at boot** (when the module is registered) and **again at l
 
 ### Program modules
 
-GRUB's default entry loads the programs as Multiboot modules: `module /boot/prog/<name>.elf <name>`. A module's name is the second word of its command line, or its file name without `.elf`; names are `[a-z0-9_]{1,15}`, duplicates are refused. At most 8 program modules are kept; each decision is one line on the serial log and in `dmesg`, never on the screen (`Program module 3 'hello': 5176 bytes, ELF checked: 2 segments, 3 pages, entry 0x400000`). The default entry loads 7: `hello`, `spin`, `exitcode`, `nullptr`, `sleep`, `getpid`, `lines`. Module memory is boot data (below 4 GiB, reserved, reached through the physical view); it is **never mapped into a process**. **Limit:** the protected `reserve.c` holds 32 ranges, and each module takes 2, so 13 modules fill it and a 14th stops the boot.
+The default boot entry loads the programs as Multiboot modules: since 0.13 `module_path: boot():/boot/prog/<name>.elf` with `module_string: <name>` (Limine passes only the string; GRUB's `module /boot/prog/<name>.elf <name>` before). A module's name is the second word of its string if there are two, otherwise its one word's last part without `.elf`; an empty string is refused; names are `[a-z0-9_]{1,15}`, duplicates are refused. At most 8 program modules are kept; each decision is one line on the serial log and in `dmesg`, never on the screen (`Program module 3 'hello': 5176 bytes, ELF checked: 2 segments, 3 pages, entry 0x400000`). The default entry loads 7: `hello`, `spin`, `exitcode`, `nullptr`, `sleep`, `getpid`, `lines`. Module memory is boot data (below 4 GiB, reserved, reached through the physical view); it is **never mapped into a process**. **Limit:** the protected `reserve.c` holds 32 ranges, and each module takes 2, so 13 modules fill it and a 14th stops the boot.
 
 ### One loading path
 
@@ -914,7 +915,7 @@ Built-in images and ELF files are both turned into a **load plan**, and `process
 
 ## Device diagnostics (`kernel/devtest.c`) [built: 0.4]
 
-| `test=` | GRUB entry | Proves | Result |
+| `test=` | Boot-menu entry | Proves | Result |
 |---|---|---|---|
 | `timer` | Timer test: measure against RTC | IRQ0 rate matches an independent clock | Counts ticks across 3 RTC second boundaries (busy-polling the RTC for precise edges). `PASS` if 270–330 (±10 %); the exact count is shown. |
 | `keyboard` | Keyboard test: show key codes | Decoding of every key, extended codes, modifiers | Shows each event (scancode, key, character, flags) in the panel area and on serial. Never returns; reboot to exit. |
@@ -983,7 +984,7 @@ Users, permissions, application permissions, and a secure boot/update chain: the
 
 ## Filesystem [planned]
 
-A virtual filesystem (VFS) layer first, then an initial RAM disk loaded by GRUB as a Multiboot module, then disk filesystems.
+A virtual filesystem (VFS) layer first, then an initial RAM disk loaded by the boot loader as a Multiboot module, then disk filesystems.
 
 ## System services [planned]
 

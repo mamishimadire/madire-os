@@ -22,8 +22,9 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, user, smx, memexhaust, module, shell, repeat
+    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
+    [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
     [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
     [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64"   # must not be running (0.11)
 )
@@ -125,6 +126,7 @@ function Key { VBox controlvm $VM keyboardputscancode @args | Out-Null; Start-Sl
 function TypeText([string]$s) { VBox controlvm $VM keyboardputstring $s | Out-Null; Start-Sleep -Milliseconds 400 }
 function Enter { Key 1c 9c; Start-Sleep -Milliseconds 400 }
 function Down { Key e0 50 e0 d0 }
+function HomeKey { Key e0 47 e0 c7 }
 function Shot([string]$name) {
     VBox controlvm $VM screenshotpng (Join-Path $OutDir "$Prefix-$name.png") | Out-Null
 }
@@ -163,8 +165,10 @@ function Stop-Run([string]$name, [string[]]$expect) {
     }
 }
 
-# GRUB Diagnostics positions (0.9; 16-26 appended in 0.10): presses of the
-# down arrow from the first entry of the submenu.
+# Diagnostics positions (0.9; 16-26 appended in 0.10; since 0.13 the
+# sub-entries of the boot menu's "Diagnostics" directory, in limine.conf's
+# order): position N is reached with N + 1 presses of the down arrow from the
+# expanded "Diagnostics" directory.
 $Diag = [ordered]@{
     divzero = 0; ud = 1; gpf = 2; pfnull = 3; pfunmapped = 4; pfreadonly = 5; pfnx = 6;
     pflow = 7; stackoverflow = 8; memexhaust = 9; doublefree = 10; freereserved = 11;
@@ -182,14 +186,58 @@ function Absent([string]$name, [string]$pattern) {
     Note ("{0,-16} {1,-8} /no {2}: {3} lines/" -f $name, $(if ($n -eq 0) { "OK" } else { "MISSING" }), $pattern, $n)
 }
 
-# Boots a Diagnostics entry: down to "Diagnostics", Enter, down to the entry, Enter.
+# 0.13: the width of the VM's screen now (from a screenshot's PNG header).
+# Limine draws its menu on a 1024x768 graphics screen; the BIOS splash and
+# Madire's text screen are 720x400 (or 640x480).
+function Get-ScreenWidth {
+    $f = Join-Path $OutDir "$Prefix-screen-probe.png"
+    VBox controlvm $VM screenshotpng $f 2>$null | Out-Null
+    if (-not (Test-Path $f)) { return 0 }
+    $b = [IO.File]::ReadAllBytes($f)
+    Remove-Item $f -Confirm:$false
+    if ($b.Length -lt 24) { return 0 }
+    return ([int]$b[16] -shl 24) -bor ([int]$b[17] -shl 16) -bor ([int]$b[18] -shl 8) -bor [int]$b[19]
+}
+
+# 0.13: powers on and stops the boot menu's 3 s countdown. No key is sent
+# before the menu is on the screen (keys during the BIOS's power-on self-test
+# stop it with "FATAL: Keyboard error"): the screen is polled every 300 ms,
+# for at most $MenuHoldMs + 30 s, until it is 1024 pixels wide (Limine's menu).
+# Then Home is pressed: Limine (common/menu.c) ends the countdown at the first
+# key and then handles it, and Home only selects the first entry. After 4 s,
+# longer than the countdown, the menu must still be on the screen and the
+# serial log still empty (no kernel started). Returns $true if both hold,
+# otherwise notes the failure and returns $false.
+function Start-Menu([string]$name) {
+    if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
+    VBox startvm $VM --type headless | Out-Null
+    $until = (Get-Date).AddMilliseconds($MenuHoldMs + 30000)
+    $shown = $false
+    while (-not $shown -and (Get-Date) -lt $until) {
+        if ((Get-ScreenWidth) -eq 1024) { $shown = $true } else { Start-Sleep -Milliseconds 300 }
+    }
+    if ($shown) { HomeKey; Start-Sleep -Seconds 4 }
+    $quiet = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
+    $held = $shown -and $quiet -and ((Get-ScreenWidth) -eq 1024)
+    if (-not $held) {
+        Note ("{0,-16} {1,-8} /boot menu shown and held (menu seen: {2}; no kernel output: {3})/" -f $name, "MISSING", $shown, $quiet)
+    }
+    return $held
+}
+
+# Boots a Diagnostics entry through the boot menu (0.13: Limine): the menu
+# held at the first entry, Down to "Diagnostics", Enter expands it (the
+# selection stays on it), Down N + 1 times to position N, Enter boots it.
+$script:DiagBooted = [ordered]@{}
 function Start-Diag([string]$test) {
-    Start-Run
-    Down; Start-Sleep -Milliseconds 500
+    if (-not (Start-Menu $test)) { return }
+    HomeKey; Start-Sleep -Milliseconds 300
+    Down; Start-Sleep -Milliseconds 300
     Enter; Start-Sleep -Milliseconds 500
-    for ($i = 0; $i -lt $Diag[$test]; $i++) { Down }
+    for ($i = 0; $i -le $Diag[$test]; $i++) { Down }
     Start-Sleep -Milliseconds 300
     Enter
+    $script:DiagBooted[$test] = $Diag[$test]
 }
 
 function Want([string]$group) { return ($Only.Count -eq 0) -or ($Only -contains $group) }
@@ -198,18 +246,28 @@ $halted = "System halted\. Power off the machine\."
 Attach $Iso
 
 if (Want "menu") {
-    Start-Run
-    Down; Start-Sleep -Milliseconds 500
-    Shot "grub-menu"
-    Enter; Start-Sleep -Milliseconds 500
-    Shot "grub-diagnostics-top"
-    for ($i = 0; $i -lt 15; $i++) { Down }
-    Start-Sleep -Milliseconds 300
-    Shot "grub-diagnostics-end"             # entries 14 and 15 at the bottom
-    for ($i = 0; $i -lt 11; $i++) { Down }
-    Start-Sleep -Milliseconds 300
-    Shot "grub-diagnostics-user"            # 0.10: entries 16-26, 26 (smap) selected
-    Stop-Run "menu" @()
+    if (Start-Menu "menu") {
+        Note ("{0,-16} {1,-8} /boot menu held (no kernel output before the selection)/" -f "menu", "OK")
+        HomeKey; Start-Sleep -Milliseconds 300
+        Shot "boot-menu"                            # the default entry selected, no countdown
+        Down; Start-Sleep -Milliseconds 300
+        Enter; Start-Sleep -Milliseconds 500
+        Shot "boot-menu-diagnostics-open"           # "Diagnostics" expanded, still selected
+        Down; Start-Sleep -Milliseconds 300
+        Shot "boot-menu-diagnostics-top"            # position 0 selected
+        for ($i = 0; $i -lt 15; $i++) { Down }
+        Start-Sleep -Milliseconds 300
+        Shot "boot-menu-diagnostics-end"            # position 15 selected
+        for ($i = 0; $i -lt 11; $i++) { Down }
+        Start-Sleep -Milliseconds 300
+        Shot "boot-menu-diagnostics-user"           # 0.10: position 26 (smap) selected
+        $still = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
+        Note ("{0,-16} {1,-8} /no boot while navigating the menu/" -f "menu", $(if ($still) { "OK" } else { "MISSING" }))
+        Enter                                       # boots the selected entry: it must be smap
+        Wait-Serial "^SMAP test: |$halted" 60 | Out-Null
+        Start-Sleep -Seconds 1
+    }
+    Stop-Run "menu" @("^SMAP test: ")
 }
 if (Want "boot") {
     Start-Run
@@ -288,7 +346,7 @@ if (Want "scrollback") {
 # 0.9.1: the shell commands. The guest's "date" is compared with the host's
 # clock (local time and UTC) and the difference is only reported: the VM's
 # RTC setting is never changed here.
-# 0.11: programs from the console (the default GRUB entry loads them):
+# 0.11: programs from the console (the default boot entry loads them):
 # run (output on the screen), run -b, ps, kill asking first (no, then yes),
 # Ctrl+C on a spinning and on a printing program.
 if (Want "procs") {
@@ -393,7 +451,7 @@ if (Want "reboot") {
     TypeText "yes"; Enter
     Start-Sleep -Seconds 3
     Shot "reboot-after-reset"
-    Start-Sleep -Seconds 15                 # GRUB's 3 s, then the second boot
+    Start-Sleep -Seconds 25                 # the BIOS, the boot menu's 3 s, then the second boot (25 s since 0.13: Limine is slower to show)
     Shot "reboot-second-boot"
     $state = (Get-VMInfo)["VMState"]
     Stop-Run "reboot" @("^yes/no> yes$", "^Restarting\.\.\.$", "^console: restart confirmed$",
@@ -459,9 +517,27 @@ if (Want "diag") {
     Shot "keyboard"
     Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP")
 }
-# 0.10: the user-mode Diagnostics entries 16-24, each through GRUB: its
-# PASS line, then System ready, and no panic (the same result lines as the
-# QEMU GRUB checks).
+# 0.13: the four Diagnostics entries no other group boots (positions 1, 2, 10
+# and 11), so that every one of the 27 positions is booted through the boot
+# menu at least once; the crash lines are the QEMU crash tests' own.
+if (Want "diagmore") {
+    $more = [ordered]@{
+        ud = @("CPU exception 6: Invalid Opcode", "Error code: 0x00000000");
+        gpf = @("CPU exception 13: General Protection Fault", "Error code: 0x00000028");
+        doublefree = @("KERNEL PANIC", "Double free of physical page 0x[0-9a-f]{8}");
+        freereserved = @("KERNEL PANIC", "Attempt to free reserved page 0x00100000")
+    }
+    foreach ($t in $more.Keys) {
+        Start-Diag $t
+        Wait-Serial $halted 40 | Out-Null
+        Start-Sleep -Seconds 1
+        Shot $t
+        Stop-Run $t @($more[$t][0], $more[$t][1], $halted)
+    }
+}
+# 0.10: the user-mode Diagnostics entries 16-24, each through the boot menu:
+# its PASS line, then System ready, and no panic (the same result lines as
+# the QEMU boot-menu checks).
 if (Want "user") {
     $user = [ordered]@{
         userspin = @("User-mode test: PASS", 60); userkill = @("User kill test: PASS", 90);
@@ -858,8 +934,15 @@ if ($Repeat -gt 0 -and ((Want "repeat") -or $Only.Count -eq 0)) {
     }
 }
 
+# 0.13: which Diagnostics positions this run booted through the boot menu
+# (their result rows above prove the right entry was selected).
+if ($script:DiagBooted.Count) {
+    $pos = ($script:DiagBooted.Values | Sort-Object) -join ","
+    Note ("boot menu (report only): {0} of 27 Diagnostics positions booted through the menu: {1}" -f $script:DiagBooted.Count, $pos)
+}
+
 $results | Set-Content -Path $summary -Encoding ascii
-$missing = @($results | Where-Object { $_ -match ' MISSING ' -or $_ -match 'NO SERIAL LOG' }).Count
+$missing =@($results | Where-Object { $_ -match ' MISSING ' -or $_ -match 'NO SERIAL LOG' }).Count
 Write-Host ""
 Write-Host "Summary: $summary ($missing missing)"
 if ($missing) { exit 1 }

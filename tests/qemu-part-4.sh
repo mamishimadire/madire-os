@@ -1,15 +1,31 @@
-# Madire OS QEMU tests, part 4 (0.12, stage 0c): [0.10] GRUB Diagnostics
-# (27 boots through GRUB). Sourced by tests/qemu-tests.sh (a full run, or
-# --shard 4). Apart from this header, every line was moved unchanged from
-# the single script. 0.12 stage 2b adds the [0.12] self-check boots at the
-# end (5 boots).
+# Madire OS QEMU tests, part 4 (0.12, stage 0c): [0.10] boot menu Diagnostics
+# (27 boots through the boot menu; GRUB until 0.13, Limine since). Sourced
+# by tests/qemu-tests.sh (a full run, or --shard 4). Apart from this header,
+# every line was moved unchanged from the single script. 0.12 stage 2b adds
+# the [0.12] self-check boots at the end (5 boots). 0.13: the Diagnostics
+# come from limine.conf and every test ISO is made with Limine (stage 3a);
+# the checks and their logs are named "boot menu" and serial-bootmenu-*
+# (stage 3b), and the [0.13] module_string checks are added at the end.
 
-echo "== [0.10] GRUB Diagnostics: the user-mode entries (appended; existing entries unchanged)"
-CFG="$OUT/grub.cfg"
+echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
+# 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
+# "//<title>" sub-entries, each with "cmdline: test=<option>".
+CFG="$OUT/limine.conf"
 # Every Diagnostics entry, in menu order: "title|test option".
-DIAGS=$(awk '/^submenu "Diagnostics"/ { in_sub = 1; next }
-             in_sub && /^ *menuentry "/ { t = $0; sub(/^ *menuentry "/, "", t); sub(/" \{$/, "", t) }
-             in_sub && /^ *multiboot / { o = $0; sub(/.*test=/, "", o); print t "|" o }' "$CFG")
+DIAGS=$(awk '/^\/Diagnostics$/ { in_sub = 1; next }
+             /^\/[^\/]/ { in_sub = 0 }
+             in_sub && /^\/\/[^\/]/ { t = substr($0, 3) }
+             in_sub && /^ *cmdline: test=/ { o = $0; sub(/.*test=/, "", o); print t "|" o }' "$CFG")
+# diag_iso <option> <title>: a test-only ISO, the same limine.conf with no
+# timeout and the default entry set to Diagnostics > <title> (before 0.13,
+# GRUB's 'set default="1>N"'). Fails if the ISO cannot be made.
+diag_iso() {
+    D="$OUT/isodiag-$1"
+    limine_tree "$D"
+    T="$2" awk '/^timeout: 3$/ { print "timeout: 0"; print "default_entry: Diagnostics/" ENVIRON["T"]; next } { print }' \
+        "$CFG" > "$D/boot/limine/limine.conf"
+    limine_iso "$D" "$OUT/madire-os-diag-$1.iso"
+}
 OLD16="Crash test: divide by zero|divzero
 Crash test: invalid opcode|ud
 Crash test: general protection fault|gpf
@@ -27,9 +43,9 @@ Keyboard test: show key codes|keyboard
 Thread test: preemption|preempt
 Crash test: kernel thread stack overflow|threadoverflow"
 if [ "$(head -n 16 <<< "$DIAGS")" = "$OLD16" ]; then
-    pass "[0.10] GRUB Diagnostics: the 16 existing entries unchanged, in their positions 0-15"
+    pass "[0.10] boot menu Diagnostics: the 16 existing entries unchanged, in their positions 0-15"
 else
-    fail "[0.10] GRUB Diagnostics: an existing entry moved or changed"
+    fail "[0.10] boot menu Diagnostics: an existing entry moved or changed"
 fi
 UENTRIES="userspin|User-mode test: PASS|30
 userkill|User kill test: PASS|60
@@ -44,30 +60,26 @@ pos=16
 while IFS='|' read -r opt passline secs; do
     entry=$(sed -n "$((pos + 1))p" <<< "$DIAGS")
     if [ "${entry##*|}" = "$opt" ]; then
-        pass "[0.10] GRUB Diagnostics position $pos: '${entry%|*}' (test=$opt)"
+        pass "[0.10] boot menu Diagnostics position $pos: '${entry%|*}' (test=$opt)"
     else
-        fail "[0.10] GRUB Diagnostics position $pos: '${entry:-none}', expected test=$opt"
+        fail "[0.10] boot menu Diagnostics position $pos: '${entry:-none}', expected test=$opt"
     fi
-    # Boot that entry through GRUB: a test-only ISO, the same grub.cfg with
-    # the default set to Diagnostics > position $pos.
-    D="$OUT/isodiag-$opt"
-    rm -rf "$D" && mkdir -p "$D/boot/grub"
-    cp "$KERNEL" "$D/boot/madire.kernel"
-    sed -e "s/^set default=0$/set default=\"1>$pos\"/" -e 's/^set timeout=3$/set timeout=0/' "$CFG" > "$D/boot/grub/grub.cfg"
-    LOG=$OUT/serial-grub-$opt.log
-    if grub-mkrescue -o "$OUT/madire-os-diag-$opt.iso" "$D" >/dev/null 2>&1; then
+    # Boot that entry through the boot menu: a test-only ISO with the
+    # default set to Diagnostics > position $pos (0.13: Limine).
+    LOG=$OUT/serial-bootmenu-$opt.log
+    if diag_iso "$opt" "${entry%|*}"; then
         boot "$LOG" "$secs" -m 32M -cdrom "$OUT/madire-os-diag-$opt.iso"
         if grep -q "^$passline$" "$LOG" && ! grep -q "PANIC" "$LOG"; then
-            pass "[0.10] GRUB Diagnostics position $pos boots through GRUB and reaches '$passline'"
+            pass "[0.10] boot menu Diagnostics position $pos boots through the boot menu and reaches '$passline'"
         else
-            fail "[0.10] GRUB Diagnostics position $pos (test=$opt): no '$passline' (or a panic) in $LOG"
+            fail "[0.10] boot menu Diagnostics position $pos (test=$opt): no '$passline' (or a panic) in $LOG"
         fi
     else
-        fail "[0.10] GRUB Diagnostics position $pos: grub-mkrescue failed"
+        fail "[0.10] boot menu Diagnostics position $pos: the test ISO could not be made"
     fi
     pos=$((pos + 1))
 done <<< "$UENTRIES"
-# Stage 7: smep and smap at 25 and 26, each booted through GRUB twice: on
+# Stage 7: smep and smap at 25 and 26, each booted through the boot menu twice: on
 # the default CPU (no SMEP/SMAP: NOT APPLICABLE, then System ready) and on
 # a CPU with both (the crash screen with #PF and the Cause line).
 SENTRIES="smep|SMEP|0x00000011|SMEP violation \(the kernel executed a user page\)
@@ -75,38 +87,34 @@ smap|SMAP|0x00000001|SMAP violation \(the kernel read a user page, AC=0\)"
 while IFS='|' read -r opt name err cause; do
     entry=$(sed -n "$((pos + 1))p" <<< "$DIAGS")
     if [ "${entry##*|}" = "$opt" ]; then
-        pass "[0.10] GRUB Diagnostics position $pos: '${entry%|*}' (test=$opt)"
+        pass "[0.10] boot menu Diagnostics position $pos: '${entry%|*}' (test=$opt)"
     else
-        fail "[0.10] GRUB Diagnostics position $pos: '${entry:-none}', expected test=$opt"
+        fail "[0.10] boot menu Diagnostics position $pos: '${entry:-none}', expected test=$opt"
     fi
-    D="$OUT/isodiag-$opt"
-    rm -rf "$D" && mkdir -p "$D/boot/grub"
-    cp "$KERNEL" "$D/boot/madire.kernel"
-    sed -e "s/^set default=0$/set default=\"1>$pos\"/" -e 's/^set timeout=3$/set timeout=0/' "$CFG" > "$D/boot/grub/grub.cfg"
-    if grub-mkrescue -o "$OUT/madire-os-diag-$opt.iso" "$D" >/dev/null 2>&1; then
-        LOG=$OUT/serial-grub-$opt.log
+    if diag_iso "$opt" "${entry%|*}"; then
+        LOG=$OUT/serial-bootmenu-$opt.log
         boot "$LOG" 20 -m 32M -cdrom "$OUT/madire-os-diag-$opt.iso"
         if grep -q "^$name test: NOT APPLICABLE (not supported by this CPU)$" "$LOG" &&
            grep -q "System ready\." "$LOG" && ! grep -q "PANIC" "$LOG"; then
-            pass "[0.10] GRUB Diagnostics position $pos, default CPU: NOT APPLICABLE, then System ready"
+            pass "[0.10] boot menu Diagnostics position $pos, default CPU: NOT APPLICABLE, then System ready"
         else
-            fail "[0.10] GRUB Diagnostics position $pos (test=$opt), default CPU: no NOT APPLICABLE / System ready, or a panic, in $LOG"
+            fail "[0.10] boot menu Diagnostics position $pos (test=$opt), default CPU: no NOT APPLICABLE / System ready, or a panic, in $LOG"
         fi
-        LOG=$OUT/serial-grub-$opt-cpu.log
+        LOG=$OUT/serial-bootmenu-$opt-cpu.log
         boot "$LOG" 20 -m 32M -cpu qemu64,+smep,+smap -cdrom "$OUT/madire-os-diag-$opt.iso"
         if grep -q "CPU exception 14: Page Fault (#PF)" "$LOG" && grep -q "Error code: $err" "$LOG" &&
            grep -qE "^ Cause: $cause$" "$LOG" && ! grep -q "System ready" "$LOG"; then
-            pass "[0.10] GRUB Diagnostics position $pos, SMEP+SMAP CPU: crash screen with #PF $err and the $name Cause line"
+            pass "[0.10] boot menu Diagnostics position $pos, SMEP+SMAP CPU: crash screen with #PF $err and the $name Cause line"
         else
-            fail "[0.10] GRUB Diagnostics position $pos (test=$opt), SMEP+SMAP CPU: no #PF $err with the $name Cause line in $LOG"
+            fail "[0.10] boot menu Diagnostics position $pos (test=$opt), SMEP+SMAP CPU: no #PF $err with the $name Cause line in $LOG"
         fi
     else
-        fail "[0.10] GRUB Diagnostics position $pos: grub-mkrescue failed"
+        fail "[0.10] boot menu Diagnostics position $pos: the test ISO could not be made"
     fi
     pos=$((pos + 1))
 done <<< "$SENTRIES"
-if [ "$(wc -l <<< "$DIAGS")" -eq 27 ]; then pass "[0.10] GRUB Diagnostics: 27 entries (16 earlier, 9 user-mode, smep and smap)"
-else fail "[0.10] GRUB Diagnostics: $(wc -l <<< "$DIAGS") entries, expected 27"; fi
+if [ "$(wc -l <<< "$DIAGS")" -eq 27 ]; then pass "[0.10] boot menu Diagnostics: 27 entries (16 earlier, 9 user-mode, smep and smap)"
+else fail "[0.10] boot menu Diagnostics: $(wc -l <<< "$DIAGS") entries, expected 27"; fi
 
 echo "== [0.12] Self-check (stage 2b): each forbidden state panics, naming it"
 # The always-on self-check: a destroyed address space loaded (thread_set_cr3)
@@ -166,3 +174,29 @@ else
     fail "[0.12] waitstall: bounds '${B//$'\n'/ }' against the calibration ${CAL:-?}"
 fi
 reject "$LOG" "KERNEL PANIC|\(WRONG\)"                "[0.12] waitstall: no panic (the test ended normally)"
+
+echo "== [0.13] A program module without module_string (Limine passes an empty string)"
+# The default entry of limine.conf, with one more module after the 7: hello.elf
+# again, without "module_string:". Limine then passes "" as its string; the
+# kernel must refuse it by name (progmod_name: an empty string is "bad name";
+# the unit case is refused("") in tests/unit/test_progmod.c) and boot on.
+D=$OUT/isonostring
+limine_tree "$D"
+cp -r "$OUT/isodir/boot/prog" "$D/boot/prog"
+awk '{ print } /^ *module_string: lines$/ && !done { print "    module_path: boot():/boot/prog/hello.elf"; done = 1 }' \
+    "$OUT/limine.conf" > "$D/boot/limine/limine.conf"
+LOG=$OUT/serial-nostring.log
+if limine_iso "$D" "$OUT/madire-os-nostring.iso"; then
+    boot "$LOG" 15 -cdrom "$OUT/madire-os-nostring.iso"
+else
+    : > "$LOG"
+fi
+grep -E '^Program module' "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Program module 8: refused: bad name \(''\)$" \
+                                                      "[0.13] a program module without module_string is refused: 'Program module 8: refused: bad name ('')'"
+if grep -q "^Program modules: 7 accepted, 1 refused (at most 8)$" "$LOG" && grep -q "System ready\." "$LOG" &&
+   ! grep -q "PANIC" "$LOG"; then
+    pass "[0.13] a program module without module_string: the boot goes on (the other 7 accepted, System ready)"
+else
+    fail "[0.13] a module without module_string: no '7 accepted, 1 refused' or no System ready (or a panic) in $LOG"
+fi

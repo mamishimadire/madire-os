@@ -337,18 +337,19 @@ else
     fail "[0.11] most modules: 14 modules did not stop at the reservation limit"
 fi
 
-echo "== [0.11] The default GRUB entry loads 7 programs (the real ISO)"
-# grub.cfg's default entry has "module /boot/prog/<name>.elf <name>" lines;
+echo "== [0.11] The default boot entry loads 7 programs (the real ISO)"
+# The default entry's program modules (0.13: limine.conf's "module_path:
+# boot():/boot/prog/<name>.elf" lines, each with "module_string: <name>");
 # make iso copies exactly those files. The normal-boot logs (the real ISO
 # and the keylog test ISO) must show all 7 accepted, nothing refused.
 ISOPROGS="hello spin exitcode nullptr sleep getpid lines"
-CFGPROGS=$(grep -oE '^ *module /boot/prog/[a-z0-9_]+\.elf [a-z0-9_]+$' "$OUT/grub.cfg" |
-           awk '{print $3}' | tr '\n' ' ' | sed 's/ $//')
+CFGPROGS=$(awk '/^ *module_path: boot\(\):\/boot\/prog\/[a-z0-9_]+\.elf$/ { p = $2; sub(/.*\//, "", p); sub(/\.elf$/, "", p); next }
+                /^ *module_string: / && p != "" { if ($2 == p) printf "%s%s", (n++ ? " " : ""), p; p = "" }' "$OUT/limine.conf")
 ISOFILES=$(ls "$OUT/isodir/boot/prog" 2>/dev/null | sed 's/\.elf$//' | sort | tr '\n' ' ' | sed 's/ $//')
 if [ "$CFGPROGS" = "$ISOPROGS" ] && [ "$ISOFILES" = "$(tr ' ' '\n' <<< "$ISOPROGS" | sort | tr '\n' ' ' | sed 's/ $//')" ]; then
-    pass "[0.11] ISO: grub.cfg loads the 7 programs ($CFGPROGS) and the ISO holds exactly those files"
+    pass "[0.11] ISO: the boot menu loads the 7 programs ($CFGPROGS) and the ISO holds exactly those files"
 else
-    fail "[0.11] ISO: grub.cfg modules '$CFGPROGS', ISO files '$ISOFILES'"
+    fail "[0.11] ISO: limine.conf modules '$CFGPROGS', ISO files '$ISOFILES'"
 fi
 LOG=$OUT/serial-boot.log
 grep -E '^Program module|^Memory initialization|^Free pages|^Paging tables|walk-check: PASS|Paging self-test: PASS' "$LOG" | sed 's/^/      /'

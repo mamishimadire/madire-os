@@ -1,0 +1,73 @@
+THIRD-PARTY NOTICES FOR MADIRE OS
+
+Madire OS's own code is written from scratch (AGENTS.md, section 11). This
+file lists the third-party software that Madire OS ships or uses to build
+what it ships, with each one's licence. It was created in 0.13.
+
+No third-party code is kept in this repository or built into Madire OS's
+kernel or programs.
+
+=============================================================================
+Limine v12.9.3 (the boot loader, since 0.13)
+=============================================================================
+
+What:     the unmodified binary package limine-binary.tar.xz of release
+          v12.9.3, https://github.com/Limine-Bootloader/Limine
+          (SHA-256 e02a473c6dc6df25159697f94930272397f21fd86e5d4eeee61bba72c95ec8d2;
+          its GPG signature was verified once, in 0.13 stage 1, against the
+          key 05D2 9860 D0A0 668A AEFB 9D69 1F3C 021B ECA2 3821).
+How:      a separate boot tool (AGENTS.md section 11, item 5). It is fetched
+          at build time by scripts/install-deps.sh, never kept in this
+          repository. Every Madire OS ISO ships its BIOS files
+          (/boot/limine/limine-bios.sys, /boot/limine/limine-bios-cd.bin and
+          the boot sectors that "limine bios-install" writes), its licence
+          (/boot/limine/LICENSE) and its third-party notices
+          (/boot/limine/3RDPARTY.md). Only its host tool is built, from the
+          package's own limine.c, and it is not shipped.
+Licence:  BSD-2-Clause (the package's LICENSE, identical to COPYING at the
+          tag v12.9.3), reproduced below.
+
+Limine's binaries also contain code from other projects, under their own
+licences: Apache-2.0 WITH LLVM-exception (cc-runtime), Apache-2.0 (PCG),
+MIT (the Multiboot 2 header, QOI, LAI, stb_image), BSD-2-Clause (Flanterm,
+libfdt), 0BSD (pdgzip, the freestanding C headers, the Limine protocol
+header) and CC0-1.0 (BLAKE2, OSDev Wiki code); the stage-1 decoder of the
+BIOS boot sectors is a modified version of the Micro LZMA decoder, whose
+original is under CC-BY-3.0 (Limine's modifications are BSD-2-Clause). The
+copyright notices and the full licence texts of all of them are in Limine's
+3RDPARTY.md, which goes with the binaries in every ISO
+(/boot/limine/3RDPARTY.md, SHA-256
+292659d622cddafe3ddab7506e9c501d4a2f7af395090767d9357203e30029a8, the file of
+the tag v12.9.3; upstream:
+https://github.com/limine-bootloader/limine/blob/v12.9.3/3RDPARTY.md).
+
+Known item (accepted in 0.13, decision D2): the cursor-position code in
+Limine's common/drivers/vga_textmode.c, built into the BIOS binaries, comes
+from the OSDev Wiki before its 2011 relicensing to CC0, and Limine's own
+3RDPARTY.md says it was "never confirmed to have been opted into CC0". Its
+licence is therefore unconfirmed. See docs/evaluations/limine.md.
+
+Limine's licence (LICENSE in the package):
+
+Copyright (C) 2019-2026 Mintsuki and contributors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

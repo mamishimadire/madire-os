@@ -322,13 +322,13 @@ for path in "$root/source" "$root/altered" "$root/regression.log"; do
 done
 echo ABORTED_REGRESSION_PROCESS=NONE
 echo FRESH_REMOTE_SNAPSHOT=ABSENT
-for tool in gcc ld nasm grub-mkrescue xorriso qemu-system-x86_64 qemu-system-i386 python3 make objdump nm; do
+for tool in gcc ld nasm limine xorriso qemu-system-x86_64 qemu-system-i386 python3 make objdump nm; do
     if ! command -v "$tool" >/dev/null 2>&1; then echo "MISSING_TOOL=$tool"; exit 38; fi
 done
 echo "TOOL_GCC=$(gcc --version | head -n 1)"
 echo "TOOL_LD=$(ld --version | head -n 1)"
 echo "TOOL_NASM=$(nasm -v)"
-echo "TOOL_GRUB=$(grub-mkrescue --version | head -n 1)"
+echo "TOOL_LIMINE=$(limine --version | head -n 1)"
 echo "TOOL_QEMU=$(qemu-system-x86_64 --version | head -n 1)"
 echo "TOOL_PYTHON=$(python3 --version)"
 echo "TOOL_OS=$(. /etc/os-release && echo "$PRETTY_NAME")"
@@ -453,11 +453,11 @@ echo "UNIT_SUITE_COUNT=$(grep -c -- '-> PASS' "$log" || true)"
 tag=$(sed -n 's/^#define MADIRE_OS_VERSION "\(.*\)"$/\1/p' kernel/kernel.h)
 echo "== [$tag] result lines =="
 grep -F "PASS: [$tag]" "$log" | tail -20 || true
-if grep -Eiq 'iso/boot/grub/grub\.cfg.*(no such file|cannot stat|not found)|no such file.*grub\.cfg' "$log"; then
-    echo REPRO_GRUB_CFG_NOTICES=FOUND
+if grep -Eiq 'iso/boot/limine/limine\.conf.*(no such file|cannot stat|not found)|no such file.*limine\.conf' "$log"; then
+    echo REPRO_BOOT_CFG_NOTICES=FOUND
     exit 50
 fi
-echo REPRO_GRUB_CFG_NOTICES=NONE
+echo REPRO_BOOT_CFG_NOTICES=NONE
 nm -u build/madire.elf > "$root/undefined.txt"
 if [ -s "$root/undefined.txt" ]; then cat "$root/undefined.txt"; exit 51; fi
 echo UNDEFINED_SYMBOLS=NONE
@@ -576,7 +576,7 @@ echo "BOOT_LOGS_PACKED=$(tar -tzf "$root/boot-logs.tar.gz" | wc -l) files"
         $null = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/final-hash.sh")
         Copy-FromRemote -RemotePath "$remoteRoot/final.sha256" -LocalPath (Join-Path $resultsRoot 'final.sha256') | Out-Null
         $checks = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/checks.sh")
-        $checks.Output | Where-Object { $_ -match '^(REPRO_GRUB|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|TWO_MIB)' } | ForEach-Object { Write-Host $_ }
+        $checks.Output | Where-Object { $_ -match '^(REPRO_BOOT|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|TWO_MIB)' } | ForEach-Object { Write-Host $_ }
         $evidence = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/evidence.sh")
         $evidence.Output | ForEach-Object { Write-Host $_ }
         Copy-FromRemote -RemotePath "$remoteRoot/stage5-evidence.tar" -LocalPath (Join-Path $resultsRoot 'stage5-evidence.tar') | Out-Null
@@ -603,10 +603,10 @@ echo "BOOT_LOGS_PACKED=$(tar -tzf "$root/boot-logs.tar.gz" | wc -l) files"
         if ($makeExit -ne 0) { throw "Regression exited with MAKE EXIT $makeExit." }
         if ($logText -notmatch '(?m)^ALL TESTS PASSED \(') { throw 'Regression log has no ALL TESTS PASSED summary.' }
         if ($logText -notmatch '(?m)^Reproducible build: identical$') { throw 'Reproducibility check did not pass.' }
-        if ($logText -match '(?im)(grep:.*iso/boot/grub/grub\.cfg|No such file or directory.*grub\.cfg|missing.*grub\.cfg)') {
-            throw 'The repro log contains a missing grub.cfg notice.'
+        if ($logText -match '(?im)(grep:.*iso/boot/limine/limine\.conf|No such file or directory.*limine\.conf|missing.*limine\.conf)') {
+            throw 'The repro log contains a missing limine.conf notice.'
         }
-        Write-Host 'REPRO_GRUB_CFG_NOTICES=NONE'
+        Write-Host 'REPRO_BOOT_CFG_NOTICES=NONE'
         $summary = [regex]::Match($logText, '(?m)^ALL TESTS PASSED \([^\r\n]+').Value
         Write-Host "RESULT_BY_TAG=$summary"
         Write-Host "UNIT_SUITES_PASS=$(@([regex]::Matches($logText, '(?m)^.*-> PASS$')).Count)"

@@ -2,7 +2,7 @@
 #
 #   make        build the kernel (build/madire.elf with symbols, and the
 #               bootable flat image build/madire.kernel)
-#   make iso    build the bootable ISO (build/madire-os.iso)
+#   make iso    build the bootable ISO (build/madire-os.iso, booted by Limine since 0.13)
 #   make unit   host unit tests for the pure kernel modules (tests/unit/)
 #   make test   unit tests, then tests/qemu-tests.sh: Multiboot header,
 #               normal boot, logo, memory and crash-screen tests in QEMU
@@ -83,7 +83,7 @@ $(ELF): $(OBJS) $(USER_IMAGES) linker/linker.ld
 
 # The bootable image: the ELF's loaded sections as one flat binary starting
 # at 1 MiB. boot/boot.asm's Multiboot header gives the loader its addresses
-# (a.out kludge); GRUB and QEMU's -kernel both accept it. The build fails if
+# (a.out kludge); Limine and QEMU's -kernel both accept it. The build fails if
 # the compiler used any SSE/x87 register.
 $(KERNEL): $(ELF)
 	@if objdump -d $(ELF) | grep -qE '%(xmm|ymm|zmm|st)'; then \
@@ -137,27 +137,44 @@ $(BUILD)/test-user/flood.elf: $(BUILD)/user/crt0.o $(BUILD)/test-user/flood.o us
 .SECONDARY: $(BUILD)/user/crt0.o $(USER_PROGS:%=$(BUILD)/user/%.o)
 
 # The ISO build also runs the source checks (0.9: boot screen usage).
-# 0.11: the programs the default entry loads as modules are the ELF files
-# named in grub.cfg's "module /boot/prog/<name>.elf" lines (one list only).
-ISO_PROGS := $(sort $(patsubst /boot/prog/%.elf,%,$(shell if test -f iso/boot/grub/grub.cfg; then grep -o '/boot/prog/[a-z0-9_]*\.elf' iso/boot/grub/grub.cfg; fi)))
-# 0.12: one version source. grub.cfg's default entry is titled
+# 0.13: the ISO boots through Limine (the separate boot tool, AGENTS.md
+# section 11, item 5). The programs the default entry loads as modules are
+# the ELF files named in limine.conf's "module_path: boot():/boot/prog/<name>.elf"
+# lines (one list only).
+ISO_PROGS := $(sort $(patsubst boot():/boot/prog/%.elf,%,$(shell if test -f iso/boot/limine/limine.conf; then grep -o 'boot():/boot/prog/[a-z0-9_]*\.elf' iso/boot/limine/limine.conf; fi)))
+# 0.12: one version source. The default entry is titled
 # "Madire OS v@MADIRE_OS_VERSION@"; the build fills in MADIRE_OS_VERSION from
 # kernel/kernel.h, and the ISO and the tests use the generated file.
 MADIRE_VERSION := $(shell sed -n 's/^#define MADIRE_OS_VERSION "\([0-9.]*\)"$$/\1/p' kernel/kernel.h)
-$(BUILD)/grub.cfg: iso/boot/grub/grub.cfg kernel/kernel.h
+$(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 	@mkdir -p $(BUILD)
 	@test -n "$(MADIRE_VERSION)" || { echo "cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1; }
-	sed 's/@MADIRE_OS_VERSION@/$(MADIRE_VERSION)/g' iso/boot/grub/grub.cfg > $@
+	sed 's/@MADIRE_OS_VERSION@/$(MADIRE_VERSION)/g' iso/boot/limine/limine.conf > $@
 	@! grep -q '@MADIRE_OS_VERSION@' $@
 
-$(ISO): $(KERNEL) $(BUILD)/grub.cfg $(ISO_PROGS:%=$(BUILD)/user/%.elf)
+# 0.13: LIMINE_DIR holds the pinned package's BIOS files and notices, LIMINE
+# is its host tool (scripts/install-deps.sh installs both). "limine
+# bios-install" (which also makes the image bootable as a disk) needs an MBR
+# whose partition starts at sector 63 or later: --protective-msdos-label with
+# -partition_offset 16 gives one starting at sector 64. SOURCE_DATE_EPOCH
+# (fixed, 2026-10-12 00:00 UTC) was the 0.13 attempt (D5) at a reproducible
+# ISO; the ISO still differs between builds (a watch item, docs/PROGRESS.md).
+LIMINE_DIR ?= /usr/local/share/limine
+LIMINE ?= limine
+ISO_EPOCH := 1791763200
+$(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf)
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
-	mkdir -p $(BUILD)/isodir/boot/grub $(BUILD)/isodir/boot/prog
+	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
-	cp $(BUILD)/grub.cfg $(BUILD)/isodir/boot/grub/grub.cfg
+	cp $(BUILD)/limine.conf $(BUILD)/isodir/boot/limine/limine.conf
+	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/LICENSE \
+	    $(LIMINE_DIR)/3RDPARTY.md $(BUILD)/isodir/boot/limine/
 	for p in $(ISO_PROGS); do cp $(BUILD)/user/$$p.elf $(BUILD)/isodir/boot/prog/$$p.elf || exit 1; done
-	grub-mkrescue -o $@ $(BUILD)/isodir 2>/dev/null
+	SOURCE_DATE_EPOCH=$(ISO_EPOCH) xorriso -as mkisofs -R -r -J -b boot/limine/limine-bios-cd.bin \
+	    -no-emul-boot -boot-load-size 4 -boot-info-table --protective-msdos-label -partition_offset 16 \
+	    -o $@ $(BUILD)/isodir 2>/dev/null
+	$(LIMINE) bios-install $@
 	@echo "ISO ready: $@"
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
@@ -185,7 +202,8 @@ elfcheck: $(ELFCHECK)
 # order, so a link order that followed the file system would show up as a
 # different binary. madire.elf and madire.kernel must be byte-identical in
 # both trees, and to the kernel of this build (the one the QEMU tests boot).
-# The ISO is not covered: grub-mkrescue records timestamps.
+# The ISO is not covered: it is not reproducible (see the watch items in
+# docs/PROGRESS.md).
 # tests/qemu-tests.sh reports the result.
 REPRO := $(BUILD)/repro
 repro: $(KERNEL)
@@ -205,7 +223,7 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
-test: unit user elfcheck $(ISO) $(BUILD)/grub.cfg repro
+test: unit user elfcheck $(ISO) $(BUILD)/limine.conf repro
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -213,7 +231,7 @@ test: unit user elfcheck $(ISO) $(BUILD)/grub.cfg repro
 # of .github/workflows/regression.yml. The unit tests and make repro run
 # only with SHARD=static, so a sharded run runs them once.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/grub.cfg $(if $(filter static,$(SHARD)),unit repro)
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(if $(filter static,$(SHARD)),unit repro)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)

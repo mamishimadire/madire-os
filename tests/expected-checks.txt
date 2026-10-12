@@ -14,4 +14,7 @@
 0.10 253
 0.11 233
 0.12 151
+# 0.13: the 11 checks of the plan (7 in part static, 2 in part 1, 2 in part 4;
+# the 7 temporary A/B checks of stages 1-3a were removed in stage 3b).
+0.13 11
 unit-suites 55

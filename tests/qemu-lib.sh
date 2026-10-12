@@ -3,9 +3,34 @@
 # parts. Apart from this header, the fixtures' comments, fixture_log, the
 # first three lines and the closing brace of fixture_normal_boot and blank
 # lines, every line below was moved unchanged from the single script.
+# 0.13 stage 3a adds limine_iso and limine_tree, and builds the keylog test
+# ISO with Limine instead of GRUB.
 
-# fixture_normal_boot: the normal boot through GRUB (serial-boot.log) and the
-# boot of the keylog test ISO (KLOG), whose logs parts 1, 2 and 3 read. A full
+# limine_iso <dir> <iso> (0.13): makes a bootable ISO from <dir> as `make iso`
+# does (xorriso, then limine bios-install). <dir> must hold boot/limine/ with
+# limine-bios.sys, limine-bios-cd.bin and limine.conf. Fails if either step
+# fails. Every test ISO is made with it.
+LIMINE=${LIMINE:-limine}
+LIMINE_DIR=${LIMINE_DIR:-/usr/local/share/limine}
+limine_iso() {
+    rm -f "$2"
+    SOURCE_DATE_EPOCH=1791763200 xorriso -as mkisofs -R -r -J -b boot/limine/limine-bios-cd.bin \
+        -no-emul-boot -boot-load-size 4 -boot-info-table --protective-msdos-label -partition_offset 16 \
+        -o "$2" "$1" >/dev/null 2>&1 && "$LIMINE" bios-install "$2" >/dev/null 2>&1
+}
+
+# limine_tree <dir> (0.13): a fresh test-ISO tree holding the kernel under test
+# and Limine's BIOS files (from the real ISO's tree); the caller writes
+# <dir>/boot/limine/limine.conf.
+limine_tree() {
+    rm -rf "$1" && mkdir -p "$1/boot/limine"
+    cp "$KERNEL" "$1/boot/madire.kernel"
+    cp "$OUT/isodir/boot/limine/limine-bios.sys" "$OUT/isodir/boot/limine/limine-bios-cd.bin" "$1/boot/limine/"
+}
+
+# fixture_normal_boot: the normal boot of the real ISO (serial-boot.log; since
+# 0.13 through Limine) and the boot of the keylog test ISO (KLOG), whose logs
+# parts 1, 2 and 3 read. A full
 # run boots them once, in part 1; a shard run of part 2 or 3 boots them
 # itself. A boot is not a check: the checks on these logs stay in their
 # sections and run once. (The body keeps its original indentation.)
@@ -17,15 +42,16 @@ LOG=$OUT/serial-boot.log
 boot_keys "$LOG" 15 "System ready." "x" 0.15 -cdrom "$ISO"
 # 0.9.2: key events are logged only with the boot option "keylog" (off by
 # default). The checks below that read key lines use a test-only ISO: the
-# same kernel and grub.cfg, with "keylog" added to the default entry only.
+# same kernel and boot menu, with "keylog" added to the default entry only
+# (0.13: limine.conf gains the line "cmdline: keylog" after the default
+# entry's "path:" line; the ISO is made with Limine).
 KLOG=$OUT/serial-boot-keylog.log
 KISO=$OUT/madire-os-keylog.iso
-rm -rf "$OUT/isokeylog" && mkdir -p "$OUT/isokeylog/boot/grub"
-cp "$KERNEL" "$OUT/isokeylog/boot/madire.kernel"
+limine_tree "$OUT/isokeylog"
 cp -r "$OUT/isodir/boot/prog" "$OUT/isokeylog/boot/prog"   # 0.11: the modules the default entry loads
-sed '0,/^\( *multiboot \/boot\/madire\.kernel\)$/s//\1 keylog/' \
-    "$OUT/grub.cfg" > "$OUT/isokeylog/boot/grub/grub.cfg"
-grub-mkrescue -o "$KISO" "$OUT/isokeylog" >/dev/null 2>&1 || : > "$KISO"
+sed '0,/^\( *\)path: boot():\/boot\/madire\.kernel$/s//&\n\1cmdline: keylog/' \
+    "$OUT/limine.conf" > "$OUT/isokeylog/boot/limine/limine.conf"
+limine_iso "$OUT/isokeylog" "$KISO" || : > "$KISO"
 boot_keys "$KLOG" 15 "System ready." "x" 0.15 -cdrom "$KISO"
 }
 
