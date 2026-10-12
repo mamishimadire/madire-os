@@ -2,7 +2,7 @@
  * Madire OS kernel entry.
  *
  * Runs in 32-bit protected mode, entered from boot/boot.asm. Brings up the
- * display, replaces GRUB's CPU tables with our own (GDT, IDT), makes the
+ * display, replaces the boot loader's CPU tables with our own (GDT, IDT), makes the
  * interrupt controller safe, proves exception handling works, sets up and
  * tests physical memory, enables the timer (IRQ0) and keyboard (IRQ1),
  * self-tests the console, then runs the idle loop, which opens the console
@@ -340,7 +340,7 @@ static void check_boot_modules(const struct multiboot_info *mbi)
     progmod_summary();
 }
 
-/* Diagnostics: GRUB's "Diagnostics" menu (or QEMU -append) passes test=<name>
+/* Diagnostics: the boot menu's "Diagnostics" directory (or QEMU -append) passes test=<name>
  * to deliberately trigger a CPU exception or run a memory test. */
 static void run_diagnostics(void)
 {

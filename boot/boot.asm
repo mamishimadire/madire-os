@@ -1,6 +1,6 @@
 ; Madire OS - boot entry point (x86-64)
 ;
-; GRUB (or QEMU's own Multiboot loader) loads the kernel image, finds the
+; The boot loader (Limine since 0.13, or QEMU's own Multiboot loader) loads the kernel image, finds the
 ; Multiboot header below, and jumps to _start in 32-bit protected mode:
 ;   eax = 0x2BADB002 (Multiboot magic), ebx = physical address of multiboot info
 ;   interrupts disabled, paging off, no usable stack.

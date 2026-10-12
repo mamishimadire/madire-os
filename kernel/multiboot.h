@@ -2,8 +2,8 @@
 #define MADIRE_MULTIBOOT_H
 
 /*
- * Multiboot 1 (specification 0.6.96) structures, as handed over by GRUB 2's
- * `multiboot` command and by QEMU's -kernel loader. Multiboot 2 is not
+ * Multiboot 1 (specification 0.6.96) structures, as handed over by a Multiboot 1 loader (GRUB 2 until 0.12, Limine since 0.13)
+ * and by QEMU's -kernel loader. Multiboot 2 is not
  * supported. All addresses are 32-bit physical addresses; memory-map entries
  * carry 64-bit base/length because firmware may report RAM above 4 GiB.
  */
