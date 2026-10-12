@@ -2,13 +2,24 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 0.11 (Milestone 0.11: programs and process management)
+**Current version:** 0.12 (Milestone 0.12: shell improvements, no filesystem; tag `v0.12`, commit `879342e`)
 
-![Madire OS v0.11 boot screen](docs/images/v0.11-boot.png)
+![Madire OS v0.12 boot screen](docs/images/v0.12-boot.png)
 
-Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that GRUB delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first); **Ctrl+C** ends the program in the foreground:
+0.12 makes the console shell easier to use, and the kernel checks itself:
 
-![run hello: the program's output on the screen (0.11)](docs/images/v0.11-run-hello.png)
+- **"Did you mean":** a mistyped command suggests up to three close names (`hlep` → `Did you mean: help, sleep?`); nothing is run for you.
+- **Help in sections:** `help shell`, `help system` and `help programs` list one group each; `help` still lists everything.
+- **`prompt`:** change the prompt (up to 8 characters) or go back with `prompt --reset`.
+- **`alias` and `unalias`:** short names for commands (up to 16).
+- **`set`, `unset`, `export` and `env`:** shell variables, kept in memory until restart.
+- **`sleep`, `presskey` and `time`:** wait for a number of seconds, wait for a key, or time a command; Ctrl+C cancels a wait.
+- **`kill -y <pid>`:** ends a process without asking (plain `kill` still asks first).
+- **Always-on kernel self-checks:** at every thread switch, every address-space (CR3) load and every return to user mode, the kernel checks that the thread, the address space and the process belong together; a broken rule stops the kernel with a panic instead of carrying on.
+
+Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that GRUB delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first; `kill -y <pid>` doesn't); **Ctrl+C** ends the program in the foreground:
+
+![run hello: the program's output on the screen (0.12)](docs/images/v0.12-run-hello.png)
 
 Programs run in **user mode** (since 0.10), each in its own address space, and talk to the kernel only through system calls; a program that makes a mistake is ended alone, and the kernel carries on. The Diagnostics menu runs the built-in test programs:
 
@@ -18,19 +29,19 @@ After the boot checks, press any key to open the console. Output that scrolls of
 
 ![Madire OS v0.9.2 console: scrolled back](docs/images/scrollback-page1-v0.9.2.png)
 
-`help` lists the commands; `help <command>` or `<command> --help` explains one:
+`help` lists the commands and ends with the sections; `help <command>` or `<command> --help` explains one:
 
-![Madire OS v0.9.1 console: help](docs/images/console-help-v0.9.1.png)
+![Madire OS v0.12 console: help](docs/images/v0.12-help.png)
 
 `uname -a`, `hostname`, `date`, `dmesg`, Up-arrow recall and `history` (0.9.1):
 
 ![Madire OS v0.9.1 console: the new commands](docs/images/console-commands-v0.9.1.png)
 
-`ps` lists the kernel threads (after boot only thread 0, the console itself, is left), and `mem` shows the higher-half kernel, NX and the kernel stack's high-water mark:
+`ps` lists the threads and processes (after boot only thread 0, the console itself, is left, and no process), and `mem` shows the higher-half kernel, NX and the kernel stack's high-water mark:
 
-![Madire OS v0.9 console: ps and version](docs/images/console-ps-v0.9.png)
+![Madire OS v0.12 console: ps and version](docs/images/v0.12-ps-version.png)
 
-![Madire OS v0.9 console: mem](docs/images/console-mem-v0.9.png)
+![Madire OS v0.12 console: mem](docs/images/v0.12-mem.png)
 
 It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So far the kernel:
 
@@ -63,39 +74,68 @@ It boots through GRUB into a 64-bit (x86-64) kernel written in C and NASM. So fa
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel;
 - provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End), and since 0.9.2 a **scrollback** of the last 1000 lines (Shift+PgUp / Shift+PgDn);
 - **doesn't log what you type** (since 0.9.2): key events reach the logs only with the boot option `keylog` (for tests) or during the keyboard diagnostics;
-- runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`, since 0.9 `ps`, since 0.9.1 `history` (with Up/Down recall), `uname`, `hostname`, `date`, `dmesg` and `reboot` (which asks first), and since 0.11 `run` and `kill`; `help <command>` and `<command> --help` explain any command;
+- runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`, since 0.9 `ps`, since 0.9.1 `history` (with Up/Down recall), `uname`, `hostname`, `date`, `dmesg` and `reboot` (which asks first), since 0.11 `run` and `kill`, and since 0.12 `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `env`, `sleep`, `presskey`, `time` and `kill -y` (26 commands); `help <command>` and `<command> --help` explain any command, `help <section>` lists one group, and a mistyped name gets "Did you mean" suggestions;
+- **checks itself at every switch** (since 0.12): the scheduler, address-space (CR3) and return-to-user-mode self-checks are always on, and each one's panic is proven by its own test boot;
 - keeps a 32 KiB kernel log in memory (`dmesg`), reads the date and time from the real-time clock, and restarts the machine through the keyboard controller, with a triple-fault fallback;
 - draws the Madire M logo, built from geometry, in VGA text mode.
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
-## v0.11 in pictures
+**Tested at v0.12:** 1222 QEMU checks and 55 unit-test suites pass in the official regression on GitHub Actions, together with the reproducible-build check; the automated VirtualBox acceptance test (`MadireOS-Test`) passes its boot and shell groups on the same ISO.
 
-Screenshots from the 0.11 VirtualBox acceptance run (`MadireOS-Test`).
+## Roadmap
 
-The boot screen of v0.11, with the self-tests passed and the 7 program modules loaded in the background:
+A summary of [docs/roadmap.md](docs/roadmap.md); each step needs its own plan and the owner's approval.
 
-![v0.11 boot screen](docs/images/v0.11-boot.png)
+- **0.1–0.12: done.** Boot, CPU and memory foundations, interrupts, the console and shell, paging and the heap, 64-bit long mode, the higher-half kernel, kernel threads and preemption, user processes, ELF programs and process management, and the shell improvements of 0.12.
+- **0.13: the bootloader, GRUB → Limine.** Planned, decision pending: the owner decides after the [Limine evaluation](docs/evaluations/limine.md).
+- **1.0: the filesystem.** A virtual filesystem layer with a RAM filesystem first, and a Live mode.
+- **Then, unscheduled and in this order:** graphics (a design guide first, then a framebuffer, fonts and the mouse), storage, an installer (virtual disks only at first), networking, the Linux-compatible foundation (system calls and a C library), TLS, audio and video, the Madire Browser, Linux apps, and in the long term Windows apps through Wine on top of the Linux layer.
+- **Alongside:** the modernisation track: UEFI, APIC, multi-core, USB, all RAM, Wi-Fi and Bluetooth; ARM64 later.
 
-`run exitcode` ends with status 42; `run -b spin` starts a program in the background, and `ps` lists it as process 6 after the thread table:
+## v0.12 in pictures
 
-![run exitcode, run -b spin and ps](docs/images/v0.11-ps.png)
+Screenshots from the 0.12 VirtualBox acceptance run (`MadireOS-Test`, the v0.12 ISO of the final regression run).
 
-`kill 6` asks first; answering `no` leaves the program running:
+The boot screen of v0.12, with the self-tests passed:
 
-![kill, then no: Kill cancelled](docs/images/v0.11-kill-no.png)
+![v0.12 boot screen](docs/images/v0.12-boot.png)
 
-Asked again, `yes` ends it, and its end line follows:
+`help` ends with the list of sections; `help system` and `help programs` show one group each:
 
-![kill, then yes: process 6 killed](docs/images/v0.11-kill-yes.png)
+![help system and help programs](docs/images/v0.12-help-sections.png)
+
+A mistyped command or help topic gets "Did you mean" suggestions:
+
+![Did you mean suggestions](docs/images/v0.12-didyoumean.png)
+
+`prompt` changes the prompt and refuses text that is too long, starts with `-` or has spaces:
+
+![prompt](docs/images/v0.12-prompt.png)
+
+`alias` makes short names for commands, with clear refusals for bad names:
+
+![alias and unalias](docs/images/v0.12-alias.png)
+
+`set` keeps shell variables in memory, with its limits checked:
+
+![set](docs/images/v0.12-set.png)
+
+`export` marks variables, and `env` lists the exported ones:
+
+![export, env and unset](docs/images/v0.12-env.png)
+
+`time sleep 1` takes 100 ticks (1.00 s); `presskey` waits for a key, and Ctrl+C cancels it:
+
+![sleep, presskey and time](docs/images/v0.12-wait.png)
+
+`kill` asks first; `kill -y` ends a process without asking, and `time kill -y` times it:
+
+![kill and kill -y](docs/images/v0.12-kill.png)
 
 **Ctrl+C** ends a program that never stops by itself (`run spin`):
 
-![Ctrl+C on spin](docs/images/v0.11-ctrlc-spin.png)
-
-and one that is printing to the screen (`run lines`, stopped at line 29 of 100):
-
-![Ctrl+C on lines](docs/images/v0.11-ctrlc-lines.png)
+![Ctrl+C on spin](docs/images/v0.12-ctrlc-spin.png)
 
 ## Development environment
 
@@ -107,6 +147,7 @@ and one that is printing to the screen (`run lines`, stopped at line 29 of 100):
 | Assembler | NASM |
 | Bootloader / ISO | GRUB 2 (`grub-mkrescue`) + xorriso |
 | Automated tests | QEMU (`qemu-system-x86_64`, and `qemu-system-i386` for the "no 64-bit CPU" test), headless |
+| Official regression | GitHub Actions (since 0.12): started by hand, sharded into parallel jobs, QEMU 8.2.2 and gcc 13 (`scripts/actions-regress.ps1`); a GitHub Codespace is the fallback |
 | Target machine | Oracle VirtualBox 7.2, VM `MadireOS-Test` (BIOS firmware, OS type Other 64-bit) |
 
 Linux is used only to run the build tools. It is not part of Madire OS.
@@ -126,7 +167,7 @@ On Linux (Codespace terminal, WSL, CI):
 bash scripts/install-deps.sh   # once (a Codespace from .devcontainer/ runs it for you)
 make            # kernel: build/madire.elf (with symbols) and build/madire.kernel (bootable)
 make iso        # bootable ISO: build/madire-os.iso
-make unit       # host unit tests, 51 suites (memory, 4-level page tables, heap,
+make unit       # host unit tests, 55 suites (memory, 4-level page tables, heap,
                 # keyboard decoder and queue, PIT maths, console text grid, line
                 # editor, parser, shell, CPUID decoding, kprintf, NX and page-fault
                 # decoding, boot modules, stack high-water mark, scheduler, thread
@@ -136,12 +177,14 @@ make unit       # host unit tests, 51 suites (memory, 4-level page tables, heap,
                 # entry, fault opcodes, system calls, SMEP/SMAP crash causes,
                 # turn order; 0.11: ELF checks, program modules, load plans,
                 # turn owners, policy (b), the early wake, run/ps/kill, the
-                # output queue)
+                # output queue; 0.12: the 0.12 shell commands, shell sessions,
+                # bounded diagnostic waits, the scheduler self-checks)
 make repro      # two clean builds in fresh directories: madire.elf and
                 # madire.kernel must be byte-identical (make test runs it too)
-make test       # unit tests + repro + 1071 QEMU checks (150 from 0.3 + 30 from 0.4 +
+make test       # unit tests + repro + 1222 QEMU checks (150 from 0.3 + 30 from 0.4 +
                 # 32 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from
-                # 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 from 0.10 + 233 new):
+                # 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 from 0.10 + 233 from
+                # 0.11 + 151 new; the agreed counts are in tests/expected-checks.txt):
                 # boot, long mode, CPUs without long mode, logo, memory at 5 RAM
                 # sizes, crash tests, timer rate, scripted keyboard input, a scripted
                 # console session, paging and heap self-tests, the higher-half kernel
@@ -155,9 +198,10 @@ make test       # unit tests + repro + 1071 QEMU checks (150 from 0.3 + 30 from 
                 # kill, contained faults with their instructions, system calls, bad
                 # pointers, 1000 processes, the GRUB Diagnostics entries; ELF programs
                 # from boot modules and malformed files, run/kill/ps and Ctrl+C in
-                # console sessions, screen output and a flooding program.
-                # About 50 minutes: run it with scripts/remote-regress.ps1
-                # (see docs/development.md)
+                # console sessions, screen output and a flooding program; the 0.12
+                # shell commands in console sessions, the self-checks' panics.
+                # The official run is on GitHub Actions, sharded, about 20 minutes:
+                # scripts/actions-regress.ps1 -Dispatch (see docs/development.md)
 make run        # boot in a QEMU window
 make clean
 ```
@@ -167,12 +211,13 @@ make clean
 ```powershell
 .\scripts\run.ps1                       # attach ISO, boot MadireOS-Test in a window
 .\scripts\run.ps1 -Headless -Screenshot # boot without a window, save build\boot-screen.png
-.\scripts\vbox-acceptance.ps1           # the scripted acceptance test (since 0.9): checks
+.\scripts\vbox-acceptance.ps1           # the automated acceptance test (since 0.9): checks
                                         # the VM settings (never changes them), boots each
-                                        # test, keeps screenshots and serial logs
+                                        # test, keeps screenshots and serial logs; since
+                                        # 0.12 a scripted shell session too (-Only boot,shell)
 ```
 
-In the console, try `run hello`, `run -b spin`, `ps`, then `kill <pid>` (it asks first), and `run lines 65636` followed by **Ctrl+C**.
+In the console, try `run hello`, `run -b spin`, `ps`, then `kill <pid>` (it asks first) or `kill -y <pid>`, and `run lines 65636` followed by **Ctrl+C**. From 0.12: `help shell`, a typo such as `hlep`, `alias ll echo hi`, `set A=1`, `time sleep 1`.
 
 When the boot screen says `System ready. Press any key to open the console.`, press a key. That key only opens the console; it isn't typed. Type `help` for the list of commands.
 
@@ -189,7 +234,7 @@ The GRUB menu has a **Diagnostics** submenu:
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v0.11)
+## Limitations (v0.12)
 
 - 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (VGA text mode doesn't exist under EFI).
 - **Only RAM below 4 GiB is used.** On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
@@ -200,16 +245,16 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - **Boot modules:** the screen has one message line, so with several modules only the last result stays visible; the serial log has them all.
 - **Keyboard:** PS/2 only (USB keyboards need firmware legacy emulation), US layout only, no LEDs (Caps Lock state is tracked in software only), keypad assumes Num Lock on.
 - **Console and shell:**
-  - Sixteen built-in commands (the full plan is in [docs/commands.md](docs/commands.md)).
+  - 26 built-in commands (the full plan is in [docs/commands.md](docs/commands.md)).
   - Commands are lowercase and case-sensitive; at most 8 words per line and 71 characters of input.
   - `history` keeps only the last 16 lines and the scrollback the last 1000 lines; both are lost at restart. No tab completion, pipes or scripting.
+  - The prompt, aliases (at most 16, one level) and variables (at most 32, values up to 63 characters) live in memory only and are lost at restart. Variables are not expanded (`$NAME` doesn't exist yet), and no environment reaches a program. `time` times built-in commands only, not aliases.
   - Shift+PgUp/PgDn need the grey PgUp/PgDn keys: the numeric keypad's ones type `9`/`3` (Num Lock is assumed on).
   - `hostname` is fixed (`madire`). `date` shows the real-time clock as it is, with no time zone: VirtualBox keeps it on the host's local time, QEMU on UTC. It assumes years 2000–2099 and can't set the date.
   - `dmesg` shows only what the kernel logged through `kprintf`/`klogf`: the boot screen's status lines and the console's own output aren't in it, and a boot-screen line can appear joined to the next one there.
   - Key events are logged only with the boot option `keylog` or during the keyboard diagnostics (for tests); never use `keylog` where secrets are typed. There is no password prompt yet; the first one must come with a secret-input mode (see [AGENTS.md](AGENTS.md)).
   - `reboot` uses the keyboard controller (or a triple fault); there is no `shutdown` or `poweroff` yet.
-  - Ctrl+key and Alt+key do nothing, except Ctrl+C while a program runs in the foreground (0.11).
-  - `kill` always asks first; there is no non-interactive form for scripts yet (planned: `kill -y <pid>`).
+  - Ctrl+key and Alt+key do nothing, except Ctrl+C while a program runs in the foreground (0.11) or during `sleep` and `presskey` (0.12).
   - Long output lines wrap at column 80, even mid-word (for example `cpu`'s "Features:" line on some CPUs).
 - **Interrupts:** only IRQ0 and IRQ1 are enabled, through the legacy 8259 PIC (no APIC). The timer runs at a fixed 100 Hz (10 ms resolution).
 - **User processes:** programs come only as boot modules (no filesystem yet): at most 8 are kept, and 14 or more boot modules of any kind stop the boot. Only static x86-64 ELF executables within the loader's rules (no dynamic linking, at most 4 segments, 1 MiB). One thread per process, at most 63 processes, a 32 KiB stack each; no signals, `fork` or `exec`. Programs can't use x87/MMX/SSE (no FPU state is saved). Only the foreground program's output reaches the screen; background programs (`run -b`) write to the serial log and `dmesg` only. Six system calls. Without NX, program data is executable. SMEP and SMAP are used only when the CPU offers them (the VirtualBox VM doesn't).
