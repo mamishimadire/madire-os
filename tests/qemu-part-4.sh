@@ -6,6 +6,7 @@
 # come from limine.conf and every test ISO is made with Limine (stage 3a);
 # the checks and their logs are named "boot menu" and serial-bootmenu-*
 # (stage 3b), and the [0.13] module_string checks are added at the end.
+# 1.0 stage 1 adds the padded test kernel's [1.0] checks at the end.
 
 echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
@@ -199,4 +200,62 @@ if grep -q "^Program modules: 7 accepted, 1 refused (at most 8)$" "$LOG" && grep
     pass "[0.13] a program module without module_string: the boot goes on (the other 7 accepted, System ready)"
 else
     fail "[0.13] a module without module_string: no '7 accepted, 1 refused' or no System ready (or a panic) in $LOG"
+fi
+
+# ---- 1.0 stage 1 (D1): a kernel past 2 MiB boots; the ISO holds the real kernel ----
+
+echo "== [1.0] The padded test kernel (make padkernel: KERNEL_PAD=1M in build/pad), under QEMU -kernel"
+# The same boot twice (-m 64M -kernel, no module), with the kernel under test
+# and with the padded one. tests/pagetables.py recomputes each boot's page
+# tables from its log (the kernel's end, the reserve: lines, the window and
+# the kernel-stack tables) and compares them with the logged count. Under
+# -kernel, QEMU puts the command line right after the kernel, so the padded
+# boot also needs a second page table in the physical view: its total is
+# the normal one + 2, of which the kernel slot +1 (through Limine, whose
+# boot data stays in the low 1 MiB, it is +1). The logs stay outside
+# serial-*.log (part final's every-boot checks keep their boots).
+PADK=$OUT/pad/madire.kernel
+PADLOGS=$OUT/pad-logs
+rm -rf "$PADLOGS" && mkdir -p "$PADLOGS"
+READY="System ready. Press any key to open the console."
+if [ -f "$PADK" ]; then
+    boot_until "$PADLOGS/normal.log" 90 "$READY" -m 64M -kernel "$KERNEL"
+    boot_until "$PADLOGS/padded.log" 90 "$READY" -m 64M -kernel "$PADK"
+else
+    echo "      no $PADK (make padkernel failed?)"
+    : > "$PADLOGS/normal.log"; : > "$PADLOGS/padded.log"
+fi
+PTN=$(python3 "$(dirname "$0")/pagetables.py" "$PADLOGS/normal.log" --label normal)
+PTP=$(python3 "$(dirname "$0")/pagetables.py" "$PADLOGS/padded.log" --label padded)
+sed 's/^/      /' <<< "$PTN"
+sed 's/^/      /' <<< "$PTP"
+LOG=$PADLOGS/padded.log
+PEND=$(sed -nE 's/^Kernel: text .* end 0x([0-9a-f]+)$/\1/p' "$LOG" | head -n 1)
+if [ -n "$PEND" ] && [ $((0x$PEND)) -gt $((0x200000)) ] && grep -q "^Paging walk-check: PASS" "$LOG" &&
+   grep -q "^Filesystem self-test: PASS$" "$LOG" && grep -qxF "$READY" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.0] padded test kernel: its image ends at 0x$PEND, past 2 MiB; walk-check PASS, filesystem self-test PASS, System ready, no panic"
+else
+    fail "[1.0] padded test kernel: end 0x${PEND:-?}, or no walk-check PASS, filesystem PASS or System ready, or a panic, in $LOG"
+fi
+ptr() { sed -nE "s/^PAGETABLES_RESULT label=[a-z]+ computed=([0-9]+) logged=([0-9]+) kernel_slot=([0-9]+) .*/\\$1/p" <<< "$2"; }
+NC=$(ptr 1 "$PTN"); NL=$(ptr 2 "$PTN"); NK=$(ptr 3 "$PTN")
+PC=$(ptr 1 "$PTP"); PL=$(ptr 2 "$PTP"); PK=$(ptr 3 "$PTP")
+# The anchor: 12 page tables in a -kernel boot below 2 MiB (logged in runs
+# 38291205719's -kernel boots, end 0x1e0000, and recomputed from them).
+if [ "${NC:-x}" = 12 ] && [ "${NL:-y}" = 12 ] && [ -n "$PC" ] && [ "$PC" = "${PL:-}" ] &&
+   [ -n "$NK" ] && [ "${PK:-x}" = "$((NK + 1))" ]; then
+    pass "[1.0] page tables recomputed from the log: normal boot $NC = logged $NL (the known 12); padded boot $PC = logged $PL; the kernel slot $NK -> $PK (+1)"
+else
+    fail "[1.0] page tables from the log: normal computed ${NC:-?} logged ${NL:-?} (12 expected), padded computed ${PC:-?} logged ${PL:-?}, kernel slot ${NK:-?} -> ${PK:-?}"
+fi
+rm -f "$OUT/iso-kernel.bin"
+xorriso -osirrox on -indev "$ISO" -extract /boot/madire.kernel "$OUT/iso-kernel.bin" >/dev/null 2>&1
+SI=$(sha256sum < "$OUT/iso-kernel.bin" 2>/dev/null | cut -d' ' -f1)
+SK=$(sha256sum < "$KERNEL" | cut -d' ' -f1)
+SP=$(sha256sum < "$PADK" 2>/dev/null | cut -d' ' -f1)
+echo "      ISO /boot/madire.kernel ${SI:-missing}; $KERNEL $SK; $PADK ${SP:-missing}"
+if [ -n "$SI" ] && [ "$SI" = "$SK" ] && [ -n "$SP" ] && [ "$SP" != "$SK" ]; then
+    pass "[1.0] the ISO's /boot/madire.kernel is the kernel under test, not the padded test kernel"
+else
+    fail "[1.0] the ISO's kernel (${SI:-missing}) against the kernel (${SK}) and the padded kernel (${SP:-missing})"
 fi

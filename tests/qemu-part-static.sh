@@ -5,7 +5,8 @@
 # from the single script. 0.13 stage 3a: the Multiboot header check uses
 # scripts/check-multiboot.py, the default-entry title comes from limine.conf,
 # and the [0.13] checks of the Limine ISO are added at the end. 1.0 stage 0a:
-# the [1.0] check of Madire's licence files at the ISO root.
+# the [1.0] check of Madire's licence files at the ISO root. 1.0 stage 1:
+# the 0.13 report's comparison with v0.12's kernel (decided no check) removed.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -114,27 +115,3 @@ MSBAD=$(awk '/^\// { n++ } n == 1 && /^ *module_path: / { if (p != "") print "no
              END { if (p != "") print "no string for " p; if (c == 0) print "no modules" }' "$OUT/limine.conf")
 if [ -z "$MSBAD" ]; then pass "[0.13] limine.conf: every program module's module_string is its file name ($(grep -c '^ *module_string: ' "$OUT/limine.conf") modules)"
 else fail "[0.13] limine.conf: ${MSBAD//$'\n'/; }"; fi
-
-echo "== [0.13] madire.kernel against v0.12's (printed for the 0.13 report; decides no check)"
-# Every "0.13" in the kernel image put back to "0.12" (same length): if the
-# result's SHA-256 is v0.12's (60012175..., runs 38181484366 and 38190277693),
-# the version string is the only difference.
-python3 - "$KERNEL" <<'PY'
-import hashlib, sys
-data = open(sys.argv[1], "rb").read()
-new, old = b"0.13", b"0.12"
-offsets = []
-i = data.find(new)
-while i >= 0:
-    offsets.append(i)
-    i = data.find(new, i + 1)
-back = data.replace(new, old)
-print("KERNEL_VS_V012: %d bytes, \"0.13\" at %d offset(s): %s" % (len(data), len(offsets), ", ".join("0x%x" % o for o in offsets)))
-for o in offsets:
-    a = max(0, o - 12)
-    print("KERNEL_VS_V012:   0x%x: %r" % (o, data[a:o + 8]))
-print("KERNEL_VS_V012: with \"0.12\" put back: sha256 %s" % hashlib.sha256(back).hexdigest())
-print("KERNEL_VS_V012: v0.12's madire.kernel:   sha256 60012175f86c02ed5361f58b6098a64a5497849abd63243f29b860e856d69b8f")
-print("KERNEL_VS_V012: %s" % ("ONLY THE VERSION STRING DIFFERS" if hashlib.sha256(back).hexdigest()
-      == "60012175f86c02ed5361f58b6098a64a5497849abd63243f29b860e856d69b8f" else "OTHER DIFFERENCES"))
-PY

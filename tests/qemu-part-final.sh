@@ -2,7 +2,7 @@
 # boot's log, after all other parts (a sharded run: in the combining job,
 # over every job's logs). Sourced by tests/qemu-tests.sh (a full run, or
 # --shard final). Apart from this header, every line was moved unchanged
-# from the single script.
+# from the single script. 1.0 stage 1 adds the [1.0] filesystem check.
 
 echo "== [0.10] The user-mode boot self-test (every boot)"
 LOG=$OUT/serial-boot.log
@@ -63,3 +63,18 @@ done
 echo "      $nl boot logs checked (all but serial-waitstall.log)"
 if [ "$nw" -eq 0 ]; then pass "[0.12] no diagnostic wait stalled or missed its limit in any other boot"
 else fail "[0.12] a diagnostic wait stalled or missed its limit (or calibration failed) in $nw of $nl boot logs"; fi
+
+
+echo "== [1.0] The filesystem boot self-test (every boot)"
+# 1.0 stage 1: every boot that reached System ready ran the filesystem's
+# self-test and passed it. The padded test kernel's boots (part 4) keep
+# their logs outside serial-*.log, so this check and the ones above count
+# the same boots as before.
+nb=0; nm=0
+for f in "$OUT"/serial-*.log; do
+    grep -q "System ready\." "$f" || continue
+    nb=$((nb + 1))
+    grep -q "^Filesystem self-test: PASS$" "$f" || { nm=$((nm + 1)); echo "      no filesystem self-test PASS in $(basename "$f")"; }
+done
+if [ "$nb" -gt 0 ] && [ "$nm" -eq 0 ]; then pass "[1.0] filesystem self-test: PASS in every one of the $nb boots that reached System ready"
+else fail "[1.0] filesystem self-test: missing in $nm of $nb boots that reached System ready"; fi

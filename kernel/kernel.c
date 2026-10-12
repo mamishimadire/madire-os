@@ -26,6 +26,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/fs/vfs.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
@@ -820,6 +821,16 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
             panic("User-mode self-test failed (details on the serial log).");
     } else {
         klogf("Scheduler self-test: NOT APPLICABLE (paging is off: no thread stacks)\n");
+    }
+
+    /* 1.0: the live RAM filesystem (/, /home, /tmp; node records in the
+     * heap) and its self-test, before any diagnostic that may use it. A
+     * failure is fatal, as for the other boot self-tests. */
+    if (heap_ok) {
+        if (!vfs_boot())
+            panic("Filesystem self-test failed (details on the serial log).");
+    } else {
+        klogf("Filesystem: NOT AVAILABLE (the kernel heap is off)\n");
     }
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */

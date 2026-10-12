@@ -477,10 +477,11 @@ import sys
 print(int(sys.argv[1], 16) - 0xffffffff80000000)
 PY
 )
-margin=$((0x200000 - physical))
-printf 'KERNEL_END_VIRTUAL=0x%s\nKERNEL_END_PHYSICAL=0x%x\nTWO_MIB_MARGIN_BYTES=%d\n' "$symbol" "$physical" "$margin"
-if [ "$margin" -lt 32768 ]; then echo TWO_MIB_MARGIN=STOP; exit 54; fi
-echo TWO_MIB_MARGIN=PASS
+margin=$((0x400000 - physical))
+two=$((0x200000 - physical))
+printf 'KERNEL_END_VIRTUAL=0x%s\nKERNEL_END_PHYSICAL=0x%x\nKERNEL_MARGIN_BYTES=%d\nTWO_MIB_MARGIN_BYTES=%d (report only)\n' "$symbol" "$physical" "$margin" "$two"
+if [ "$margin" -lt 32768 ]; then echo KERNEL_MARGIN=STOP; exit 54; fi
+echo KERNEL_MARGIN=PASS
 '@
         $evidenceBody = @'
 #!/usr/bin/env bash
@@ -576,7 +577,7 @@ echo "BOOT_LOGS_PACKED=$(tar -tzf "$root/boot-logs.tar.gz" | wc -l) files"
         $null = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/final-hash.sh")
         Copy-FromRemote -RemotePath "$remoteRoot/final.sha256" -LocalPath (Join-Path $resultsRoot 'final.sha256') | Out-Null
         $checks = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/checks.sh")
-        $checks.Output | Where-Object { $_ -match '^(REPRO_BOOT|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|TWO_MIB)' } | ForEach-Object { Write-Host $_ }
+        $checks.Output | Where-Object { $_ -match '^(REPRO_BOOT|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|KERNEL_MARGIN|TWO_MIB)' } | ForEach-Object { Write-Host $_ }
         $evidence = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/evidence.sh")
         $evidence.Output | ForEach-Object { Write-Host $_ }
         Copy-FromRemote -RemotePath "$remoteRoot/stage5-evidence.tar" -LocalPath (Join-Path $resultsRoot 'stage5-evidence.tar') | Out-Null

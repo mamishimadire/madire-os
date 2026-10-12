@@ -9,7 +9,8 @@
 #   - checks every part ran exactly once, in its own job, to its end;
 #   - runs the part "final" over every job's serial logs;
 #   - checks the unit suites and make repro ran once (static job) and the
-#     static checks (symbols, libgcc/libc, SSE/x87, 2 MiB margin);
+#     static checks (symbols, libgcc/libc, SSE/x87, the kernel margin:
+#     1.0 stage 1, below 4 MiB, computed here from KERNEL_END_VIRTUAL);
 #   - sums the counts and compares them with tests/expected-checks.txt;
 #   - replays every pattern-helper call under mawk and gawk
 #     (tests/helper-replay.sh; evidence only, decides no check);
@@ -103,10 +104,29 @@ main() {
         echo "$k=${v:-missing}"
         [ "$v" = 0 ] || bad "$k is ${v:-missing}, expected 0"
     done
-    m=$(sed -n 's/^TWO_MIB_MARGIN_BYTES=//p' "$chk" 2>/dev/null)
+    # 1.0 stage 1 (D1): the gate is the margin below 4 MiB (0x400000 - the
+    # kernel's physical end, at least 32768 bytes); the 2 MiB figure is a
+    # report only. Both are computed here from KERNEL_END_VIRTUAL, which the
+    # workflow prints in every version: the workflow runs from main, so its
+    # own KERNEL_MARGIN_BYTES line exists only once 1.0 is there; when it
+    # is printed, it must equal the value computed here.
+    end=$(sed -n 's/^KERNEL_END_VIRTUAL=0x\([0-9a-f]\{16\}\)$/\1/p' "$chk" 2>/dev/null | head -n 1)
     grep -E '^KERNEL_END_VIRTUAL=' "$chk" 2>/dev/null
-    echo "TWO_MIB_MARGIN_BYTES=${m:-missing}"
-    [ -n "$m" ] && [ "$m" -ge 32768 ] || bad "2 MiB margin ${m:-missing} below 32768 bytes"
+    km=""; tm=""
+    if [ -n "$end" ]; then
+        km=$(( 0x400000 - (0x$end - 0xffffffff80000000) ))
+        tm=$(( 0x200000 - (0x$end - 0xffffffff80000000) ))
+    fi
+    echo "KERNEL_MARGIN_BYTES=${km:-missing} (below 4 MiB; the gate: at least 32768)"
+    echo "TWO_MIB_MARGIN_BYTES=${tm:-missing} (below 2 MiB; report only)"
+    wm=$(sed -n 's/^KERNEL_MARGIN_BYTES=//p' "$chk" 2>/dev/null | head -n 1)
+    if [ -n "$wm" ]; then
+        echo "KERNEL_MARGIN_BYTES printed by the workflow: $wm"
+        [ "$wm" = "$km" ] || bad "the workflow's KERNEL_MARGIN_BYTES $wm differs from the computed ${km:-missing}"
+    else
+        echo "KERNEL_MARGIN_BYTES not printed (workflow runs from main)"
+    fi
+    [ -n "$km" ] && [ "$km" -ge 32768 ] || bad "kernel margin below 4 MiB ${km:-missing} below 32768 bytes"
 
     echo "== Counts"
     counts=$( { cat "$dir"/shard-*/regression.log; cat "$dir/combined/final.log"; } | grep '^SHARD_COUNTS ')

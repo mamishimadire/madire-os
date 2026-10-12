@@ -5,7 +5,8 @@
 # unchanged from the single script. 0.12 stage 2 adds the [0.12] stage 2
 # console session at the end (shard 1 is the shortest).
 # 0.13 adds the [0.13] checks of where Limine places the boot data (the
-# temporary stage 1 A/B section was removed again in stage 3b).
+# temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
+# adds the [1.0] filesystem checks of the normal boot at the end.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1358,3 +1359,35 @@ if [ -z "$MODBAD" ]; then
 else
     fail "[0.13] Limine boot: module placement: ${MODBAD//$'\n'/; }"
 fi
+
+# ---- 1.0: the live RAM filesystem and its boot self-test (the normal boot) ----
+
+echo "== [1.0] Filesystem: the live RAM filesystem and its boot self-test"
+LOG=$OUT/serial-boot.log
+grep -E "^Filesystem" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file" \
+                                                      "[1.0] filesystem: the live RAM filesystem, 1024 nodes, 2 MiB per file"
+expect "$LOG" "^Filesystem: / holds home, tmp; 3 nodes, 0 data pages$" \
+                                                      "[1.0] filesystem: / holds home and tmp at boot (3 nodes, 0 data pages)"
+expect "$LOG" "^Filesystem self-test: create and look up: 3 folders and 5 files under /tmp/fstest, each found by its absolute and its relative path: OK$" \
+                                                      "[1.0] filesystem self-test: create, and look up by absolute and relative path"
+expect "$LOG" "^Filesystem self-test: paths: '\.', '\.\.', '\.\.' of '/', repeated '/', a trailing '/' \(folders only\), the empty path: OK$" \
+                                                      "[1.0] filesystem self-test: '.', '..', '..' of '/', repeated and trailing '/', the empty path"
+expect "$LOG" "^Filesystem self-test: limits: a 255-byte name created and found, 256 bytes ENAMETOOLONG; a 4095-byte path found, 4096 bytes ENAMETOOLONG; nothing created: OK$" \
+                                                      "[1.0] filesystem self-test: NAME_MAX 255 and PATH_MAX 4096 exactly, nothing created past them"
+expect "$LOG" "^Filesystem self-test: errors: 16 cases answered as Linux does \(EEXIST, ENOENT, ENOTDIR, EISDIR, ENOTEMPTY, EINVAL, EBUSY\): OK$" \
+                                                      "[1.0] filesystem self-test: 16 error cases answered as Linux does"
+expect "$LOG" "^Filesystem self-test: rename: in place, into another folder, over a file, a folder over an empty folder; into its own subtree EINVAL, a file onto a folder EISDIR, a folder onto a file ENOTDIR, the same node unchanged: OK$" \
+                                                      "[1.0] filesystem self-test: rename (moves, replacements, refusals, the same node)"
+expect "$LOG" "^Filesystem self-test: depth: a chain of 64 folders created, looked up by one path, removed: OK$" \
+                                                      "[1.0] filesystem self-test: a chain of 64 folders looked up by one path"
+FSC=$(grep -m1 -E '^Filesystem self-test: cleanup: ' "$LOG")
+read -r N0 N1 H0 H1 <<< "$(sed -nE 's/.*nodes ([0-9]+) -> ([0-9]+), heap in use ([0-9]+) -> ([0-9]+) bytes: OK$/\1 \2 \3 \4/p' <<< "$FSC")"
+if grep -qE '^Filesystem self-test: cleanup: everything removed \(a held file freed at its drop\); ' <<< "$FSC" &&
+   [ "${N0:-x}" = 3 ] && [ "${N1:-y}" = 3 ] && [ -n "${H0:-}" ] && [ "$H0" = "${H1:-}" ]; then
+    pass "[1.0] filesystem self-test: everything removed; nodes 3 -> 3, heap in use $H0 -> $H1 bytes (no node or byte left)"
+else
+    fail "[1.0] filesystem self-test: cleanup: ${FSC:-no line}"
+fi
+expect_in_order "$LOG" "[1.0] filesystem self-test: PASS, after the kernel heap and before System ready" \
+    "^Kernel heap: +OK" "^Filesystem self-test: PASS$" "^System ready\."

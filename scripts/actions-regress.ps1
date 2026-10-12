@@ -103,7 +103,7 @@ try {
     if (Test-Path -LiteralPath $summaryFile) {
         Write-Host '--- combined summary (sharded run) ---'
         Get-Content -LiteralPath $summaryFile | Where-Object {
-            $_ -match '^(SAME_|ISO_|part |COMBINE_FAIL|UNIT_SUITES|Reproducible|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|TWO_MIB|COUNTED|EXPECTED_CHECKS|REPLAY|ALL TESTS|COMBINED_RESULT|[0-9]+ TEST)' -or $_ -match '^  '
+            $_ -match '^(SAME_|ISO_|part |COMBINE_FAIL|UNIT_SUITES|Reproducible|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|KERNEL_MARGIN|TWO_MIB|COUNTED|EXPECTED_CHECKS|REPLAY|ALL TESTS|COMBINED_RESULT|[0-9]+ TEST)' -or $_ -match '^  '
         } | ForEach-Object { Write-Host $_ }
         $commit = (Get-Content -LiteralPath (Join-Path $results 'shard-static\commit.txt') | Select-Object -First 1)
     }
