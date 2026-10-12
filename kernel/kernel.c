@@ -553,6 +553,10 @@ static void run_diagnostics(void)
         diag_message("Filesystem fill test: files filled to the budget...");
         diag_message(fstest_fill() ? "Filesystem fill test: done"
                                    : "Filesystem fill test: FAIL (see serial log)");
+    } else if (cmdline_has("test=klock")) {       /* 1.0 stage 3 */
+        diag_message("Filesystem lock test: 6 threads and thread 0 for 3000 ticks...");
+        diag_message(fstest_klock() ? "Filesystem lock test: done"
+                                    : "Filesystem lock test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();

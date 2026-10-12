@@ -12,6 +12,11 @@
  * Stage 2: file data in pages from the page allocator (fspage.c), within
  * the budget fixed here at boot: min(32 MiB, 3/4 of the free pages now).
  * The budget is a ceiling, not an allocation: no page is taken at boot.
+ *
+ * Stage 3 (D10): one lock, vfs_lock(), for the whole filesystem
+ * (kernel/proc/klock.h). The boot takes it like every later user: around
+ * building the root folders and around each step of the self-test (thread
+ * 0 is the only user then, so it never waits).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -23,11 +28,13 @@
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
+#include "kernel/proc/klock.h"
 #include "kernel/timer.h"
 
 static struct ramfs ramfs;
 static struct vfs vfs;
 static uint32_t boot_free_pages;        /* the free pages the budget was computed from */
+static struct klock lock;               /* stage 3: the VFS lock */
 
 static void *heap_alloc_fn(size_t bytes)
 {
@@ -52,6 +59,11 @@ struct ramfs *vfs_ramfs(void)
 uint32_t vfs_boot_free_pages(void)
 {
     return boot_free_pages;
+}
+
+struct klock *vfs_lock(void)
+{
+    return &lock;
 }
 
 /* ---- the boot self-test ---- */
@@ -406,19 +418,24 @@ static bool selftest(void)
     uint32_t nodes0 = ramfs.nodes;
     uint32_t heap0 = kheap_stats()->used_bytes;
     mismatches = 0;
-    bool ok = test_create();
-    ok = test_paths() && ok;
-    ok = test_limits() && ok;
-    ok = test_errors() && ok;
-    ok = test_rename() && ok;
-    ok = test_depth() && ok;
-    ok = test_data() && ok;
+    static bool (*const steps[])(void) = {
+        test_create, test_paths, test_limits, test_errors, test_rename, test_depth, test_data,
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        klock_acquire(&lock);           /* stage 3: each step under the VFS lock */
+        ok = steps[i]() && ok;
+        klock_release(&lock);
+    }
+    klock_acquire(&lock);
     ok = test_cleanup(nodes0, heap0) && ok;
+    klock_release(&lock);
     klogf("Filesystem self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
 
-bool vfs_boot(void)
+/* The root and its folders (under the VFS lock). */
+static bool build(void)
 {
     static const struct ramfs_mem mem = { .alloc = heap_alloc_fn, .free = kfree };
     if (ramfs_init(&ramfs, &mem, RAMFS_MAX_NODES) < 0) {
@@ -455,5 +472,14 @@ bool vfs_boot(void)
     names[p] = '\0';
     klogf("Filesystem: / holds %s; %u nodes, %u data pages\n", names, ramfs.nodes,
           ramfs.data_pages);
-    return selftest();
+    return true;
+}
+
+bool vfs_boot(void)
+{
+    klock_init(&lock);
+    klock_acquire(&lock);
+    bool built = build();
+    klock_release(&lock);
+    return built && selftest();
 }

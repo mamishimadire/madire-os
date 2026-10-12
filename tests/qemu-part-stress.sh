@@ -16,6 +16,8 @@
 # 3. Key pace (0.12 stage 3): the same 861-key session at 30 ms and at
 #    50 ms, presses and releases reported; one check (no dropped key).
 #    1.0 stage 0d: also at a 50 ms gap with a 20 ms hold (report only).
+# 4. The VFS lock (1.0 stage 3, plan C2): test=klock, 30 boots, one check
+#    each; KLOCK lines and a KLOCK_SPREAD summary report the figures.
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -193,3 +195,37 @@ if grep -qE "events dropped" "$OUT/serial-keypace-30.log" "$OUT/serial-keypace-5
 else
     pass "[stress] key pace: the kernel reported no dropped key event at 30 ms or 50 ms"
 fi
+
+echo "== [stress] The VFS lock: test=klock, 30 boots (1.0 stage 3, plan C2)"
+# Each boot is part 2's test=klock boot (tests/qemu-lib.sh klock_boot: -m
+# 64M, keys typed during the test at a 50 ms gap and a 20 ms hold). One
+# check per boot: all nine result lines OK (the same regexes as part 2's
+# checks 1-9), the PASS line and the exact echo of the keys (check 10).
+# KLOCK lines report each boot's figures; KLOCK_SPREAD the lowest and
+# highest of each over the 30 boots (report only: the checks decide).
+spread() { sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{ printf "%s-%s", $1, $2 }'; }
+KL_ITERS="" KL_HOLD="" KL_TURN="" KL_WAIT0="" KL_SECS=""
+for b in $(seq -w 1 30); do
+    LOG=$OUT/serial-klockstress-$b.log
+    out=$(klock_boot "$LOG")
+    echo "$out"
+    secs=$(sed -nE 's/^BOOT_SECONDS [^ ]+ ([0-9.]+)$/\1/p' <<< "$out")
+    read -r it ho tu w0 <<< "$(klock_figures "$LOG")"
+    echo "      KLOCK boot=$b iterations=${it:-none} hold=${ho:-none} turn=${tu:-none} wait0=${w0:-none} seconds=${secs:-none}"
+    KL_ITERS+="${it:-0}"$'\n' KL_HOLD+="${ho:-0}"$'\n' KL_TURN+="${tu:-0}"$'\n'
+    KL_WAIT0+="${w0:-0}"$'\n' KL_SECS+="${secs:-0}"$'\n'
+    bad=""
+    for re in "$KLOCK_RE_CONTENTION" "$KLOCK_RE_COUNTER" "$KLOCK_RE_RECORDS" "$KLOCK_RE_HOLD" \
+              "$KLOCK_RE_TURN" "$KLOCK_RE_THREAD0" "$KLOCK_RE_SELFCHECK" "$KLOCK_RE_PREEMPT" \
+              "$KLOCK_RE_RETURNED" "^Filesystem lock test: PASS \("; do
+        grep -qE -- "$re" "$LOG" || bad+=" /$re/"
+    done
+    klock_keys_ok "$LOG" || bad+=" (keys: echo not exact, a dropped key, no done line, no System ready, or a panic)"
+    if [ -z "$bad" ]; then
+        pass "[stress] klock $b: every result line OK, PASS, the keys' echo exact"
+    else
+        fail "[stress] klock $b: missing or failed in $LOG:$bad"
+        grep -E "^Filesystem lock test: " "$LOG" | sed 's/^/      /'
+    fi
+done
+echo "KLOCK_SPREAD boots=30 iterations=$(printf '%s' "$KL_ITERS" | spread) hold=$(printf '%s' "$KL_HOLD" | spread) turn=$(printf '%s' "$KL_TURN" | spread) turn_max=$(printf '%s' "$KL_TURN" | sort -n | tail -n 1) wait0=$(printf '%s' "$KL_WAIT0" | spread) seconds=$(printf '%s' "$KL_SECS" | spread)"

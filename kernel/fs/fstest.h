@@ -15,6 +15,11 @@
  * test=fsfill: files filled to the budget (QEMU -m 32M: 3/4 of the free
  * pages; -m 64M: the 32 MiB cap), ENOSPC, every byte read back, all freed.
  *
+ * test=klock (stage 3, D10): six kernel threads and thread 0 take the VFS
+ * lock in turn for 3000 ticks (a counter in a file, a record across a page
+ * boundary); no lost update, no torn record, the hold, turn and thread-0
+ * wait figures, nothing left behind.
+ *
  * Each logs a bounded number of lines (one per step, and at most 8 lines
  * about mismatches), never a line per node or per page.
  */
@@ -23,5 +28,6 @@
 
 bool fstest_limits(void);
 bool fstest_fill(void);
+bool fstest_klock(void);
 
 #endif

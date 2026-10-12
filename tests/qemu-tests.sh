@@ -126,12 +126,22 @@ reject() {
 # boot <log> <seconds> <qemu args...>   (-no-reboot: a triple fault ends the
 # run instead of looping, and the expected text will then be missing)
 boot() {
-    local log=$1 secs=$2
+    local log=$1 secs=$2 t0
     shift 2
     rm -f "$log"
+    t0=$(date +%s%N)
     timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
         -serial file:"$log" "$@" >/dev/null 2>&1
     [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+
+# boot_seconds <log> <start, date +%s%N>: 1.0 stage 3, report only (decides
+# no check): "BOOT_SECONDS <log> <s>", the boot's wall time in seconds with
+# one decimal, printed by boot and boot_until.
+boot_seconds() {
+    local ms=$(( ($(date +%s%N) - $2) / 1000000 ))
+    echo "BOOT_SECONDS ${1##*/} $((ms / 1000)).$((ms % 1000 / 100))"
 }
 
 # boot_keys <log> <seconds> <ready text> <keys> <gap> <qemu args...>

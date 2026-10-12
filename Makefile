@@ -78,7 +78,8 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/console/scrollback.c kernel/memory/uvm_core.c                             kernel/memory/usercopy_core.c kernel/proc/syscall_core.c                             kernel/proc/proc_core.c kernel/proc/userimg.c \
                             kernel/proc/elf_core.c kernel/proc/progmod_core.c \
                             kernel/proc/loadplan.c kernel/proc/diagwait_core.c \
-                            kernel/fs/path_core.c kernel/fs/vfs_core.c kernel/fs/ramfs_core.c)
+                            kernel/fs/path_core.c kernel/fs/vfs_core.c kernel/fs/ramfs_core.c \
+                            kernel/proc/klock_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test test-shard unit user elfcheck repro padkernel clean

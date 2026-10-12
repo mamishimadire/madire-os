@@ -3,7 +3,8 @@
 # (a full run, or --shard 2). Apart from this header and the fixture call,
 # every line was moved unchanged from the single script; the [0.12] shell
 # session at the end was added in stage 1. 1.0 stage 2 adds the [1.0]
-# storage diagnostics (test=fslimits, test=fsfill at 32M and 64M) last.
+# storage diagnostics (test=fslimits, test=fsfill at 32M and 64M) last;
+# stage 3 the VFS lock's test=klock after them.
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 
@@ -914,3 +915,38 @@ fsfill_test() {
 
 fsfill_test 32M
 fsfill_test 64M
+
+# ---- 1.0 stage 3: the VFS lock (D10, plan B2 and C2) ----
+
+echo "== [1.0] test=klock: 6 threads and thread 0 contend for the VFS lock for 3000 ticks (-m 64M, keys typed meanwhile)"
+# Deviations (approved): C2's 4 processes are kernel threads (no filesystem
+# system call before stage 4); the longest turn is at most 6 ticks (B2,
+# policy (b)), not C2's 5. The helpers and regexes are in tests/qemu-lib.sh.
+LOG=$OUT/serial-klock.log
+klock_boot "$LOG"
+grep -E "^Filesystem lock test: (thread [0-9]+ '|longest|figures)" "$LOG" | sed 's/^/      /'
+expect "$LOG" "$KLOCK_RE_CONTENTION" \
+    "[1.0] klock: 6 threads and thread 0 contended for 3000 ticks; every thread took the lock, each at least once after waiting"
+expect "$LOG" "$KLOCK_RE_COUNTER" "[1.0] klock: no lost update: the file's counter equals the increments made"
+expect "$LOG" "$KLOCK_RE_RECORDS" \
+    "[1.0] klock: no torn record: every 4096-byte record read (across a page boundary) was one writer's whole record"
+expect "$LOG" "$KLOCK_RE_HOLD" "[1.0] klock: longest hold at most 2 ticks"
+expect "$LOG" "$KLOCK_RE_TURN" "[1.0] klock: longest turn at most 6 ticks, its owner named (policy (b))"
+expect "$LOG" "$KLOCK_RE_THREAD0" "[1.0] klock: thread 0's longest wait reported; thread 0 waited only by yielding"
+if grep -qE "$KLOCK_RE_SELFCHECK" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.0] klock: the thread-0 self-check never fired; no panic"
+else
+    fail "[1.0] klock: no self-check line, or a panic, in $LOG"
+fi
+expect "$LOG" "$KLOCK_RE_PREEMPT" "[1.0] klock: preemption count 0 at every release and at the end (none left raised)"
+if grep -qE "$KLOCK_RE_RETURNED" "$LOG" && grep -qE "^Filesystem lock test: PASS \(" "$LOG"; then
+    fs_closing "$LOG" lock \
+        "[1.0] klock: 0 leaks: nodes, data pages, free pages, heap, threads and stack slots back to the start; the lock free"
+else
+    fail "[1.0] klock: no PASS, or threads, stack slots, heap or the lock not back, in $LOG"
+fi
+if klock_keys_ok "$LOG"; then
+    pass "[1.0] klock: keys typed during the test reached the console (echo ran); PASS, System ready"
+else
+    fail "[1.0] klock: the echo typed during the test is missing or not exact, a key event was dropped, or no done line, System ready or a panic, in $LOG"
+fi

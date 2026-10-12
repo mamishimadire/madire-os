@@ -22,6 +22,7 @@
 # padded test kernel (3 in part 4); 3 unit suites (path, vfs, ramfs).
 # Stage 2: 18 more: the data budget and the self-test's data step (4 in
 # part 1), test=fslimits (8) and test=fsfill at 32M and 64M (6) in part 2;
-# 1 unit suite (fspage).
-1.0 33
-unit-suites 59
+# 1 unit suite (fspage). Stage 3: 10 more: test=klock, the VFS lock under
+# contention (part 2); 1 unit suite (klock).
+1.0 43
+unit-suites 60

@@ -29,4 +29,9 @@ struct vfs *vfs_root(void);
 struct ramfs *vfs_ramfs(void);
 uint32_t vfs_boot_free_pages(void);
 
+/* Stage 3 (D10): the VFS lock (kernel/proc/klock.h). Every user of the
+ * filesystem takes it around each bounded piece of work: one path lookup,
+ * one chunk of at most 4096 bytes, one folder's entries (plan B2). */
+struct klock *vfs_lock(void);
+
 #endif

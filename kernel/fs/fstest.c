@@ -19,6 +19,11 @@
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/vm_layout.h"
+#include "kernel/proc/diagwait.h"
+#include "kernel/proc/klock.h"
+#include "kernel/proc/preempt.h"
+#include "kernel/proc/thread.h"
+#include "kernel/timer.h"
 
 #define MAX_LOGGED 8u                   /* mismatch lines per test */
 
@@ -484,4 +489,259 @@ bool fstest_fill(void)
     ok = step_end(line, &since) && ok;
     remove_fill(FDIR, &fd);
     return acct_end(&a0, ok);
+}
+
+/* ---- test=klock (stage 3, D10): the VFS lock under contention ---- */
+
+/*
+ * Six kernel threads and thread 0 take the VFS lock in turn for 3000
+ * ticks (plan C2; the plan's 4 processes are kernel threads here, as no
+ * filesystem system call exists before stage 4: an approved deviation).
+ * Under the lock each one increments a counter kept in a file (read,
+ * every fourth time a yield while holding, write back: without the lock
+ * the yield would lose updates) and writes or reads a 4096-byte record
+ * that straddles a page boundary (a reader seeing two writers' halves
+ * would be a torn record). The keyboard is live: keys typed meanwhile
+ * reach the console after the test.
+ */
+
+#define KL_THREADS 6u
+#define KL_TICKS   3000u
+#define KL_DIR     "/tmp/klock"
+#define KL_REC     RAMFS_PAGE
+#define KL_REC_OFF 2048u                /* pages 0 and 1 */
+
+struct kl_worker {
+    uint32_t id;                        /* 1 = thread 0, 2.. = the threads */
+    int32_t tid;
+    uint64_t iters, incs, waited, steps, held_yields, writes, reads, torn, errors;
+    uint8_t *rec;
+};
+
+static struct kl_worker kw[KL_THREADS + 1];
+static struct vnode *kl_counter, *kl_record;
+static volatile uint64_t kl_end;
+
+/* The record a writer leaves: an 8-byte tag (writer, sequence), then
+ * bytes that follow from the tag. */
+static uint8_t kl_byte(uint64_t tag, uint32_t j)
+{
+    return (uint8_t)(tag * 31u + j * 7u + (j >> 8) + (tag >> 32));
+}
+
+static void kl_fill(uint8_t *r, uint32_t id, uint64_t seq)
+{
+    uint64_t tag = ((uint64_t)id << 32) | (seq & 0xFFFFFFFFu);
+    for (uint32_t j = 0; j < 8; j++)
+        r[j] = (uint8_t)(tag >> (8 * j));
+    for (uint32_t j = 8; j < KL_REC; j++)
+        r[j] = kl_byte(tag, j);
+}
+
+static bool kl_whole(const uint8_t *r)
+{
+    uint64_t tag = 0;
+    for (uint32_t j = 0; j < 8; j++)
+        tag |= (uint64_t)r[j] << (8 * j);
+    if ((tag >> 32) > KL_THREADS + 1)
+        return false;
+    for (uint32_t j = 8; j < KL_REC; j++)
+        if (r[j] != kl_byte(tag, j))
+            return false;
+    return true;
+}
+
+/* One turn under the lock. */
+static void kl_step(struct kl_worker *w)
+{
+    struct klock *lk = vfs_lock();
+    uint32_t steps = klock_acquire(lk);
+    if (steps) {
+        w->waited++;
+        w->steps += steps;
+    }
+    uint64_t c = 0;
+    if (ramfs_read(fs, kl_counter, 0, &c, sizeof(c)) != (int64_t)sizeof(c))
+        w->errors++;
+    if ((w->iters & 3) == 3) {
+        thread_yield();                 /* holding: the others find it taken */
+        w->held_yields++;
+    }
+    c++;
+    if (ramfs_write(fs, kl_counter, 0, &c, sizeof(c)) == (int64_t)sizeof(c))
+        w->incs++;
+    else
+        w->errors++;
+    if (w->iters & 1) {
+        if (ramfs_read(fs, kl_record, KL_REC_OFF, w->rec, KL_REC) == KL_REC) {
+            w->reads++;
+            w->torn += !kl_whole(w->rec);
+        } else {
+            w->errors++;
+        }
+    } else {
+        kl_fill(w->rec, w->id, w->writes + 1);
+        if (ramfs_write(fs, kl_record, KL_REC_OFF, w->rec, KL_REC) == KL_REC)
+            w->writes++;
+        else
+            w->errors++;
+    }
+    klock_release(lk);
+    w->iters++;
+}
+
+static int32_t kl_body(void *arg)
+{
+    struct kl_worker *w = arg;
+    struct diag_site s;
+    diag_wait_until(&s, kl_end);
+    while (diag_wait_poll(&s))
+        kl_step(w);
+    if (klock_held(vfs_lock()))         /* never leaves holding it */
+        w->errors++;
+    return 0;
+}
+
+bool fstest_klock(void)
+{
+    if (!begin("lock"))
+        return false;
+    struct klock *lk = vfs_lock();
+    struct acct a0;
+    acct_now(&a0);
+    uint32_t live0 = thread_live(), stacks0 = thread_stacks_in_use();
+    uint32_t heap0 = kheap_stats()->used_bytes;
+    uint32_t wf0 = diag_wait_failures();
+    uint64_t checks0 = klock_thread0_checks();
+
+    want(lk->owner, KLOCK_FREE, "the lock free at the start");
+    klock_init(lk);                     /* the figures from here on */
+    klock_acquire(lk);
+    bool ok = create(KL_DIR, VNODE_DIR) != 0;
+    kl_counter = ok ? create(KL_DIR "/counter", VNODE_FILE) : 0;
+    kl_record = ok ? create(KL_DIR "/record", VNODE_FILE) : 0;
+    uint64_t zero = 0;
+    uint8_t *first = kmalloc(KL_REC);
+    ok = ok && kl_counter && kl_record && first &&
+         ramfs_write(fs, kl_counter, 0, &zero, sizeof(zero)) == (int64_t)sizeof(zero);
+    if (ok) {
+        kl_fill(first, 0, 0);
+        ok = ramfs_write(fs, kl_record, KL_REC_OFF, first, KL_REC) == KL_REC;
+    }
+    if (first)
+        kfree(first);
+    klock_release(lk);
+    want_true(ok, "the counter and the record");
+
+    static const char *const names[KL_THREADS] = {
+        "klock0", "klock1", "klock2", "klock3", "klock4", "klock5",
+    };
+    bool made = ok;
+    for (uint32_t i = 0; i <= KL_THREADS; i++) {
+        struct kl_worker *w = &kw[i];
+        *w = (struct kl_worker){ .id = i + 1, .tid = -1 };
+        w->rec = kmalloc(KL_REC);
+        made = made && w->rec;
+    }
+    thread_turn_reset();
+    kl_end = timer_ticks() + KL_TICKS;
+    klogf("Filesystem lock test: %u threads and thread 0 contend for the VFS lock for %u ticks "
+          "(keys may be typed now)\n", KL_THREADS, KL_TICKS);
+    kw[0].tid = 0;
+    for (uint32_t i = 1; made && i <= KL_THREADS; i++) {
+        kw[i].tid = thread_create(names[i - 1], kl_body, &kw[i], false);
+        made = kw[i].tid > 0;
+    }
+    want_true(made, "6 threads created");
+    if (made)
+        kl_body(&kw[0]);                /* thread 0 takes its turns too */
+    for (uint32_t i = 1; i <= KL_THREADS; i++)
+        if (kw[i].tid > 0)
+            thread_join(kw[i].tid);
+
+    uint64_t takes = 0, after_wait = 0, incs = 0, writes = 0, reads = 0, torn = 0, errors = 0;
+    bool all_waited = made;
+    for (uint32_t i = 0; i <= KL_THREADS; i++) {
+        struct kl_worker *w = &kw[i];
+        klogf("Filesystem lock test: thread %d '%s': %llu takes, %llu after waiting (%llu wait "
+              "steps), %llu yields while holding, %llu records written, %llu read\n", (int)w->tid,
+              w->tid >= 0 ? thread_name(w->tid) : "?", (unsigned long long)w->iters,
+              (unsigned long long)w->waited, (unsigned long long)w->steps,
+              (unsigned long long)w->held_yields, (unsigned long long)w->writes,
+              (unsigned long long)w->reads);
+        all_waited = all_waited && w->iters > 0 && w->waited > 0;
+        takes += w->iters;
+        after_wait += w->waited;
+        incs += w->incs;
+        writes += w->writes;
+        reads += w->reads;
+        torn += w->torn;
+        errors += w->errors;
+        if (w->rec)
+            kfree(w->rec);
+    }
+
+    uint64_t c = 0;
+    klock_acquire(lk);
+    if (kl_counter && ramfs_read(fs, kl_counter, 0, &c, sizeof(c)) != (int64_t)sizeof(c))
+        errors++;
+    uint64_t hold = lk->hold_longest, wait0 = lk->wait_longest0, yields0 = lk->yields0;
+    uint32_t pcmax = lk->release_pc_max;
+    uint64_t lock_takes = lk->takes;    /* the setup's take, the workers', this one */
+    want(vfs_unlink(v, v->root, KL_DIR "/counter"), 0, "unlink the counter");
+    want(vfs_unlink(v, v->root, KL_DIR "/record"), 0, "unlink the record");
+    want(vfs_rmdir(v, v->root, KL_DIR), 0, "rmdir " KL_DIR);
+    klock_release(lk);
+
+    unsigned since = 0;
+    char line[240], who[80];
+    ksnprintf(line, sizeof(line), "contention: %u of %u threads took the lock, each at least once "
+              "after waiting; %llu takes, %llu after waiting", all_waited ? KL_THREADS + 1 : 0,
+              KL_THREADS + 1, (unsigned long long)takes, (unsigned long long)after_wait);
+    want_true(all_waited, "every thread took the lock after waiting");
+    bool steps_ok = step_end(line, &since);
+    ksnprintf(line, sizeof(line), "counter: %llu increments made, the file holds %llu",
+              (unsigned long long)incs, (unsigned long long)c);
+    want_true(incs > 0 && c == incs, "no lost update");
+    steps_ok = step_end(line, &since) && steps_ok;
+    ksnprintf(line, sizeof(line), "records: %llu written, %llu read across a page boundary (%u "
+              "bytes at %u), %llu torn", (unsigned long long)writes, (unsigned long long)reads,
+              KL_REC, KL_REC_OFF, (unsigned long long)torn);
+    want_true(writes > 0 && reads > 0 && torn == 0, "no torn record");
+    steps_ok = step_end(line, &since) && steps_ok;
+    ksnprintf(line, sizeof(line), "longest hold: %llu ticks (at most 2)", (unsigned long long)hold);
+    want_true(hold <= 2, "longest hold");
+    steps_ok = step_end(line, &since) && steps_ok;
+    uint64_t turn = thread_turn_max();
+    thread_turn_owner(who, sizeof(who));
+    ksnprintf(line, sizeof(line), "longest turn: %llu ticks (at most 6), taken by %s",
+              (unsigned long long)turn, who);
+    want_true(turn <= 6, "longest turn");
+    steps_ok = step_end(line, &since) && steps_ok;
+    ksnprintf(line, sizeof(line), "thread 0: longest wait %llu ticks; %llu wait steps, all by "
+              "yielding", (unsigned long long)wait0, (unsigned long long)yields0);
+    want_true(yields0 == kw[0].steps && kw[0].waited > 0, "thread 0 waited by yielding");
+    steps_ok = step_end(line, &since) && steps_ok;
+    uint64_t checks = klock_thread0_checks() - checks0;
+    ksnprintf(line, sizeof(line), "thread-0 self-check: never fired; checked at each of thread "
+              "0's %llu wait steps", (unsigned long long)checks);
+    want_true(checks == yields0, "the self-check at every wait step of thread 0");
+    steps_ok = step_end(line, &since) && steps_ok;
+    ksnprintf(line, sizeof(line), "preemption count: highest at a release %u, now %u (0 "
+              "expected)", pcmax, preempt_count());
+    want_true(pcmax == 0 && preempt_count() == 0, "no preemption count left raised");
+    steps_ok = step_end(line, &since) && steps_ok;
+    uint32_t live1 = thread_live(), stacks1 = thread_stacks_in_use();
+    uint32_t heap1 = kheap_stats()->used_bytes;
+    errors += diag_wait_failures() - wf0;
+    ksnprintf(line, sizeof(line), "threads %u -> %u, stack slots %u -> %u, heap in use %u -> %u "
+              "bytes, the lock %s, %llu errors", live0, live1, stacks0, stacks1, heap0, heap1,
+              lk->owner == KLOCK_FREE ? "free" : "HELD", (unsigned long long)errors);
+    want_true(live1 == live0 && stacks1 == stacks0 && heap1 == heap0 && lk->owner == KLOCK_FREE &&
+              errors == 0 && lock_takes == takes + 2, "everything returned");
+    steps_ok = step_end(line, &since) && steps_ok;
+    klogf("Filesystem lock test: figures: iterations %llu, longest hold %llu, longest turn %llu, "
+          "thread 0 longest wait %llu\n", (unsigned long long)takes, (unsigned long long)hold,
+          (unsigned long long)turn, (unsigned long long)wait0);
+    return acct_end(&a0, steps_ok && made);
 }
