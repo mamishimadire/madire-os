@@ -69,9 +69,24 @@ for b in 1 2 3; do
        continue ;;
     esac
     expect "$LOG" "^Kill race test: PASS$"                  "[stress] killrace $b: PASS"
-    expect_in_order "$LOG" "[stress] killrace $b: seed $KSEED used and logged (its delays and their sum)" \
-        "^Kill race test: seed $KSEED: 0 to 500000 extra work steps before each kill of modes 1-7$" \
-        "^Kill race test: seed $KSEED: [0-9]+ extra work steps in all$"
+    # 1.0 stage 0e: the bound is one tick of work steps, calibrated by the
+    # kernel at the start of the test (it was a fixed 500000). The same check
+    # also fails if the bound is 0, below 0.9 x the measured steps per tick,
+    # or not the bound the seed line used.
+    D="[stress] killrace $b: seed $KSEED used and logged (its delays and their sum), bound at least 0.9 tick"
+    read -r KSTEPS KBOUND <<< "$(sed -nE 's/^Kill race test: calibration: ([0-9]+) work steps per tick \(.*\); bound ([0-9]+) steps$/\1 \2/p' "$LOG" | head -n 1)"
+    KUSED=$(sed -nE "s/^Kill race test: seed $KSEED: 0 to ([0-9]+) extra work steps before each kill of modes 1-7\$/\1/p" "$LOG" | head -n 1)
+    echo "      KILLRACE_BOUND boot=$b seed=$KSEED steps_per_tick=${KSTEPS:-none} bound=${KBOUND:-none} seed_line=${KUSED:-none}"
+    if [ -z "$KSTEPS" ] || [ -z "$KBOUND" ] || [ "$KUSED" != "$KBOUND" ]; then
+        fail "$D (calibration or seed line missing, or their bounds differ: '$KBOUND' vs '$KUSED')"
+    elif [ "$KBOUND" -eq 0 ] || [ $((KBOUND * 10)) -lt $((KSTEPS * 9)) ]; then
+        fail "$D (bound $KBOUND, $KSTEPS steps per tick)"
+    else
+        expect_in_order "$LOG" "$D" \
+            "^Kill race test: calibration: $KSTEPS work steps per tick \(.*\); bound $KBOUND steps$" \
+            "^Kill race test: seed $KSEED: 0 to $KBOUND extra work steps before each kill of modes 1-7$" \
+            "^Kill race test: seed $KSEED: [0-9]+ extra work steps in all$"
+    fi
     count_lines "$LOG" "^Kill race test: progress: [0-9]+ of 400 cycles, tick [0-9]+$" 8 \
                                                             "[stress] killrace $b: 8 progress lines (every 50 cycles)"
     n=$(grep -cE "^Kill race test: mode [0-7]: 50 of 50 killed, [0-9]+ before any return to ring 3$" "$LOG")

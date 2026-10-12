@@ -1874,17 +1874,45 @@ void usertest_selfcheck_ring3cr3(void)
 #define KR_CYCLES 400
 #define KR_MODES  8
 /* 0.12 stage 3, with seed=N only: after its wait, each cycle of modes 1-7
- * does 0 to KR_JITTER_MAX extra work steps (ua_work) before the kill, drawn
- * from the seed, so the kills move within a tick from one seed to the next
- * (without a seed every boot repeated the same timings). The modes and
- * their counts are unchanged; mode 0 kills with preemption off, where
- * extra work would change nothing. */
-#define KR_JITTER_MAX 500000u
+ * does 0 to `bound` extra work steps (ua_work) before the kill, drawn from
+ * the seed, so the kills move from one seed to the next (without a seed
+ * every boot repeated the same timings). The modes and their counts are
+ * unchanged; mode 0 kills with preemption off, where extra work would
+ * change nothing.
+ * 1.0 stage 0e: the bound was a fixed 500000 steps, about 4% of a tick
+ * under TCG. It is now one whole tick of ua_work, measured at the start of
+ * the test (kr_calibrate), so the kills land across tick boundaries. */
+#define KR_CAL_CHUNK 10000u                 /* steps between two reads of the tick */
+#define KR_CAL_MIN   1000000u               /* a plausible tick under TCG */
+#define KR_CAL_MAX   1000000000u
 
 static uint32_t kr_next(uint32_t *s)
 {
     *s = *s * 1103515245u + 12345u;
     return *s >> 8;
+}
+
+/* The work steps in one whole tick: from one tick edge to the next, in
+ * chunks of KR_CAL_CHUNK steps with preemption off (timer interrupts still
+ * arrive and count). Each wait stops past KR_CAL_MAX steps, so a timer that
+ * does not tick ends it too, with a figure the caller rejects. */
+static uint32_t kr_calibrate(void)
+{
+    uint32_t steps = 0;
+    preempt_disable();
+    uint64_t t0 = timer_ticks();
+    while (timer_ticks() == t0 && steps <= KR_CAL_MAX) {   /* to the next edge */
+        ua_work(KR_CAL_CHUNK);
+        steps += KR_CAL_CHUNK;
+    }
+    uint64_t t1 = timer_ticks();
+    steps = 0;
+    while (timer_ticks() == t1 && steps <= KR_CAL_MAX) {   /* one whole tick */
+        ua_work(KR_CAL_CHUNK);
+        steps += KR_CAL_CHUNK;
+    }
+    preempt_enable();
+    return steps;
 }
 
 bool usertest_killrace(bool seeded, uint32_t seed)
@@ -1893,14 +1921,30 @@ bool usertest_killrace(bool seeded, uint32_t seed)
     uint32_t free0 = pmm_free_pages(), stacks0 = thread_stacks_in_use(), live0 = thread_live();
     uint32_t spaces0 = uspace_live_count;
     uint32_t done[KR_MODES] = { 0 }, before[KR_MODES] = { 0 }, wrong = 0, start_bad = 0;
-    uint32_t not_ring3 = 0, rng = seed;
+    uint32_t not_ring3 = 0, rng = seed, bound = 0;
     uint64_t jitter_sum = 0;
-    if (seeded)
+    if (seeded) {
+        uint32_t steps = kr_calibrate();
+        if (steps < KR_CAL_MIN || steps > KR_CAL_MAX) {
+            klogf("%s: calibration: %u work steps per tick, outside %u to %u: MISMATCH\n", t,
+                  (unsigned)steps, (unsigned)KR_CAL_MIN, (unsigned)KR_CAL_MAX);
+            klogf("%s: FAIL\n", t);
+            return false;
+        }
+        bound = steps;
+        klogf("%s: calibration: %u work steps per tick (one whole tick, edge to edge); "
+              "bound %u steps\n", t, (unsigned)steps, (unsigned)bound);
         klogf("%s: seed %u: 0 to %u extra work steps before each kill of modes 1-7\n", t,
-              (unsigned)seed, (unsigned)KR_JITTER_MAX);
+              (unsigned)seed, (unsigned)bound);
+    }
     for (uint32_t i = 0; i < KR_CYCLES; i++) {
         uint32_t mode = i % KR_MODES;
-        uint32_t jitter = seeded ? kr_next(&rng) % (KR_JITTER_MAX + 1) : 0;
+        uint32_t jitter = 0;
+        if (seeded) {                       /* 48 bits from two draws: the bound can exceed 24 */
+            uint64_t r = (uint64_t)kr_next(&rng) << 24;
+            r |= kr_next(&rng);
+            jitter = (uint32_t)(r % ((uint64_t)bound + 1));
+        }
         if (mode == 0)                              /* no switch until the kill: it never ran */
             preempt_disable();
         int32_t pid = mode == 7 ? process_start("sleep", 2) : process_start("spin", (i / KR_MODES) % 4);
