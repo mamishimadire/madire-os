@@ -77,7 +77,9 @@ jobs:
       - name: Tool versions
         run: |
           { gcc --version | head -n 1; ld --version | head -n 1; nasm -v;
-            grub-mkrescue --version | head -n 1; qemu-system-x86_64 --version | head -n 1;
+            { grub-mkrescue --version || echo "grub-mkrescue: not installed"; } | head -n 1;
+            { limine --version || echo "limine: not installed"; } | head -n 1;
+            qemu-system-x86_64 --version | head -n 1;
             python3 --version; nproc; free -m | sed -n 2p; } | tee tools.txt
 
       - name: make unit test iso (TCG)
@@ -181,7 +183,9 @@ jobs:
       - name: Tool versions
         run: |
           { gcc --version | head -n 1; ld --version | head -n 1; nasm -v;
-            grub-mkrescue --version | head -n 1; qemu-system-x86_64 --version | head -n 1;
+            { grub-mkrescue --version || echo "grub-mkrescue: not installed"; } | head -n 1;
+            { limine --version || echo "limine: not installed"; } | head -n 1;
+            qemu-system-x86_64 --version | head -n 1;
             python3 --version; nproc; free -m | sed -n 2p; } | tee tools.txt
 
       - name: make test-shard SHARD=${{ matrix.part }} (TCG)
@@ -329,7 +333,9 @@ jobs:
       - name: Tool versions
         run: |
           { gcc --version | head -n 1; ld --version | head -n 1; nasm -v;
-            grub-mkrescue --version | head -n 1; qemu-system-x86_64 --version | head -n 1;
+            { grub-mkrescue --version || echo "grub-mkrescue: not installed"; } | head -n 1;
+            { limine --version || echo "limine: not installed"; } | head -n 1;
+            qemu-system-x86_64 --version | head -n 1;
             python3 --version; nproc; free -m | sed -n 2p; } | tee tools.txt
 
       - name: make test-shard SHARD=stress (TCG)
