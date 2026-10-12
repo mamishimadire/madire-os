@@ -1,6 +1,6 @@
 # External references
 
-These projects are **references, not part of Madire OS**. They may be read to learn how others solved a problem; **nothing from them is copied or closely reproduced** (code, text or assets). The binding code-origin rules are in [AGENTS.md](../AGENTS.md) (section 11): Madire's own code is written from scratch; a third-party library is allowed only with a permissive licence, the owner's explicit approval per library, its own folder `third_party/<name>/` with its licence file, and an entry in `THIRD_PARTY_NOTICES`. Madire OS has no licence of its own yet, and one must be decided before any outside code is included.
+These projects are **references, not part of Madire OS**. They may be read to learn how others solved a problem; **nothing from them is copied or closely reproduced** (code, text or assets). The binding code-origin rules are in [AGENTS.md](../AGENTS.md) (section 11): Madire's own code is written from scratch; a third-party library is allowed only with a permissive licence, the owner's explicit approval per library, its own folder `third_party/<name>/` with its licence file, and an entry in `THIRD_PARTY_NOTICES`. Madire OS is licensed under Apache 2.0 (see [LICENSE](../LICENSE)).
 
 ## Rules
 

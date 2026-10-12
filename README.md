@@ -292,3 +292,7 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
 - [docs/references.md](docs/references.md): external projects used as references only
 - [AGENTS.md](AGENTS.md): the working rules for anyone, person or coding agent, changing the repository
 - [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES): the third-party software Madire OS ships (since 0.13: Limine)
+
+## Licence
+
+Madire OS is licensed under the [Apache License 2.0](LICENSE) (see also [NOTICE](NOTICE)). The name "Madire OS" and the M logo are not covered by that licence: see [TRADEMARKS.md](TRADEMARKS.md). Contributions are accepted under the Developer Certificate of Origin, see [CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities as described in [SECURITY.md](SECURITY.md).

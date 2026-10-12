@@ -243,6 +243,7 @@ Each was reported and accepted when it was made; none was removed or weakened.
 
 ### Follow-ups (from 0.13)
 
+- **ISO must carry Madire LICENSE, NOTICE and THIRD_PARTY_NOTICES (Apache 2.0 s.4); planned for v1.0 Stage 0 (Makefile change + regression).**
 - **Stale "GRUB" comments in the kernel sources (1.0 stage 0).** Comments still name GRUB in `boot/boot.asm`, `kernel/arch/x86/gdt.c`, `kernel/devtest.h`, `kernel/kernel.c`, `kernel/memory/reserve.h`, `kernel/memory/vmtest.h` and the protected `kernel/multiboot.h`. They were left unchanged in 0.13 so that `madire.kernel` stays identical to stage 3a's (`5813f58c…`, which differs from v0.12's only in the version digits). Clean them up in 1.0 stage 0, with `make repro` and a kernel hash comparison (a comment must not change the binary); `multiboot.h` needs the protected-file justification. The history comments in `tests/unit/test_mmap.c` and `tests/qemu-part-1.sh` (the pinned memory maps were read with GRUB 2.12 `lsmmap`) stay as they are.
 
 ## 4. Roadmap
@@ -292,7 +293,7 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 
 **Modernisation track:** the legacy hardware paths Madire OS uses today (BIOS, the 8259 PIC, the PIT, one CPU, VGA text mode, PS/2, RAM below 4 GiB) and their modern replacements, the goals that will make it feel modern to users, and the open decision on Rust for drivers are listed in [roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet). All planned, not yet committed to milestones.
 
-**Applications and compatibility strategy:** how Madire OS is to run most applications users need (Windows programs through Wine on top of the Linux layer, installed separately by users since the 0.12 stage 5 decision; Linux programs through the Linux system-call interface, virtual machines, web apps, plus its own and native apps), where apps come from over time, the open-source policy, licences for commercial software, and the **high-priority open decision on Madire OS's own licence** are in [roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet). Planned, not tied to milestones yet.
+**Applications and compatibility strategy:** how Madire OS is to run most applications users need (Windows programs through Wine on top of the Linux layer, installed separately by users since the 0.12 stage 5 decision; Linux programs through the Linux system-call interface, virtual machines, web apps, plus its own and native apps), where apps come from over time, the open-source policy, licences for commercial software, and Madire OS's own licence (**Licence decided 12 Oct 2026: Apache 2.0 + trademark note, DCO**, see [LICENSE](../LICENSE)) are in [roadmap.md](roadmap.md#applications-and-compatibility-strategy-planned-not-tied-to-milestones-yet). Planned, not tied to milestones yet.
 
 ### Future phases (direction only; planned, not committed)
 
@@ -348,7 +349,7 @@ The 0.9 plan considered Linux/POSIX-compatible system calls, as 0.7 planning ask
 | VM `MadireOS-Test`: OS type Other_64; COM1 serial output to a file under the git-ignored `build/` folder, as acceptance evidence | 0.7 | `--pae` is left unchanged |
 | **App strategy (planned):** a Chromium-based **Madire Browser** is a priority once graphics and networking exist. The **Madire Store** starts with web apps (WhatsApp Web, Teams, Zoom, Outlook/Gmail, Office on the web), open-source apps (LibreOffice, Thunderbird, VLC) and Madire's own apps. Official third-party apps need the vendors' agreement. | 0.7 planning | Direction only |
 | 0.9 planning must consider Linux/POSIX-compatible system calls | 0.7 planning | For porting Chromium, Linux apps and Wine |
-| **The licence must be decided before any outside open-source code is included** | 0.7 planning | The repository has no licence yet |
+| **The licence must be decided before any outside open-source code is included** | 0.7 planning | Licence decided 12 Oct 2026: Apache 2.0 + trademark note, DCO (see [LICENSE](../LICENSE)) |
 | External projects are references only: never copied without explicit approval and a licence check; cloned (shallow) only outside the repository; security tools are never run against any system; Chromium and Gecko are browsed, not cloned | 0.7 | See [references.md](references.md) |
 | Higher-half kernel: virtual = `0xFFFFFFFF80000000` + physical (PML4[511]), `-mcmodel=kernel`; the stub maps the kernel low and high and jumps high | 0.8 | Still booted as a flat binary through the a.out kludge (physical load addresses) |
 | Physical view at `0xFFFF800000000000` (PML4[256]) for the low 1 MiB (pages 1–255) and the boot-data reservations only; no direct map; free RAM, page 0 and the kernel image stay out of it | 0.8 | The walk-check and the self-test prove the kernel image has no alias there (no writable view of kernel code) |

@@ -420,7 +420,7 @@ These are features of the shell, not commands:
 - **Destructive commands** (marked ⚠: for example `rm`, `format`, `partition`, `userdel`, `reboot`) require confirmation or show a clear warning first.
 - **Madire AI** never changes the system without informing the user first.
 - **Keeping this standard current:** whenever a milestone adds, changes or removes a command, this file is updated in the same milestone (status, level, purpose, foundation) and the MOCS version goes up by one step (v0.1 → v0.2 → …). New commands follow these rules: one meaning per name, a level (CORE, SYSTEM or APPLICATION), `--help`, and a confirmation or a clear warning before destructive actions. The same rule is in [AGENTS.md](../AGENTS.md).
-- **Licences:** porting a command toolkit (for example BusyBox, GPL-2.0, or toybox, 0BSD) requires the owner's approval and a licence check first. Madire OS has no licence of its own yet; see [references.md](references.md).
+- **Licences:** porting a command toolkit (for example BusyBox, GPL-2.0, or toybox, 0BSD) requires the owner's approval and a licence check first. Madire OS is licensed under Apache 2.0 (see [LICENSE](../LICENSE)); see also [references.md](references.md).
 
 ## 7. Priority order
 

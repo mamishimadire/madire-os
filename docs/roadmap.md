@@ -154,6 +154,6 @@ These legacy pieces were chosen **deliberately, as the simplest starting point**
 - Users bring their own licences for commercial services (for example Microsoft 365) and for Windows in a virtual machine.
 - Madire OS never redistributes a proprietary app without the vendor's agreement.
 
-### 5. Open decision: Madire OS's own licence (HIGH PRIORITY)
+### 5. Madire OS's own licence (decided)
 
-Madire OS has no licence yet. The candidates include MIT, Apache-2.0, GPL-3.0 or a proprietary licence. **It must be decided before any outside code is included**, because the choice decides which open-source code can be combined with the kernel and how.
+**Licence decided 12 Oct 2026: Apache 2.0 + trademark note, DCO** (see [LICENSE](../LICENSE)). The candidates were MIT, Apache-2.0, GPL-3.0 or a proprietary licence; it had to be decided before any outside code is included, because the choice decides which open-source code can be combined with the kernel and how.
