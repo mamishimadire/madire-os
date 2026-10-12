@@ -20,5 +20,8 @@
 # 1.0 stage 0a: the ISO root's licence files (part static). Stage 1: 14 more:
 # the filesystem's boot self-test (10 in part 1, 1 in part final) and the
 # padded test kernel (3 in part 4); 3 unit suites (path, vfs, ramfs).
-1.0 15
-unit-suites 58
+# Stage 2: 18 more: the data budget and the self-test's data step (4 in
+# part 1), test=fslimits (8) and test=fsfill at 32M and 64M (6) in part 2;
+# 1 unit suite (fspage).
+1.0 33
+unit-suites 59

@@ -6,7 +6,8 @@
 # console session at the end (shard 1 is the shortest).
 # 0.13 adds the [0.13] checks of where Limine places the boot data (the
 # temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
-# adds the [1.0] filesystem checks of the normal boot at the end.
+# adds the [1.0] filesystem checks of the normal boot at the end; stage 2
+# the data budget and the self-test's data step after them.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1391,3 +1392,35 @@ else
 fi
 expect_in_order "$LOG" "[1.0] filesystem self-test: PASS, after the kernel heap and before System ready" \
     "^Kernel heap: +OK" "^Filesystem self-test: PASS$" "^System ready\."
+
+# 1.0 stage 2: the data budget (B5, B6) and the self-test's data step, on
+# the normal boot (the ISO, QEMU's default 128 MiB). The first stage 1
+# check above matches the start of the B6 line, which now ends with
+# ", budget N pages"; its regex and condition are unchanged.
+echo "== [1.0] Filesystem: the data budget and the self-test's data step"
+expect "$LOG" "^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file, budget 8192 pages$" \
+                                                      "[1.0] filesystem: budget 8192 pages on the 128 MiB boot"
+FSB=$(grep -m1 -E '^Filesystem: budget: ' "$LOG")
+read -r BCAP BFREE BPAGES BKIB <<< "$(sed -nE 's/^Filesystem: budget: min\(([0-9]+) pages, 3\/4 of ([0-9]+) free pages\) = ([0-9]+) pages \(([0-9]+) KiB\), 0 taken at boot$/\1 \2 \3 \4/p' <<< "$FSB")"
+if [ -n "${BFREE:-}" ] && [ "$BCAP" = 8192 ]; then
+    BWANT=$((BFREE * 3 / 4))
+    if [ "$BWANT" -gt 8192 ]; then BWANT=8192; fi
+fi
+if [ -n "${BWANT:-}" ] && [ "$BPAGES" = "$BWANT" ] && [ "$BKIB" = $((BWANT * 4)) ]; then
+    pass "[1.0] filesystem: budget = min(8192, 3/4 of the $BFREE free pages at boot) = $BPAGES pages, recomputed from the log"
+else
+    fail "[1.0] filesystem: budget line wrong or not recomputable (${FSB:-no line}; expected ${BWANT:-?} pages)"
+fi
+FSD=$(grep -m1 -E '^Filesystem self-test: data: ' "$LOG")
+echo "      ${FSD:-no data line}"
+if grep -qE '^Filesystem self-test: data: 8192 bytes written across 3 pages and read back, a hole at 1 MiB reads as zeros and costs nothing, truncate frees pages and growth takes none; .*: OK$' <<< "$FSD"; then
+    pass "[1.0] filesystem self-test: data written across page boundaries and read back; a hole reads as zeros and costs nothing; truncate frees pages"
+else
+    fail "[1.0] filesystem self-test: data step: ${FSD:-no line}"
+fi
+read -r D0 D1 P0 P1 <<< "$(sed -nE 's/.*; data pages ([0-9]+) -> ([0-9]+), free pages ([0-9]+) -> ([0-9]+): OK$/\1 \2 \3 \4/p' <<< "$FSD")"
+if [ "${D0:-x}" = 0 ] && [ "${D1:-y}" = 0 ] && [ -n "${P0:-}" ] && [ "$P0" = "${P1:-}" ]; then
+    pass "[1.0] filesystem self-test: data pages 0 -> 0, free pages $P0 -> $P1 (every data and index page given back)"
+else
+    fail "[1.0] filesystem self-test: pages not given back (${FSD:-no line})"
+fi

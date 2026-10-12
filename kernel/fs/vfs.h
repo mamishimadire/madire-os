@@ -9,15 +9,24 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "kernel/fs/vfs_core.h"
 
+struct ramfs;
+
 /* Builds the filesystem and runs its boot self-test (create, look up,
- * paths, limits, errors, rename, depth, then everything removed with no
- * node or heap byte left). Needs the kernel heap. false: the self-test
- * failed (details on the serial log). */
+ * paths, limits, errors, rename, depth, file data (stage 2), then
+ * everything removed with no node, heap byte or data page left). Fixes
+ * the data budget from the free pages now. Needs the kernel heap. false:
+ * the self-test failed (details on the serial log). */
 bool vfs_boot(void);
 
 /* The mounted filesystem (after vfs_boot). */
 struct vfs *vfs_root(void);
+
+/* Stage 2: the RAM filesystem under it (its data calls, counts and
+ * budget), and the free pages at boot its budget was computed from. */
+struct ramfs *vfs_ramfs(void);
+uint32_t vfs_boot_free_pages(void);
 
 #endif

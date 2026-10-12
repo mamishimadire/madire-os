@@ -5,21 +5,29 @@
  *
  * The boot self-test works in a scratch folder, /tmp/fstest, and leaves
  * nothing behind: the node count and the heap's bytes in use are compared
- * before and after. Its long paths are built in a static buffer, not on
- * the boot stack.
+ * before and after, and (stage 2) the data pages and the page allocator's
+ * free pages around its data step. Its long paths and its data are built
+ * in static buffers, not on the boot stack.
+ *
+ * Stage 2: file data in pages from the page allocator (fspage.c), within
+ * the budget fixed here at boot: min(32 MiB, 3/4 of the free pages now).
+ * The budget is a ceiling, not an allocation: no page is taken at boot.
  */
 #include <stddef.h>
 #include <stdint.h>
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/fs_errno.h"
+#include "kernel/fs/fspage.h"
 #include "kernel/fs/path_core.h"
 #include "kernel/fs/ramfs_core.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
+#include "kernel/memory/pmm.h"
 #include "kernel/timer.h"
 
 static struct ramfs ramfs;
 static struct vfs vfs;
+static uint32_t boot_free_pages;        /* the free pages the budget was computed from */
 
 static void *heap_alloc_fn(size_t bytes)
 {
@@ -34,6 +42,16 @@ static int64_t uptime_now(void)
 struct vfs *vfs_root(void)
 {
     return &vfs;
+}
+
+struct ramfs *vfs_ramfs(void)
+{
+    return &ramfs;
+}
+
+uint32_t vfs_boot_free_pages(void)
+{
+    return boot_free_pages;
 }
 
 /* ---- the boot self-test ---- */
@@ -269,6 +287,94 @@ static bool test_depth(void)
     return step_end("depth: a chain of 64 folders created, looked up by one path, removed");
 }
 
+/* ---- stage 2: file data ---- */
+
+static uint8_t databuf[RAMFS_PAGE];
+
+/* The byte the data step writes at file position pos. */
+static uint8_t pattern(uint64_t pos)
+{
+    return (uint8_t)(pos * 7 + (pos >> 12) + 3);
+}
+
+static void fill(uint64_t pos, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++)
+        databuf[i] = pattern(pos + i);
+}
+
+/* databuf[from, from + len) holds the bytes of file positions pos on. */
+static bool holds(uint32_t from, uint64_t pos, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++)
+        if (databuf[from + i] != pattern(pos + i))
+            return false;
+    return true;
+}
+
+static bool zeros(uint32_t from, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++)
+        if (databuf[from + i])
+            return false;
+    return true;
+}
+
+static bool test_data(void)
+{
+    struct vnode *r = vfs.root, *f = 0;
+    uint32_t data0 = ramfs.data_pages;
+    want(vfs_create(&vfs, r, "/tmp/fstest/data", VNODE_FILE, 0644, &f), 0, "create data");
+    if (!f)
+        return step_end("data");
+    uint32_t free0 = pmm_free_pages();
+    fill(100, RAMFS_PAGE);
+    want((int)ramfs_write(&ramfs, f, 100, databuf, RAMFS_PAGE), RAMFS_PAGE, "write 4096 bytes at 100");
+    fill(100 + RAMFS_PAGE, RAMFS_PAGE);
+    want((int)ramfs_write(&ramfs, f, 100 + RAMFS_PAGE, databuf, RAMFS_PAGE), RAMFS_PAGE,
+         "write 4096 bytes at 4196");
+    want_true(f->size == 100 + 2 * RAMFS_PAGE, "size 8292");
+    want_true(ramfs_file_pages(f) == 4 && ramfs.data_pages == data0 + 4 &&
+              pmm_free_pages() == free0 - 4, "3 data pages and the index page taken");
+    want((int)ramfs_read(&ramfs, f, 100, databuf, RAMFS_PAGE), RAMFS_PAGE, "read 4096 at 100");
+    want_true(holds(0, 100, RAMFS_PAGE), "bytes 100-4195 read back");
+    want((int)ramfs_read(&ramfs, f, 100 + RAMFS_PAGE, databuf, RAMFS_PAGE), RAMFS_PAGE,
+         "read 4096 at 4196");
+    want_true(holds(0, 100 + RAMFS_PAGE, RAMFS_PAGE), "bytes 4196-8291 read back");
+    want((int)ramfs_read(&ramfs, f, 0, databuf, 100), 100, "read 100 at 0");
+    want_true(zeros(0, 100), "bytes before the first write read as zeros");
+    want((int)ramfs_read(&ramfs, f, 100 + 2 * RAMFS_PAGE, databuf, 10), 0, "read at the end");
+
+    databuf[0] = 0x5a;
+    want((int)ramfs_write(&ramfs, f, 1024 * 1024, databuf, 1), 1, "write a byte at 1 MiB");
+    want_true(ramfs_file_pages(f) == 5 && pmm_free_pages() == free0 - 5,
+              "the byte at 1 MiB costs one page");
+    want((int)ramfs_read(&ramfs, f, 512 * 1024, databuf, RAMFS_PAGE), RAMFS_PAGE, "read in the hole");
+    want_true(zeros(0, RAMFS_PAGE), "the hole reads as zeros");
+    want((int)ramfs_read(&ramfs, f, 1024 * 1024, databuf, RAMFS_PAGE), 1, "read the last byte");
+    want_true(databuf[0] == 0x5a, "the byte at 1 MiB read back");
+
+    want(ramfs_truncate(&ramfs, f, 5000), 0, "truncate to 5000");
+    want_true(f->size == 5000 && ramfs_file_pages(f) == 3 && pmm_free_pages() == free0 - 3,
+              "the truncate gives back 2 pages");
+    want(ramfs_truncate(&ramfs, f, RAMFS_FILE_MAX), 0, "truncate to 2 MiB");
+    want_true(f->size == RAMFS_FILE_MAX && ramfs_file_pages(f) == 3 &&
+              pmm_free_pages() == free0 - 3, "growing takes no page");
+    want((int)ramfs_read(&ramfs, f, RAMFS_PAGE, databuf, RAMFS_PAGE), RAMFS_PAGE,
+         "read the page holding byte 5000");
+    want_true(holds(0, RAMFS_PAGE, 5000 - RAMFS_PAGE) &&
+              zeros(5000 - RAMFS_PAGE, 2 * RAMFS_PAGE - 5000), "bytes past 5000 read as zeros");
+    want(ramfs_truncate(&ramfs, f, RAMFS_FILE_MAX + 1), -FS_EFBIG, "truncate past 2 MiB");
+    want(vfs_unlink(&vfs, r, "/tmp/fstest/data"), 0, "unlink data");
+    uint32_t free1 = pmm_free_pages();
+    want_true(ramfs.data_pages == data0 && free1 == free0, "every page given back");
+    char line[240];
+    ksnprintf(line, sizeof(line), "data: 8192 bytes written across 3 pages and read back, a hole "
+              "at 1 MiB reads as zeros and costs nothing, truncate frees pages and growth takes "
+              "none; data pages %u -> %u, free pages %u -> %u", data0, ramfs.data_pages, free0, free1);
+    return step_end(line);
+}
+
 static bool test_cleanup(uint32_t nodes0, uint32_t heap0)
 {
     struct vnode *r = vfs.root;
@@ -306,6 +412,7 @@ static bool selftest(void)
     ok = test_errors() && ok;
     ok = test_rename() && ok;
     ok = test_depth() && ok;
+    ok = test_data() && ok;
     ok = test_cleanup(nodes0, heap0) && ok;
     klogf("Filesystem self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
@@ -318,6 +425,8 @@ bool vfs_boot(void)
         klogf("Filesystem: no heap memory for the root folder\n");
         return false;
     }
+    boot_free_pages = pmm_free_pages();
+    ramfs_set_pages(&ramfs, &fspage_source, ramfs_budget_pages(boot_free_pages));
     vfs_mount(&vfs, &ramfs_ops, &ramfs, &ramfs.root->vn, uptime_now);
     ramfs.root->vn.atime = ramfs.root->vn.mtime = ramfs.root->vn.ctime = uptime_now();
     int rh = vfs_create(&vfs, vfs.root, "/home", VNODE_DIR, 0755, 0);
@@ -326,8 +435,11 @@ bool vfs_boot(void)
         klogf("Filesystem: cannot create /home (%d) or /tmp (%d)\n", rh, rt);
         return false;
     }
-    klogf("Filesystem: live RAM filesystem, %u nodes, %u MiB per file\n", RAMFS_MAX_NODES,
-          RAMFS_FILE_MAX / (1024u * 1024u));
+    klogf("Filesystem: live RAM filesystem, %u nodes, %u MiB per file, budget %u pages\n",
+          RAMFS_MAX_NODES, RAMFS_FILE_MAX / (1024u * 1024u), ramfs.budget_pages);
+    klogf("Filesystem: budget: min(%u pages, 3/4 of %u free pages) = %u pages (%u KiB), "
+          "0 taken at boot\n", RAMFS_BUDGET_CAP, boot_free_pages, ramfs.budget_pages,
+          ramfs.budget_pages * (RAMFS_PAGE / 1024u));
     char names[64];
     size_t p = 0;
     for (struct vnode *e = ramfs_first(vfs.root); e && p + 20 < sizeof(names); e = ramfs_next(e)) {

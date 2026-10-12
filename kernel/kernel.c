@@ -26,6 +26,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
@@ -544,6 +545,14 @@ static void run_diagnostics(void)
         diag_message("Heap test: allocating until the heap is full...");
         diag_message(vmtest_heap_exhaust() ? "Heap exhaustion test: PASS"
                                                  : "Heap exhaustion test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fslimits")) {    /* 1.0 stage 2 */
+        diag_message("Filesystem limits test: each limit hit once...");
+        diag_message(fstest_limits() ? "Filesystem limits test: done"
+                                     : "Filesystem limits test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fsfill")) {      /* 1.0 stage 2 */
+        diag_message("Filesystem fill test: files filled to the budget...");
+        diag_message(fstest_fill() ? "Filesystem fill test: done"
+                                   : "Filesystem fill test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();

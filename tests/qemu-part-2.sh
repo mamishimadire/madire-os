@@ -2,7 +2,8 @@
 # scrollback, and [0.10] up to userkmem. Sourced by tests/qemu-tests.sh
 # (a full run, or --shard 2). Apart from this header and the fixture call,
 # every line was moved unchanged from the single script; the [0.12] shell
-# session at the end was added in stage 1.
+# session at the end was added in stage 1. 1.0 stage 2 adds the [1.0]
+# storage diagnostics (test=fslimits, test=fsfill at 32M and 64M) last.
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 
@@ -833,3 +834,83 @@ else
 fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[0.12] no panic, dropped key or screen-rule violation"
+
+# ---- 1.0 stage 2: the storage diagnostics (B5, B7) ----
+
+READY_LINE="System ready. Press any key to open the console."
+
+# fs_closing <log> <limits|fill> <description>: the test's closing line
+# gives nodes 3 -> 3, data pages 0 -> 0, and free pages back to the start
+# minus exactly the heap's growth and its new page tables (the heap never
+# shrinks); with the PASS line, System ready and no panic.
+fs_closing() {
+    local l n0 n1 d0 d1 f0 f1 hp pt
+    l=$(grep -m1 -E "^Filesystem $2 test: (PASS|FAIL) \(" "$1")
+    read -r n0 n1 d0 d1 f0 f1 hp pt <<< "$(sed -nE 's/.*\(nodes ([0-9]+) -> ([0-9]+), data pages ([0-9]+) -> ([0-9]+), free pages ([0-9]+) -> ([0-9]+) = ([0-9]+) heap pages \+ ([0-9]+) page tables\)$/\1 \2 \3 \4 \5 \6 \7 \8/p' <<< "$l")"
+    if [ "${n0:-x}" = 3 ] && [ "${n1:-y}" = 3 ] && [ "${d0:-x}" = 0 ] && [ "${d1:-y}" = 0 ] &&
+       [ -n "${pt:-}" ] && [ "$f1" -eq $((f0 - hp - pt)) ]; then
+        pass "$3 ($f0 -> $f1 = $hp heap pages + $pt page tables)"
+    else
+        fail "$3 (${l:-no closing line})"
+    fi
+}
+
+echo "== [1.0] test=fslimits: every B5 limit hit once (-m 128M)"
+LOG=$OUT/serial-fslimits.log
+boot_until "$LOG" 240 "$READY_LINE" -m 128M -kernel "$KERNEL" -append "test=fslimits"
+grep -E "^Filesystem limits test: " "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Filesystem limits test: nodes: [0-9]+ files created up to 1024 nodes; the next file ENOSPC, the next folder ENOSPC, nothing created; all removed: OK$" \
+    "[1.0] fslimits: 1024 nodes: the next file and the next folder ENOSPC, nothing created; all removed"
+expect "$LOG" "^Filesystem limits test: file size: 2 MiB written in 512 writes of 4096 bytes and read back \(513 pages with the index\); one more byte EFBIG; a write crossing 2 MiB returned 100 of 4096 bytes; a write at 3 MiB EFBIG; truncate to 2 MiB \+ 1 EFBIG, to 2 MiB OK: OK$" \
+    "[1.0] fslimits: 2 MiB per file: a write crossing it returns the short count up to 2 MiB; at 2 MiB and past it EFBIG; truncate past it EFBIG"
+expect "$LOG" "^Filesystem limits test: hole: one byte written at 1 MiB costs 2 pages \(index \+ data\); the 1 MiB before it reads as zeros: OK$" \
+    "[1.0] fslimits: a byte written at 1 MiB costs 2 pages (index + data); the hole reads as zeros"
+expect "$LOG" "^Filesystem limits test: budget: [0-9]+ files filled to 8192 pages = the budget, the next write ENOSPC; a write running out returned 2048 of 8192 bytes, the next ENOSPC; growing a file by truncate takes no page and is never ENOSPC, a write into the grown hole ENOSPC: OK$" \
+    "[1.0] fslimits: the budget: files filled to exactly the budget, then ENOSPC; a write running out returns its short count, the next ENOSPC; growing a file by truncate takes no page and is never ENOSPC"
+expect "$LOG" "^Filesystem limits test: page allocator: all [0-9]+ free pages taken, under the budget: a new file's first write ENOSPC with no index page left behind, a new page of a file ENOSPC, an existing page still written; all pages given back: OK$" \
+    "[1.0] fslimits: the page allocator refusing a page under the budget: ENOSPC, no index page left behind"
+expect "$LOG" "^Filesystem limits test: heap: filled to its 16 MiB cap \([0-9]+ blocks\): a file ENOMEM \(no room for its record\), a folder ENOMEM \(its record fit, its name did not\); nothing half-created; the heap given back: OK$" \
+    "[1.0] fslimits: heap exhausted: create ENOMEM (no record; a record without room for its name), nothing half-created"
+fs_closing "$LOG" limits \
+    "[1.0] fslimits: everything freed: nodes 3, data pages 0, free pages back to the start minus the heap's growth and its page tables"
+if grep -qE "^Filesystem limits test: PASS \(" "$LOG" && grep -qxF "$READY_LINE" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.0] fslimits: PASS, System ready, no panic"
+else
+    fail "[1.0] fslimits: no PASS, no System ready, or a panic in $LOG"
+fi
+
+# fsfill_test <-m size>: files filled to the budget at that RAM size.
+fsfill_test() {
+    local mem=$1 log=$OUT/serial-fsfill-$1.log l b f bwant
+    echo "== [1.0] test=fsfill at -m $mem"
+    boot_until "$log" 240 "$READY_LINE" -m "$mem" -kernel "$KERNEL" -append "test=fsfill"
+    grep -E "^Filesystem (fill test|: budget): " "$log" | sed 's/^/      /'
+    l=$(grep -m1 -E '^Filesystem fill test: budget ' "$log")
+    read -r b f <<< "$(sed -nE 's/^Filesystem fill test: budget ([0-9]+) pages = min\(8192, 3\/4 of ([0-9]+) free pages at boot\); [0-9]+ free pages now$/\1 \2/p' <<< "$l")"
+    bwant=""
+    if [ -n "${f:-}" ]; then bwant=$((f * 3 / 4)); fi
+    if [ "$mem" = 32M ]; then
+        if [ -n "$bwant" ] && [ "$bwant" -lt 8192 ] && [ "$b" = "$bwant" ]; then
+            pass "[1.0] fsfill 32M: budget = 3/4 of the $f free pages at boot = $b pages (below the 8192 cap)"
+        else
+            fail "[1.0] fsfill 32M: budget not 3/4 of the free pages below the cap (${l:-no line})"
+        fi
+    else
+        if [ -n "$bwant" ] && [ "$bwant" -ge 8192 ] && [ "$b" = 8192 ]; then
+            pass "[1.0] fsfill $mem: budget = min(8192, 3/4 of the $f free pages at boot) = 8192 pages (the cap)"
+        else
+            fail "[1.0] fsfill $mem: budget not the 8192-page cap (${l:-no line})"
+        fi
+    fi
+    expect "$log" "^Filesystem fill test: [0-9]+ files filled to ${b:-X} pages \(data \+ index\) = the budget, the next write ENOSPC; a write running out returned 2048 of 8192 bytes, the next ENOSPC; growing a file by truncate took no page; every byte read back \([0-9]+ bytes\): OK$" \
+        "[1.0] fsfill $mem: filled to exactly ${b:-?} pages (data + index); the last write short, the next ENOSPC; every byte read back"
+    if grep -qE "^Filesystem fill test: PASS \(" "$log" && grep -qxF "$READY_LINE" "$log" && ! grep -q "PANIC" "$log"; then
+        fs_closing "$log" fill \
+            "[1.0] fsfill $mem: everything freed: data pages 0, free pages back to the start minus the heap's growth and its page tables; PASS, System ready, no panic"
+    else
+        fail "[1.0] fsfill $mem: no PASS, no System ready, or a panic in $log"
+    fi
+}
+
+fsfill_test 32M
+fsfill_test 64M
