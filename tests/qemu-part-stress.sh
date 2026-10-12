@@ -15,6 +15,7 @@
 #    processes, and free pages must match at the start and the end.
 # 3. Key pace (0.12 stage 3): the same 861-key session at 30 ms and at
 #    50 ms, presses and releases reported; one check (no dropped key).
+#    1.0 stage 0d: also at a 50 ms gap with a 20 ms hold (report only).
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -138,7 +139,7 @@ for b in 1 2 3 4 5 6; do
     fi
 done
 
-echo "== [stress] Key pace: the same long key session at 30 ms and at 50 ms (report only)"
+echo "== [stress] Key pace: the same long key session at 30 ms, at 50 ms and at 50 ms with a 20 ms hold (report only)"
 # 0.12 stage 3: stage 1 found key releases lost from about the 360th key of
 # a long session at 30 ms (gap and hold), found in the Codespace. Both paces
 # run here, in the same job, so they compare on the same machine: 861 single
@@ -146,9 +147,17 @@ echo "== [stress] Key pace: the same long key session at 30 ms and at 50 ms (rep
 # reports the presses, releases and the first press without its release
 # (KEY_PACE lines, report only). The one check: the kernel reported no
 # dropped key event at either pace.
+#
+# 1.0 stage 0d: a third pace, a 20 ms hold at a 50 ms gap (the hold shorter
+# than the interval), to test whether the loss is a hold-time effect. It is
+# report only, like the other two: its KEY_PACE line decides nothing, and the
+# one check below still reads the 30 ms and 50 ms logs only.
 S="x{wait:1}"
 for i in $(seq -w 1 30); do S+="echo kp-$i abcdefghijklmnop{ret}"; done
-for ms in 30 50; do
+for pace in 30:30 50:50 50:20; do
+    gap=${pace%:*} hold=${pace#*:}
+    if [ "$hold" = "$gap" ]; then ms=$gap label="$gap ms"
+    else ms=${gap}h$hold label="$gap ms, hold $hold ms"; fi
     LOG=$OUT/serial-keypace-$ms.log
     SOCK=$OUT/qmp.sock
     rm -f "$LOG" "$SOCK"
@@ -156,13 +165,13 @@ for ms in 30 50; do
         -qmp unix:"$SOCK",server=on,wait=off -m 32M -kernel "$KERNEL" -append "keylog" >/dev/null 2>&1 &
     QPID=$!
     out=$(python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "${S}echo end-of-pace-$ms{ret}" \
-          --gap "0.0$ms" --hold "$ms" --done $'\nend-of-pace-'"$ms"$'\n' --done-timeout 120 2>&1)
-    echo "      $ms ms: $out"
+          --gap "0.0$gap" --hold "$hold" --done $'\nend-of-pace-'"$ms"$'\n' --done-timeout 120 2>&1)
+    echo "      $label: $out"
     sleep 2
     kill "$QPID" 2>/dev/null
     wait "$QPID" 2>/dev/null
     [ -f "$LOG" ] || : > "$LOG"
-    echo "      $(python3 "$(dirname "$0")/key_pace.py" "$LOG" "gap=${ms}ms hold=${ms}ms")"
+    echo "      $(python3 "$(dirname "$0")/key_pace.py" "$LOG" "gap=${gap}ms hold=${hold}ms")"
 done
 if grep -qE "events dropped" "$OUT/serial-keypace-30.log" "$OUT/serial-keypace-50.log"; then
     fail "[stress] key pace: the kernel reported dropped key events"
