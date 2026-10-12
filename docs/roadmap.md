@@ -54,6 +54,20 @@ Order decided in 0.7 planning: 64-bit long mode (0.7), then the higher-half kern
 
 Of the candidate items listed for 0.8, the reproducible build, the stack high-water mark and the boot-module result on screen were included. Making the `test_reserve` unit test independent of the test binary's load address was deferred to a later milestone.
 
+## Boot experience, diagnostics and system information (planned, unscheduled; added after 0.13)
+
+Each item needs its own plan and the owner's approval; none is scheduled.
+
+1. **Boot branding (a small interim step, optional before 1.0).** Limine's colours in Madire blue, a "Madire OS" branding line and a shorter timeout, set in `limine.conf`. No layout change. Every boot menu check that changes is listed with its before and after.
+2. **A branded boot with the Madire Design Guide (the graphics milestone).**
+   - A Limine wallpaper with the Madire logo and title in the image (original artwork only).
+   - The Diagnostics menu hidden behind a key, for developers, and regrouped (CPU, Memory, Scheduling, User mode, and later groups as their features arrive). The position checks and the VirtualBox automation are updated in the same stage.
+   - Auto-boot for normal users.
+   - Later: a Madire splash screen, then a login screen, then the desktop.
+3. **Diagnostics grow with each milestone.** Storage tests with 1.0 and the disk driver; graphics tests with graphics; PCI scan and disk detection with the disk driver; network tests with networking; USB and multi-core tests with the modernisation track; larger stress tests (10,000 processes, memory pressure) at any time. No empty diagnostic group before its feature exists.
+4. **A hardware information command:** CPU, RAM, boot loader, kernel version, uptime and the memory map; later PCI devices. The command standard already plans a name for this summary, `system` ([commands.md](commands.md): "a readable summary of the whole system: OS, version, CPU, memory, disks, devices, uptime"), and `devices` and `lspci` for hardware lists; no new command name is added without the owner's approval.
+5. **Study-only references for boot and desktop design:** Plymouth (a boot splash system; GPL-2.0-or-later) and COSMIC (a desktop; its components are GPL-3.0, its toolkit `libcosmic` MPL-2.0). Both are **study only**: their design may be studied, no code, text or assets are copied (AGENTS.md section 11). They are added to [references.md](references.md), with their read rule, before they are first used.
+
 ## Later stages (direction only; planned, not committed)
 
 - **Toolchain:** a dedicated `x86_64-elf` cross-compiler if the host compiler ever becomes a problem; CI build on every push (GitHub Actions); `test_reserve` independent of the test binary's load address
