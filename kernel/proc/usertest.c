@@ -1879,10 +1879,14 @@ void usertest_selfcheck_ring3cr3(void)
  * every boot repeated the same timings). The modes and their counts are
  * unchanged; mode 0 kills with preemption off, where extra work would
  * change nothing.
- * 1.0 stage 0e: the bound was a fixed 500000 steps, about 4% of a tick
- * under TCG. It is now one whole tick of ua_work, measured at the start of
- * the test (kr_calibrate), so the kills land across tick boundaries. */
+ * 1.0 stage 0e: the bound was a fixed 500000 steps. It is now one tick of
+ * ua_work, measured at the start of the test (kr_calibrate), so the kills
+ * land across tick boundaries. A single measured tick came out short (3.5
+ * million steps against about 10 million per tick spent in the test), so a
+ * warm-up tick is discarded and the most of KR_CAL_TICKS whole ticks kept,
+ * as the boot calibration keeps the most of its whole ticks. */
 #define KR_CAL_CHUNK 10000u                 /* steps between two reads of the tick */
+#define KR_CAL_TICKS 4u                     /* measured, after the warm-up tick */
 #define KR_CAL_MIN   1000000u               /* a plausible tick under TCG */
 #define KR_CAL_MAX   1000000000u
 
@@ -1892,27 +1896,36 @@ static uint32_t kr_next(uint32_t *s)
     return *s >> 8;
 }
 
-/* The work steps in one whole tick: from one tick edge to the next, in
- * chunks of KR_CAL_CHUNK steps with preemption off (timer interrupts still
- * arrive and count). Each wait stops past KR_CAL_MAX steps, so a timer that
- * does not tick ends it too, with a figure the caller rejects. */
-static uint32_t kr_calibrate(void)
+/* The work steps until the tick count changes, in chunks of KR_CAL_CHUNK;
+ * stops past KR_CAL_MAX, so a timer that does not tick ends it too, with a
+ * figure the caller rejects. */
+static uint32_t kr_tick_steps(void)
 {
     uint32_t steps = 0;
-    preempt_disable();
-    uint64_t t0 = timer_ticks();
-    while (timer_ticks() == t0 && steps <= KR_CAL_MAX) {   /* to the next edge */
+    uint64_t t = timer_ticks();
+    while (timer_ticks() == t && steps <= KR_CAL_MAX) {
         ua_work(KR_CAL_CHUNK);
         steps += KR_CAL_CHUNK;
     }
-    uint64_t t1 = timer_ticks();
-    steps = 0;
-    while (timer_ticks() == t1 && steps <= KR_CAL_MAX) {   /* one whole tick */
-        ua_work(KR_CAL_CHUNK);
-        steps += KR_CAL_CHUNK;
+    return steps;
+}
+
+/* Preemption off (timer interrupts still arrive and count): to the next
+ * tick edge, then one warm-up tick (discarded), then KR_CAL_TICKS whole
+ * ticks; returns the most steps of those. */
+static uint32_t kr_calibrate(uint32_t *warmup, uint32_t tick[KR_CAL_TICKS])
+{
+    uint32_t most = 0;
+    preempt_disable();
+    (void)kr_tick_steps();                                  /* to the next edge */
+    *warmup = kr_tick_steps();
+    for (uint32_t i = 0; i < KR_CAL_TICKS; i++) {
+        tick[i] = kr_tick_steps();
+        if (tick[i] > most)
+            most = tick[i];
     }
     preempt_enable();
-    return steps;
+    return most;
 }
 
 bool usertest_killrace(bool seeded, uint32_t seed)
@@ -1924,7 +1937,12 @@ bool usertest_killrace(bool seeded, uint32_t seed)
     uint32_t not_ring3 = 0, rng = seed, bound = 0;
     uint64_t jitter_sum = 0;
     if (seeded) {
-        uint32_t steps = kr_calibrate();
+        uint32_t warmup, tick[KR_CAL_TICKS];
+        uint32_t steps = kr_calibrate(&warmup, tick);
+        _Static_assert(KR_CAL_TICKS == 4, "the calibration line prints 4 ticks");
+        klogf("%s: calibration ticks: warm-up %u steps (discarded), then %u %u %u %u steps\n", t,
+              (unsigned)warmup, (unsigned)tick[0], (unsigned)tick[1], (unsigned)tick[2],
+              (unsigned)tick[3]);
         if (steps < KR_CAL_MIN || steps > KR_CAL_MAX) {
             klogf("%s: calibration: %u work steps per tick, outside %u to %u: MISMATCH\n", t,
                   (unsigned)steps, (unsigned)KR_CAL_MIN, (unsigned)KR_CAL_MAX);
@@ -1932,8 +1950,9 @@ bool usertest_killrace(bool seeded, uint32_t seed)
             return false;
         }
         bound = steps;
-        klogf("%s: calibration: %u work steps per tick (one whole tick, edge to edge); "
-              "bound %u steps\n", t, (unsigned)steps, (unsigned)bound);
+        klogf("%s: calibration: %u work steps per tick (the most of %u whole ticks after a "
+              "warm-up tick); bound %u steps\n", t, (unsigned)steps, (unsigned)KR_CAL_TICKS,
+              (unsigned)bound);
         klogf("%s: seed %u: 0 to %u extra work steps before each kill of modes 1-7\n", t,
               (unsigned)seed, (unsigned)bound);
     }
