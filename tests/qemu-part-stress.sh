@@ -200,26 +200,29 @@ echo "== [stress] The VFS lock: test=klock, 30 boots (1.0 stage 3, plan C2)"
 # Each boot is part 2's test=klock boot (tests/qemu-lib.sh klock_boot: -m
 # 64M, keys typed during the test at a 50 ms gap and a 20 ms hold). One
 # check per boot: all nine result lines OK (the same regexes as part 2's
-# checks 1-9), the PASS line and the exact echo of the keys (check 10).
+# checks 1-9, with check 6's ticket bound recomputed), the PASS line and
+# the exact echo of the keys (check 10).
 # KLOCK lines report each boot's figures; KLOCK_SPREAD the lowest and
 # highest of each over the 30 boots (report only: the checks decide).
 spread() { sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{ printf "%s-%s", $1, $2 }'; }
-KL_ITERS="" KL_HOLD="" KL_TURN="" KL_WAIT0="" KL_SECS=""
+KL_ITERS="" KL_HOLD="" KL_TURN="" KL_WAIT0="" KL_SECS="" KL_TMIN="" KL_TMAX=""
 for b in $(seq -w 1 30); do
     LOG=$OUT/serial-klockstress-$b.log
     out=$(klock_boot "$LOG")
     echo "$out"
     secs=$(sed -nE 's/^BOOT_SECONDS [^ ]+ ([0-9.]+)$/\1/p' <<< "$out")
-    read -r it ho tu w0 <<< "$(klock_figures "$LOG")"
-    echo "      KLOCK boot=$b iterations=${it:-none} hold=${ho:-none} turn=${tu:-none} wait0=${w0:-none} seconds=${secs:-none}"
+    read -r it ho tu w0 tmin tmax <<< "$(klock_figures "$LOG")"
+    echo "      KLOCK boot=$b iterations=${it:-none} hold=${ho:-none} turn=${tu:-none} wait0=${w0:-none} takes_per_thread=${tmin:-none}-${tmax:-none} seconds=${secs:-none}"
     KL_ITERS+="${it:-0}"$'\n' KL_HOLD+="${ho:-0}"$'\n' KL_TURN+="${tu:-0}"$'\n'
     KL_WAIT0+="${w0:-0}"$'\n' KL_SECS+="${secs:-0}"$'\n'
+    KL_TMIN+="${tmin:-0}"$'\n' KL_TMAX+="${tmax:-0}"$'\n'
     bad=""
     for re in "$KLOCK_RE_CONTENTION" "$KLOCK_RE_COUNTER" "$KLOCK_RE_RECORDS" "$KLOCK_RE_HOLD" \
               "$KLOCK_RE_TURN" "$KLOCK_RE_THREAD0" "$KLOCK_RE_SELFCHECK" "$KLOCK_RE_PREEMPT" \
               "$KLOCK_RE_RETURNED" "^Filesystem lock test: PASS \("; do
         grep -qE -- "$re" "$LOG" || bad+=" /$re/"
     done
+    klock_bound_ok "$LOG" || bad+=" (thread 0's wait past the ticket bound recomputed from its line)"
     klock_keys_ok "$LOG" || bad+=" (keys: echo not exact, a dropped key, no done line, no System ready, or a panic)"
     if [ -z "$bad" ]; then
         pass "[stress] klock $b: every result line OK, PASS, the keys' echo exact"
@@ -228,4 +231,4 @@ for b in $(seq -w 1 30); do
         grep -E "^Filesystem lock test: " "$LOG" | sed 's/^/      /'
     fi
 done
-echo "KLOCK_SPREAD boots=30 iterations=$(printf '%s' "$KL_ITERS" | spread) hold=$(printf '%s' "$KL_HOLD" | spread) turn=$(printf '%s' "$KL_TURN" | spread) turn_max=$(printf '%s' "$KL_TURN" | sort -n | tail -n 1) wait0=$(printf '%s' "$KL_WAIT0" | spread) seconds=$(printf '%s' "$KL_SECS" | spread)"
+echo "KLOCK_SPREAD boots=30 iterations=$(printf '%s' "$KL_ITERS" | spread) hold=$(printf '%s' "$KL_HOLD" | spread) turn=$(printf '%s' "$KL_TURN" | spread) turn_max=$(printf '%s' "$KL_TURN" | sort -n | tail -n 1) wait0=$(printf '%s' "$KL_WAIT0" | spread) takes_per_thread_min=$(printf '%s' "$KL_TMIN" | sort -n | head -n 1) takes_per_thread_max=$(printf '%s' "$KL_TMAX" | sort -n | tail -n 1) seconds=$(printf '%s' "$KL_SECS" | spread)"

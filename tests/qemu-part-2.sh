@@ -921,18 +921,24 @@ fsfill_test 64M
 echo "== [1.0] test=klock: 6 threads and thread 0 contend for the VFS lock for 3000 ticks (-m 64M, keys typed meanwhile)"
 # Deviations (approved): C2's 4 processes are kernel threads (no filesystem
 # system call before stage 4); the longest turn is at most 6 ticks (B2,
-# policy (b)), not C2's 5. The helpers and regexes are in tests/qemu-lib.sh.
+# policy (b)), not C2's 5; the stage 3 fix (a FIFO ticket lock) bounds
+# thread 0's wait by the tickets ahead x (longest hold + 1) + 1 ticks, not
+# B2's "one chunk per try". The helpers and regexes are in tests/qemu-lib.sh.
 LOG=$OUT/serial-klock.log
 klock_boot "$LOG"
 grep -E "^Filesystem lock test: (thread [0-9]+ '|longest|figures)" "$LOG" | sed 's/^/      /'
 expect "$LOG" "$KLOCK_RE_CONTENTION" \
-    "[1.0] klock: 6 threads and thread 0 contended for 3000 ticks; every thread took the lock, each at least once after waiting"
+    "[1.0] klock: 6 threads and thread 0 contended for 3000 ticks; every thread took the lock, each at least once after waiting, each at least 25% of the mean takes per thread, and every worker at least once while thread 0's loop ran (FIFO fairness)"
 expect "$LOG" "$KLOCK_RE_COUNTER" "[1.0] klock: no lost update: the file's counter equals the increments made"
 expect "$LOG" "$KLOCK_RE_RECORDS" \
     "[1.0] klock: no torn record: every 4096-byte record read (across a page boundary) was one writer's whole record"
 expect "$LOG" "$KLOCK_RE_HOLD" "[1.0] klock: longest hold at most 2 ticks"
 expect "$LOG" "$KLOCK_RE_TURN" "[1.0] klock: longest turn at most 6 ticks, its owner named (policy (b))"
-expect "$LOG" "$KLOCK_RE_THREAD0" "[1.0] klock: thread 0's longest wait reported; thread 0 waited only by yielding"
+if grep -qE "$KLOCK_RE_THREAD0" "$LOG" && klock_bound_ok "$LOG"; then
+    pass "[1.0] klock: thread 0's longest wait within the ticket bound (tickets ahead x (longest hold + 1) + 1 ticks); thread 0 waited only by yielding"
+else
+    fail "[1.0] klock: thread 0's line missing or not OK, or its wait past the bound recomputed from it, in $LOG"
+fi
 if grep -qE "$KLOCK_RE_SELFCHECK" "$LOG" && ! grep -q "PANIC" "$LOG"; then
     pass "[1.0] klock: the thread-0 self-check never fired; no panic"
 else

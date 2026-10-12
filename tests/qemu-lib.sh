@@ -180,12 +180,12 @@ klock_boot() {
 
 # The result lines of test=klock (kernel/fs/fstest.c), one regex each, in
 # the order of the checks in part 2 (1-9; 10 is the keys).
-KLOCK_RE_CONTENTION="^Filesystem lock test: contention: 7 of 7 threads took the lock, each at least once after waiting; [0-9]+ takes, [0-9]+ after waiting: OK$"
+KLOCK_RE_CONTENTION="^Filesystem lock test: contention: 7 of 7 threads took the lock, each at least once after waiting; takes per thread [0-9]+-[0-9]+ \(mean [0-9]+, each at least 25% of it\); every worker took it while thread 0's loop ran \(fewest [1-9][0-9]*\); [0-9]+ takes, [0-9]+ after waiting: OK$"
 KLOCK_RE_COUNTER="^Filesystem lock test: counter: ([1-9][0-9]*) increments made, the file holds \1: OK$"
 KLOCK_RE_RECORDS="^Filesystem lock test: records: [1-9][0-9]* written, [1-9][0-9]* read across a page boundary \(4096 bytes at 2048\), 0 torn: OK$"
 KLOCK_RE_HOLD="^Filesystem lock test: longest hold: [0-2] ticks \(at most 2\): OK$"
 KLOCK_RE_TURN="^Filesystem lock test: longest turn: [0-6] ticks \(at most 6\), taken by (thread [0-9]+ 'klock[0-5]' \(kernel thread\): [0-6] ticks|no thread \(no turn of 1 tick or more\)): OK$"
-KLOCK_RE_THREAD0="^Filesystem lock test: thread 0: longest wait [0-9]+ ticks; [1-9][0-9]* wait steps, all by yielding: OK$"
+KLOCK_RE_THREAD0="^Filesystem lock test: thread 0: longest wait [0-9]+ ticks, bound [0-9]+ \(at most [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1\) \+ 1\); [1-9][0-9]* wait steps, all by yielding: OK$"
 KLOCK_RE_SELFCHECK="^Filesystem lock test: thread-0 self-check: never fired; checked at each of thread 0's [1-9][0-9]* wait steps: OK$"
 KLOCK_RE_PREEMPT="^Filesystem lock test: preemption count: highest at a release 0, now 0 \(0 expected\): OK$"
 KLOCK_RE_RETURNED="^Filesystem lock test: threads ([0-9]+) -> \1, stack slots ([0-9]+) -> \2, heap in use ([0-9]+) -> \3 bytes, the lock free, 0 errors: OK$"
@@ -202,7 +202,17 @@ klock_keys_ok() {
         [ "$(awk '/^key:/ { next } on { print; exit } $0 == "madire> echo klock-keys-ok" { on = 1 }' "$log")" = "klock-keys-ok" ]
 }
 
-# klock_figures <log>: "iterations hold turn wait0" from the figures line.
+# klock_figures <log>: "iterations hold turn wait0 takes_min takes_max" from
+# the figures line.
 klock_figures() {
-    sed -nE 's/^Filesystem lock test: figures: iterations ([0-9]+), longest hold ([0-9]+), longest turn ([0-9]+), thread 0 longest wait ([0-9]+)$/\1 \2 \3 \4/p' "$1" | head -n 1
+    sed -nE 's/^Filesystem lock test: figures: iterations ([0-9]+), longest hold ([0-9]+), longest turn ([0-9]+), thread 0 longest wait ([0-9]+), takes per thread ([0-9]+)-([0-9]+)$/\1 \2 \3 \4 \5 \6/p' "$1" | head -n 1
+}
+
+# klock_bound_ok <log>: the stage 3 fix's bound, recomputed from thread 0's
+# line: the bound is (tickets ahead) x (longest hold + 1) + 1 and the
+# longest wait is at most it.
+klock_bound_ok() {
+    local w b a h
+    read -r w b a h <<< "$(sed -nE 's/^Filesystem lock test: thread 0: longest wait ([0-9]+) ticks, bound ([0-9]+) \(at most ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1\) \+ 1\);.*/\1 \2 \3 \4/p' "$1" | head -n 1)"
+    [ -n "${h:-}" ] && [ "$b" -eq $((a * (h + 1) + 1)) ] && [ "$w" -le "$b" ]
 }

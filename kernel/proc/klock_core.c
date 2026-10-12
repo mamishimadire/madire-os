@@ -1,4 +1,4 @@
-/* The kernel lock, the pure part (see klock_core.h). */
+/* The kernel lock, the pure part: a FIFO ticket lock (see klock_core.h). */
 #include "kernel/proc/klock_core.h"
 
 static bool valid_tid(int32_t tid)
@@ -9,20 +9,48 @@ static bool valid_tid(int32_t tid)
 void klock_core_init(struct klock *l)
 {
     l->owner = KLOCK_FREE;
+    l->next = l->serving = 0;
+    for (uint32_t i = 0; i < KLOCK_TICKETS; i++)
+        l->ticket_tid[i] = KLOCK_FREE;
     l->since = 0;
     l->takes = l->contended = l->yields = l->yields0 = 0;
     l->hold_longest = l->wait_longest = l->wait_longest0 = 0;
+    l->ahead_max0 = 0;
     l->release_pc_max = 0;
 }
 
-enum klock_result klock_core_try(struct klock *l, int32_t tid, uint64_t now, uint64_t first_try,
-                                 uint32_t yields)
+uint32_t klock_core_ahead(const struct klock *l, uint32_t ticket)
+{
+    return ticket - l->serving;
+}
+
+enum klock_result klock_core_ticket(struct klock *l, int32_t tid, uint32_t *ticket)
 {
     if (!valid_tid(tid))
         return KLOCK_ERR_BAD_TID;
     if (l->owner == tid)
         return KLOCK_ERR_RECURSIVE;
-    if (l->owner != KLOCK_FREE)
+    if (l->next - l->serving >= KLOCK_TICKETS)
+        return KLOCK_ERR_FULL;
+    uint32_t t = l->next++;
+    l->ticket_tid[t % KLOCK_TICKETS] = tid;
+    uint32_t ahead = klock_core_ahead(l, t);
+    if (tid == 0 && ahead > l->ahead_max0)
+        l->ahead_max0 = ahead;
+    *ticket = t;
+    return KLOCK_QUEUED;
+}
+
+enum klock_result klock_core_try(struct klock *l, int32_t tid, uint32_t ticket, uint64_t now,
+                                 uint64_t first_try, uint32_t yields)
+{
+    if (!valid_tid(tid))
+        return KLOCK_ERR_BAD_TID;
+    if (l->owner == tid)
+        return KLOCK_ERR_RECURSIVE;
+    if (l->ticket_tid[ticket % KLOCK_TICKETS] != tid || klock_core_ahead(l, ticket) >= KLOCK_TICKETS)
+        return KLOCK_ERR_NOT_TICKET;
+    if (l->serving != ticket || l->owner != KLOCK_FREE)
         return KLOCK_BUSY;
     l->owner = tid;
     l->since = now;
@@ -48,6 +76,8 @@ enum klock_result klock_core_release(struct klock *l, int32_t tid, uint64_t now,
         l->hold_longest = held;
     if (pc > l->release_pc_max)
         l->release_pc_max = pc;
+    l->ticket_tid[l->serving % KLOCK_TICKETS] = KLOCK_FREE;
+    l->serving++;
     l->owner = KLOCK_FREE;
     return KLOCK_RELEASED;
 }
@@ -59,15 +89,30 @@ void klock_core_waited(struct klock *l, int32_t tid)
         l->yields0++;
 }
 
+int32_t klock_core_ahead_bad(const struct klock *l, uint32_t ticket,
+                             enum sched_state (*state)(int32_t tid), enum sched_state *bad_state)
+{
+    uint32_t n = 0;
+    for (uint32_t t = l->serving; t != ticket && n < KLOCK_TICKETS; t++, n++) {
+        int32_t tid = l->ticket_tid[t % KLOCK_TICKETS];
+        enum sched_state s = valid_tid(tid) ? state(tid) : SCHED_FREE;
+        if (!klock_core_owner_ok(s)) {
+            *bad_state = s;
+            return valid_tid(tid) ? tid : KLOCK_FREE - 1;
+        }
+    }
+    return KLOCK_FREE;
+}
+
 enum klock_wait klock_core_wait_method(int32_t tid)
 {
     (void)tid;                          /* no sleep queue in 1.0: everyone yields */
     return KLOCK_WAIT_YIELD;
 }
 
-bool klock_core_owner_ok(enum sched_state owner_state)
+bool klock_core_owner_ok(enum sched_state state)
 {
-    return owner_state == SCHED_READY;
+    return state == SCHED_READY;
 }
 
 bool klock_core_held_by(const struct klock *l, int32_t tid)
@@ -78,12 +123,15 @@ bool klock_core_held_by(const struct klock *l, int32_t tid)
 const char *klock_result_str(enum klock_result r)
 {
     switch (r) {
-    case KLOCK_TAKEN:         return "taken";
-    case KLOCK_BUSY:          return "busy";
-    case KLOCK_RELEASED:      return "released";
-    case KLOCK_ERR_RECURSIVE: return "taken twice by the same thread";
-    case KLOCK_ERR_NOT_OWNER: return "released by a thread that does not hold it";
-    case KLOCK_ERR_BAD_TID:   return "not a thread id";
+    case KLOCK_TAKEN:          return "taken";
+    case KLOCK_BUSY:           return "busy";
+    case KLOCK_QUEUED:         return "queued";
+    case KLOCK_RELEASED:       return "released";
+    case KLOCK_ERR_RECURSIVE:  return "taken twice by the same thread";
+    case KLOCK_ERR_NOT_OWNER:  return "released by a thread that does not hold it";
+    case KLOCK_ERR_BAD_TID:    return "not a thread id";
+    case KLOCK_ERR_FULL:       return "more tickets out than threads";
+    case KLOCK_ERR_NOT_TICKET: return "a try with a ticket that is not the caller's";
     }
     return "?";
 }

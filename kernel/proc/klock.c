@@ -35,25 +35,34 @@ uint32_t klock_acquire(struct klock *l)
     if (pc || !irq_enabled())
         panicf("klock_acquire: thread %d '%s' with preemption disabled (count %u)\n or "
                "interrupts off: a klock is taken outermost.", (int)me, thread_name(me), pc);
+    uint32_t ticket = 0;
+    preempt_disable();
     uint64_t first = timer_ticks();
+    enum klock_result r = klock_core_ticket(l, me, &ticket);
+    preempt_enable();
+    if (r != KLOCK_QUEUED)
+        panicf("klock_acquire: thread %d '%s': %s.", (int)me, thread_name(me),
+               klock_result_str(r));
     uint32_t yields = 0;
     for (;;) {
+        enum sched_state bs = SCHED_READY;
+        int32_t bad = KLOCK_FREE;
         preempt_disable();
-        enum klock_result r = klock_core_try(l, me, timer_ticks(), first, yields);
-        int32_t owner = l->owner;
-        enum sched_state os = thread_state(owner);
-        if (r == KLOCK_BUSY)
+        r = klock_core_try(l, me, ticket, timer_ticks(), first, yields);
+        if (r == KLOCK_BUSY) {
+            bad = klock_core_ahead_bad(l, ticket, thread_state, &bs);
             klock_core_waited(l, me);
+        }
         preempt_enable();
         if (r == KLOCK_TAKEN)
             return yields;
         if (r != KLOCK_BUSY)
             panicf("klock_acquire: thread %d '%s': %s.", (int)me, thread_name(me),
                    klock_result_str(r));
-        if (!klock_core_owner_ok(os))
-            panicf("klock_acquire: thread %d '%s' waits for thread %d '%s',\n which holds the "
-                   "lock and is %s: it can never release it.", (int)me, thread_name(me),
-                   (int)owner, thread_name(owner), state_str(os));
+        if (bad != KLOCK_FREE)          /* an abandoned turn: the wait would never end */
+            panicf("klock_acquire: thread %d '%s' waits behind thread %d '%s',\n which holds "
+                   "the lock or a ticket ahead and is %s: it can never take its turn.", (int)me,
+                   thread_name(me), (int)bad, thread_name(bad), state_str(bs));
         if (klock_core_wait_method(me) != KLOCK_WAIT_YIELD)
             panic(me == 0 ? "klock_acquire: a blocking wait was requested by thread 0 (the "
                             "console): thread 0 never blocks."
