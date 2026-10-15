@@ -11,6 +11,8 @@
  * a refused write logs nothing.
  * 1.0 stage 4: read (0), close (3), dup (32), dup2 (33), and write
  * through the descriptor table (kernel/proc/fd.h).
+ * 1.0 stage 5: open (2), stat (4), fstat (5), lstat (6), lseek (8),
+ * ftruncate (77), openat (257), newfstatat (262) (kernel/fs/fsys.h).
  */
 
 #include <stdbool.h>

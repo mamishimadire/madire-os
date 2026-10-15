@@ -219,15 +219,17 @@ fi
 
 # ---- 1.0 stage 1 (D1): a kernel past 2 MiB boots; the ISO holds the real kernel ----
 
-echo "== [1.0] The padded test kernel (make padkernel: KERNEL_PAD=1M in build/pad), under QEMU -kernel"
+echo "== [1.0] The padded test kernel (make padkernel: KERNEL_PAD=2M in build/pad), under QEMU -kernel"
 # The same boot twice (-m 64M -kernel, no module), with the kernel under test
 # and with the padded one. tests/pagetables.py recomputes each boot's page
 # tables from its log (the kernel's end, the reserve: lines, the window and
 # the kernel-stack tables) and compares them with the logged count. Under
-# -kernel, QEMU puts the command line right after the kernel, so the padded
-# boot also needs a second page table in the physical view: its total is
-# the normal one + 2, of which the kernel slot +1 (through Limine, whose
-# boot data stays in the low 1 MiB, it is +1). The logs stay outside
+# -kernel, QEMU puts the command line right after the kernel. 1.0 stage 5:
+# the kernel itself ends past 2 MiB, so the normal boot has 14 tables (12
+# below 2 MiB: the kernel slot +1, and the physical view +1 for the command
+# line in 2-4 MiB), and the pad is 2 MiB so that the padded kernel crosses
+# the next boundary, 4 MiB: the kernel slot +1 again (the view keeps two
+# tables: 0-2 and 4-6 MiB), a total of 15. The logs stay outside
 # serial-*.log (part final's every-boot checks keep their boots).
 PADK=$OUT/pad/madire.kernel
 PADLOGS=$OUT/pad-logs
@@ -246,9 +248,9 @@ sed 's/^/      /' <<< "$PTN"
 sed 's/^/      /' <<< "$PTP"
 LOG=$PADLOGS/padded.log
 PEND=$(sed -nE 's/^Kernel: text .* end 0x([0-9a-f]+)$/\1/p' "$LOG" | head -n 1)
-if [ -n "$PEND" ] && [ $((0x$PEND)) -gt $((0x200000)) ] && grep -q "^Paging walk-check: PASS" "$LOG" &&
+if [ -n "$PEND" ] && [ $((0x$PEND)) -gt $((0x400000)) ] && grep -q "^Paging walk-check: PASS" "$LOG" &&
    grep -q "^Filesystem self-test: PASS$" "$LOG" && grep -qxF "$READY" "$LOG" && ! grep -q "PANIC" "$LOG"; then
-    pass "[1.0] padded test kernel: its image ends at 0x$PEND, past 2 MiB; walk-check PASS, filesystem self-test PASS, System ready, no panic"
+    pass "[1.0] padded test kernel: its image ends at 0x$PEND, past 4 MiB; walk-check PASS, filesystem self-test PASS, System ready, no panic"
 else
     fail "[1.0] padded test kernel: end 0x${PEND:-?}, or no walk-check PASS, filesystem PASS or System ready, or a panic, in $LOG"
 fi
@@ -256,12 +258,13 @@ ptr() { sed -nE "s/^PAGETABLES_RESULT label=[a-z]+ computed=([0-9]+) logged=([0-
 NC=$(ptr 1 "$PTN"); NL=$(ptr 2 "$PTN"); NK=$(ptr 3 "$PTN")
 PC=$(ptr 1 "$PTP"); PL=$(ptr 2 "$PTP"); PK=$(ptr 3 "$PTP")
 # The anchor: 12 page tables in a -kernel boot below 2 MiB (logged in runs
-# 38291205719's -kernel boots, end 0x1e0000, and recomputed from them).
-if [ "${NC:-x}" = 12 ] && [ "${NL:-y}" = 12 ] && [ -n "$PC" ] && [ "$PC" = "${PL:-}" ] &&
+# 38291205719's -kernel boots, end 0x1e0000, and recomputed from them);
+# 14 since 1.0 stage 5, when the kernel crossed 2 MiB (see above).
+if [ "${NC:-x}" = 14 ] && [ "${NL:-y}" = 14 ] && [ -n "$PC" ] && [ "$PC" = "${PL:-}" ] &&
    [ -n "$NK" ] && [ "${PK:-x}" = "$((NK + 1))" ]; then
-    pass "[1.0] page tables recomputed from the log: normal boot $NC = logged $NL (the known 12); padded boot $PC = logged $PL; the kernel slot $NK -> $PK (+1)"
+    pass "[1.0] page tables recomputed from the log: normal boot $NC = logged $NL (the known 14); padded boot $PC = logged $PL; the kernel slot $NK -> $PK (+1)"
 else
-    fail "[1.0] page tables from the log: normal computed ${NC:-?} logged ${NL:-?} (12 expected), padded computed ${PC:-?} logged ${PL:-?}, kernel slot ${NK:-?} -> ${PK:-?}"
+    fail "[1.0] page tables from the log: normal computed ${NC:-?} logged ${NL:-?} (14 expected), padded computed ${PC:-?} logged ${PL:-?}, kernel slot ${NK:-?} -> ${PK:-?}"
 fi
 rm -f "$OUT/iso-kernel.bin"
 xorriso -osirrox on -indev "$ISO" -extract /boot/madire.kernel "$OUT/iso-kernel.bin" >/dev/null 2>&1

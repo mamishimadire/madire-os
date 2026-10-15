@@ -52,8 +52,9 @@ enum ofile_kind {
     OFILE_FILE,
 };
 
-#define OF_READ  1u
-#define OF_WRITE 2u
+#define OF_READ   1u
+#define OF_WRITE  2u
+#define OF_APPEND 4u                    /* 1.0 stage 5: O_APPEND (writes at the end) */
 
 struct ofile {
     uint8_t kind;                       /* enum ofile_kind */
@@ -75,6 +76,7 @@ struct ofile_table {
 
 struct fd_table {
     uint16_t fd[FD_MAX];                /* an index into the ofile table, or FD_NONE */
+    uint16_t cloexec;                   /* 1.0 stage 5: bit n = descriptor n's close-on-exec */
 };
 
 /* errno values (Linux x86-64), returned as -errno */
@@ -132,6 +134,15 @@ int fd_dup2(struct fd_table *d, struct ofile_table *t, uint64_t oldfd, uint64_t 
  * FD_MAX). Returns the number of descriptors closed. */
 uint32_t fd_close_all(struct fd_table *d, struct ofile_table *t, void *nodes[FD_MAX],
                       uint32_t *nnodes);
+
+/*
+ * 1.0 stage 5: close-on-exec, kept per descriptor as on Linux (O_CLOEXEC;
+ * nothing reads it until exec exists): set by open, cleared by close, and
+ * clear on the new descriptor of dup and dup2. A descriptor that is not
+ * open never has it. fd_set_cloexec: false if fd is not open.
+ */
+bool fd_set_cloexec(struct fd_table *d, uint64_t fd, bool on);
+bool fd_cloexec(const struct fd_table *d, uint64_t fd);
 
 /* The bytes one read or write call handles: count clamped to FD_RW_MAX. */
 uint64_t fd_rw_count(uint64_t count);

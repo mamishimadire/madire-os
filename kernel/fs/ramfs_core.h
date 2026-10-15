@@ -105,6 +105,23 @@ int64_t ramfs_write(struct ramfs *fs, struct vnode *file, uint64_t off, const vo
 int64_t ramfs_read(struct ramfs *fs, struct vnode *file, uint64_t off, void *buf, uint64_t len);
 int ramfs_truncate(struct ramfs *fs, struct vnode *file, uint64_t length);
 
+/*
+ * 1.0 stage 5 (K7 (b)): ramfs_truncate in steps, so that a caller can
+ * release the VFS lock between them. The first call sets the size to
+ * length (zeroing the rest of a last partial page, as ramfs_truncate);
+ * each call then gives back at most max_pages pages lying wholly past the
+ * new end (1 to RAMFS_TRUNC_STEP_MAX, the index page included: it goes
+ * with the last data page, or alone in the next step when that step is
+ * full). Returns 1 while such pages are left, 0 when none is, or
+ * -FS_EISDIR / -FS_EFBIG with nothing changed. Called until it returns 0,
+ * it leaves exactly what ramfs_truncate leaves. Between two steps the
+ * file reads as its new size; the pages still to give back count against
+ * the budget until they are given back.
+ */
+#define RAMFS_TRUNC_STEP_MAX 64u
+int ramfs_truncate_step(struct ramfs *fs, struct vnode *file, uint64_t length,
+                        uint32_t max_pages);
+
 /* A file's pages now, its index page included (0 for a folder). */
 uint32_t ramfs_file_pages(const struct vnode *file);
 

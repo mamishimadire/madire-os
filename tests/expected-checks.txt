@@ -26,6 +26,8 @@
 # contention (part 2); 1 unit suite (klock). Stage 4: 32 more: file
 # descriptors: the boot line, test=fdsys (17, and 1 with SMEP and SMAP)
 # and test=fdkill (11) in part 2, test=selfcheckcopylock (2) in part 4;
-# 2 unit suites (fdtable, usercopy_out).
-1.0 75
-unit-suites 62
+# 2 unit suites (fdtable, usercopy_out). Stage 5: 44 more: the file system
+# calls: the boot clock line, test=fileio (22), test=bigio (13) and
+# test=filecontend (8) in part 2; 1 unit suite (syscall_fs).
+1.0 119
+unit-suites 63

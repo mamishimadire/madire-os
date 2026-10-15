@@ -34,4 +34,11 @@ uint32_t vfs_boot_free_pages(void);
  * one chunk of at most 4096 bytes, one folder's entries (plan B2). */
 struct klock *vfs_lock(void);
 
+/* Stage 5: file times are seconds since 1970 from the RTC read at boot,
+ * plus the uptime (no time zone). vfs_boot_epoch: that time at uptime 0
+ * (0 if the RTC could not be read: times are then seconds of uptime);
+ * vfs_now: the time now. */
+int64_t vfs_boot_epoch(void);
+int64_t vfs_now(void);
+
 #endif

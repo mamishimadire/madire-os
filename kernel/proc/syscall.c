@@ -4,6 +4,8 @@
 #include "kernel/arch/x86/irq.h"
 #include "kernel/kprintf.h"
 #include "kernel/console/console.h"
+#include "kernel/fs/fsys.h"
+#include "kernel/fs/fsys_core.h"
 #include "kernel/memory/usercopy.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
@@ -176,6 +178,28 @@ void syscall_dispatch(struct interrupt_frame *frame)
         break;
     case SC_DUP2:
         r = fd_sys_dup2(process_current_fds(), frame->rdi, frame->rsi);
+        break;
+    case SC_OPEN:                       /* 1.0 stage 5 (kernel/fs/fsys.c) */
+        r = fsys_sys_openat(FS_AT_FDCWD, frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_OPENAT:
+        r = fsys_sys_openat(frame->rdi, frame->rsi, frame->rdx, frame->r10);
+        break;
+    case SC_STAT:
+    case SC_LSTAT:                      /* no symbolic links: the same */
+        r = fsys_sys_fstatat(FS_AT_FDCWD, frame->rdi, frame->rsi, 0);
+        break;
+    case SC_NEWFSTATAT:
+        r = fsys_sys_fstatat(frame->rdi, frame->rsi, frame->rdx, frame->r10);
+        break;
+    case SC_FSTAT:
+        r = fsys_sys_fstat(frame->rdi, frame->rsi);
+        break;
+    case SC_LSEEK:
+        r = fsys_sys_lseek(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_FTRUNCATE:
+        r = fsys_sys_ftruncate(frame->rdi, frame->rsi);
         break;
     case SC_NANOSLEEP:
         r = sys_nanosleep(frame->rdi);

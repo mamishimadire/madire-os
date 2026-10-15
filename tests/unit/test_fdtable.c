@@ -230,6 +230,44 @@ static void test_busy_fifo(void)
     CHECK_EQ(ofile_busy_ahead(&t, f, ofile_busy_ticket(&t, f)), 0);
 }
 
+/* 1.0 stage 5: close-on-exec per descriptor (set, cleared by close, clear
+ * on dup's and dup2's new descriptor, never on a closed one), and
+ * OF_APPEND alongside the access bits. */
+static void test_cloexec_and_append(void)
+{
+    uint32_t f = 0;
+    void *node = 0;
+    console_table();
+    CHECK_EQ(d.cloexec, 0);
+    CHECK_EQ(ofile_alloc(&t, OFILE_FILE, OF_WRITE | OF_APPEND, &node_a, &f), 0);
+    CHECK_EQ(ofile_access(&t, f, OF_WRITE), 0);                 /* OF_APPEND does not hide it */
+    CHECK_EQ(ofile_access(&t, f, OF_READ), -9);
+    int fd = fd_install(&d, f);
+    CHECK_EQ(fd, 3);
+    CHECK(!fd_cloexec(&d, 3));
+    CHECK(fd_set_cloexec(&d, 3, true));
+    CHECK(fd_cloexec(&d, 3));
+    CHECK(!fd_cloexec(&d, 1));
+    CHECK(!fd_set_cloexec(&d, 9, true));                        /* not open */
+    CHECK(!fd_set_cloexec(&d, 16, true));
+    CHECK(!fd_cloexec(&d, (1ull << 32) + 3));
+    CHECK_EQ(fd_dup(&d, &t, 3), 4);
+    CHECK(!fd_cloexec(&d, 4));                                  /* dup: clear on the new fd */
+    CHECK(fd_cloexec(&d, 3));
+    CHECK(fd_set_cloexec(&d, 4, true));
+    CHECK_EQ(fd_dup2(&d, &t, 3, 4, &node), 4);                  /* newfd open: closed first */
+    CHECK(!fd_cloexec(&d, 4));                                  /* dup2: clear on newfd */
+    CHECK_EQ(fd_dup2(&d, &t, 3, 3, &node), 3);                  /* same fd: nothing done */
+    CHECK(fd_cloexec(&d, 3));
+    CHECK_EQ(fd_close(&d, &t, 3, &node), 0);
+    CHECK(!fd_cloexec(&d, 3));                                  /* close clears it */
+    CHECK_EQ(d.cloexec, 0);
+    CHECK_EQ(fd_close(&d, &t, 4, &node), 0);
+    CHECK(node == &node_a);                                     /* the last reference */
+    fd_table_init(&d);
+    CHECK_EQ(d.cloexec, 0);
+}
+
 int main(void)
 {
     RUN(test_write_check_moved);
@@ -242,5 +280,6 @@ int main(void)
     RUN(test_close_all);
     RUN(test_chunks);
     RUN(test_busy_fifo);
+    RUN(test_cloexec_and_append);
     return unit_report("fdtable");
 }

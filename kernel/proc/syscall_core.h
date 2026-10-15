@@ -22,7 +22,12 @@
  *                                     at most SYSCALL_WRITE_MAX bytes per call
  *                                     (a short count beyond); a file the full
  *                                     count
+ *   2    open(path, flags, mode)      1.0 stage 5 (kernel/fs/fsys.c): openat(AT_FDCWD, ...)
  *   3    close(fd)                    1.0 stage 4
+ *   4    stat(path, st)               1.0 stage 5
+ *   5    fstat(fd, st)                1.0 stage 5
+ *   6    lstat(path, st)              1.0 stage 5: as stat (no symbolic links)
+ *   8    lseek(fd, off, whence)       1.0 stage 5
  *   24   sched_yield()                0
  *   35   nanosleep(req, rem)          rounded up to whole timer ticks; rem is
  *                                     never written (nothing interrupts a
@@ -31,7 +36,10 @@
  *   33   dup2(oldfd, newfd)           1.0 stage 4
  *   39   getpid()                     the process ID
  *   60   exit(status)                 ends the process; status & 0xFF
+ *   77   ftruncate(fd, length)        1.0 stage 5
  *   231  exit_group(status)           the same (one thread per process)
+ *   257  openat(dirfd, path, flags, mode)        1.0 stage 5
+ *   262  newfstatat(dirfd, path, st, flags)      1.0 stage 5
  *
  * Every other number, compared as the full 64-bit RAX (so the x32 bit
  * 0x40000000, values of 2^32 and above, and -1 are all unknown), returns
@@ -53,6 +61,14 @@
 #define SYS_GETPID      39u
 #define SYS_EXIT        60u
 #define SYS_EXIT_GROUP  231u
+#define SYS_OPEN        2u              /* 1.0 stage 5 */
+#define SYS_STAT        4u
+#define SYS_FSTAT       5u
+#define SYS_LSTAT       6u
+#define SYS_LSEEK       8u
+#define SYS_FTRUNCATE   77u
+#define SYS_OPENAT      257u
+#define SYS_NEWFSTATAT  262u
 
 #define SYS_MADIRE_FIRST 0x10000000ull
 #define SYS_MADIRE_LAST  0x1000FFFFull
@@ -78,6 +94,14 @@ enum syscall_id {
     SC_CLOSE,
     SC_DUP,
     SC_DUP2,
+    SC_OPEN,                        /* 1.0 stage 5 */
+    SC_STAT,
+    SC_FSTAT,
+    SC_LSTAT,
+    SC_LSEEK,
+    SC_FTRUNCATE,
+    SC_OPENAT,
+    SC_NEWFSTATAT,
     SC_COUNT                        /* the number of ids */
 };
 

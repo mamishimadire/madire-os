@@ -23,6 +23,16 @@
  * The busy mark is held for a whole read or write on a file and released
  * before the call returns, so it is never held at a return to ring 3,
  * where a kill takes effect (always-on self-check: fd_busy_check).
+ *
+ * 1.0 stage 5: open, lseek, ftruncate and fstat's kernel side. A write
+ * (and a truncate) also holds its node's write mark for the whole call
+ * (fsys_core.h), so two writes to one file never interleave chunk by
+ * chunk; O_APPEND claims the end once, under the mark. Lock order: the
+ * open file's busy mark, the node's write mark, the VFS lock. A truncate
+ * gives pages back at most FSYS_TRUNC_STEP per hold of the VFS lock. A
+ * buffer that turns bad part-way: the bytes before its first bad page are
+ * moved and counted (an error only when there are none). The console
+ * keeps its own write path (kernel/proc/syscall.c), unchanged.
  */
 
 #include <stdbool.h>
@@ -70,6 +80,31 @@ int fd_resolve(const struct fd_table *d, uint64_t fd, uint8_t want, uint32_t *fi
 int64_t fd_file_read(uint32_t file, uint64_t buf, uint64_t count);
 int64_t fd_file_write(uint32_t file, uint64_t buf, uint64_t count);
 
+/* 1.0 stage 5. open: fd_open_begin checks for a free descriptor (-EMFILE)
+ * and takes an open file of `access` with no node yet (-ENFILE);
+ * fd_open_node gives it its node (the VFS lock held: the node is held);
+ * fd_open_finish installs it at the lowest free descriptor (with
+ * close-on-exec if asked) and returns that number; fd_open_abort gives it
+ * back (dropping its node if it had one). */
+int fd_open_begin(const struct fd_table *d, uint8_t access, uint32_t *file);
+void fd_open_node(uint32_t file, struct vnode *n);
+int fd_open_finish(struct fd_table *d, uint32_t file, bool cloexec);
+void fd_open_abort(uint32_t file);
+
+/* The open file of descriptor fd, with one reference taken for the call
+ * (fd_put gives it back): 0, or -EBADF. */
+int fd_get(const struct fd_table *d, uint64_t fd, uint32_t *file, uint8_t *kind,
+           uint8_t *access, struct vnode **node);
+void fd_put(uint32_t file);
+
+/* A file's new size, under its write mark, in steps (the caller holds the
+ * node): 0, -EISDIR (not a file) or -EFBIG. */
+int fd_node_truncate(struct vnode *n, uint64_t length);
+
+/* lseek on a file's open file, under its busy mark: the new offset or
+ * -EINVAL. */
+int64_t fd_file_lseek(uint32_t file, int64_t off, uint64_t whence);
+
 int64_t fd_sys_close(struct fd_table *d, uint64_t fd);
 int64_t fd_sys_dup(struct fd_table *d, uint64_t oldfd);
 int64_t fd_sys_dup2(struct fd_table *d, uint64_t oldfd, uint64_t newfd);
@@ -85,8 +120,39 @@ struct fd_figures {
     uint64_t chunks;                    /* file chunks moved under the VFS lock */
     uint64_t hold_longest;              /* ticks, the longest such hold */
     uint64_t busy_wait_longest;         /* ticks, the longest wait for a busy mark */
+    /* 1.0 stage 5: every hold of the chunk loop, the truncates and lseek */
+    uint64_t holds;
+    uint64_t holds_ticked;              /* of them, holds of 1 tick or more */
+    uint64_t holds_switched;            /* of them, holds during which another thread ran */
+    uint64_t trunc_holds, trunc_hold_longest;
+    uint64_t wmark_wait_longest;        /* ticks, the longest wait for a write mark */
 };
 void fd_figures(struct fd_figures *out);
+
+/* 1.0 stage 5: the figures from now on (chunks, holds, the longest hold
+ * and waits, and every thread's VFS-lock waits); a diagnostic's start. */
+void fd_figures_reset(void);
+
+/* Thread tid's VFS-lock takes after waiting, and its longest wait in
+ * ticks, through fd_vfs_acquire (the chunk loop, the truncates, lseek,
+ * the file system calls, node drops, and test=filecontend's thread 0). */
+void fd_thread_lock(int32_t tid, uint64_t *waited, uint64_t *longest);
+
+/* 1.0 stage 5: the VFS lock with its figures. fd_vfs_acquire takes it
+ * (the wait steps it needed); fd_vfs_release notes the tick and releases
+ * it. A take that waited is a hand-off: its gap is the ticks from the
+ * release that served its ticket (with the FIFO lock, the last release)
+ * to the take, the time the next owner took to be scheduled. Counted
+ * only while every user of the lock goes through these two. */
+uint32_t fd_vfs_acquire(void);
+void fd_vfs_release(void);
+struct fd_handoff {
+    uint64_t count;                     /* takes that waited */
+    uint64_t ticked;                    /* of them, gaps of 1 tick or more */
+    uint64_t longest;                   /* ticks */
+    int32_t longest_tid;                /* the thread that waited it, or -1 */
+};
+void fd_handoffs(struct fd_handoff *out);
 
 /* A copy of open file `file` (its kind, refs, offset, busy figures). */
 void fd_file_info(uint32_t file, struct ofile *out);

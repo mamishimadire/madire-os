@@ -79,7 +79,8 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/proc/elf_core.c kernel/proc/progmod_core.c \
                             kernel/proc/loadplan.c kernel/proc/diagwait_core.c \
                             kernel/fs/path_core.c kernel/fs/vfs_core.c kernel/fs/ramfs_core.c \
-                            kernel/proc/klock_core.c kernel/proc/fdtable_core.c)
+                            kernel/proc/klock_core.c kernel/proc/fdtable_core.c \
+                            kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
 .PHONY: all iso run test test-shard unit user elfcheck repro padkernel clean
@@ -246,7 +247,8 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
-# 1.0 stage 1 (D1): the padded test kernel (1 MiB of .bss more) in build/pad,
+# 1.0 stage 1 (D1): the padded test kernel (2 MiB of .bss more since stage 5:
+# the kernel itself is past 2 MiB, so the pad takes it past 4 MiB) in build/pad,
 # for the [1.0] checks in tests/qemu-part-4.sh. A failed build is reported
 # and leaves no kernel there, so those checks fail without stopping the run.
 PAD_BUILD := $(BUILD)/pad
@@ -254,7 +256,7 @@ padkernel:
 	@echo "KERNEL_PAD_REFUSAL (make -n KERNEL_PAD=1, the default BUILD; a dry run): $$($(MAKE) -n KERNEL_PAD=1 BUILD=build all 2>&1 | grep -m1 'KERNEL_PAD' || echo 'NOT REFUSED')"
 	@rm -rf $(PAD_BUILD)
 	@start=$$(date +%s); \
-	if $(MAKE) -s BUILD=$(PAD_BUILD) KERNEL_PAD=1M all > $(BUILD)/padkernel.log 2>&1; \
+	if $(MAKE) -s BUILD=$(PAD_BUILD) KERNEL_PAD=2M all > $(BUILD)/padkernel.log 2>&1; \
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 

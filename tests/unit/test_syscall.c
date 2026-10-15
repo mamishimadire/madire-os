@@ -12,6 +12,15 @@ static void test_implemented_numbers(void)
     CHECK_EQ(syscall_lookup(32), SC_DUP);
     CHECK_EQ(syscall_lookup(33), SC_DUP2);
     CHECK(strcmp(syscall_name(SC_DUP2), "dup2") == 0);
+    CHECK_EQ(syscall_lookup(2), SC_OPEN);                   /* 1.0 stage 5 */
+    CHECK_EQ(syscall_lookup(4), SC_STAT);
+    CHECK_EQ(syscall_lookup(5), SC_FSTAT);
+    CHECK_EQ(syscall_lookup(6), SC_LSTAT);
+    CHECK_EQ(syscall_lookup(8), SC_LSEEK);
+    CHECK_EQ(syscall_lookup(77), SC_FTRUNCATE);
+    CHECK_EQ(syscall_lookup(257), SC_OPENAT);
+    CHECK_EQ(syscall_lookup(262), SC_NEWFSTATAT);
+    CHECK(strcmp(syscall_name(SC_NEWFSTATAT), "newfstatat") == 0);
     CHECK_EQ(syscall_lookup(1), SC_WRITE);
     CHECK_EQ(syscall_lookup(24), SC_SCHED_YIELD);
     CHECK_EQ(syscall_lookup(35), SC_NANOSLEEP);
@@ -28,9 +37,12 @@ static void test_everything_else_is_unknown(void)
     for (uint64_t nr = 0; nr < 1024; nr++)
         if (syscall_lookup(nr) != SC_UNKNOWN)
             implemented++;
-    CHECK_EQ(implemented, 10);                      /* 6 until 1.0 stage 4: + 0, 3, 32, 33 */
+    CHECK_EQ(implemented, 18);                      /* 6 until 1.0 stage 4: + 0, 3, 32, 33;
+                                                     * 10 until stage 5: + 2, 4, 5, 6, 8, 77,
+                                                     * 257, 262 */
     static const uint64_t others[] = {
-        7, 2, 9, 23, 25, 34, 36, 38, 40, 57, 59, 62, 230, 232, 334, 335, 547,
+        /* 16 (ioctl, deferred) replaced 2 (open) in 1.0 stage 5 */
+        7, 16, 9, 23, 25, 34, 36, 38, 40, 57, 59, 62, 230, 232, 334, 335, 547,
         0x40000001ull,                  /* x32 ABI write */
         0x40000000ull + 60,             /* x32 ABI exit */
         (1ull << 32) + 1,               /* write's number with high bits set */

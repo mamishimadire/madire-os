@@ -35,6 +35,12 @@ struct vnode {
     uint32_t opens;                     /* open files and current folders on it */
     struct vnode *parent;               /* its folder; the root's is itself; NULL once removed */
     int64_t atime, mtime, ctime;        /* seconds */
+    /* 1.0 stage 5: the node write mark (fsys_core.h), held by a write or
+     * a truncate for its whole call; its figures. */
+    uint32_t wr_next, wr_serving;
+    int32_t wr_holder;                  /* thread id + 1, 0: free */
+    uint32_t wr_ahead_max;              /* most tickets ahead of a caller's (holder included) */
+    uint64_t wr_takes, wr_contended;
 };
 
 struct vfs_ops {

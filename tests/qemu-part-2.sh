@@ -1049,3 +1049,146 @@ else
     fail "[1.0] fdkill: no PASS or no System ready in $LOG"
 fi
 reject "$LOG" "PANIC"                                 "[1.0] fdkill: no crash screen, no panic"
+
+# ---- 1.0 stage 5: the file system calls (B1, B2, B5) ----
+# Deviations (approved): the plan's single-call 1 MiB and 2 MiB checks are
+# replaced by the largest single call a program can hold (61,440 bytes)
+# and files built in 32 KiB calls (item 2); test=fileio, test=bigio and
+# test=filecontend are added to B7's diagnostics; check 32's two O_APPEND
+# open files are opened by the kernel (stage 4's grant path) so that the
+# write mark is forced deterministically; check 40's bound includes the
+# hand-off gap (a design error found before coding: the klock wait
+# formula assumed every runnable thread uses the lock).
+
+echo "== [1.0] The filesystem's clock at boot"
+expect "$OUT/serial-boot.log" "^Filesystem: clock: the RTC read [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} at boot \(epoch [0-9]+, uptime [0-9]+ s\); file times are that plus uptime, no time zone$" \
+    "[1.0] boot: the filesystem's clock logged: the RTC date and time at boot (file times are that plus uptime, no time zone)"
+
+echo "== [1.0] test=fileio: open, stat, lseek, ftruncate, openat, newfstatat from fileio and fileerr (-m 32M)"
+LOG=$OUT/serial-fileio.log
+boot_until "$LOG" 240 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=fileio"
+grep -E "^File test: " "$LOG" | sed 's/^/      /'
+# fio_case <program> <arg> <regex after the status> <description>: the
+# program exited with status 0 (every result it checked was right) and the
+# kernel's own conditions after it held.
+fio_case() {
+    expect "$LOG" "^File test: $1 $2 \(.*\): process [0-9]+ exited, status 0 \(expected 0\)$3: OK$" "$4"
+}
+fio_case fileio 1 "" \
+    "[1.0] fileio: open with O_CREAT makes a file (mode 0644 stored) at the lowest free fd (3); write 100 bytes, close, reopen read-only, read back 100 bytes identical; read at the end returns 0"
+fio_case fileio 2 "" \
+    "[1.0] fileio: O_CREAT|O_EXCL on an existing name EEXIST, on a new name creates it; O_TRUNC empties a file (size 0, its pages freed), also with O_RDONLY (as Linux); O_CLOEXEC and unknown flag bits accepted"
+fio_case fileio 3 "" \
+    "[1.0] fileio: O_APPEND: a write after lseek(0) lands at the end of the file; the offset follows it"
+fio_case fileio 4 "" \
+    "[1.0] fileio: lseek SEEK_SET, SEEK_CUR and SEEK_END return the new offset; past the end allowed (the hole reads as zeros); a negative result, SEEK_DATA, SEEK_HOLE, other whence values and an overflow EINVAL with the offset unchanged; past 2 MiB allowed, a write there EFBIG"
+fio_case fileio 5 "; times between the boot time and now \(boot [0-9]+, mtime [0-9]+, ctime [0-9]+, now [0-9]+\)" \
+    "[1.0] fileio: stat, lstat, fstat and newfstatat agree on a file: S_IFREG|0644, size, 1 link, the same node number, blksize 4096, blocks = pages x 8, uid and gid 0; the 144-byte struct written exactly; mtime and ctime set by a write and by ftruncate, between the boot time and now"
+fio_case fileio 6 "" \
+    "[1.0] fileio: stat on folders: / (node 1) and /tmp: S_IFDIR with their modes (0755, 01777), links 2 + subfolders"
+fio_case fileio 7 "" \
+    "[1.0] fileio: ftruncate grows a file to 1 MiB taking no page (the hole reads as zeros), shrinks it freeing pages, to exactly 2 MiB OK; the offset unchanged"
+fio_case fileio 8 "" \
+    "[1.0] fileio: openat: a folder fd (O_DIRECTORY) as dirfd, AT_FDCWD (the root until stage 6) and an absolute path with a bad dirfd open the same node; newfstatat with AT_EMPTY_PATH and \"\" stats the dirfd itself; read on a folder fd EISDIR"
+fio_case fileio 9 "" \
+    "[1.0] fileio: the console descriptors: lseek ESPIPE on fds 0, 1 and 2; fstat shows a character device (S_IFCHR)"
+expect "$LOG" "^File test: fileio 10 \(EMFILE from open\): process [0-9]+ exited, status 0 \(expected 0\); open files while it held 13 files and the console: [0-9]+ \([0-9]+ before \+ 15\): the refused open took none: OK$" \
+    "[1.0] fileio: EMFILE from open: 13 opens fill fds 3-15, the next open EMFILE and takes no open file; after a close the next open gets that fd"
+fio_case fileerr 1 "" \
+    "[1.0] fileerr: open: EFAULT (NULL, unmapped and kernel paths), ENOENT (a missing file without O_CREAT, a missing folder on the way, the empty path), ENOTDIR (a file on the way, O_DIRECTORY on a file, a trailing '/' on a file), EEXIST (O_CREAT|O_EXCL on a file and on '/'), EISDIR (a folder for writing, O_TRUNC on a folder, O_CREAT on a folder, O_CREAT with a trailing '/'), ENAMETOOLONG (a 256-byte name, no NUL within 4096 bytes), EINVAL (access mode 3)"
+fio_case fileerr 2 "" \
+    "[1.0] fileerr: stat and lstat: EFAULT (a bad path; a stat buffer unmapped, read-only or in the kernel), ENOENT, ENOTDIR, ENAMETOOLONG, the empty path ENOENT"
+fio_case fileerr 3 "" \
+    "[1.0] fileerr: fstat: EBADF (closed, 16, -1, 2^32+3), EFAULT (a bad buffer)"
+fio_case fileerr 4 "" \
+    "[1.0] fileerr: openat and newfstatat with a dirfd: EBADF (not open, relative path), ENOTDIR (a file or the console as dirfd); newfstatat EINVAL for an unknown flag, \"\" without AT_EMPTY_PATH ENOENT, AT_SYMLINK_NOFOLLOW and AT_NO_AUTOMOUNT accepted"
+fio_case fileerr 5 "" \
+    "[1.0] fileerr: lseek: EBADF; ESPIPE on fds 0, 1 and 2; EINVAL for whence 3, 4, 5 and -1"
+fio_case fileerr 6 "" \
+    "[1.0] fileerr: ftruncate: EBADF; EINVAL on a read-only fd, a console fd, a folder fd and a negative length; EFBIG past 2 MiB"
+expect "$LOG" "^File test: errno matrix: nothing changed: nodes ([0-9]+) -> \1, data pages ([0-9]+) -> \2, open files ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes: OK$" \
+    "[1.0] fileerr: the errno matrix changed nothing: nodes, data pages, open files and heap bytes back to the start"
+expect "$LOG" "^File test: ENFILE: the open-file table filled to 256 \([0-9]+ taken by the kernel\); open refused twice \(also O_CREAT on a new name\), still 256, /tmp/fio-new not created; one freed, then the open succeeded at fd 3 \(fileio 11: process [0-9]+ exited, status 0, expected 0\); all given back \(([0-9]+) -> \1\): OK$" \
+    "[1.0] fileio: ENFILE: with the open-file table full (256), open returns ENFILE, also with O_CREAT on a new name, which is not created; no descriptor taken; after one open file is freed the same open succeeds at fd 3"
+expect "$LOG" "^File test: ENOSPC: 1024 nodes in use \(the limit 1024; [0-9]+ made by the kernel\); open with O_CREAT ENOSPC, /tmp/fio-x not created, nodes still 1024; no descriptor taken, an existing file opened at fd 3 \(fileio 12: process [0-9]+ exited, status 0, expected 0\): OK$" \
+    "[1.0] fileio: ENOSPC: with 1024 nodes in use, open with O_CREAT returns ENOSPC, nothing created, no descriptor or open file taken; an existing file still opens"
+expect "$LOG" "^File test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fileio: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^File test: PASS$"                    "[1.0] fileio: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] fileio: no crash screen, no panic"
+
+echo "== [1.0] test=bigio: large reads and writes through the chunk loop (-m 32M)"
+LOG=$OUT/serial-bigio.log
+boot_until "$LOG" 300 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=bigio"
+grep -E "^Big I/O test: " "$LOG" | sed 's/^/      /'
+bio_case() {
+    expect "$LOG" "^Big I/O test: bigio $1 \(.*\): process [0-9]+ exited, status 0 \(expected 0\)$2: OK$" "$3"
+}
+bio_case 1 "" \
+    "[1.0] bigio: the largest single call a program can hold: a 61,440-byte write returns 61,440 and a 61,440-byte read returns 61,440 (15 chunks each), bytes identical"
+bio_case 2 "" \
+    "[1.0] bigio: a 1 MiB file written in 32 writes of 32 KiB (each the full count) and read back in 32 reads of 32 KiB, 1,048,576 bytes identical; the next read returns 0"
+bio_case 3 "; the file holds 2097152 bytes in 513 pages" \
+    "[1.0] bigio: the 2 MiB file-size limit reached by 64 writes of 32 KiB, each returning the full count"
+bio_case 4 "" \
+    "[1.0] bigio: at 2 MiB one more byte EFBIG, the size unchanged"
+bio_case 5 "; then truncated to 0 in 9 holds of at most 64 pages, 0 pages left" \
+    "[1.0] bigio: a 61,440-byte write starting 1000 bytes below 2 MiB returns 1000 (the short count up to the limit)"
+bio_case 6 "; 5 pages left before it, 0 after" \
+    "[1.0] bigio: the budget: with 5 pages left, a 61,440-byte write returns 16,384 (the index page and 4 data pages), the next write ENOSPC; ftruncate growth still 0 (no page taken)"
+bio_case 7 "" \
+    "[1.0] bigio: a 10,000-byte write whose buffer becomes unmapped after 6000 bytes returns 6000; with no valid byte EFAULT, nothing written"
+bio_case 8 "" \
+    "[1.0] bigio: a 10,000-byte read whose buffer becomes unmapped after 6000 bytes returns 6000 and moves the offset by 6000; with no valid byte EFAULT, the offset unchanged"
+expect "$LOG" "^Big I/O test: two writers: 2 processes appended 8 writes of 32 KiB each through separate O_APPEND open files \(statuses 0, 0\): the file holds 524288 bytes, 16 blocks of 32 KiB, each one write's \(writer 1: 8, writer 2: 8, each in order: yes\), 0 interleaved; the write mark waited on [1-9][0-9]* times \(forced\), most tickets ahead [0-9]+: OK$" \
+    "[1.0] bigio: two processes appending 256 KiB each (8 writes of 32 KiB) through separate opens with O_APPEND: the file holds 524,288 bytes, every write's 32 KiB contiguous (never interleaved chunk by chunk), each writer's writes in order; the node write mark waited on (forced)"
+expect "$LOG" "^Big I/O test: VFS lock holds of the chunk loop and the truncates: [0-9]+ holds \([1-9][0-9]* chunks, [0-9]+ truncate holds; the 2 MiB file truncated to 0 in 9 holds of at most 64 pages\), longest hold [0-2] ticks \(at most 2\): OK$" \
+    "[1.0] bigio: the chunk loop and the truncates held the VFS lock only in bounded pieces (a 2 MiB file truncated to 0 among them, at most 64 pages freed per hold): longest hold at most 2 ticks"
+expect "$LOG" "^Big I/O test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] bigio: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^Big I/O test: PASS$"                 "[1.0] bigio: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] bigio: no crash screen, no panic"
+
+echo "== [1.0] test=filecontend: the busy mark with 4 sharers; the VFS lock under ring-3 load (-m 64M)"
+# The regexes and fc_bounds_ok are repeated in tests/qemu-part-stress.sh
+# (filecontend x 10): change both together.
+LOG=$OUT/serial-filecontend.log
+boot_until "$LOG" 300 "$READY_LINE" -m 64M -kernel "$KERNEL" -append "test=filecontend"
+grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
+FC_RE_SHARE="^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
+FC_RE_LOAD="^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
+FC_RE_HOLDS="^File contention test: holds under load: [0-9]+ holds of the chunk loop, the truncates and lseek, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, [0-9]+ truncate holds \(longest [0-9]+ ticks\); longest hold of all [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\): OK$"
+FC_RE_WAITS="^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
+FC_RE_TURN="^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
+FC_RE_CLEAN="^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
+# fc_bounds_ok <log>: the bounds recomputed from the waits line: the
+# longest gap at most 36; thread 0's bound = ahead x (hold + 1 + 36) + 1
+# with its wait within it; each worker's wait within 4 x (hold + 37) + 1.
+fc_bounds_ok() {
+    local l g w0 b0 a h w1 w2 w3 w4 bw
+    l=$(grep -m1 -E "^File contention test: waits: " "$1")
+    g=$(sed -nE 's/.* longest gap ([0-9]+) ticks .*/\1/p' <<< "$l")
+    read -r w0 b0 a h <<< "$(sed -nE 's/.*longest waits: thread 0 ([0-9]+) ticks \(bound ([0-9]+): ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1 \+ 36\) \+ 1\).*/\1 \2 \3 \4/p' <<< "$l")"
+    read -r w1 w2 w3 w4 bw <<< "$(sed -nE 's/.*, workers ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+) ticks \(bound ([0-9]+): 4 tickets ahead\).*/\1 \2 \3 \4 \5/p' <<< "$l")"
+    [ -n "${g:-}" ] && [ -n "${h:-}" ] && [ -n "${bw:-}" ] && [ "$g" -le 36 ] &&
+        [ "$b0" -eq $((a * (h + 37) + 1)) ] && [ "$w0" -le "$b0" ] &&
+        [ "$bw" -eq $((4 * (h + 37) + 1)) ] && [ "$w1" -le "$bw" ] && [ "$w2" -le "$bw" ] &&
+        [ "$w3" -le "$bw" ] && [ "$w4" -le "$bw" ]
+}
+expect "$LOG" "$FC_RE_SHARE" \
+    "[1.0] filecontend: the busy mark with 4 sharers, 3 forced to queue behind the first (most tickets ahead 3): each took the mark in the order it asked (first reads at 0, 4096, 8192, 12288), 256 reads, final offset 1 MiB, bytes identical"
+expect "$LOG" "$FC_RE_LOAD" \
+    "[1.0] filecontend: 4 processes and thread 0 contended for the VFS lock with 2 ring-3 spinners running: every worker's 256 KiB written and read back identical; every worker and thread 0 took the lock after waiting"
+expect "$LOG" "$FC_RE_HOLDS" \
+    "[1.0] filecontend: longest hold within the convoy bound (2 + 6 x 6 other threads = 38 ticks), 2 MiB truncates under load included; holds spanning a switch reported"
+if grep -qE "$FC_RE_WAITS" "$LOG" && fc_bounds_ok "$LOG"; then
+    pass "[1.0] filecontend: every hand-off gap at most 6 ticks per other runnable thread (6 x 6 = 36); thread 0's and every worker's longest wait within the convoy ticket bound (tickets ahead x (longest hold + 1 + 6 x 6 other threads) + 1); waits only by yielding"
+else
+    fail "[1.0] filecontend: the waits line missing or not OK, or a gap or wait past the bounds recomputed from it, in $LOG"
+fi
+expect "$LOG" "$FC_RE_TURN" \
+    "[1.0] filecontend: longest turn at most 6 ticks, its owner named (policy (b)); the spinners ran in ring 3 throughout"
+expect "$LOG" "$FC_RE_CLEAN" \
+    "[1.0] filecontend: cleanup: processes, open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^File contention test: PASS$"         "[1.0] filecontend: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] filecontend: no crash screen, no panic"

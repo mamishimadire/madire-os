@@ -18,6 +18,9 @@
 #    1.0 stage 0d: also at a 50 ms gap with a 20 ms hold (report only).
 # 4. The VFS lock (1.0 stage 3, plan C2): test=klock, 30 boots, one check
 #    each; KLOCK lines and a KLOCK_SPREAD summary report the figures.
+# 5. The VFS lock under ring-3 load (1.0 stage 5): test=filecontend, 10
+#    boots, one check each; FILECONTEND lines and a FILECONTEND_SPREAD
+#    summary report the holds, the hand-off gaps, the waits and the turns.
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -232,3 +235,59 @@ for b in $(seq -w 1 30); do
     fi
 done
 echo "KLOCK_SPREAD boots=30 iterations=$(printf '%s' "$KL_ITERS" | spread) hold=$(printf '%s' "$KL_HOLD" | spread) turn=$(printf '%s' "$KL_TURN" | spread) turn_max=$(printf '%s' "$KL_TURN" | sort -n | tail -n 1) wait0=$(printf '%s' "$KL_WAIT0" | spread) takes_per_thread_min=$(printf '%s' "$KL_TMIN" | sort -n | head -n 1) takes_per_thread_max=$(printf '%s' "$KL_TMAX" | sort -n | tail -n 1) seconds=$(printf '%s' "$KL_SECS" | spread)"
+
+echo "== [stress] The VFS lock under ring-3 load: test=filecontend, 10 boots (1.0 stage 5)"
+# Each boot is part 2's test=filecontend boot (-m 64M). One check per boot:
+# the same result lines as part 2's checks 37-44 (the regexes and the
+# bounds recomputed from the waits line are repeated here from
+# tests/qemu-part-2.sh: change both together). FILECONTEND lines report
+# each boot's figures; FILECONTEND_SPREAD the lowest and highest of each
+# over the 10 boots (report only: the checks decide).
+FC_READY="System ready. Press any key to open the console."
+FCS_RE=(
+"^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
+"^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
+"^File contention test: holds under load: [0-9]+ holds of the chunk loop, the truncates and lseek, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, [0-9]+ truncate holds \(longest [0-9]+ ticks\); longest hold of all [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\): OK$"
+"^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
+"^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
+"^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
+"^File contention test: PASS$"
+)
+fcs_bounds_ok() {
+    local l g w0 b0 a h w1 w2 w3 w4 bw
+    l=$(grep -m1 -E "^File contention test: waits: " "$1")
+    g=$(sed -nE 's/.* longest gap ([0-9]+) ticks .*/\1/p' <<< "$l")
+    read -r w0 b0 a h <<< "$(sed -nE 's/.*longest waits: thread 0 ([0-9]+) ticks \(bound ([0-9]+): ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1 \+ 36\) \+ 1\).*/\1 \2 \3 \4/p' <<< "$l")"
+    read -r w1 w2 w3 w4 bw <<< "$(sed -nE 's/.*, workers ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+) ticks \(bound ([0-9]+): 4 tickets ahead\).*/\1 \2 \3 \4 \5/p' <<< "$l")"
+    [ -n "${g:-}" ] && [ -n "${h:-}" ] && [ -n "${bw:-}" ] && [ "$g" -le 36 ] &&
+        [ "$b0" -eq $((a * (h + 37) + 1)) ] && [ "$w0" -le "$b0" ] &&
+        [ "$bw" -eq $((4 * (h + 37) + 1)) ] && [ "$w1" -le "$bw" ] && [ "$w2" -le "$bw" ] &&
+        [ "$w3" -le "$bw" ] && [ "$w4" -le "$bw" ]
+}
+FC_DUR="" FC_HOLDS="" FC_TICKED="" FC_SWITCHED="" FC_HOLD="" FC_TRUNC="" FC_GAPS="" FC_GAP=""
+FC_WAIT0="" FC_WAITW="" FC_TURN=""
+for b in $(seq -w 1 10); do
+    LOG=$OUT/serial-filecontend-$b.log
+    boot_until "$LOG" 300 "$FC_READY" -m 64M -kernel "$KERNEL" -append "test=filecontend"
+    read -r du ho ti sw hl th gt gl w0 ww tu <<< "$(sed -nE 's/^File contention test: figures: duration ([0-9]+), holds ([0-9]+), ticked ([0-9]+), switched ([0-9]+), longest hold ([0-9]+), truncate holds [0-9]+, longest truncate hold ([0-9]+), hand-offs [0-9]+, gaps ticked ([0-9]+), longest gap ([0-9]+), thread 0 wait ([0-9]+), worker wait ([0-9]+), turn ([0-9]+), thread 0 loop [0-9]+$/\1 \2 \3 \4 \5 \6 \7 \8 \9/p' "$LOG" | head -n 1)"
+    # sed has nine groups at most: the last two figures come from a second pass.
+    read -r ww tu <<< "$(sed -nE 's/^File contention test: figures: .* worker wait ([0-9]+), turn ([0-9]+), thread 0 loop [0-9]+$/\1 \2/p' "$LOG" | head -n 1)"
+    echo "      FILECONTEND boot=$b duration=${du:-none} holds=${ho:-none} ticked=${ti:-none} switched=${sw:-none} longest_hold=${hl:-none} longest_truncate_hold=${th:-none} gaps_ticked=${gt:-none} longest_gap=${gl:-none} wait0=${w0:-none} worker_wait=${ww:-none} turn=${tu:-none}"
+    FC_DUR+="${du:-0}"$'\n' FC_HOLDS+="${ho:-0}"$'\n' FC_TICKED+="${ti:-0}"$'\n'
+    FC_SWITCHED+="${sw:-0}"$'\n' FC_HOLD+="${hl:-0}"$'\n' FC_TRUNC+="${th:-0}"$'\n'
+    FC_GAPS+="${gt:-0}"$'\n' FC_GAP+="${gl:-0}"$'\n' FC_WAIT0+="${w0:-0}"$'\n'
+    FC_WAITW+="${ww:-0}"$'\n' FC_TURN+="${tu:-0}"$'\n'
+    bad=""
+    for re in "${FCS_RE[@]}"; do
+        grep -qE -- "$re" "$LOG" || bad+=" /$re/"
+    done
+    fcs_bounds_ok "$LOG" || bad+=" (a gap or wait past the bounds recomputed from the waits line)"
+    grep -q "PANIC" "$LOG" && bad+=" (a panic)"
+    if [ -z "$bad" ]; then
+        pass "[stress] filecontend $b: every result line OK, the bounds recomputed, PASS, no panic"
+    else
+        fail "[stress] filecontend $b: missing or failed in $LOG:$bad"
+        grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
+    fi
+done
+echo "FILECONTEND_SPREAD boots=10 duration=$(printf '%s' "$FC_DUR" | spread) holds=$(printf '%s' "$FC_HOLDS" | spread) ticked=$(printf '%s' "$FC_TICKED" | spread) switched=$(printf '%s' "$FC_SWITCHED" | spread) longest_hold=$(printf '%s' "$FC_HOLD" | spread) longest_truncate_hold=$(printf '%s' "$FC_TRUNC" | spread) gaps_ticked=$(printf '%s' "$FC_GAPS" | spread) longest_gap=$(printf '%s' "$FC_GAP" | spread) wait0=$(printf '%s' "$FC_WAIT0" | spread) worker_wait=$(printf '%s' "$FC_WAITW" | spread) turn=$(printf '%s' "$FC_TURN" | spread)"

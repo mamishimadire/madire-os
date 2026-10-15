@@ -62,6 +62,7 @@ void fd_table_init(struct fd_table *d)
 {
     for (uint32_t i = 0; i < FD_MAX; i++)
         d->fd[i] = FD_NONE;
+    d->cloexec = 0;
 }
 
 int fd_lookup(const struct fd_table *d, uint64_t fd, uint32_t *idx)
@@ -111,6 +112,7 @@ int fd_close(struct fd_table *d, struct ofile_table *t, uint64_t fd, void **node
     if (fd_lookup(d, fd, &idx) < 0)
         return -FDT_EBADF;
     d->fd[fd] = FD_NONE;
+    d->cloexec &= (uint16_t)~(1u << fd);
     ofile_put(t, idx, node_out);
     return 0;
 }
@@ -121,8 +123,10 @@ int fd_dup(struct fd_table *d, struct ofile_table *t, uint64_t oldfd)
     if (fd_lookup(d, oldfd, &idx) < 0)
         return -FDT_EBADF;
     int fd = fd_install(d, idx);
-    if (fd >= 0)
+    if (fd >= 0) {
         ofile_get(t, idx);
+        d->cloexec &= (uint16_t)~(1u << fd);
+    }
     return fd;
 }
 
@@ -138,8 +142,25 @@ int fd_dup2(struct fd_table *d, struct ofile_table *t, uint64_t oldfd, uint64_t 
     if (d->fd[newfd] != FD_NONE)
         fd_close(d, t, newfd, node_out);
     d->fd[newfd] = (uint16_t)idx;
+    d->cloexec &= (uint16_t)~(1u << newfd);
     ofile_get(t, idx);
     return (int)newfd;
+}
+
+bool fd_set_cloexec(struct fd_table *d, uint64_t fd, bool on)
+{
+    if (fd >= FD_MAX || d->fd[fd] == FD_NONE)
+        return false;
+    if (on)
+        d->cloexec |= (uint16_t)(1u << fd);
+    else
+        d->cloexec &= (uint16_t)~(1u << fd);
+    return true;
+}
+
+bool fd_cloexec(const struct fd_table *d, uint64_t fd)
+{
+    return fd < FD_MAX && d->fd[fd] != FD_NONE && (d->cloexec >> fd) & 1u;
 }
 
 uint32_t fd_close_all(struct fd_table *d, struct ofile_table *t, void *nodes[FD_MAX],

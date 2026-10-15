@@ -30,6 +30,10 @@ static struct ramfs_node *new_node(struct ramfs *fs, enum vnode_type type, uint3
     n->vn.opens = 0;
     n->vn.parent = 0;
     n->vn.atime = n->vn.mtime = n->vn.ctime = 0;
+    n->vn.wr_next = n->vn.wr_serving = 0;   /* stage 5: the write mark free */
+    n->vn.wr_holder = 0;
+    n->vn.wr_ahead_max = 0;
+    n->vn.wr_takes = n->vn.wr_contended = 0;
     n->name = 0;
     n->name_len = 0;
     n->first = n->last = n->next = 0;
@@ -418,4 +422,62 @@ int ramfs_truncate(struct ramfs *fs, struct vnode *file, uint64_t length)
     }
     file->size = length;                /* growing: a hole, no page taken */
     return 0;
+}
+
+int ramfs_truncate_step(struct ramfs *fs, struct vnode *file, uint64_t length,
+                        uint32_t max_pages)
+{
+    if (file->type != VNODE_FILE)
+        return -FS_EISDIR;
+    if (length > RAMFS_FILE_MAX)
+        return -FS_EFBIG;
+    struct ramfs_node *n = RN(file);
+    if (length < file->size && n->index) {
+        uint32_t at = (uint32_t)(length % RAMFS_PAGE);
+        if (at) {                       /* the rest of the last page reads as zeros */
+            uint64_t frame = slot_get(fs, n, (uint32_t)(length / RAMFS_PAGE));
+            if (frame) {
+                volatile uint8_t *p = fs->pages->map(frame);
+                for (uint32_t i = at; i < RAMFS_PAGE; i++)
+                    p[i] = 0;
+                fs->pages->unmap();
+            }
+        }
+    }
+    file->size = length;
+    if (!n->index)
+        return 0;
+    if (max_pages == 0)
+        max_pages = 1;
+    if (max_pages > RAMFS_TRUNC_STEP_MAX)
+        max_pages = RAMFS_TRUNC_STEP_MAX;
+    uint64_t frames[RAMFS_TRUNC_STEP_MAX];
+    uint32_t got = 0;
+    bool more = false;
+    volatile uint64_t *ix = fs->pages->map(n->index);
+    for (uint32_t s = (uint32_t)((length + RAMFS_PAGE - 1) / RAMFS_PAGE); s < RAMFS_SLOTS; s++) {
+        if (!ix[s])
+            continue;
+        if (got == max_pages) {
+            more = true;
+            break;
+        }
+        frames[got++] = ix[s];
+        ix[s] = 0;
+    }
+    fs->pages->unmap();
+    /* The index page goes with the last data page, within max_pages: if
+     * the step is full, it goes in the next one. */
+    if (!more && n->pages - got == 1 && got == max_pages)
+        more = true;
+    for (uint32_t i = 0; i < got; i++) {
+        give_page(fs, frames[i]);
+        n->pages--;
+    }
+    if (!more && n->pages == 1) {       /* no data page left: the index page goes too */
+        give_page(fs, n->index);
+        n->index = 0;
+        n->pages = 0;
+    }
+    return more ? 1 : 0;
 }

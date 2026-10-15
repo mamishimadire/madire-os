@@ -16,6 +16,14 @@ enum syscall_id syscall_lookup(uint64_t nr)
     case SYS_GETPID:      return SC_GETPID;
     case SYS_EXIT:        return SC_EXIT;
     case SYS_EXIT_GROUP:  return SC_EXIT_GROUP;
+    case SYS_OPEN:        return SC_OPEN;
+    case SYS_STAT:        return SC_STAT;
+    case SYS_FSTAT:       return SC_FSTAT;
+    case SYS_LSTAT:       return SC_LSTAT;
+    case SYS_LSEEK:       return SC_LSEEK;
+    case SYS_FTRUNCATE:   return SC_FTRUNCATE;
+    case SYS_OPENAT:      return SC_OPENAT;
+    case SYS_NEWFSTATAT:  return SC_NEWFSTATAT;
     default:              return SC_UNKNOWN;
     }
 }
@@ -39,6 +47,14 @@ const char *syscall_name(enum syscall_id id)
     case SC_CLOSE:       return "close";
     case SC_DUP:         return "dup";
     case SC_DUP2:        return "dup2";
+    case SC_OPEN:        return "open";
+    case SC_STAT:        return "stat";
+    case SC_FSTAT:       return "fstat";
+    case SC_LSTAT:       return "lstat";
+    case SC_LSEEK:       return "lseek";
+    case SC_FTRUNCATE:   return "ftruncate";
+    case SC_OPENAT:      return "openat";
+    case SC_NEWFSTATAT:  return "newfstatat";
     case SC_COUNT:       break;
     }
     return "unknown";

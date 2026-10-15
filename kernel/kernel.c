@@ -26,6 +26,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/proc/fd.h"
@@ -570,6 +571,17 @@ static void run_diagnostics(void)
         diag_message("Descriptor kill test: programs ending with descriptors open...");
         diag_message(fdtest_kill() ? "Descriptor kill test: done"
                                    : "Descriptor kill test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fileio")) {      /* 1.0 stage 5 */
+        diag_message("File test: open, stat, lseek, ftruncate from fileio and fileerr...");
+        diag_message(fsiotest_fileio() ? "File test: done" : "File test: FAIL (see serial log)");
+    } else if (cmdline_has("test=bigio")) {       /* 1.0 stage 5 */
+        diag_message("Big I/O test: large reads and writes from bigio...");
+        diag_message(fsiotest_bigio() ? "Big I/O test: done"
+                                      : "Big I/O test: FAIL (see serial log)");
+    } else if (cmdline_has("test=filecontend")) { /* 1.0 stage 5 */
+        diag_message("File contention test: the busy mark and the VFS lock under load...");
+        diag_message(fsiotest_contend() ? "File contention test: done"
+                                        : "File contention test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();

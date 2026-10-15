@@ -1,14 +1,18 @@
 /* enosys (0.10): every number not implemented returns -ENOSYS (38): all of
- * 0-1023 except the ten (six until 1.0 stage 4 added read, close, dup and
- * dup2), values with high bits set, -1, the x32 range and the reserved
- * Madire range. Exits with the number of wrong results (at most 255). */
+ * 0-1023 except the eighteen (six until 1.0 stage 4 added read, close, dup
+ * and dup2; ten until stage 5 added open, stat, fstat, lstat, lseek,
+ * ftruncate, openat and newfstatat), values with high bits set, -1, the
+ * x32 range and the reserved Madire range. Exits with the number of wrong
+ * results (at most 255). */
 #include "user/ulib.h"
 
 static int implemented(uint64_t nr)
 {
     return nr == SYS_WRITE || nr == SYS_SCHED_YIELD || nr == SYS_NANOSLEEP ||
            nr == SYS_GETPID || nr == SYS_EXIT || nr == SYS_EXIT_GROUP ||
-           nr == SYS_READ || nr == SYS_CLOSE || nr == SYS_DUP || nr == SYS_DUP2;
+           nr == SYS_READ || nr == SYS_CLOSE || nr == SYS_DUP || nr == SYS_DUP2 ||
+           nr == SYS_OPEN || nr == SYS_STAT || nr == SYS_FSTAT || nr == SYS_LSTAT ||
+           nr == SYS_LSEEK || nr == SYS_FTRUNCATE || nr == SYS_OPENAT || nr == SYS_NEWFSTATAT;
 }
 
 int main(long arg)

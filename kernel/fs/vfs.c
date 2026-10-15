@@ -1,7 +1,10 @@
 /*
  * The kernel's filesystem (1.0): see vfs.h. Node records and names come
- * from the kernel heap; times are seconds of uptime for now (the RTC date
- * is added with stat, stage 5).
+ * from the kernel heap. Times (stage 5): seconds since 1970 from the RTC
+ * read once at boot, plus the uptime (no time zone: the RTC holds what the
+ * firmware set, as `date` shows it); uptime only if the RTC cannot be
+ * read. The RTC is read with the existing cmos_rtc_read() (cmos.c) and
+ * rtc_decode() (rtc_time.c).
  *
  * The boot self-test works in a scratch folder, /tmp/fstest, and leaves
  * nothing behind: the node count and the heap's bytes in use are compared
@@ -23,8 +26,10 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/fspage.h"
+#include "kernel/fs/fsys_core.h"
 #include "kernel/fs/path_core.h"
 #include "kernel/fs/ramfs_core.h"
+#include "kernel/arch/x86/cmos.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
@@ -35,6 +40,10 @@ static struct ramfs ramfs;
 static struct vfs vfs;
 static uint32_t boot_free_pages;        /* the free pages the budget was computed from */
 static struct klock lock;               /* stage 3: the VFS lock */
+static int64_t clock_base;              /* stage 5: epoch seconds at uptime 0 */
+static bool clock_rtc;                  /* the RTC was read */
+static struct rtc_time clock_read;      /* what it read */
+static uint32_t clock_uptime;           /* the uptime when it was read */
 
 static void *heap_alloc_fn(size_t bytes)
 {
@@ -43,7 +52,26 @@ static void *heap_alloc_fn(size_t bytes)
 
 static int64_t uptime_now(void)
 {
-    return (int64_t)timer_uptime_seconds();
+    return clock_base + (int64_t)timer_uptime_seconds();
+}
+
+/* Stage 5: the clock's base, read before the root folder is made. */
+static void clock_init(void)
+{
+    struct rtc_raw raw;
+    clock_uptime = timer_uptime_seconds();
+    clock_rtc = cmos_rtc_read(&raw) && rtc_decode(&raw, &clock_read);
+    clock_base = clock_rtc ? fsys_epoch(&clock_read) - (int64_t)clock_uptime : 0;
+}
+
+int64_t vfs_boot_epoch(void)
+{
+    return clock_base;
+}
+
+int64_t vfs_now(void)
+{
+    return uptime_now();
 }
 
 struct vfs *vfs_root(void)
@@ -442,6 +470,7 @@ static bool build(void)
         klogf("Filesystem: no heap memory for the root folder\n");
         return false;
     }
+    clock_init();
     boot_free_pages = pmm_free_pages();
     ramfs_set_pages(&ramfs, &fspage_source, ramfs_budget_pages(boot_free_pages));
     vfs_mount(&vfs, &ramfs_ops, &ramfs, &ramfs.root->vn, uptime_now);
@@ -472,6 +501,15 @@ static bool build(void)
     names[p] = '\0';
     klogf("Filesystem: / holds %s; %u nodes, %u data pages\n", names, ramfs.nodes,
           ramfs.data_pages);
+    if (clock_rtc) {
+        char text[RTC_TEXT_SIZE];
+        rtc_format(&clock_read, text);
+        klogf("Filesystem: clock: the RTC read %s at boot (epoch %lld, uptime %u s); file "
+              "times are that plus uptime, no time zone\n", text,
+              (long long)(clock_base + (int64_t)clock_uptime), clock_uptime);
+    } else {
+        klogf("Filesystem: clock: no RTC date; file times are seconds of uptime\n");
+    }
     return true;
 }
 
