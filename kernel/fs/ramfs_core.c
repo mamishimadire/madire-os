@@ -31,9 +31,7 @@ static struct ramfs_node *new_node(struct ramfs *fs, enum vnode_type type, uint3
     n->vn.parent = 0;
     n->vn.atime = n->vn.mtime = n->vn.ctime = 0;
     n->vn.wr_next = n->vn.wr_serving = 0;   /* stage 5: the write mark free */
-    n->vn.wr_holder = 0;
-    n->vn.wr_ahead_max = 0;
-    n->vn.wr_takes = n->vn.wr_contended = 0;
+    n->vn.wr_holder = n->vn.wr_spare = 0;
     n->name = 0;
     n->name_len = 0;
     n->first = n->last = n->next = 0;

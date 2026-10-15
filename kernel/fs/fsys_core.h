@@ -139,12 +139,17 @@ uint64_t fsys_page_step(uint64_t addr, uint64_t left);
  * The node write mark (plan B2: Linux's per-inode write lock): a FIFO
  * ticket mark in the node (vfs_core.h), held by a write or a truncate for
  * its whole call, so two writes to one file never interleave chunk by
- * chunk. Waiters yield (kernel/proc/fd.c). wr_holder is the holder's
- * thread id + 1 (0: free), so a zeroed node has a free mark.
+ * chunk. Waiters yield (kernel/proc/fd.c). It lives in what was the
+ * node's padding: 16-bit tickets, compared by equality, with distances
+ * as 16-bit differences, so the wrap from 65535 to 0 is harmless (each
+ * thread holds at most one ticket, far fewer than 65536). wr_holder is
+ * the holder's thread id + 1 (0: free), so a zeroed node has a free mark.
+ * Its figures (takes, waits, most tickets ahead) are kept by fd.c.
  */
-uint32_t fsys_wmark_ticket(struct vnode *n);
-bool fsys_wmark_try(struct vnode *n, uint32_t ticket, int32_t tid, uint32_t waited);
+uint16_t fsys_wmark_ticket(struct vnode *n, uint32_t *ahead);   /* ahead: holder included */
+bool fsys_wmark_try(struct vnode *n, uint16_t ticket, int32_t tid);
 bool fsys_wmark_release(struct vnode *n, int32_t tid);
-int32_t fsys_wmark_holder(const struct vnode *n);  /* thread id, or -1 */
+int32_t fsys_wmark_holder(const struct vnode *n);              /* thread id, or -1 */
+uint32_t fsys_wmark_waiting(const struct vnode *n);            /* tickets out, the holder's included */
 
 #endif

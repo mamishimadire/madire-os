@@ -28,20 +28,26 @@ enum vnode_type { VNODE_FILE = 1, VNODE_DIR = 2 };
 
 struct vnode {
     enum vnode_type type;
+    /* 1.0 stage 5: the node write mark (fsys_core.h), held by a write or
+     * a truncate for its whole call, in what was padding: 16-bit tickets
+     * (at most 64 threads hold one each, so the wrap is harmless) and the
+     * holder; its figures are kernel/proc/fd.c's, not per node. */
+    uint16_t wr_next, wr_serving;
     uint64_t ino;
     uint64_t size;                      /* bytes (files) */
     uint32_t mode;                      /* stored and shown, never checked */
     uint32_t nlink;                     /* 1 while it has a name, 0 once removed */
     uint32_t opens;                     /* open files and current folders on it */
+    uint16_t wr_holder;                 /* the write mark's holder: thread id + 1, 0: free */
+    uint16_t wr_spare;                  /* padding, 0 */
     struct vnode *parent;               /* its folder; the root's is itself; NULL once removed */
     int64_t atime, mtime, ctime;        /* seconds */
-    /* 1.0 stage 5: the node write mark (fsys_core.h), held by a write or
-     * a truncate for its whole call; its figures. */
-    uint32_t wr_next, wr_serving;
-    int32_t wr_holder;                  /* thread id + 1, 0: free */
-    uint32_t wr_ahead_max;              /* most tickets ahead of a caller's (holder included) */
-    uint64_t wr_takes, wr_contended;
 };
+
+/* A node is 72 bytes, and a RAM filesystem node record at most 128 (its
+ * heap block stays 144 bytes, ramfs_core.h): a new field must fail the
+ * build, not grow every node. */
+_Static_assert(sizeof(struct vnode) == 72, "struct vnode is 72 bytes");
 
 struct vfs_ops {
     /* The entry called name in folder dir, or NULL. */

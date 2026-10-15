@@ -60,6 +60,10 @@ struct ramfs_node {
     uint64_t index;                     /* a file's index page, 0 while it has no data page */
 };
 
+/* 1.0 stage 5: at most 128 bytes, so its heap block stays 144 (stage 2,
+ * tests/unit/test_fspage.c): a new field must fail the build. */
+_Static_assert(sizeof(struct ramfs_node) <= 128, "struct ramfs_node is at most 128 bytes");
+
 struct ramfs {
     struct ramfs_mem mem;
     uint32_t max_nodes;

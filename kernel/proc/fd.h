@@ -126,6 +126,10 @@ struct fd_figures {
     uint64_t holds_switched;            /* of them, holds during which another thread ran */
     uint64_t trunc_holds, trunc_hold_longest;
     uint64_t wmark_wait_longest;        /* ticks, the longest wait for a write mark */
+    /* The write marks of every node (kept here: the node holds only the
+     * mark itself, in its padding). */
+    uint64_t wmark_takes, wmark_contended;
+    uint32_t wmark_ahead_max;           /* most tickets ahead of a caller's (holder included) */
 };
 void fd_figures(struct fd_figures *out);
 

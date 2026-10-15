@@ -247,7 +247,7 @@ FC_READY="System ready. Press any key to open the console."
 FCS_RE=(
 "^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
 "^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
-"^File contention test: holds under load: [0-9]+ holds of the chunk loop, the truncates and lseek, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, [0-9]+ truncate holds \(longest [0-9]+ ticks\); longest hold of all [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\): OK$"
+"^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, longest [0-9]+ ticks; truncate holds [0-9]+ \(longest [0-9]+ ticks\); thread 0's yield-while-holding holds [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks; longest of all holds [0-9]+ ticks; each at most 38 \(2 \+ 6 x 6 other threads\): OK$"
 "^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
 "^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
 "^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
@@ -264,19 +264,24 @@ fcs_bounds_ok() {
         [ "$bw" -eq $((4 * (h + 37) + 1)) ] && [ "$w1" -le "$bw" ] && [ "$w2" -le "$bw" ] &&
         [ "$w3" -le "$bw" ] && [ "$w4" -le "$bw" ]
 }
-FC_DUR="" FC_HOLDS="" FC_TICKED="" FC_SWITCHED="" FC_HOLD="" FC_TRUNC="" FC_GAPS="" FC_GAP=""
-FC_WAIT0="" FC_WAITW="" FC_TURN=""
+# fc_fig <log> <name>: one named figure of the boot's figures line.
+fc_fig() {
+    sed -nE "s/^File contention test: figures: (.*, )?$2 ([0-9]+)(, .*)?$/\\2/p" "$1" | head -n 1
+}
+FC_NAMES=(duration finished margin holds ticked switched "work hold" "yield hold" "all holds"
+          "longest truncate hold" "gaps ticked" "longest gap" "thread 0 wait" "worker wait" turn)
+declare -A FC_ALL=()
 for b in $(seq -w 1 10); do
     LOG=$OUT/serial-filecontend-$b.log
     boot_until "$LOG" 300 "$FC_READY" -m 64M -kernel "$KERNEL" -append "test=filecontend"
-    read -r du ho ti sw hl th gt gl w0 ww tu <<< "$(sed -nE 's/^File contention test: figures: duration ([0-9]+), holds ([0-9]+), ticked ([0-9]+), switched ([0-9]+), longest hold ([0-9]+), truncate holds [0-9]+, longest truncate hold ([0-9]+), hand-offs [0-9]+, gaps ticked ([0-9]+), longest gap ([0-9]+), thread 0 wait ([0-9]+), worker wait ([0-9]+), turn ([0-9]+), thread 0 loop [0-9]+$/\1 \2 \3 \4 \5 \6 \7 \8 \9/p' "$LOG" | head -n 1)"
-    # sed has nine groups at most: the last two figures come from a second pass.
-    read -r ww tu <<< "$(sed -nE 's/^File contention test: figures: .* worker wait ([0-9]+), turn ([0-9]+), thread 0 loop [0-9]+$/\1 \2/p' "$LOG" | head -n 1)"
-    echo "      FILECONTEND boot=$b duration=${du:-none} holds=${ho:-none} ticked=${ti:-none} switched=${sw:-none} longest_hold=${hl:-none} longest_truncate_hold=${th:-none} gaps_ticked=${gt:-none} longest_gap=${gl:-none} wait0=${w0:-none} worker_wait=${ww:-none} turn=${tu:-none}"
-    FC_DUR+="${du:-0}"$'\n' FC_HOLDS+="${ho:-0}"$'\n' FC_TICKED+="${ti:-0}"$'\n'
-    FC_SWITCHED+="${sw:-0}"$'\n' FC_HOLD+="${hl:-0}"$'\n' FC_TRUNC+="${th:-0}"$'\n'
-    FC_GAPS+="${gt:-0}"$'\n' FC_GAP+="${gl:-0}"$'\n' FC_WAIT0+="${w0:-0}"$'\n'
-    FC_WAITW+="${ww:-0}"$'\n' FC_TURN+="${tu:-0}"$'\n'
+    row="      FILECONTEND boot=$b"
+    for n in "${FC_NAMES[@]}"; do
+        val=$(fc_fig "$LOG" "$n")
+        row+=" ${n// /_}=${val:-none}"
+        FC_ALL[$n]+="${val:-0}"$'\n'
+    done
+    echo "$row"
+    grep -E "^File contention test: timing: " "$LOG" | sed 's/^/      /'
     bad=""
     for re in "${FCS_RE[@]}"; do
         grep -qE -- "$re" "$LOG" || bad+=" /$re/"
@@ -290,4 +295,8 @@ for b in $(seq -w 1 10); do
         grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
     fi
 done
-echo "FILECONTEND_SPREAD boots=10 duration=$(printf '%s' "$FC_DUR" | spread) holds=$(printf '%s' "$FC_HOLDS" | spread) ticked=$(printf '%s' "$FC_TICKED" | spread) switched=$(printf '%s' "$FC_SWITCHED" | spread) longest_hold=$(printf '%s' "$FC_HOLD" | spread) longest_truncate_hold=$(printf '%s' "$FC_TRUNC" | spread) gaps_ticked=$(printf '%s' "$FC_GAPS" | spread) longest_gap=$(printf '%s' "$FC_GAP" | spread) wait0=$(printf '%s' "$FC_WAIT0" | spread) worker_wait=$(printf '%s' "$FC_WAITW" | spread) turn=$(printf '%s' "$FC_TURN" | spread)"
+row="FILECONTEND_SPREAD boots=10"
+for n in "${FC_NAMES[@]}"; do
+    row+=" ${n// /_}=$(printf '%s' "${FC_ALL[$n]}" | spread)"
+done
+echo "$row"

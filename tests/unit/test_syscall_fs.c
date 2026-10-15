@@ -199,27 +199,76 @@ static void test_page_step(void)
 static void test_wmark(void)
 {
     struct vnode n;
+    uint32_t ahead = 99;
+    CHECK_EQ(sizeof(struct vnode), 72);                                 /* the mark in the padding */
     memset(&n, 0, sizeof(n));           /* a zeroed node: the mark is free */
     CHECK_EQ(fsys_wmark_holder(&n), -1);
-    uint32_t a = fsys_wmark_ticket(&n), b = fsys_wmark_ticket(&n), c = fsys_wmark_ticket(&n);
-    CHECK_EQ(n.wr_ahead_max, 2);
-    CHECK(!fsys_wmark_try(&n, b, 11, 0));                               /* not its turn */
-    CHECK(!fsys_wmark_try(&n, a, -1, 0));                               /* not a thread */
-    CHECK(fsys_wmark_try(&n, a, 0, 0));                                 /* thread 0 may hold it */
+    CHECK_EQ(fsys_wmark_waiting(&n), 0);
+    uint16_t a = fsys_wmark_ticket(&n, &ahead);
+    CHECK_EQ(ahead, 0);
+    uint16_t b = fsys_wmark_ticket(&n, &ahead);
+    CHECK_EQ(ahead, 1);
+    uint16_t c = fsys_wmark_ticket(&n, &ahead);
+    CHECK_EQ(ahead, 2);
+    CHECK_EQ(fsys_wmark_waiting(&n), 3);
+    CHECK(!fsys_wmark_try(&n, b, 11));                                  /* not its turn */
+    CHECK(!fsys_wmark_try(&n, a, -1));                                  /* not a thread */
+    CHECK(!fsys_wmark_try(&n, a, 0xFFFF));                              /* no room for id + 1 */
+    CHECK(fsys_wmark_try(&n, a, 0));                                    /* thread 0 may hold it */
     CHECK_EQ(fsys_wmark_holder(&n), 0);
     CHECK(!fsys_wmark_release(&n, 11));                                 /* not the holder */
     CHECK(fsys_wmark_release(&n, 0));
     CHECK_EQ(fsys_wmark_holder(&n), -1);
-    CHECK(!fsys_wmark_try(&n, c, 12, 1));                               /* b is next, not c */
-    CHECK(fsys_wmark_try(&n, b, 11, 3));
-    CHECK(!fsys_wmark_try(&n, c, 12, 2));                               /* held */
+    CHECK(!fsys_wmark_try(&n, c, 12));                                  /* b is next, not c */
+    CHECK(fsys_wmark_try(&n, b, 11));
+    CHECK(!fsys_wmark_try(&n, c, 12));                                  /* held */
     CHECK(fsys_wmark_release(&n, 11));
-    CHECK(fsys_wmark_try(&n, c, 12, 4));
+    CHECK(fsys_wmark_try(&n, c, 12));
     CHECK(fsys_wmark_release(&n, 12));
     CHECK(!fsys_wmark_release(&n, 12));
-    CHECK_EQ(n.wr_takes, 3);
-    CHECK_EQ(n.wr_contended, 2);
-    CHECK_EQ(n.wr_next, n.wr_serving);
+    CHECK_EQ(fsys_wmark_waiting(&n), 0);
+}
+
+/* The 16-bit tickets across the wrap from 65535 to 0: FIFO order, the
+ * tickets ahead and the tickets out stay right, as in the klock suite's
+ * 32-bit wrap. */
+static void test_wmark_wrap(void)
+{
+    struct vnode n;
+    memset(&n, 0, sizeof(n));
+    n.wr_next = n.wr_serving = 65533;
+    uint16_t t[6];
+    uint32_t ahead = 0;
+    for (int i = 0; i < 6; i++) {
+        t[i] = fsys_wmark_ticket(&n, &ahead);
+        CHECK_EQ(ahead, (uint32_t)i);                                   /* across the wrap too */
+    }
+    CHECK_EQ(t[0], 65533);
+    CHECK_EQ(t[2], 65535);
+    CHECK_EQ(t[3], 0);                                                  /* wrapped */
+    CHECK_EQ(t[5], 2);
+    CHECK_EQ(fsys_wmark_waiting(&n), 6);
+    for (int i = 0; i < 6; i++) {
+        for (int j = i + 1; j < 6; j++)
+            CHECK(!fsys_wmark_try(&n, t[j], 20 + j));                   /* only the oldest */
+        CHECK(fsys_wmark_try(&n, t[i], 20 + i));
+        CHECK_EQ(fsys_wmark_holder(&n), 20 + i);
+        CHECK_EQ(fsys_wmark_waiting(&n), (uint32_t)(6 - i));
+        CHECK(fsys_wmark_release(&n, 20 + i));
+    }
+    CHECK_EQ(n.wr_serving, 3);
+    CHECK_EQ(n.wr_next, 3);
+    CHECK_EQ(fsys_wmark_waiting(&n), 0);
+    CHECK_EQ(fsys_wmark_holder(&n), -1);
+    /* 70000 takes in turn: the counters wrap more than once. */
+    unsigned ok = 1;
+    for (uint32_t i = 0; i < 70000; i++) {
+        uint16_t k = fsys_wmark_ticket(&n, &ahead);
+        if (ahead != 0 || !fsys_wmark_try(&n, k, 7) || !fsys_wmark_release(&n, 7))
+            ok = 0;
+    }
+    CHECK(ok);
+    CHECK_EQ(fsys_wmark_waiting(&n), 0);
 }
 
 /* ---- ramfs_truncate_step over a host page pool ---- */
@@ -351,6 +400,7 @@ int main(void)
     RUN(test_epoch);
     RUN(test_page_step);
     RUN(test_wmark);
+    RUN(test_wmark_wrap);
     RUN(test_truncate_step);
     return unit_report("syscall_fs");
 }

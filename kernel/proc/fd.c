@@ -306,18 +306,24 @@ static void busy_give(uint32_t file)
 static void wmark_take(struct vnode *n)
 {
     int32_t me = thread_current();
+    uint32_t ahead = 0;
     preempt_disable();
-    uint32_t ticket = fsys_wmark_ticket(n);
+    uint16_t ticket = fsys_wmark_ticket(n, &ahead);
+    if (ahead > figs.wmark_ahead_max)
+        figs.wmark_ahead_max = ahead;
     uint64_t t0 = timer_ticks();
     preempt_enable();
     uint32_t waited = 0;
     for (;;) {
         preempt_disable();
-        bool held = fsys_wmark_try(n, ticket, me, waited);
+        bool held = fsys_wmark_try(n, ticket, me);
         int32_t owner = fsys_wmark_holder(n);
         enum sched_state os = owner >= 0 ? thread_state(owner) : SCHED_READY;
         if (held) {
             busy_held[me]++;
+            figs.wmark_takes++;
+            if (waited)
+                figs.wmark_contended++;
             uint64_t w = timer_ticks() - t0;
             if (w > figs.wmark_wait_longest)
                 figs.wmark_wait_longest = w;
@@ -625,6 +631,9 @@ void fd_figures(struct fd_figures *out)
     out->trunc_holds = figs.trunc_holds;
     out->trunc_hold_longest = figs.trunc_hold_longest;
     out->wmark_wait_longest = figs.wmark_wait_longest;
+    out->wmark_takes = figs.wmark_takes;
+    out->wmark_contended = figs.wmark_contended;
+    out->wmark_ahead_max = figs.wmark_ahead_max;
     preempt_enable();
 }
 
@@ -634,6 +643,8 @@ void fd_figures_reset(void)
     figs.chunks = figs.hold_longest = figs.busy_wait_longest = 0;
     figs.holds = figs.holds_ticked = figs.holds_switched = 0;
     figs.trunc_holds = figs.trunc_hold_longest = figs.wmark_wait_longest = 0;
+    figs.wmark_takes = figs.wmark_contended = 0;
+    figs.wmark_ahead_max = 0;
     for (uint32_t i = 0; i < SCHED_MAX_THREADS; i++)
         lock_waited[i] = lock_wait_longest[i] = 0;
     handoff.count = handoff.ticked = handoff.longest = 0;

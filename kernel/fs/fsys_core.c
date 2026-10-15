@@ -145,36 +145,37 @@ uint64_t fsys_page_step(uint64_t addr, uint64_t left)
     return left < to_end ? left : to_end;
 }
 
-uint32_t fsys_wmark_ticket(struct vnode *n)
+uint16_t fsys_wmark_ticket(struct vnode *n, uint32_t *ahead)
 {
-    uint32_t ticket = n->wr_next++;
-    uint32_t ahead = ticket - n->wr_serving;
-    if (ahead > n->wr_ahead_max)
-        n->wr_ahead_max = ahead;
+    uint16_t ticket = n->wr_next;
+    n->wr_next = (uint16_t)(ticket + 1);
+    *ahead = (uint16_t)(ticket - n->wr_serving);
     return ticket;
 }
 
-bool fsys_wmark_try(struct vnode *n, uint32_t ticket, int32_t tid, uint32_t waited)
+bool fsys_wmark_try(struct vnode *n, uint16_t ticket, int32_t tid)
 {
-    if (tid < 0 || n->wr_serving != ticket || n->wr_holder != 0)
+    if (tid < 0 || tid >= 0xFFFF || n->wr_serving != ticket || n->wr_holder != 0)
         return false;
-    n->wr_holder = tid + 1;
-    n->wr_takes++;
-    if (waited)
-        n->wr_contended++;
+    n->wr_holder = (uint16_t)(tid + 1);
     return true;
 }
 
 bool fsys_wmark_release(struct vnode *n, int32_t tid)
 {
-    if (tid < 0 || n->wr_holder != tid + 1)
+    if (tid < 0 || tid >= 0xFFFF || n->wr_holder != (uint16_t)(tid + 1))
         return false;
     n->wr_holder = 0;
-    n->wr_serving++;
+    n->wr_serving = (uint16_t)(n->wr_serving + 1);
     return true;
 }
 
 int32_t fsys_wmark_holder(const struct vnode *n)
 {
-    return n->wr_holder - 1;
+    return (int32_t)n->wr_holder - 1;
+}
+
+uint32_t fsys_wmark_waiting(const struct vnode *n)
+{
+    return (uint16_t)(n->wr_next - n->wr_serving);
 }

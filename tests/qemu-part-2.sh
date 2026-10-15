@@ -1157,7 +1157,7 @@ boot_until "$LOG" 300 "$READY_LINE" -m 64M -kernel "$KERNEL" -append "test=filec
 grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
 FC_RE_SHARE="^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
 FC_RE_LOAD="^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
-FC_RE_HOLDS="^File contention test: holds under load: [0-9]+ holds of the chunk loop, the truncates and lseek, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, [0-9]+ truncate holds \(longest [0-9]+ ticks\); longest hold of all [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\): OK$"
+FC_RE_HOLDS="^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, longest [0-9]+ ticks; truncate holds [0-9]+ \(longest [0-9]+ ticks\); thread 0's yield-while-holding holds [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks; longest of all holds [0-9]+ ticks; each at most 38 \(2 \+ 6 x 6 other threads\): OK$"
 FC_RE_WAITS="^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
 FC_RE_TURN="^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
 FC_RE_CLEAN="^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
@@ -1180,7 +1180,7 @@ expect "$LOG" "$FC_RE_SHARE" \
 expect "$LOG" "$FC_RE_LOAD" \
     "[1.0] filecontend: 4 processes and thread 0 contended for the VFS lock with 2 ring-3 spinners running: every worker's 256 KiB written and read back identical; every worker and thread 0 took the lock after waiting"
 expect "$LOG" "$FC_RE_HOLDS" \
-    "[1.0] filecontend: longest hold within the convoy bound (2 + 6 x 6 other threads = 38 ticks), 2 MiB truncates under load included; holds spanning a switch reported"
+    "[1.0] filecontend: work holds (chunk loop, truncates incl. 2 MiB under load, lseek) and thread 0's yield-while-holding holds each within the convoy bound (2 + 6 x 6 other threads = 38 ticks); the longest of all holds too; distributions and holds spanning a switch reported"
 if grep -qE "$FC_RE_WAITS" "$LOG" && fc_bounds_ok "$LOG"; then
     pass "[1.0] filecontend: every hand-off gap at most 6 ticks per other runnable thread (6 x 6 = 36); thread 0's and every worker's longest wait within the convoy ticket bound (tickets ahead x (longest hold + 1 + 6 x 6 other threads) + 1); waits only by yielding"
 else

@@ -474,13 +474,15 @@ static bool w2_queued(uint64_t unused)
 {
     (void)unused;
     preempt_disable();
-    bool ok = app->wr_next - app->wr_serving >= 2;
+    bool ok = fsys_wmark_waiting(app) >= 2;
     preempt_enable();
     return ok;
 }
 
 static void bigio_writers(void)
 {
+    struct fd_figures fg0;
+    fd_figures(&fg0);                               /* the write marks' figures before */
     app = make_file("/tmp/bio-app", 0);
     uint32_t f1 = kopen(app, OF_WRITE | OF_APPEND), f2 = kopen(app, OF_WRITE | OF_APPEND);
     bool q1 = false, q2 = false;
@@ -538,8 +540,12 @@ static void bigio_writers(void)
             order = false;
         next_c[w] = c + 1;
     }
-    uint64_t contended = app ? app->wr_contended : 0;
-    uint32_t ahead = app ? app->wr_ahead_max : 0;
+    /* The marks' figures are fd.c's, for every node: only these two
+     * writers write at the same time in test=bigio. */
+    struct fd_figures fg1;
+    fd_figures(&fg1);
+    uint64_t contended = fg1.wmark_contended - fg0.wmark_contended;
+    uint32_t ahead = fg1.wmark_ahead_max;
     char text[400];
     ksnprintf(text, sizeof(text), "two writers: 2 processes appended 8 writes of 32 KiB each "
               "through separate O_APPEND open files (statuses %d, %d): the file holds %llu bytes, "
@@ -616,6 +622,10 @@ bool fsiotest_bigio(void)
 #define SPINNERS 2
 #define OTHERS 6                        /* other runnable threads: 3 workers, 2 spinners, thread 0 */
 #define TURN_MAX 6                      /* policy (b) */
+/* Ticks: a timeout for thread 0's loop, which ends when the workers have
+ * finished (raised from 6000 so their finish under load is measured, not
+ * cut off). */
+#define FC_LIMIT 15000u
 
 static uint32_t share_file;
 static int32_t share_tid;
@@ -710,17 +720,42 @@ static void contend_load(void)
         wtid[i] = wk[i] > 0 ? process_tid(wk[i]) : -1;
     }
     uint64_t t_begin = timer_ticks(), iters = 0;
+    uint64_t y_holds = 0, y_ticked = 0, y_longest = 0;  /* thread 0's yield-while-holding holds */
     struct diag_site s;
-    diag_wait_begin(&s, 6000);
+    diag_wait_begin(&s, FC_LIMIT);
     while (probe && !workers_ended() && diag_wait_poll(&s)) {
         fd_vfs_acquire();
+        uint64_t h0 = timer_ticks();
         ramfs_read(rfs, probe, 0, kbuf, FD_CHUNK);
-        if ((iters & 3) == 0)
+        bool yielded = (iters & 3) == 0;
+        if (yielded)
             thread_yield();                         /* holding: the workers queue behind */
+        uint64_t held = timer_ticks() - h0;
         fd_vfs_release();
+        if (yielded) {
+            y_holds++;
+            if (held >= 1)
+                y_ticked++;
+            if (held > y_longest)
+                y_longest = held;
+        }
         iters++;
     }
+    bool at_limit = !workers_ended();
     uint64_t duration = timer_ticks() - t_begin;
+    /* The workers finish under the same load: the spinners run until they
+     * have (a blocking wait, the documented exception of the bounded
+     * waits: the workers end by themselves). */
+    int32_t code[WORKERS];
+    bool workers_ok = probe != 0;
+    for (int i = 0; i < WORKERS; i++) {
+        enum proc_status st;
+        struct proc_result r = wait_for(wk[i], &st);
+        code[i] = r.end == PROC_END_EXIT ? r.code : -1;
+        workers_ok = workers_ok && exited(wk[i], st, r, 0);
+    }
+    uint64_t finished = timer_ticks() - t_begin;
+    uint64_t margin = finished < FC_LIMIT ? (FC_LIMIT - finished) * 100 / FC_LIMIT : 0;
     uint64_t spin_ticks[SPINNERS];
     for (int i = 0; i < SPINNERS; i++) {
         spin_ticks[i] = sp_tid[i] >= 0 ? thread_ticks_run(sp_tid[i]) : 0;
@@ -733,14 +768,10 @@ static void contend_load(void)
         struct proc_result r = wait_for(sp[i], &st);
         spinners_killed = spinners_killed && st == PROC_OK && r.end == PROC_END_KILLED;
     }
-    int32_t code[WORKERS];
-    bool workers_ok = probe != 0;
-    for (int i = 0; i < WORKERS; i++) {
-        enum proc_status st;
-        struct proc_result r = wait_for(wk[i], &st);
-        code[i] = r.end == PROC_END_EXIT ? r.code : -1;
-        workers_ok = workers_ok && exited(wk[i], st, r, 0);
-    }
+    klogf("%s: timing: the workers finished after %llu ticks, the loop's limit %u ticks (margin "
+          "%llu%%); thread 0's loop ended %s\n", tag, (unsigned long long)finished, FC_LIMIT,
+          (unsigned long long)margin,
+          at_limit ? "AT ITS LIMIT, before the workers finished" : "when the workers finished");
 
     /* The figures. */
     uint64_t hold = lk->hold_longest, yields0 = lk->yields0;
@@ -773,14 +804,18 @@ static void contend_load(void)
     line(workers_ok && all_waited && waited0 >= 1, text);
 
     uint64_t hold_bound = 2 + (uint64_t)TURN_MAX * OTHERS;
-    ksnprintf(text, sizeof(text), "holds under load: %llu holds of the chunk loop, the truncates "
-              "and lseek, %llu of 1 tick or more, %llu spanning a switch, %llu truncate holds "
-              "(longest %llu ticks); longest hold of all %llu ticks (at most %llu: 2 + 6 x %d "
-              "other threads)", (unsigned long long)fg.holds,
+    ksnprintf(text, sizeof(text), "holds under load: work holds (chunk loop, truncates, lseek) "
+              "%llu, %llu of 1 tick or more, %llu spanning a switch, longest %llu ticks; truncate "
+              "holds %llu (longest %llu ticks); thread 0's yield-while-holding holds %llu, %llu "
+              "of 1 tick or more, longest %llu ticks; longest of all holds %llu ticks; each at "
+              "most %llu (2 + 6 x %d other threads)", (unsigned long long)fg.holds,
               (unsigned long long)fg.holds_ticked, (unsigned long long)fg.holds_switched,
-              (unsigned long long)fg.trunc_holds, (unsigned long long)fg.trunc_hold_longest,
+              (unsigned long long)fg.hold_longest, (unsigned long long)fg.trunc_holds,
+              (unsigned long long)fg.trunc_hold_longest, (unsigned long long)y_holds,
+              (unsigned long long)y_ticked, (unsigned long long)y_longest,
               (unsigned long long)hold, (unsigned long long)hold_bound, OTHERS);
-    line(hold <= hold_bound && fg.trunc_holds >= 18, text);
+    line(fg.hold_longest <= hold_bound && y_longest <= hold_bound && hold <= hold_bound &&
+         y_holds > 0 && fg.trunc_holds >= 18, text);
 
     uint64_t gap_bound = (uint64_t)TURN_MAX * OTHERS;
     uint64_t bound0 = (uint64_t)ahead0 * (hold + 1 + gap_bound) + 1;
@@ -807,11 +842,14 @@ static void contend_load(void)
               TURN_MAX, who, (unsigned long long)spin_ticks[0], (unsigned long long)spin_ticks[1]);
     line(turn <= TURN_MAX && spin_ticks[0] >= 1 && spin_ticks[1] >= 1 && spinners_killed, text);
 
-    klogf("%s: figures: duration %llu, holds %llu, ticked %llu, switched %llu, longest hold %llu, "
-          "truncate holds %llu, longest truncate hold %llu, hand-offs %llu, gaps ticked %llu, "
-          "longest gap %llu, thread 0 wait %llu, worker wait %llu, turn %llu, thread 0 loop %llu\n",
-          tag, (unsigned long long)duration, (unsigned long long)fg.holds,
+    klogf("%s: figures: duration %llu, finished %llu, margin %llu, holds %llu, ticked %llu, "
+          "switched %llu, work hold %llu, yield hold %llu, all holds %llu, truncate holds %llu, "
+          "longest truncate hold %llu, hand-offs %llu, gaps ticked %llu, longest gap %llu, "
+          "thread 0 wait %llu, worker wait %llu, turn %llu, thread 0 loop %llu\n", tag,
+          (unsigned long long)duration, (unsigned long long)finished,
+          (unsigned long long)margin, (unsigned long long)fg.holds,
           (unsigned long long)fg.holds_ticked, (unsigned long long)fg.holds_switched,
+          (unsigned long long)fg.hold_longest, (unsigned long long)y_longest,
           (unsigned long long)hold, (unsigned long long)fg.trunc_holds,
           (unsigned long long)fg.trunc_hold_longest, (unsigned long long)ho.count,
           (unsigned long long)ho.ticked, (unsigned long long)ho.longest,
