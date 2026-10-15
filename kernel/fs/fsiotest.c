@@ -692,9 +692,14 @@ static void contend_sharers(void)
 
 static int32_t wk[WORKERS];
 
-static bool workers_ended(void)
+/* The three plain workers (the last, the truncating one, is not waited
+ * for here): thread 0's loop contends while they run, then stops, so the
+ * truncating worker's 2 MiB rounds finish without thread 0's
+ * yield-while-holding holds (stage 5's second filecontend fix: those
+ * holds, not the workers' own, set the test's length). */
+static bool plain_workers_ended(void)
 {
-    for (int i = 0; i < WORKERS; i++)
+    for (int i = 0; i < WORKERS - 1; i++)
         if (wk[i] > 0 && !process_ended(wk[i]))
             return false;
     return true;
@@ -723,7 +728,7 @@ static void contend_load(void)
     uint64_t y_holds = 0, y_ticked = 0, y_longest = 0;  /* thread 0's yield-while-holding holds */
     struct diag_site s;
     diag_wait_begin(&s, FC_LIMIT);
-    while (probe && !workers_ended() && diag_wait_poll(&s)) {
+    while (probe && !plain_workers_ended() && diag_wait_poll(&s)) {
         fd_vfs_acquire();
         uint64_t h0 = timer_ticks();
         ramfs_read(rfs, probe, 0, kbuf, FD_CHUNK);
@@ -741,7 +746,7 @@ static void contend_load(void)
         }
         iters++;
     }
-    bool at_limit = !workers_ended();
+    bool at_limit = !plain_workers_ended();
     uint64_t duration = timer_ticks() - t_begin;
     /* The workers finish under the same load: the spinners run until they
      * have (a blocking wait, the documented exception of the bounded
@@ -769,9 +774,11 @@ static void contend_load(void)
         spinners_killed = spinners_killed && st == PROC_OK && r.end == PROC_END_KILLED;
     }
     klogf("%s: timing: the workers finished after %llu ticks, the loop's limit %u ticks (margin "
-          "%llu%%); thread 0's loop ended %s\n", tag, (unsigned long long)finished, FC_LIMIT,
-          (unsigned long long)margin,
-          at_limit ? "AT ITS LIMIT, before the workers finished" : "when the workers finished");
+          "%llu%%); thread 0's loop ended after %llu ticks, %s\n", tag,
+          (unsigned long long)finished, FC_LIMIT, (unsigned long long)margin,
+          (unsigned long long)duration,
+          at_limit ? "AT ITS LIMIT, before the three plain workers finished"
+                   : "when the three plain workers finished");
 
     /* The figures. */
     uint64_t hold = lk->hold_longest, yields0 = lk->yields0;
