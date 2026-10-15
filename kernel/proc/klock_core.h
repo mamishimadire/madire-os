@@ -96,6 +96,15 @@ enum klock_result klock_core_try(struct klock *l, int32_t tid, uint32_t ticket, 
  * expected). */
 enum klock_result klock_core_release(struct klock *l, int32_t tid, uint64_t now, uint32_t pc);
 
+/* 1.0 stage 4: the holder `tid` releases at tick `now` (as
+ * klock_core_release, `pc` recorded the same way) and takes the next
+ * ticket (*ticket, as klock_core_ticket) in one step: no other ticket can
+ * come between, so it goes behind every ticket already out and holds the
+ * lock again only after each of them. KLOCK_QUEUED, or the release's
+ * error with nothing changed (kernel/proc/klock.c, klock_requeue). */
+enum klock_result klock_core_requeue(struct klock *l, int32_t tid, uint64_t now, uint32_t pc,
+                                     uint32_t *ticket);
+
 /* One wait step of thread `tid`, counted before it yields. */
 void klock_core_waited(struct klock *l, int32_t tid);
 

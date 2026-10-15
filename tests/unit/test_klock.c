@@ -234,6 +234,63 @@ static void test_abandoned_ticket(void)
     CHECK(klock_core_ahead_bad(&l, l.serving, fake_state, &bs) == KLOCK_FREE);   /* none ahead */
 }
 
+/* 1.0 stage 4: klock_core_requeue (kernel/proc/klock.c, klock_requeue).
+ * The holder goes to the back of the queue: every ticket already out
+ * holds the lock before it again (FIFO kept, no queue-jumping); one ticket
+ * is served and one handed out (none lost or doubled); the abandoned-
+ * ticket check still sees the tickets ahead of the new one; a requeue by
+ * a thread not holding the lock is refused with nothing changed. */
+static void test_requeue(void)
+{
+    for (int i = 0; i < SCHED_MAX_THREADS; i++)
+        states[i] = SCHED_READY;
+    klock_core_init(&l);
+    enum sched_state bs = SCHED_READY;
+    uint32_t t = 0xDEADu;
+    CHECK_EQ(take(0, 10), KLOCK_TAKEN);                         /* ticket 0 */
+    uint32_t t5 = ticket(5), t6 = ticket(6);                    /* tickets 1, 2 */
+    CHECK_EQ(klock_core_requeue(&l, 0, 12, 0, &t), KLOCK_QUEUED);
+    CHECK_EQ(t, 3);                                             /* behind every ticket out */
+    CHECK(l.owner == KLOCK_FREE);
+    CHECK_EQ(l.serving, 1);                                     /* its old ticket served */
+    CHECK_EQ(l.next, 4);                                        /* one handed out */
+    CHECK_EQ(l.next - l.serving, 3);                            /* 5, 6 and 0: none lost */
+    CHECK_EQ(klock_core_ahead(&l, t), 2);
+    CHECK_EQ(l.hold_longest, 2);                                /* the release recorded */
+    CHECK_EQ(klock_core_try(&l, 0, t, 12, 12, 0), KLOCK_BUSY);  /* no queue-jumping */
+    CHECK_EQ(klock_core_try(&l, 6, t6, 12, 12, 0), KLOCK_BUSY); /* 5 is first */
+    CHECK(klock_core_ahead_bad(&l, t, fake_state, &bs) == KLOCK_FREE);
+    states[6] = SCHED_BLOCKED;                                  /* a ticket ahead of the requeue */
+    CHECK_EQ(klock_core_ahead_bad(&l, t, fake_state, &bs), 6);
+    CHECK_EQ(bs, SCHED_BLOCKED);
+    states[6] = SCHED_READY;
+    CHECK_EQ(klock_core_try(&l, 5, t5, 13, 12, 1), KLOCK_TAKEN);
+    uint32_t keep = 0xBEEFu;                                    /* not the holder: refused */
+    CHECK_EQ(klock_core_requeue(&l, 0, 13, 0, &keep), KLOCK_ERR_NOT_OWNER);
+    CHECK_EQ(keep, 0xBEEFu);
+    CHECK_EQ(l.next, 4);
+    CHECK_EQ(l.owner, 5);
+    CHECK_EQ(klock_core_requeue(&l, 5, 14, 0, &t5), KLOCK_QUEUED);  /* 5 behind 6 and 0 */
+    CHECK_EQ(t5, 4);
+    CHECK_EQ(klock_core_try(&l, 5, t5, 14, 14, 0), KLOCK_BUSY);
+    CHECK_EQ(klock_core_try(&l, 0, t, 14, 12, 1), KLOCK_BUSY);
+    CHECK_EQ(klock_core_try(&l, 6, t6, 14, 12, 1), KLOCK_TAKEN);
+    CHECK_EQ(klock_core_release(&l, 6, 15, 0), KLOCK_RELEASED);
+    CHECK_EQ(klock_core_try(&l, 5, t5, 15, 14, 1), KLOCK_BUSY);
+    CHECK_EQ(klock_core_try(&l, 0, t, 15, 12, 2), KLOCK_TAKEN);
+    CHECK_EQ(klock_core_release(&l, 0, 16, 0), KLOCK_RELEASED);
+    CHECK_EQ(klock_core_try(&l, 5, t5, 16, 14, 1), KLOCK_TAKEN);
+    CHECK_EQ(klock_core_release(&l, 5, 17, 0), KLOCK_RELEASED);
+    CHECK(l.owner == KLOCK_FREE);
+    CHECK_EQ(l.next, 5);                                        /* 5 tickets, each served once */
+    CHECK_EQ(l.serving, 5);
+    CHECK_EQ(take(2, 20), KLOCK_TAKEN);                         /* nobody waiting: */
+    CHECK_EQ(klock_core_requeue(&l, 2, 21, 0, &t), KLOCK_QUEUED);
+    CHECK_EQ(klock_core_ahead(&l, t), 0);                       /* its new ticket is next */
+    CHECK_EQ(klock_core_try(&l, 2, t, 21, 21, 0), KLOCK_TAKEN);
+    CHECK_EQ(klock_core_requeue(&l, -1, 22, 0, &t), KLOCK_ERR_BAD_TID);
+}
+
 /* Holds: the longest in ticks, and the highest preemption count at a
  * release. */
 static void test_hold_figures(void)
@@ -347,6 +404,7 @@ int main(void)
     RUN(test_wait_method);
     RUN(test_owner_rule);
     RUN(test_abandoned_ticket);
+    RUN(test_requeue);
     RUN(test_hold_figures);
     RUN(test_wait_figures);
     RUN(test_mutual_exclusion_model);

@@ -82,6 +82,15 @@ enum klock_result klock_core_release(struct klock *l, int32_t tid, uint64_t now,
     return KLOCK_RELEASED;
 }
 
+enum klock_result klock_core_requeue(struct klock *l, int32_t tid, uint64_t now, uint32_t pc,
+                                     uint32_t *ticket)
+{
+    enum klock_result r = klock_core_release(l, tid, now, pc);
+    if (r != KLOCK_RELEASED)
+        return r;
+    return klock_core_ticket(l, tid, ticket);
+}
+
 void klock_core_waited(struct klock *l, int32_t tid)
 {
     l->yields++;

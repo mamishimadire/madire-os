@@ -97,12 +97,11 @@ uint32_t klock_requeue(struct klock *l)
     uint32_t ticket = 0;
     preempt_disable();
     uint64_t now = timer_ticks();
-    enum klock_result r = klock_core_release(l, me, now, pc);
-    enum klock_result q = r == KLOCK_RELEASED ? klock_core_ticket(l, me, &ticket) : r;
+    enum klock_result r = klock_core_requeue(l, me, now, pc, &ticket);
     preempt_enable();
-    if (r != KLOCK_RELEASED || q != KLOCK_QUEUED)
+    if (r != KLOCK_QUEUED)
         panicf("klock_requeue: thread %d '%s': %s.", (int)me, thread_name(me),
-               klock_result_str(r != KLOCK_RELEASED ? r : q));
+               klock_result_str(r));
     return wait_turn(l, me, ticket, now);
 }
 
