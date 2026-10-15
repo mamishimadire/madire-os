@@ -6,7 +6,11 @@
 enum syscall_id syscall_lookup(uint64_t nr)
 {
     switch (nr) {
+    case SYS_READ:        return SC_READ;
     case SYS_WRITE:       return SC_WRITE;
+    case SYS_CLOSE:       return SC_CLOSE;
+    case SYS_DUP:         return SC_DUP;
+    case SYS_DUP2:        return SC_DUP2;
     case SYS_SCHED_YIELD: return SC_SCHED_YIELD;
     case SYS_NANOSLEEP:   return SC_NANOSLEEP;
     case SYS_GETPID:      return SC_GETPID;
@@ -31,16 +35,18 @@ const char *syscall_name(enum syscall_id id)
     case SC_GETPID:      return "getpid";
     case SC_EXIT:        return "exit";
     case SC_EXIT_GROUP:  return "exit_group";
+    case SC_READ:        return "read";
+    case SC_CLOSE:       return "close";
+    case SC_DUP:         return "dup";
+    case SC_DUP2:        return "dup2";
+    case SC_COUNT:       break;
     }
     return "unknown";
 }
 
-int64_t syscall_write_check(uint64_t fd, uint64_t count, uint64_t *accepted)
+uint64_t syscall_console_count(uint64_t count)
 {
-    if (fd != 1 && fd != 2)
-        return -MADIRE_EBADF;
-    *accepted = count < SYSCALL_WRITE_MAX ? count : SYSCALL_WRITE_MAX;
-    return 0;
+    return count < SYSCALL_WRITE_MAX ? count : SYSCALL_WRITE_MAX;
 }
 
 int64_t syscall_timespec_ticks(int64_t sec, int64_t nsec, uint32_t hz, uint32_t *ticks)

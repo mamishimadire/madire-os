@@ -7,6 +7,11 @@
 
 static void test_implemented_numbers(void)
 {
+    CHECK_EQ(syscall_lookup(0), SC_READ);                   /* 1.0 stage 4 */
+    CHECK_EQ(syscall_lookup(3), SC_CLOSE);
+    CHECK_EQ(syscall_lookup(32), SC_DUP);
+    CHECK_EQ(syscall_lookup(33), SC_DUP2);
+    CHECK(strcmp(syscall_name(SC_DUP2), "dup2") == 0);
     CHECK_EQ(syscall_lookup(1), SC_WRITE);
     CHECK_EQ(syscall_lookup(24), SC_SCHED_YIELD);
     CHECK_EQ(syscall_lookup(35), SC_NANOSLEEP);
@@ -23,9 +28,9 @@ static void test_everything_else_is_unknown(void)
     for (uint64_t nr = 0; nr < 1024; nr++)
         if (syscall_lookup(nr) != SC_UNKNOWN)
             implemented++;
-    CHECK_EQ(implemented, 6);
+    CHECK_EQ(implemented, 10);                      /* 6 until 1.0 stage 4: + 0, 3, 32, 33 */
     static const uint64_t others[] = {
-        0, 2, 3, 23, 25, 34, 36, 38, 40, 57, 59, 62, 230, 232, 334, 335, 547,
+        7, 2, 9, 23, 25, 34, 36, 38, 40, 57, 59, 62, 230, 232, 334, 335, 547,
         0x40000001ull,                  /* x32 ABI write */
         0x40000000ull + 60,             /* x32 ABI exit */
         (1ull << 32) + 1,               /* write's number with high bits set */
@@ -51,25 +56,17 @@ static void test_madire_range(void)
     CHECK_EQ(MADIRE_EINVAL, 22);
 }
 
-static void test_write_check(void)
+/* 1.0 stage 4: the console's count (the 5 count CHECKs of the former
+ * test_write_check); which descriptors may be written is decided by the
+ * descriptor table, and its 10 CHECKs moved to tests/unit/test_fdtable.c
+ * (test_write_check_moved), one for one. */
+static void test_console_count(void)
 {
-    uint64_t n = 99;
-    CHECK_EQ(syscall_write_check(1, 5, &n), 0);
-    CHECK_EQ(n, 5);
-    CHECK_EQ(syscall_write_check(2, 0, &n), 0);
-    CHECK_EQ(n, 0);
-    CHECK_EQ(syscall_write_check(1, 4096, &n), 0);
-    CHECK_EQ(n, 4096);
-    CHECK_EQ(syscall_write_check(1, 4097, &n), 0);
-    CHECK_EQ(n, 4096);                                  /* short count beyond the maximum */
-    CHECK_EQ(syscall_write_check(1, UINT64_MAX, &n), 0);
-    CHECK_EQ(n, 4096);
-    n = 7;
-    CHECK_EQ(syscall_write_check(0, 5, &n), -9);        /* stdin: not writable here */
-    CHECK_EQ(syscall_write_check(3, 5, &n), -9);
-    CHECK_EQ(syscall_write_check(UINT64_MAX, 5, &n), -9);
-    CHECK_EQ(syscall_write_check((1ull << 32) + 1, 5, &n), -9);
-    CHECK_EQ(n, 7);                                     /* untouched on error */
+    CHECK_EQ(syscall_console_count(5), 5);
+    CHECK_EQ(syscall_console_count(0), 0);
+    CHECK_EQ(syscall_console_count(4096), 4096);
+    CHECK_EQ(syscall_console_count(4097), 4096);        /* short count beyond the maximum */
+    CHECK_EQ(syscall_console_count(UINT64_MAX), 4096);
 }
 
 static void test_timespec_ticks(void)
@@ -201,7 +198,7 @@ int main(void)
     RUN(test_implemented_numbers);
     RUN(test_everything_else_is_unknown);
     RUN(test_madire_range);
-    RUN(test_write_check);
+    RUN(test_console_count);
     RUN(test_timespec_ticks);
     RUN(test_exit_status);
     RUN(test_write_lines);

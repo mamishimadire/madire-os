@@ -8,6 +8,7 @@
 #include "kernel/memory/usercopy.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/fd.h"
 #include "kernel/proc/loadplan.h"
 #include "kernel/proc/process.h"
 #include "kernel/proc/progmod.h"
@@ -137,6 +138,10 @@ static void table_init(void)
 static void process_finish(int slot, enum proc_end end, int32_t code) __attribute__((noreturn));
 static void process_finish(int slot, enum proc_end end, int32_t code)
 {
+    /* 1.0 stage 4: every descriptor closed first (by the process's own
+     * thread, as its address space is); no busy mark is held here. */
+    fd_busy_check("process_finish");
+    fd_teardown(&table.e[slot].fds);
     if (spaces[slot].pml4) {
         struct uvm_teardown_stats st = { 0, 0, 0 };
         uspace_destroy(&spaces[slot], &st);
@@ -200,15 +205,27 @@ static int32_t process_thread(void *arg)
     enter_user(&frame, args[slot]);
 }
 
-/* A process for a built-in image (img) or an ELF file (file, size). */
+/* A process for a built-in image (img) or an ELF file (file, size), with
+ * the console descriptors and (1.0 stage 4) the kernel's grants. */
 static int32_t start(const char *name, const struct userimg *img, const uint8_t *file,
-                     uint64_t size, uint64_t arg)
+                     uint64_t size, uint64_t arg, const struct fd_grant *grants, uint32_t ngrants)
 {
     int slot = -1;
     int32_t pid = -1;
     uint32_t f = irq_save();
     table_init();
     enum proc_status r = proc_alloc(&table, name, &slot, &pid);
+    if (r == PROC_OK && (fd_start_console(&table.e[slot].fds) < 0 ||
+                         !fd_start_grants(&table.e[slot].fds, grants, ngrants))) {
+        /* Closed before the slot is given back. Nothing here drops a node
+         * (no VFS lock with interrupts off): console files have none, and
+         * a granted file is still held by the kernel's own reference. */
+        struct proc_result res;
+        fd_teardown(&table.e[slot].fds);
+        proc_exit(&table, slot, PROC_END_FAULT, -1);
+        proc_reap(&table, pid, &res);
+        r = PROC_ERR_FULL;              /* no open file left, or a bad grant */
+    }
     if (r == PROC_OK) {
         images[slot] = img;
         files[slot] = file;
@@ -222,6 +239,8 @@ static int32_t start(const char *name, const struct userimg *img, const uint8_t 
     if (r != PROC_OK)
         return -1;
     int32_t tid = thread_create(name, process_thread, (void *)(intptr_t)slot, false);
+    if (tid < 0)
+        fd_teardown(&table.e[slot].fds);
     f = irq_save();
     if (tid < 0) {
         struct proc_result res;
@@ -240,14 +259,23 @@ int32_t process_start(const char *name, uint64_t arg)
     const struct userimg *img = userimg_find(user_images, user_images_count, name);
     if (!img || userimg_check(img) != USERIMG_OK)
         return -1;
-    return start(img->name, img, 0, 0, arg);
+    return start(img->name, img, 0, 0, arg, 0, 0);
+}
+
+int32_t process_start_fds(const char *name, uint64_t arg, const struct fd_grant *grants,
+                          uint32_t ngrants)
+{
+    const struct userimg *img = userimg_find(user_images, user_images_count, name);
+    if (!img || userimg_check(img) != USERIMG_OK)
+        return -1;
+    return start(img->name, img, 0, 0, arg, grants, ngrants);
 }
 
 int32_t process_start_file(const char *name, const uint8_t *file, uint64_t size, uint64_t arg)
 {
     if (!name || !file)
         return -1;
-    return start(name, 0, file, size, arg);
+    return start(name, 0, file, size, arg, 0, 0);
 }
 
 int32_t process_start_program(const char *name, uint64_t arg)
@@ -469,6 +497,20 @@ bool process_current_kill_pending(void)
 void process_exit_current(int32_t status)
 {
     process_finish(current_slot("exit"), PROC_END_EXIT, status);
+}
+
+struct fd_table *process_current_fds(void)
+{
+    return &table.e[current_slot("descriptors")].fds;
+}
+
+int32_t process_open_fds(int32_t pid)
+{
+    uint32_t f = irq_save();
+    int slot = table_ready ? proc_find(&table, pid) : -1;
+    int32_t n = slot >= 0 ? (int32_t)fd_count(&table.e[slot].fds) : -1;
+    irq_restore(f);
+    return n;
 }
 
 int32_t process_tid(int32_t pid)

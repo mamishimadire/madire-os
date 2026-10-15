@@ -10,7 +10,11 @@
 
 #include <stdint.h>
 
+#define SYS_READ        0
 #define SYS_WRITE       1
+#define SYS_CLOSE       3
+#define SYS_DUP         32
+#define SYS_DUP2        33
 #define SYS_SCHED_YIELD 24
 #define SYS_NANOSLEEP   35
 #define SYS_GETPID      39
@@ -19,7 +23,9 @@
 
 #define EBADF  9
 #define EFAULT 14
+#define EISDIR 21
 #define EINVAL 22
+#define EMFILE 24
 #define ENOSYS 38
 
 struct timespec {
@@ -44,6 +50,27 @@ static inline long syscall6(uint64_t n, uint64_t a, uint64_t b, uint64_t c,
 static inline long sys_write(uint64_t fd, const void *buf, uint64_t count)
 {
     return syscall6(SYS_WRITE, fd, (uint64_t)(uintptr_t)buf, count, 0, 0, 0);
+}
+
+/* 1.0 stage 4 */
+static inline long sys_read(uint64_t fd, void *buf, uint64_t count)
+{
+    return syscall6(SYS_READ, fd, (uint64_t)(uintptr_t)buf, count, 0, 0, 0);
+}
+
+static inline long sys_close(uint64_t fd)
+{
+    return syscall6(SYS_CLOSE, fd, 0, 0, 0, 0, 0);
+}
+
+static inline long sys_dup(uint64_t oldfd)
+{
+    return syscall6(SYS_DUP, oldfd, 0, 0, 0, 0, 0);
+}
+
+static inline long sys_dup2(uint64_t oldfd, uint64_t newfd)
+{
+    return syscall6(SYS_DUP2, oldfd, newfd, 0, 0, 0, 0);
 }
 
 static inline long sys_sched_yield(void)

@@ -28,6 +28,8 @@
 #include "kernel/devtest.h"
 #include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/proc/fd.h"
+#include "kernel/proc/fdtest.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
@@ -433,6 +435,9 @@ static void run_diagnostics(void)
         bool seeded = cmdline_u32("seed=", &seed);  /* 0.12 stage 3 */
         diag_message(usertest_killrace(seeded, seed) ? "Kill race test: PASS"
                                                      : "Kill race test: FAIL (see serial log)");
+    } else if (cmdline_has("test=selfcheckcopylock")) {   /* 1.0 stage 4 */
+        diag_message("Self-check test: a user copy under the VFS lock (must panic)");
+        fdtest_selfcheck_copylock();
     } else if (cmdline_has("test=selfcheckcr3")) {
         /* 0.12 stage 2b: each self-check test must panic, naming the state.
          * cmdline_has matches substrings: ring3cr3 before ring3. */
@@ -557,6 +562,14 @@ static void run_diagnostics(void)
         diag_message("Filesystem lock test: 6 threads and thread 0 for 3000 ticks...");
         diag_message(fstest_klock() ? "Filesystem lock test: done"
                                     : "Filesystem lock test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fdsys")) {       /* 1.0 stage 4 */
+        diag_message("Descriptor test: read, write, close, dup, dup2 from fdops...");
+        diag_message(fdtest_sys() ? "Descriptor test: done"
+                                  : "Descriptor test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fdkill")) {      /* 1.0 stage 4 */
+        diag_message("Descriptor kill test: programs ending with descriptors open...");
+        diag_message(fdtest_kill() ? "Descriptor kill test: done"
+                                   : "Descriptor kill test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();
@@ -848,6 +861,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
     run_diagnostics();
+    /* 1.0 stage 4: every process so far (the boot self-test's, a
+     * diagnostic's) has closed its descriptors. */
+    klogf("Descriptors: %u per process, %u open files system-wide; %u open files now\n",
+          FD_MAX, FILE_MAX, fd_open_files());
 
     bool console_offered = console_ok && keyboard_ok;
     bootscreen_ready(console_offered ? "Press any key to open the console."

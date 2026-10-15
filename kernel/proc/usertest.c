@@ -17,6 +17,7 @@
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
 #include "kernel/proc/diagwait.h"
+#include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
 #include "kernel/proc/progmod.h"
@@ -1039,7 +1040,7 @@ static const struct us_case us_cases[] = {
     { "exitcode", 3, "return 44 from main (crt0's exit)",           44 },
     { "getpid",   0, "getpid twice, exits with it",                 -1 },
     { "yield",    0, "100 sched_yield calls, each 0",                0 },
-    { "enosys",   0, "1028 numbers without a call: -ENOSYS each",    0 },
+    { "enosys",   0, "1024 numbers without a call: -ENOSYS each",    0 },
     { "sysregs",  0, "registers and RFLAGS across a call",           0 },
 };
 #define US_CASES (int)(sizeof(us_cases) / sizeof(us_cases[0]))
@@ -1080,7 +1081,8 @@ bool usertest_usersys(void)
      * sched_yield 100; exit 7 (exitcode 0, 2, 3 and crt0 in getpid, yield,
      * enosys, sysregs); exit_group 1; write 4 (getpid 1, yield 1,
      * enosys 2; since stage 5b, before that these were -ENOSYS too);
-     * -ENOSYS 1028 (enosys). */
+     * -ENOSYS 1024 (enosys; 1028 until 1.0 stage 4 implemented read,
+     * close, dup and dup2). */
     syscall_counts(&c1);
     uint64_t gp = c1.by_id[SC_GETPID] - c0.by_id[SC_GETPID];
     uint64_t sy = c1.by_id[SC_SCHED_YIELD] - c0.by_id[SC_SCHED_YIELD];
@@ -1088,7 +1090,7 @@ bool usertest_usersys(void)
     uint64_t eg = c1.by_id[SC_EXIT_GROUP] - c0.by_id[SC_EXIT_GROUP];
     uint64_t wr = c1.by_id[SC_WRITE] - c0.by_id[SC_WRITE];
     uint64_t en = c1.enosys - c0.enosys;
-    line_ok = gp == 3 && sy == 100 && ex == 7 && eg == 1 && wr == 4 && en == 1028;
+    line_ok = gp == 3 && sy == 100 && ex == 7 && eg == 1 && wr == 4 && en == 1024;
     klogf("%s: system calls made: getpid %llu, sched_yield %llu, exit %llu, exit_group %llu, "
           "write %llu, -ENOSYS %llu: %s\n", t, (unsigned long long)gp, (unsigned long long)sy,
           (unsigned long long)ex, (unsigned long long)eg, (unsigned long long)wr,
@@ -1932,7 +1934,7 @@ bool usertest_killrace(bool seeded, uint32_t seed)
 {
     const char *t = "Kill race test";
     uint32_t free0 = pmm_free_pages(), stacks0 = thread_stacks_in_use(), live0 = thread_live();
-    uint32_t spaces0 = uspace_live_count;
+    uint32_t spaces0 = uspace_live_count, files0 = fd_open_files();   /* 1.0 stage 4 */
     uint32_t done[KR_MODES] = { 0 }, before[KR_MODES] = { 0 }, wrong = 0, start_bad = 0;
     uint32_t not_ring3 = 0, rng = seed, bound = 0;
     uint64_t jitter_sum = 0;
@@ -2040,12 +2042,14 @@ bool usertest_killrace(bool seeded, uint32_t seed)
     while (thread_reap())
         ;
     uint32_t free1 = pmm_free_pages(), stacks1 = thread_stacks_in_use(), live1 = thread_live();
+    uint32_t files1 = fd_open_files();
     line_ok = process_live() == 0 && free1 == free0 && stacks1 == stacks0 && live1 == live0 &&
-              uspace_live_count == spaces0;
+              uspace_live_count == spaces0 && files1 == files0;
     klogf("%s: cleanup: %u processes left, free pages %u -> %u, stacks %u -> %u, threads %u -> %u, "
-          "live address spaces %u -> %u: %s\n", t, (unsigned)process_live(), (unsigned)free0,
-          (unsigned)free1, (unsigned)stacks0, (unsigned)stacks1, (unsigned)live0, (unsigned)live1,
-          (unsigned)spaces0, (unsigned)uspace_live_count, line_ok ? "OK" : "MISMATCH");
+          "live address spaces %u -> %u, open files %u -> %u: %s\n", t, (unsigned)process_live(),
+          (unsigned)free0, (unsigned)free1, (unsigned)stacks0, (unsigned)stacks1, (unsigned)live0,
+          (unsigned)live1, (unsigned)spaces0, (unsigned)uspace_live_count, (unsigned)files0,
+          (unsigned)files1, line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
     ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");

@@ -956,3 +956,96 @@ if klock_keys_ok "$LOG"; then
 else
     fail "[1.0] klock: the echo typed during the test is missing or not exact, a key event was dropped, or no done line, System ready or a panic, in $LOG"
 fi
+
+# ---- 1.0 stage 4: file descriptors (B1, B2, B3) ----
+# Deviations (approved): file read and write come in stage 4, not 5, on
+# files the kernel gives a program at its start (process_start_fds, no
+# system call; diagnostics now, shell redirection in stage 9); test=fdsys
+# is added to B7's diagnostics; check 24's read is 48 KiB, not 2 MiB (a
+# built-in program holds at most 64 KiB of data).
+
+echo "== [1.0] Descriptors at boot"
+expect_next "$OUT/serial-boot.log" \
+    "[1.0] boot: descriptor limits logged (16 per process, 256 open files); 0 open files at System ready" \
+    "^Descriptors: 16 per process, 256 open files system-wide; 0 open files now$" "^System ready\. "
+
+echo "== [1.0] test=fdsys: read, write, close, dup, dup2 from fdops (-m 32M; files given at start)"
+LOG=$OUT/serial-fdsys.log
+boot_text "$LOG" 120 "System ready." "x{ret}version{ret}echo end-of-fd-test{ret}" 0.05 \
+    $'\nend-of-fd-test\n' -m 32M -kernel "$KERNEL" -append "test=fdsys"
+grep -E "^Descriptor test: " "$LOG" | sed 's/^/      /'
+# fdsys_case <arg> <regex after the status> <description>: fdops <arg>
+# exited with status 0 (every result it checked was right) and the
+# kernel's own conditions after it held.
+fdsys_case() {
+    expect "$LOG" "^Descriptor test: fdops $1 \(.*\): process [0-9]+ exited, status 0 \(expected 0\)$2: OK$" "$3"
+}
+fdsys_case 0 "" \
+    "[1.0] fdsys: fds 0, 1, 2 open at start: write(1) and write(2) as before, write(0) EBADF (read-only), read(0) returns 0, read(1) EBADF (write-only)"
+fdsys_case 1 "" \
+    "[1.0] fdsys: close(2) returns 0, then write(2) and close(2) EBADF; close(16), close(-1), close(2^32+1) EBADF"
+P=$(grep -m1 -E "^Descriptor test: fdops 2 " "$LOG" | sed -nE 's/.*: process ([0-9]+) exited.*/\1/p')
+if grep -qE "^Descriptor test: fdops 2 \(.*\): process [0-9]+ exited, status 0 \(expected 0\): OK$" "$LOG" &&
+   [ -n "$P" ] && grep -qxF "[pid $P] fdops: through a dup" "$LOG"; then
+    pass "[1.0] fdsys: dup returns the lowest free fd (3 with 0-2 open, 2 after close(2)); a write through it reaches the log with the [pid N] prefix"
+else
+    fail "[1.0] fdsys: dup case not OK, or no '[pid ${P:-?}] fdops: through a dup' line, in $LOG"
+fi
+fdsys_case 3 "" \
+    "[1.0] fdsys: dup2: oldfd = newfd returns newfd; an open newfd is closed first and reused; newfd 16 or -1 EBADF; oldfd not open EBADF, newfd left open"
+fdsys_case 4 "" \
+    "[1.0] fdsys: EMFILE: 13 dups fill fds 3-15, the next dup returns EMFILE and changes nothing; after a close the next dup gets that fd"
+fdsys_case 5 "" \
+    "[1.0] fdsys: a 5000-byte write through a dup of fd 1 returns 4096 (the console's short count, unchanged)"
+fdsys_case 10 "; offset 10000" \
+    "[1.0] fdsys: a 10000-byte read through an inherited file fd returns 10000 in one call (3 chunks), bytes identical; the next read returns 0 at end of file"
+fdsys_case 11 "; the file holds 9000 bytes, each as written" \
+    "[1.0] fdsys: a 9000-byte write through an inherited O_RDWR file fd returns 9000 (the full count, 3 chunks); the kernel reads the same bytes back"
+fdsys_case 12 "; the shared offset 200" \
+    "[1.0] fdsys: dup'd descriptors share one offset: 100 bytes through fd 3, then 100 through its dup, read bytes 0-99 and 100-199"
+fdsys_case 13 "; both files unchanged \(offsets 0, 0; sizes 10000 and 9000\)" \
+    "[1.0] fdsys: files: write to a read-only fd EBADF, read from a write-only fd EBADF; nothing changed"
+fdsys_case 14 "; offset 100 \(unchanged by the 3 EFAULT reads\)" \
+    "[1.0] fdsys: read into an unmapped, read-only (text) or kernel buffer returns EFAULT; no byte written, the offset unchanged"
+expect "$LOG" "^Descriptor test: busy mark: the second read waited \([1-9][0-9]* wait steps\) until the first call \(40960 bytes, 10 chunks\) ended, then read at its end offset \(status 10, in 4096-byte units\); 3 sharers: 192 reads, final offset 786432, takes 192, after waiting [0-9]+, most tickets ahead [0-2] \(at most 2\), longest wait [0-9]+ ticks: OK$" \
+    "[1.0] fdsys: the busy mark: a second read on an open file shared by two processes waited until the first call ended and continued at its end offset"
+expect "$LOG" "^Descriptor test: VFS lock holds of the chunk loop: [1-9][0-9]* chunks, longest hold [0-2] ticks \(at most 2\): OK$" \
+    "[1.0] fdsys: the console path and the chunk loop held the VFS lock only in bounded chunks: longest hold at most 2 ticks"
+expect "$LOG" "^Descriptor test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fdsys: cleanup: open files, fd entries, node holds, data pages, heap bytes and VFS lock tickets back to the start"
+expect "$LOG" "^Descriptor test: PASS$"              "[1.0] fdsys: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] fdsys: no crash screen, no panic"
+expect_next "$LOG" "[1.0] fdsys: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-fdsys-smap.log
+boot "$LOG" 90 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=fdsys"
+expect "$LOG" "^Descriptor test: PASS$"              "[1.0] fdsys with SMEP and SMAP on: PASS (copy_to_user's stac/clac)"
+
+echo "== [1.0] test=fdkill: programs ending with descriptors open (-m 32M)"
+LOG=$OUT/serial-fdkill.log
+boot_until "$LOG" 180 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=fdkill"
+grep -E "^Descriptor kill test: " "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Descriptor kill test: killed: 8 programs holding 16 descriptors each \(an inherited file among them\) killed in ring 3; 128 descriptors closed by their teardowns: OK$" \
+    "[1.0] fdkill: 8 programs holding 16 fds each (an inherited file among them) killed in ring 3: every fd closed by the teardown"
+expect "$LOG" "^Descriptor kill test: fault: 8 programs ended by a page fault with 16 descriptors open; 128 descriptors closed by their teardowns: OK$" \
+    "[1.0] fdkill: 8 programs ended by a fault with 16 fds open: every fd closed"
+expect "$LOG" "^Descriptor kill test: exit: 8 programs exiting without closing their 16 descriptors; 128 descriptors closed by their teardowns: OK$" \
+    "[1.0] fdkill: 8 programs exiting without closing their fds: every fd closed"
+expect "$LOG" "^Descriptor kill test: kill before the first entry to ring 3: process [0-9]+ killed; 4 descriptors closed \(the 3 console fds and the inherited file\): OK$" \
+    "[1.0] fdkill: a kill requested before the first entry to ring 3: its console fds closed"
+expect "$LOG" "^Descriptor kill test: kill during a read: requested between chunk 1 and chunk 2 of 12 \(offset 4096 of 49152 at the kill\); the read completed \(offset 49152\), then process [0-9]+ killed; 4 descriptors closed: OK$" \
+    "[1.0] fdkill: a kill requested during a 48 KiB read, between its first and second chunk: the read returned its full count (12 chunks; the kill took effect at the return to ring 3), then every fd closed"
+expect "$LOG" "^Descriptor kill test: unlinked file: alive after its unlink while the killed programs held it \(nodes ([0-9]+) -> \1, nlink 0, held by 1 open file\), freed at their last close \(nodes [0-9]+, data pages [0-9]+ -> [0-9]+\): OK$" \
+    "[1.0] fdkill: an unlinked file held only by killed programs' fds freed at its last close (node and data pages back)"
+expect "$LOG" "^Descriptor kill test: open-file table: filled to 256 \(256 taken by the kernel\), the next ENFILE, still 256; all given back \(0 -> 0\): OK$" \
+    "[1.0] fdkill: the open-file table: 256 objects taken by the kernel, the 257th ENFILE with nothing changed, all given back"
+expect "$LOG" "^Descriptor kill test: leaks: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fdkill: nothing leaked: open files, fd entries, node holds, data pages, heap bytes, VFS lock tickets back to the start"
+expect "$LOG" "^Descriptor kill test: 26 address spaces torn down by their own threads, 0 wrong; free pages [0-9]+ -> [0-9]+ \(\+[0-9]+: the unlinked file's pages\), kernel page tables ([0-9]+) -> \1, stack slots ([0-9]+) -> \2, live threads ([0-9]+) -> \3, live address spaces ([0-9]+) -> \4, processes left 0: OK$" \
+    "[1.0] fdkill: address spaces, frames, page tables, stacks, threads and process table exactly restored"
+if grep -qE "^Descriptor kill test: PASS$" "$LOG" && grep -qxF "$READY_LINE" "$LOG"; then
+    pass "[1.0] fdkill: PASS"
+else
+    fail "[1.0] fdkill: no PASS or no System ready in $LOG"
+fi
+reject "$LOG" "PANIC"                                 "[1.0] fdkill: no crash screen, no panic"

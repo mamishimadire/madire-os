@@ -74,6 +74,17 @@ int32_t process_start_file(const char *name, const uint8_t *file, uint64_t size,
  * such program was kept at boot. */
 int32_t process_start_program(const char *name, uint64_t arg);
 
+/* 1.0 stage 4: the built-in image `name`, as process_start, with more
+ * descriptors given at its start (kernel/proc/fd.h): each grant's open
+ * file at its number, replacing a console descriptor there. Kernel only:
+ * no system call and no console command reaches it (the diagnostics use
+ * it; a shell redirection may later). The caller keeps its own reference
+ * to each granted file until this returns. -1 as process_start, or for a
+ * bad grant or no open file left for the console descriptors. */
+struct fd_grant;
+int32_t process_start_fds(const char *name, uint64_t arg, const struct fd_grant *grants,
+                          uint32_t ngrants);
+
 /* Requests the end of process `pid`; it ends at its next return to ring 3
  * (result PROC_END_KILLED). */
 enum proc_status process_kill(int32_t pid);
@@ -110,6 +121,12 @@ int32_t process_current_pid(void);
 /* True when the calling process has a pending kill request. */
 bool process_current_kill_pending(void);
 void process_exit_current(int32_t status) __attribute__((noreturn));
+
+/* 1.0 stage 4: the calling process's descriptors (panics if the thread
+ * is not a process), and the descriptors open in process `pid` (-1: no
+ * such process). */
+struct fd_table *process_current_fds(void);
+int32_t process_open_fds(int32_t pid);
 
 /* The thread of process `pid` (alive or not yet waited for), or -1. */
 int32_t process_tid(int32_t pid);

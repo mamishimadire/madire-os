@@ -14,12 +14,21 @@
  * Our own table: the numbers and meanings are taken from the documented
  * Linux interface, no Linux header is used.
  *
- *   1    write(fd, buf, count)        fd 1 or 2; at most SYSCALL_WRITE_MAX
- *                                     bytes per call (a short count beyond)
+ *   0    read(fd, buf, count)         1.0 stage 4: through the descriptor table
+ *                                     (kernel/proc/fd.h): fd 0 (the console)
+ *                                     returns 0; a file the full count
+ *   1    write(fd, buf, count)        through the descriptor table (1.0 stage
+ *                                     4): the console (fds 1 and 2 at start)
+ *                                     at most SYSCALL_WRITE_MAX bytes per call
+ *                                     (a short count beyond); a file the full
+ *                                     count
+ *   3    close(fd)                    1.0 stage 4
  *   24   sched_yield()                0
  *   35   nanosleep(req, rem)          rounded up to whole timer ticks; rem is
  *                                     never written (nothing interrupts a
  *                                     sleep: there are no signals)
+ *   32   dup(oldfd)                   1.0 stage 4: the lowest free descriptor
+ *   33   dup2(oldfd, newfd)           1.0 stage 4
  *   39   getpid()                     the process ID
  *   60   exit(status)                 ends the process; status & 0xFF
  *   231  exit_group(status)           the same (one thread per process)
@@ -34,7 +43,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define SYS_READ        0u
 #define SYS_WRITE       1u
+#define SYS_CLOSE       3u
+#define SYS_DUP         32u
+#define SYS_DUP2        33u
 #define SYS_SCHED_YIELD 24u
 #define SYS_NANOSLEEP   35u
 #define SYS_GETPID      39u
@@ -61,15 +74,21 @@ enum syscall_id {
     SC_GETPID,
     SC_EXIT,
     SC_EXIT_GROUP,
+    SC_READ,                        /* 1.0 stage 4 */
+    SC_CLOSE,
+    SC_DUP,
+    SC_DUP2,
+    SC_COUNT                        /* the number of ids */
 };
 
 enum syscall_id syscall_lookup(uint64_t nr);
 bool syscall_is_madire(uint64_t nr);       /* in the reserved Madire range */
 const char *syscall_name(enum syscall_id id);
 
-/* write: 0 if fd is 1 or 2 (then *accepted = the bytes that will be taken,
- * min(count, SYSCALL_WRITE_MAX)), else -EBADF. */
-int64_t syscall_write_check(uint64_t fd, uint64_t count, uint64_t *accepted);
+/* write to the console: the bytes taken, min(count, SYSCALL_WRITE_MAX).
+ * (1.0 stage 4: which descriptors are open, and for writing, is decided by
+ * the descriptor table, kernel/proc/fdtable_core.h.) */
+uint64_t syscall_console_count(uint64_t count);
 
 /* nanosleep: a struct timespec {int64 tv_sec; int64 tv_nsec} to timer ticks
  * at `hz`, rounded up (0 stays 0, which is a yield); -EINVAL if tv_sec < 0

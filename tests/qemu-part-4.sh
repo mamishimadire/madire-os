@@ -153,6 +153,21 @@ selfcheck_panic selfcheckring3cr3 "ring 3 without a live address space" \
     "process_return_to_user: thread [0-9]+ returns to ring 3 at$" \
     "^ RIP 0x00000000004[0-9a-f]{5} without a live address space$" "^ \(CR3 0x[0-9a-f]{16}\)\.$"
 
+echo "== [1.0] self-check (stage 4): a user copy while holding the VFS lock (test=selfcheckcopylock)"
+# kernel/memory/usercopy.h: user memory is never touched under the VFS lock.
+# Thread 0 takes the lock and calls copy_to_user; "(WRONG)" means it returned.
+LOG=$OUT/serial-selfcheckcopylock.log
+boot_until "$LOG" 10 " System halted. Power off the machine." -m 32M -kernel "$KERNEL" \
+    -append "test=selfcheckcopylock"
+expect_lines "$LOG" "[1.0] self-check: a user copy while holding the VFS lock panics, naming the thread" \
+    "copy_to_user: thread 0 'kernel' holds the VFS lock:$" "^ user memory is never touched under it\.$"
+if grep -q "System halted\. Power off the machine\." "$LOG" && [ "$(grep -c '^boot32: start$' "$LOG")" = 1 ] &&
+   ! grep -qE "\(WRONG\)|System ready" "$LOG"; then
+    pass "[1.0] self-check: the panic screen shown and the kernel halted"
+else
+    fail "[1.0] self-check: no halt, a reset, a returned copy or System ready in $LOG"
+fi
+
 echo "== [0.12] Bounded diagnostic waits: the timer stopped on purpose (test=waitstall)"
 # 0.12 stage 3: with interrupts off on thread 0 the tick count cannot move;
 # a bounded wait and thread 0's bounded sleep must each end as a stall

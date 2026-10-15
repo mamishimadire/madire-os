@@ -28,21 +28,11 @@ static const char *state_str(enum sched_state s)
     return "?";
 }
 
-uint32_t klock_acquire(struct klock *l)
+/* Waits by yielding until `ticket` (taken at tick `first`) is served;
+ * returns the wait steps. */
+static uint32_t wait_turn(struct klock *l, int32_t me, uint32_t ticket, uint64_t first)
 {
-    int32_t me = thread_current();
-    uint32_t pc = preempt_count();
-    if (pc || !irq_enabled())
-        panicf("klock_acquire: thread %d '%s' with preemption disabled (count %u)\n or "
-               "interrupts off: a klock is taken outermost.", (int)me, thread_name(me), pc);
-    uint32_t ticket = 0;
-    preempt_disable();
-    uint64_t first = timer_ticks();
-    enum klock_result r = klock_core_ticket(l, me, &ticket);
-    preempt_enable();
-    if (r != KLOCK_QUEUED)
-        panicf("klock_acquire: thread %d '%s': %s.", (int)me, thread_name(me),
-               klock_result_str(r));
+    enum klock_result r;
     uint32_t yields = 0;
     for (;;) {
         enum sched_state bs = SCHED_READY;
@@ -77,6 +67,43 @@ uint32_t klock_acquire(struct klock *l)
         yields++;
         thread_yield();                 /* stays on the run queue: never blocks */
     }
+}
+
+uint32_t klock_acquire(struct klock *l)
+{
+    int32_t me = thread_current();
+    uint32_t pc = preempt_count();
+    if (pc || !irq_enabled())
+        panicf("klock_acquire: thread %d '%s' with preemption disabled (count %u)\n or "
+               "interrupts off: a klock is taken outermost.", (int)me, thread_name(me), pc);
+    uint32_t ticket = 0;
+    preempt_disable();
+    uint64_t first = timer_ticks();
+    enum klock_result r = klock_core_ticket(l, me, &ticket);
+    preempt_enable();
+    if (r != KLOCK_QUEUED)
+        panicf("klock_acquire: thread %d '%s': %s.", (int)me, thread_name(me),
+               klock_result_str(r));
+    return wait_turn(l, me, ticket, first);
+}
+
+uint32_t klock_requeue(struct klock *l)
+{
+    int32_t me = thread_current();
+    uint32_t pc = preempt_count();
+    if (pc || !irq_enabled())
+        panicf("klock_requeue: thread %d '%s' with preemption disabled (count %u)\n or "
+               "interrupts off: a klock is taken outermost.", (int)me, thread_name(me), pc);
+    uint32_t ticket = 0;
+    preempt_disable();
+    uint64_t now = timer_ticks();
+    enum klock_result r = klock_core_release(l, me, now, pc);
+    enum klock_result q = r == KLOCK_RELEASED ? klock_core_ticket(l, me, &ticket) : r;
+    preempt_enable();
+    if (r != KLOCK_RELEASED || q != KLOCK_QUEUED)
+        panicf("klock_requeue: thread %d '%s': %s.", (int)me, thread_name(me),
+               klock_result_str(r != KLOCK_RELEASED ? r : q));
+    return wait_turn(l, me, ticket, now);
 }
 
 void klock_release(struct klock *l)

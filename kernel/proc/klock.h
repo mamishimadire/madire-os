@@ -42,6 +42,13 @@ uint32_t klock_acquire(struct klock *l);
 
 void klock_release(struct klock *l);
 
+/* 1.0 stage 4: releases the lock and takes a new ticket in one step (no
+ * other ticket can come between), so every thread already waiting holds
+ * the lock once before the caller has it again; returns the wait steps.
+ * The caller must hold it. (test=fdkill uses it to take the lock between
+ * two chunks of a program's read.) */
+uint32_t klock_requeue(struct klock *l);
+
 /* True if the calling thread holds it. */
 bool klock_held(const struct klock *l);
 
