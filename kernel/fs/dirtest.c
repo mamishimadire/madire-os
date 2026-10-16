@@ -414,7 +414,7 @@ static void dirops_lookup_cost(void)
     klogf("%s: adversarial lookup (report only): a %u-byte path of 512 'e99z' steps (511 "
           "followed by '..') in a folder of %u entries, the folder last: %s in %llu us (%llu "
           "ticks, under the VFS lock); TSC %llu cycles per tick (calibrated over %llu ticks, "
-          "limit %u)\n", (unsigned)p, made + 1, r == 0 && n ? "found" : "NOT found",
+          "limit %u)\n", tag, (unsigned)p, made + 1, r == 0 && n ? "found" : "NOT found",
           (unsigned long long)fd_cycles_us(cycles, per), (unsigned long long)ticks,
           (unsigned long long)per, (unsigned long long)spent, FD_TSC_LIMIT);
     remove_dir("/tmp/do-adv/e99z");
