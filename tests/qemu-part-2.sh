@@ -730,6 +730,9 @@ expect_lines "$LOG" "[0.12] help: today's list unchanged, then prompt, alias, un
     "^  ls       List a folder: ls \[-l\] \[path\]$" "^  mkdir    Create a folder: mkdir <path>$" \
     "^  rmdir    Remove an empty folder: rmdir <path>$" "^  touch    Create an empty file, or update its time$" \
     "^  stat     Show a file's or folder's details: stat <path>$" "^  cat      Show a file's contents: cat <path>$" \
+    "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$" "^  cp       Copy a file: cp \[-y\] <from> <to>$" \
+    "^  mv       Move or rename: mv \[-y\] <from> <to>$" "^  df       Show the filesystem's nodes and pages in use$" \
+    "^  du       Show the pages under a folder: du \[path\]$" \
     "^Sections: shell system programs files \(help <section>\)$" "$NEXT"
 expect_lines "$LOG" "[0.12] help shell: the shell's commands" \
     "^madire> help shell$" "^shell: The shell's own commands$" "^  help     " "^  clear    " "^  echo     " \
@@ -743,7 +746,8 @@ expect_lines "$LOG" "[0.12] help programs: programs and processes" \
     "^  kill     " "$NEXT"
 # Every command "help" lists is in exactly one section, and no section name
 # is a command (stage 2's new commands must be placed in a section; 1.0
-# stage 8: the section "files" and its 8 commands, 34 in all).
+# stage 8: the section "files" and its 8 commands, 34 in all; stage 9: rm,
+# cp, mv, df and du in "files", 39 in all).
 if awk '
         /^madire> / { cur = $0; next }
         cur == "madire> help" && /^  [a-z]/ { split($0, f, " "); all[f[1]] = 1; next }
@@ -753,9 +757,9 @@ if awk '
             for (c in in_sec) if (!(c in all)) bad = 1
             split("shell system programs files", s, " ")
             for (i = 1; i <= 4; i++) if (s[i] in all) bad = 1
-            exit !(na == 34 && !bad)
+            exit !(na == 39 && !bad)
         }' "$LOG"; then
-    pass "[0.12] help sections: each of the 34 commands in exactly one section, no section named like a command"
+    pass "[0.12] help sections: each of the 39 commands in exactly one section, no section named like a command"
 else
     fail "[0.12] help sections: a command missing from the sections, in two, or a section named like a command"
 fi
@@ -768,8 +772,9 @@ expect_lines "$LOG" "[0.12] help nosuchcommand: today's line only, no suggestion
     "^madire> help nosuchcommand$" "^No help for 'nosuchcommand': unknown command\.$" "$NEXT"
 expect_lines "$LOG" "[0.12] hlep: Did you mean: help, sleep?" \
     "^madire> hlep$" "^Unknown command: hlep\. Type 'help' for a list of commands\.$" "^Did you mean: help, sleep\?$" "$NEXT"
-expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (run, cd, cpu)" \
-    "^madire> ru$" "^Unknown command: ru\. " "^Did you mean: run, cd, cpu\?$" "$NEXT"
+# 1.0 stage 9: rm and du are at distance 1 too (was "run, cd, cpu").
+expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (du, rm, run)" \
+    "^madire> ru$" "^Unknown command: ru\. " "^Did you mean: du, rm, run\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] Echo: case-sensitive, distance 1 (echo)" \
     "^madire> Echo x$" "^Unknown command: Echo\. " "^Did you mean: echo\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] ECHO: four letters differ, no suggestion" \

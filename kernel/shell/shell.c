@@ -1112,12 +1112,17 @@ static enum shell_result cmd_ls(int argc, char **argv, const struct shell_contex
     return r < 0 ? fs_error(o, c, "ls", path, r) : SHELL_OK;
 }
 
+static bool cat_into_itself(const char *path, const struct shell_context *c,
+                            const struct shell_output *o);
+
 static enum shell_result cmd_cat(int argc, char **argv, const struct shell_context *c,
                                  const struct shell_output *o)
 {
     if (argc != 2)
         return usage_error(o, "cat <path>");
     if (!fs_path_arg(argv[1], "cat <path>", o))
+        return SHELL_BAD_ARGS;
+    if (c->storage && cat_into_itself(argv[1], c, o))       /* 1.0 stage 9 */
         return SHELL_BAD_ARGS;
     int r = c->files->cat_open(c->files->ctx, argv[1]);
     return r < 0 ? fs_error(o, c, "cat", argv[1], r) : SHELL_CAT;
@@ -1154,6 +1159,517 @@ void shell_cat_end(struct shell_cat *s, const struct shell_output *o)
 {
     if (s->n)
         cat_emit(s, o);
+}
+
+/* ---- 1.0 stage 9: rm, cp, mv, df, du and output redirection (with storage) ---- */
+
+#define RM_USAGE        "rm [-y] <path>"
+#define CP_USAGE        "cp [-y] <from> <to>"
+#define MV_USAGE        "mv [-y] <from> <to>"
+#define DU_USAGE        "du [path]"
+#define FS_PAIR_SHOWN   16      /* each path of a line naming two: the line fits 79 columns */
+#define OUT_PATH_SHOWN  24      /* the file of an "Output to" line */
+#define OP_SHOWN        20      /* a bad operator word */
+#define KEEP_MAX        256     /* paths kept across a question (lines are shorter) */
+#define OUT_BUF         4096    /* a redirection writes at most this much per hold */
+
+/* The line's redirection (shell_parse_line), static: not on the console's stack. */
+static struct shell_redirect line_redirect;
+
+/* A data write's reason: the budget, the size limit, else as fs_reason. */
+static const char *data_reason(int err)
+{
+    if (err == -FS_ENOSPC)
+        return "no file space left (the budget is full)";
+    if (err == -FS_EFBIG)
+        return "the file is at its size limit (2 MiB)";
+    return fs_reason(err);
+}
+
+static void l_reason(struct line *l, const char *why, int err)
+{
+    if (why) {
+        l_str(l, why);
+    } else {
+        l_str(l, "error ");
+        l_uint(l, (uint32_t)-err, 0, ' ');
+    }
+}
+
+static void l_quoted(struct line *l, const char *s, uint32_t max)
+{
+    l_char(l, '\'');
+    l_shown(l, s, str_len(s), max);
+    l_char(l, '\'');
+}
+
+static void keep(char *dst, const char *src)
+{
+    uint32_t i = 0;
+    for (; src[i] && i + 1 < KEEP_MAX; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+/* rm's, cp's and mv's question, kept until the next line answers it. */
+enum { ASK_NONE, ASK_RM, ASK_CP, ASK_MV };
+static struct {
+    int op;
+    char a[KEEP_MAX], b[KEEP_MAX];
+} pending;
+
+static enum shell_result ask(const struct shell_output *o, int op, const char *a, const char *b)
+{
+    struct line l;
+    pending.op = op;
+    keep(pending.a, a);
+    keep(pending.b, b ? b : "");
+    l_reset(&l);
+    l_str(&l, op == ASK_RM ? "Remove file " : "Replace file ");
+    l_quoted(&l, op == ASK_RM ? a : b, FS_PATH_SHOWN);
+    l_str(&l, "? Type 'yes' to confirm:");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_ASK;
+}
+
+static enum shell_result rm_folder(const struct shell_output *o, const char *path)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "rm: ");
+    l_quoted(&l, path, FS_PATH_SHOWN);
+    l_str(&l, ": is a folder (rmdir removes folders).");
+    emit(o, &l, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
+static enum shell_result do_rm(const char *path, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    int r = c->storage->unlink(c->storage->ctx, path);
+    if (r == -FS_EISDIR)
+        return rm_folder(o, path);
+    return r < 0 ? fs_error(o, c, "rm", path, r) : SHELL_OK;
+}
+
+/* "rm <path>": a file only (rm -r later); asks first, unless -y. */
+static enum shell_result cmd_rm(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    bool yes = argc > 1 && str_eq(argv[1], "-y");
+    if (yes) {
+        argv++;
+        argc--;
+    }
+    if (argc != 2 || argv[1][0] == '-')
+        return usage_error(o, RM_USAGE);
+    struct shell_finfo *f = &ls_rows[0];
+    int r = c->files->stat(c->files->ctx, argv[1], f);
+    if (r < 0)
+        return fs_error(o, c, "rm", argv[1], r);
+    if (f->type == SHELL_FT_DIR)
+        return rm_folder(o, argv[1]);
+    return yes ? do_rm(argv[1], c, o) : ask(o, ASK_RM, argv[1], 0);
+}
+
+static enum shell_result do_cp(const char *from, const char *to, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    uint64_t size = 0;
+    int r = c->storage->copy_open(c->storage->ctx, from, to, &size);
+    if (r == 0)
+        return SHELL_COPY;
+    /* The error is the source's if it can no longer be read, else the target's. */
+    bool source = c->files->stat(c->files->ctx, from, &ls_rows[0]) < 0;
+    return fs_error(o, c, "cp", source ? from : to, r);
+}
+
+/* "cp <from> <to>": a file to the file at <to> (a folder there is refused:
+ * no copying into a folder yet); an existing file asks first, unless -y. */
+static enum shell_result cmd_cp(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    struct line l;
+    bool yes = argc > 1 && str_eq(argv[1], "-y");
+    if (yes) {
+        argv++;
+        argc--;
+    }
+    if (argc != 3 || argv[1][0] == '-' || argv[2][0] == '-')
+        return usage_error(o, CP_USAGE);
+    const char *from = argv[1], *to = argv[2];
+    struct shell_finfo *f = &ls_rows[0], *t = &ls_rows[1];
+    int r = c->files->stat(c->files->ctx, from, f);
+    if (r < 0)
+        return fs_error(o, c, "cp", from, r);
+    if (f->type == SHELL_FT_DIR)
+        return fs_error(o, c, "cp", from, -FS_EISDIR);
+    r = c->files->stat(c->files->ctx, to, t);
+    if (r == 0) {
+        if (t->type == SHELL_FT_DIR)
+            return fs_error(o, c, "cp", to, -FS_EISDIR);
+        if (t->ino == f->ino) {
+            l_reset(&l);
+            l_str(&l, "cp: ");
+            l_quoted(&l, from, FS_PAIR_SHOWN);
+            l_str(&l, " and ");
+            l_quoted(&l, to, FS_PAIR_SHOWN);
+            l_str(&l, " are the same file.");
+            emit(o, &l, SHELL_ERROR);
+            return SHELL_BAD_ARGS;
+        }
+        if (!yes)
+            return ask(o, ASK_CP, from, to);
+    } else if (r != -FS_ENOENT) {
+        return fs_error(o, c, "cp", to, r);
+    }
+    return do_cp(from, to, c, o);
+}
+
+static const char *mv_reason(int err)
+{
+    if (err == -FS_EINVAL)
+        return "a folder cannot move into itself";
+    if (err == -FS_EBUSY)
+        return "'/', '.' and '..' cannot move";
+    return fs_reason(err);
+}
+
+/* "mv: '<from>' -> '<to>': <reason>." (a rename's error may be either side's). */
+static enum shell_result do_mv(const char *from, const char *to, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    struct line l;
+    int r = c->storage->rename(c->storage->ctx, from, to);
+    if (r == 0)
+        return SHELL_OK;
+    l_reset(&l);
+    l_str(&l, "mv: ");
+    l_quoted(&l, from, FS_PAIR_SHOWN);
+    l_str(&l, " -> ");
+    l_quoted(&l, to, FS_PAIR_SHOWN);
+    l_str(&l, ": ");
+    l_reason(&l, mv_reason(r), r);
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
+    if (r == -FS_ENOENT && (from[0] != '/' || to[0] != '/') && c->files->cwd_removed(c->files->ctx))
+        say(o, FS_HINT, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
+/* "mv <from> <to>": a rename (stage 6): a file over a file (asks first,
+ * unless -y), an empty folder over an empty folder, across folders. */
+static enum shell_result cmd_mv(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    bool yes = argc > 1 && str_eq(argv[1], "-y");
+    if (yes) {
+        argv++;
+        argc--;
+    }
+    if (argc != 3 || argv[1][0] == '-' || argv[2][0] == '-')
+        return usage_error(o, MV_USAGE);
+    const char *from = argv[1], *to = argv[2];
+    struct shell_finfo *f = &ls_rows[0], *t = &ls_rows[1];
+    if (!yes && c->files->stat(c->files->ctx, from, f) == 0 && f->type == SHELL_FT_FILE &&
+        c->files->stat(c->files->ctx, to, t) == 0 && t->type == SHELL_FT_FILE && t->ino != f->ino)
+        return ask(o, ASK_MV, from, to);
+    return do_mv(from, to, c, o);
+}
+
+enum shell_result shell_answer(const char *answer, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    int op = pending.op;
+    pending.op = ASK_NONE;
+    if (!shell_reboot_confirmed(answer)) {      /* the same exact "yes" rule */
+        say(o, op == ASK_RM ? "Remove cancelled." : op == ASK_CP ? "Copy cancelled."
+                                                                 : "Move cancelled.", SHELL_TEXT);
+        return SHELL_OK;
+    }
+    if (op == ASK_RM)
+        return do_rm(pending.a, c, o);
+    if (op == ASK_CP)
+        return do_cp(pending.a, pending.b, c, o);
+    if (op == ASK_MV)
+        return do_mv(pending.a, pending.b, c, o);
+    return SHELL_OK;
+}
+
+void shell_copy_end(const char *to, uint64_t done, uint64_t size, int err, bool cancelled,
+                    const struct shell_output *o)
+{
+    struct line l;
+    enum shell_text kind = cancelled ? SHELL_TEXT : SHELL_ERROR;
+    if (!cancelled && err == 0)
+        return;
+    l_reset(&l);
+    if (cancelled) {
+        l_str(&l, SHELL_CP_CANCELLED);
+    } else {
+        l_str(&l, "cp: ");
+        l_quoted(&l, to, FS_PATH_SHOWN);
+        l_str(&l, ": ");
+        l_reason(&l, data_reason(err), err);
+        l_char(&l, '.');
+    }
+    emit(o, &l, kind);
+    l_str(&l, "cp: ");
+    l_quoted(&l, to, FS_PATH_SHOWN);
+    l_str(&l, " holds the first ");
+    l_u64(&l, done, 0);
+    l_str(&l, " of ");
+    l_u64(&l, size, 0);
+    l_str(&l, " bytes.");
+    emit(o, &l, kind);
+}
+
+/* "Nodes:      7 used of 1024 (1017 free)" */
+static void df_row(const struct shell_output *o, const char *label, uint32_t used,
+                   uint32_t total, const char *unit, const char *tail)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, label);
+    l_pad_to(&l, 12);
+    l_uint(&l, used, 0, ' ');
+    l_str(&l, unit);
+    l_str(&l, " used of ");
+    l_uint(&l, total, 0, ' ');
+    l_str(&l, unit);
+    l_str(&l, " (");
+    l_uint(&l, total > used ? total - used : 0, 0, ' ');
+    l_str(&l, unit);
+    l_str(&l, " free)");
+    l_str(&l, tail);
+    emit(o, &l, SHELL_TEXT);
+}
+
+/* "df": the filesystem (the Live label, D6), its nodes and its pages. */
+static enum shell_result cmd_df(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    struct shell_dfinfo d;
+    (void)argc; (void)argv;
+    c->storage->df(c->storage->ctx, &d);
+    say(o, "Filesystem: live (RAM), mounted on / (files in memory only)", SHELL_TEXT);
+    df_row(o, "Nodes:", d.nodes, d.max_nodes, "", "");
+    df_row(o, "Pages:", d.pages, d.budget, "", ", 4 KiB each");
+    df_row(o, "Space:", d.pages * 4, d.budget * 4, " KiB", "");
+    return SHELL_OK;
+}
+
+static void l_count(struct line *l, uint64_t n, const char *one, const char *many)
+{
+    l_u64(l, n, 0);
+    l_str(l, n == 1 ? one : many);
+}
+
+/* "du [path]": "516 pages (2064 KiB) in 3 files and 1 folder" under a
+ * folder (itself not counted), or for one file. */
+static enum shell_result cmd_du(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    const struct shell_storage *s = c->storage;
+    struct shell_du t = { 0, 0, 0 };
+    struct line l;
+    const char *path = argc == 2 ? argv[1] : ".";
+    if (!fs_path_arg(path, DU_USAGE, o))
+        return SHELL_BAD_ARGS;
+    int r = s->du_open(s->ctx, path, &t);
+    if (r < 0)
+        return fs_error(o, c, "du", path, r);
+    while ((r = s->du_next(s->ctx, &t)) > 0)
+        ;
+    s->du_close(s->ctx);
+    if (r < 0)
+        return fs_error(o, c, "du", path, r);
+    l_reset(&l);
+    l_count(&l, t.pages, " page (", " pages (");
+    l_u64(&l, t.pages * 4, 0);
+    l_str(&l, " KiB) in ");
+    l_count(&l, t.files, " file and ", " files and ");
+    l_count(&l, t.folders, " folder", " folders");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_OK;
+}
+
+/* Output redirection: the command's text lines collect here and go to the
+ * file OUT_BUF bytes at a time (one hold each); its error lines and notes
+ * stay on the screen. Writing stops at the first limit. */
+static struct {
+    bool on, stopped;
+    const struct shell_storage *st;
+    const struct shell_output *screen;
+    char path[KEEP_MAX];
+    uint8_t buf[OUT_BUF];
+    uint32_t n;
+    uint64_t written;
+    int err;
+} rd;
+
+static void out_put(const uint8_t *bytes, uint32_t len)
+{
+    uint32_t done = 0;
+    while (!rd.stopped && done < len) {
+        int64_t r = rd.st->out_write(rd.st->ctx, bytes + done, len - done);
+        if (r <= 0) {
+            rd.err = r < 0 ? (int)r : -FS_ENOSPC;
+            rd.stopped = true;
+            break;
+        }
+        done += (uint32_t)r;
+        rd.written += (uint64_t)r;
+    }
+}
+
+static void out_sink(void *ctx, const char *text, enum shell_text kind)
+{
+    (void)ctx;
+    if (kind != SHELL_TEXT) {
+        rd.screen->write(rd.screen->ctx, text, kind);
+        return;
+    }
+    for (; *text && !rd.stopped; text++) {
+        if (rd.n == OUT_BUF) {
+            out_put(rd.buf, rd.n);
+            rd.n = 0;
+        }
+        rd.buf[rd.n++] = (uint8_t)*text;
+    }
+}
+
+static const struct shell_output out_output = { out_sink, 0 };
+
+/* "Output to '<file>': <reason>." */
+static void out_error(const struct shell_output *o, const char *path, const char *why, int err)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "Output to ");
+    l_quoted(&l, path, OUT_PATH_SHOWN);
+    l_str(&l, ": ");
+    l_reason(&l, why, err);
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
+}
+
+/* Commands whose output cannot go to a file: the console drives them
+ * (the screen, a wait, a question, a program, a copy). */
+static const char *const no_redirect[] = {
+    "clear", "reboot", "kill", "sleep", "presskey", "run", "rm", "cp", "mv",
+};
+
+/* The file opened for the command: its output, or 0 (refused; said why). */
+static __attribute__((noinline)) const struct shell_output *
+redirect_begin(const char *name, const struct shell_context *c, const struct shell_output *o)
+{
+    struct line l;
+    for (uint32_t i = 0; i < sizeof(no_redirect) / sizeof(no_redirect[0]); i++) {
+        if (str_eq(name, no_redirect[i])) {
+            l_reset(&l);
+            l_str(&l, name);
+            l_str(&l, ": its output cannot go to a file.");
+            emit(o, &l, SHELL_ERROR);
+            return 0;
+        }
+    }
+    const char *path = line_redirect.target;
+    int r = c->storage->out_open(c->storage->ctx, path, line_redirect.kind == REDIRECT_APPEND);
+    if (r < 0) {
+        out_error(o, path, fs_reason(r), r);
+        if (r == -FS_ENOENT && path[0] != '/' && c->files->cwd_removed(c->files->ctx))
+            say(o, FS_HINT, SHELL_ERROR);
+        return 0;
+    }
+    rd.on = true;
+    rd.stopped = false;
+    rd.st = c->storage;
+    rd.screen = o;
+    keep(rd.path, path);
+    rd.n = 0;
+    rd.written = 0;
+    rd.err = 0;
+    return &out_output;
+}
+
+bool shell_redirect_active(void)
+{
+    return rd.on;
+}
+
+bool shell_redirect_raw(const uint8_t *bytes, uint32_t len)
+{
+    if (!rd.on)
+        return false;
+    out_put(bytes, len);
+    return !rd.stopped;
+}
+
+void shell_redirect_end(void)
+{
+    struct line l;
+    if (!rd.on)
+        return;
+    if (rd.n)
+        out_put(rd.buf, rd.n);
+    rd.n = 0;
+    rd.st->out_close(rd.st->ctx);
+    rd.on = false;
+    if (!rd.stopped)
+        return;
+    out_error(rd.screen, rd.path, data_reason(rd.err), rd.err);
+    l_reset(&l);
+    l_str(&l, "Output to ");
+    l_quoted(&l, rd.path, OUT_PATH_SHOWN);
+    l_str(&l, ": only the first ");
+    l_u64(&l, rd.written, 0);
+    l_str(&l, " bytes were written.");
+    emit(rd.screen, &l, SHELL_ERROR);
+}
+
+/* "cat a >> a" would never end: refused (">" is fine: a is emptied first). */
+static bool cat_into_itself(const char *path, const struct shell_context *c,
+                            const struct shell_output *o)
+{
+    struct line l;
+    if (!rd.on || line_redirect.kind != REDIRECT_APPEND ||
+        !c->storage->out_is(c->storage->ctx, path))
+        return false;
+    l_reset(&l);
+    l_str(&l, "cat: ");
+    l_quoted(&l, path, FS_PATH_SHOWN);
+    l_str(&l, ": is also the output file.");
+    emit(o, &l, SHELL_ERROR);
+    return true;
+}
+
+/* A redirection the parser refused. */
+static __attribute__((noinline)) enum shell_result
+redirect_syntax(enum parse_result pr, int argc, char **argv, const struct shell_output *o)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "Redirection: ");
+    switch (pr) {
+    case PARSE_NO_TARGET:                   /* the operator is the last word */
+        l_quoted(&l, argv[argc - 1], OP_SHOWN);
+        l_str(&l, " needs a file name after it.");
+        break;
+    case PARSE_TWO_REDIRECTS:
+        l_str(&l, "only one '>' or '>>' per line.");
+        break;
+    case PARSE_BAD_OPERATOR:
+        l_quoted(&l, line_redirect.target, OP_SHOWN);
+        l_str(&l, " is not an operator (use > or >>).");
+        break;
+    default:                                /* PARSE_NO_COMMAND */
+        l_str(&l, line_redirect.kind == REDIRECT_APPEND ? "no command before '>>'."
+                                                         : "no command before '>'.");
+        break;
+    }
+    emit(o, &l, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
 }
 
 static const struct command commands[] = {
@@ -1253,6 +1769,17 @@ static const struct command file_commands[] = {
 
 #define FILES_COUNT (sizeof(file_commands) / sizeof(file_commands[0]))
 
+/* 1.0 stage 9: offered only when the context has storage (see shell.h). */
+static const struct command storage_commands[] = {
+    { "rm",    RM_USAGE,         "Remove a file: rm [-y] <path> (asks first)", 2, cmd_rm, SECTION_FILES },
+    { "cp",    CP_USAGE,         "Copy a file: cp [-y] <from> <to>",        3, cmd_cp, SECTION_FILES },
+    { "mv",    MV_USAGE,         "Move or rename: mv [-y] <from> <to>",     3, cmd_mv, SECTION_FILES },
+    { "df",    "df",             "Show the filesystem's nodes and pages in use", 0, cmd_df, SECTION_FILES },
+    { "du",    DU_USAGE,         "Show the pages under a folder: du [path]", 1, cmd_du, SECTION_FILES },
+};
+
+#define STORAGE_COUNT (sizeof(storage_commands) / sizeof(storage_commands[0]))
+
 static const char *const section_names[SECTION_COUNT] = { "shell", "system", "programs", "files" };
 static const char *const section_titles[SECTION_COUNT] = {
     "The shell's own commands",
@@ -1278,7 +1805,8 @@ static const struct command *kill_of(const struct shell_context *c)
 }
 
 /* Every command the context offers, in "help" order. Returns the count. */
-#define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT + FILES_COUNT)
+#define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT + FILES_COUNT + \
+                     STORAGE_COUNT)
 
 static uint32_t offered(const struct shell_context *c, const struct command **list)
 {
@@ -1303,6 +1831,9 @@ static uint32_t offered(const struct shell_context *c, const struct command **li
     if (c->files)
         for (uint32_t i = 0; i < FILES_COUNT; i++)
             list[n++] = &file_commands[i];
+    if (c->files && c->storage)
+        for (uint32_t i = 0; i < STORAGE_COUNT; i++)
+            list[n++] = &storage_commands[i];
     return n;
 }
 
@@ -1315,6 +1846,10 @@ static bool builtin_name(const char *name, const struct shell_context *c)
     if (c->files)
         for (uint32_t i = 0; i < FILES_COUNT; i++)
             if (str_eq(name, file_commands[i].name))
+                return true;
+    if (c->files && c->storage)             /* 1.0 stage 9, likewise */
+        for (uint32_t i = 0; i < STORAGE_COUNT; i++)
+            if (str_eq(name, storage_commands[i].name))
                 return true;
     if (str_eq(name, ps_command.name) || str_eq(name, run_command.name) ||
         str_eq(name, kill_command.name))
@@ -1361,6 +1896,10 @@ static const struct command *find_command(const char *name, const struct shell_c
         for (uint32_t i = 0; i < FILES_COUNT; i++)
             if (str_eq(name, file_commands[i].name))
                 return &file_commands[i];
+    if (c->files && c->storage)
+        for (uint32_t i = 0; i < STORAGE_COUNT; i++)
+            if (str_eq(name, storage_commands[i].name))
+                return &storage_commands[i];
     return 0;
 }
 
@@ -1484,7 +2023,7 @@ static void say_suggestions(const struct shell_output *o, const struct suggestio
         l_str(&l, s->name[i]);
     }
     l_char(&l, '?');
-    emit(o, &l, SHELL_TEXT);
+    emit(o, &l, SHELL_NOTE);                /* 1.0 stage 9: never sent to a file */
 }
 
 /* The candidates for an unknown name: the commands offered, and for a
@@ -2119,8 +2658,8 @@ static bool expand_alias(const struct shell_alias *a, int *argc, char **argv, ch
     return true;
 }
 
-enum shell_result shell_execute(char *line, const struct shell_context *c,
-                                const struct shell_output *o)
+static enum shell_result execute(char *line, const struct shell_context *c,
+                                 const struct shell_output *o)
 {
     char *argv[SHELL_MAX_ARGS];
     int argc;
@@ -2129,7 +2668,12 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         c->session->sleep_seconds = 0;
         c->session->timed = false;
     }
-    switch (shell_parse(line, &argc, argv)) {
+    /* 1.0 stage 9: with storage, a redirection (shell_parse_line); without
+     * it, ">" stays an ordinary word. */
+    line_redirect.kind = REDIRECT_NONE;
+    enum parse_result pr = c->storage ? shell_parse_line(line, &argc, argv, &line_redirect)
+                                      : shell_parse(line, &argc, argv);
+    switch (pr) {
     case PARSE_EMPTY:
         return SHELL_EMPTY;
     case PARSE_TOO_MANY:
@@ -2137,6 +2681,8 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         return SHELL_TOO_MANY;
     case PARSE_OK:
         break;
+    default:
+        return redirect_syntax(pr, argc, argv, o);
     }
 
     const struct command *cmd = find_command(argv[0], c);
@@ -2155,6 +2701,13 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         if (!time_prepare(&argc, argv, c, o))
             return SHELL_BAD_ARGS;
         cmd = find_command(argv[0], c);
+    }
+    /* 1.0 stage 9: the file is opened once the command is known (an
+     * unknown command makes none); the output goes there from now on. */
+    if (cmd && line_redirect.kind != REDIRECT_NONE) {
+        o = redirect_begin(cmd->name, c, o);
+        if (!o)
+            return SHELL_BAD_ARGS;
     }
     if (cmd && c->extras && argc == 2) {
         /* 0.9.1: "<command> --help" for every command, "help <command>". */
@@ -2200,4 +2753,13 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         say_suggestions(o, &s);
     }
     return SHELL_UNKNOWN;
+}
+
+enum shell_result shell_execute(char *line, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    enum shell_result r = execute(line, c, o);
+    if (rd.on && r != SHELL_CAT)            /* 1.0 stage 9: cat ends it later */
+        shell_redirect_end();
+    return r;
 }

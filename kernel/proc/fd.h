@@ -101,6 +101,14 @@ void fd_put(uint32_t file);
  * node): 0, -EISDIR (not a file) or -EFBIG. */
 int fd_node_truncate(struct vnode *n, uint64_t length);
 
+/* 1.0 stage 9: the node write mark for a writer that is not a system call
+ * (the console's cp and output redirection, thread 0): taken by yielding
+ * (never under the VFS lock), held across the whole copy or command, given
+ * back by the same thread. The same mark and figures as a write's. The
+ * caller holds the node. */
+void fd_node_wmark_take(struct vnode *n);
+void fd_node_wmark_give(struct vnode *n);
+
 /* lseek on a file's open file, under its busy mark: the new offset or
  * -EINVAL. */
 int64_t fd_file_lseek(uint32_t file, int64_t off, uint64_t whence);

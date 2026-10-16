@@ -75,7 +75,23 @@ static struct vnode *cat_node;
 static bool catting;
 static uint64_t cat_off, cat_start;
 static struct shell_cat cat_text;
-static uint8_t cat_chunk[4096];
+static uint8_t cat_chunk[4096];         /* 1.0 stage 9: also cp's chunk (never both at once) */
+/* 1.0 stage 9: rm's, cp's or mv's question waits for its answer; the copy
+ * in progress (both files held, the target's write mark held); the file a
+ * command's output goes to (held, its write mark held); du's walk (the
+ * folder it started at and the one it is in, both held). */
+static bool storage_asked;
+static bool copying;
+static struct vnode *cp_src, *cp_dst;
+static uint64_t cp_off, cp_size, cp_chunks, cp_start;
+static char cp_to[256];
+static struct vnode *out_node;
+static uint64_t out_off, out_bytes;
+static uint32_t out_writes, out_largest;
+static char out_path[256];
+static struct vnode *du_root, *du_cur;
+static uint64_t du_seq;
+static uint32_t du_depth;
 
 /* ---- Drawing (grid -> VGA) ---- */
 
@@ -452,6 +468,282 @@ static const struct shell_files files_ops = {
     fs_list_open, fs_list_next, fs_list_close, fs_cat_open, 0,
 };
 
+/* ---- rm, cp, mv, df, du and output redirection (1.0 stage 9) ---- */
+
+/*
+ * The same rules as above. A file's data moves one chunk of at most 4096
+ * bytes per hold. A file that is written (cp's target, the output file)
+ * has its node's write mark held by thread 0 for the whole copy or
+ * command, taken before any hold of the lock (fd_node_wmark_take yields
+ * while another writer's call finishes), so no two writes to one file
+ * interleave (plan B2). A file that loses its name is held across the
+ * change and given back with fd_node_drop, so its pages are freed in steps
+ * (as the system calls do, kernel/fs/fsys.c).
+ */
+
+static void keep_path(char *dst, const char *src, uint32_t size)
+{
+    uint32_t i = 0;
+    for (; src[i] && i + 1 < size; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+static void stamp_node(struct vnode *n)
+{
+    n->mtime = n->ctime = vfs_root()->now();        /* the VFS lock held */
+}
+
+static int st_unlink(void *ctx, const char *path)
+{
+    (void)ctx;
+    struct vfs *v = vfs_root();
+    struct vnode *n = 0, *victim = 0;
+    fd_vfs_acquire();
+    if (vfs_lookup(v, cwd_node(), path, &n) == 0 && n->type == VNODE_FILE) {
+        vfs_hold(n);
+        victim = n;
+    }
+    int r = vfs_unlink(v, cwd_node(), path);
+    fd_vfs_release();
+    if (victim)
+        fd_node_drop(victim);
+    return r;
+}
+
+static int st_rename(void *ctx, const char *from, const char *to)
+{
+    (void)ctx;
+    struct vfs *v = vfs_root();
+    struct vnode *n = 0, *victim = 0;
+    fd_vfs_acquire();
+    if (vfs_lookup(v, cwd_node(), to, &n) == 0 && n->type == VNODE_FILE) {
+        vfs_hold(n);                        /* a file it may replace */
+        victim = n;
+    }
+    int r = vfs_rename(v, cwd_node(), from, cwd_node(), to);
+    fd_vfs_release();
+    if (victim)
+        fd_node_drop(victim);
+    return r;
+}
+
+/* The file at path, held (created with mode 0644 if missing): 0, or an
+ * error with nothing held; *existed: it was there before. */
+static int hold_target(const char *path, struct vnode **out, bool *existed)
+{
+    struct vfs *v = vfs_root();
+    struct vnode *n = 0;
+    *existed = false;
+    int r = vfs_lookup(v, cwd_node(), path, &n);
+    if (r == 0 && n->type == VNODE_DIR)
+        r = -FS_EISDIR;
+    else if (r == 0)
+        *existed = true;
+    else if (r == -FS_ENOENT)
+        r = vfs_create(v, cwd_node(), path, VNODE_FILE, 0644, &n);
+    if (r == 0) {
+        vfs_hold(n);
+        *out = n;
+    }
+    return r;
+}
+
+static int st_copy_open(void *ctx, const char *from, const char *to, uint64_t *size)
+{
+    (void)ctx;
+    struct vnode *src = 0, *dst = 0;
+    bool existed = false;
+    fd_vfs_acquire();
+    int r = vfs_lookup(vfs_root(), cwd_node(), from, &src);
+    if (r == 0 && src->type == VNODE_DIR)
+        r = -FS_EISDIR;
+    if (r == 0) {
+        vfs_hold(src);
+        r = hold_target(to, &dst, &existed);
+        if (r < 0) {
+            fd_vfs_release();
+            fd_node_drop(src);
+            return r;
+        }
+        *size = src->size;
+    }
+    fd_vfs_release();
+    if (r < 0)
+        return r;
+    if (existed)
+        fd_node_truncate(dst, 0);           /* its own write mark, in steps */
+    fd_node_wmark_take(dst);
+    cp_src = src;
+    cp_dst = dst;
+    cp_off = 0;
+    cp_size = *size;
+    cp_chunks = 0;
+    keep_path(cp_to, to, sizeof(cp_to));
+    return 0;
+}
+
+static void st_df(void *ctx, struct shell_dfinfo *out)
+{
+    (void)ctx;
+    const struct ramfs *fs = vfs_ramfs();
+    fd_vfs_acquire();
+    out->nodes = fs->nodes;
+    out->max_nodes = fs->max_nodes;
+    out->pages = fs->data_pages;
+    out->budget = fs->budget_pages;
+    fd_vfs_release();
+}
+
+static int st_du_open(void *ctx, const char *path, struct shell_du *t)
+{
+    (void)ctx;
+    struct vnode *n = 0;
+    fd_vfs_acquire();
+    int r = vfs_lookup(vfs_root(), cwd_node(), path, &n);
+    if (r == 0 && n->type == VNODE_FILE) {
+        t->files = 1;
+        t->pages = ramfs_file_pages(n);
+    } else if (r == 0) {
+        vfs_hold(n);                        /* where the walk started */
+        vfs_hold(n);                        /* where it is */
+        du_root = du_cur = n;
+        du_seq = 0;
+        du_depth = 0;
+    }
+    fd_vfs_release();
+    return r;
+}
+
+/* At most 16 entries per hold, iteratively (no recursion): into each
+ * folder, back up through its parent and on after the folder's own entry
+ * (by its stamp), until the walk is back where it started. Only the
+ * folder it is in is held (and the start); folders have no pages, so
+ * their holds are given back inside the lock (as "cd" does). */
+static int st_du_next(void *ctx, struct shell_du *t)
+{
+    (void)ctx;
+    struct vfs *v = vfs_root();
+    if (!du_cur)
+        return 0;
+    int r = 1;
+    fd_vfs_acquire();
+    for (uint32_t count = 0; count < SHELL_LS_BATCH; count++) {
+        if (du_cur != v->root && !du_cur->parent) {
+            r = -FS_ENOENT;                 /* removed meanwhile */
+            break;
+        }
+        struct vnode *e = ramfs_entry_from(du_cur, du_seq);
+        if (!e) {
+            if (du_depth == 0) {
+                r = 0;
+                break;
+            }
+            struct vnode *up = du_cur->parent;
+            du_seq = (uint64_t)ramfs_seq(du_cur) + 1;
+            vfs_hold(up);
+            vfs_drop(v, du_cur);
+            du_cur = up;
+            du_depth--;
+        } else if (e->type == VNODE_DIR) {
+            t->folders++;
+            vfs_hold(e);
+            vfs_drop(v, du_cur);
+            du_cur = e;
+            du_seq = 0;
+            du_depth++;
+        } else {
+            t->files++;
+            t->pages += ramfs_file_pages(e);
+            du_seq = (uint64_t)ramfs_seq(e) + 1;
+        }
+    }
+    fd_vfs_release();
+    return r;
+}
+
+static void st_du_close(void *ctx)
+{
+    (void)ctx;
+    if (du_cur)
+        fd_node_drop(du_cur);
+    if (du_root)
+        fd_node_drop(du_root);
+    du_cur = du_root = 0;
+}
+
+static int st_out_open(void *ctx, const char *path, bool append)
+{
+    (void)ctx;
+    struct vnode *n = 0;
+    bool existed = false;
+    fd_vfs_acquire();
+    int r = hold_target(path, &n, &existed);
+    fd_vfs_release();
+    if (r < 0)
+        return r;
+    if (existed && !append)
+        fd_node_truncate(n, 0);             /* ">": emptied first, in steps */
+    fd_node_wmark_take(n);
+    out_off = 0;
+    if (append) {                           /* ">>": the end, claimed once under the mark */
+        fd_vfs_acquire();
+        out_off = n->size;
+        fd_vfs_release();
+    }
+    out_node = n;
+    out_bytes = 0;
+    out_writes = out_largest = 0;
+    keep_path(out_path, path, sizeof(out_path));
+    return 0;
+}
+
+static int64_t st_out_write(void *ctx, const uint8_t *buf, uint32_t len)
+{
+    (void)ctx;
+    if (len > sizeof(cat_chunk))
+        len = sizeof(cat_chunk);            /* one chunk per hold */
+    fd_vfs_acquire();
+    int64_t put = ramfs_write(vfs_ramfs(), out_node, out_off, buf, len);
+    if (put > 0) {
+        out_off += (uint64_t)put;
+        stamp_node(out_node);
+    }
+    fd_vfs_release();
+    if (put > 0) {
+        out_bytes += (uint64_t)put;
+        out_writes++;
+        if ((uint32_t)put > out_largest)
+            out_largest = (uint32_t)put;
+    }
+    return put;
+}
+
+static void st_out_close(void *ctx)
+{
+    (void)ctx;
+    fd_node_wmark_give(out_node);
+    fd_node_drop(out_node);
+    out_node = 0;
+    klogf("console: output to '%s': %llu bytes in %u writes, largest %u\n", out_path,
+          (unsigned long long)out_bytes, out_writes, out_largest);
+}
+
+static bool st_out_is(void *ctx, const char *path)
+{
+    (void)ctx;
+    struct vnode *n = 0;
+    fd_vfs_acquire();
+    bool same = vfs_lookup(vfs_root(), cwd_node(), path, &n) == 0 && n == out_node;
+    fd_vfs_release();
+    return same;
+}
+
+static const struct shell_storage storage_ops = {
+    st_unlink, st_rename, st_copy_open, st_df, st_du_open, st_du_next, st_du_close,
+    st_out_open, st_out_write, st_out_close, st_out_is, 0,
+};
+
 /* ---- Programs (0.11) ---- */
 
 /* shell_procs.start: a program module, by name (argv[0]); 1.0 stage 7:
@@ -601,6 +893,8 @@ static void build_context(struct shell_context *c)
     c->session = &session;
     /* 1.0 stage 8: the file commands, once the filesystem has booted. */
     c->files = fs_up() ? &files_ops : 0;
+    /* 1.0 stage 9: rm, cp, mv, df, du and "> file". */
+    c->storage = fs_up() ? &storage_ops : 0;
 }
 
 /* 0.12 stage 2: Ctrl held with c (as for a foreground program). */
@@ -647,6 +941,7 @@ static void end_wait(const char *text)
 static void cat_finish(const char *why)
 {
     shell_cat_end(&cat_text, &sink);
+    shell_redirect_end();                   /* 1.0 stage 9: "cat a > b" */
     catting = false;
     fd_node_drop(cat_node);
     cat_node = 0;
@@ -674,10 +969,65 @@ static void cat_step(void)
         cat_finish(0);
         return;
     }
+    if (shell_redirect_active()) {          /* 1.0 stage 9: the bytes as they are */
+        bool more = shell_redirect_raw(cat_chunk, (uint32_t)n);
+        cat_off += (uint64_t)n;
+        if (!more)
+            cat_finish(0);                  /* stopped at a limit: said by the end */
+        return;
+    }
     shell_cat_put(&cat_text, cat_chunk, (uint32_t)n, &sink);
     cat_off += (uint64_t)n;
     render_all();
     place_cursor();
+}
+
+/* 1.0 stage 9: "cp" ends (err, or cancelled by Ctrl+C): both files given
+ * back, what was copied said, the next prompt. */
+static void copy_finish(int err, bool cancelled)
+{
+    copying = false;
+    fd_node_wmark_give(cp_dst);
+    fd_node_drop(cp_dst);
+    fd_node_drop(cp_src);
+    cp_dst = cp_src = 0;
+    uint64_t ticks = timer_ticks() - cp_start;
+    if (cancelled)
+        klogf("console: Ctrl+C: cp cancelled after %llu bytes (%llu ticks)\n",
+              (unsigned long long)cp_off, (unsigned long long)ticks);
+    else
+        klogf("console: cp: %llu bytes in %llu chunks, %llu ticks%s\n", (unsigned long long)cp_off,
+              (unsigned long long)cp_chunks, (unsigned long long)ticks, err ? ", stopped" : "");
+    shell_copy_end(cp_to, cp_off, cp_size, err, cancelled, &sink);
+    next_prompt();
+}
+
+/* 1.0 stage 9: one chunk of the copy per pass of the idle loop, read and
+ * written in two holds (each at most 4096 bytes), so keys (Ctrl+C) are
+ * handled between chunks and other threads run. A short write is the
+ * file-size limit or the budget. */
+static void copy_step(void)
+{
+    fd_vfs_acquire();
+    int64_t n = ramfs_read(vfs_ramfs(), cp_src, cp_off, cat_chunk, sizeof(cat_chunk));
+    fd_vfs_release();
+    if (n <= 0) {
+        copy_finish(0, false);
+        return;
+    }
+    fd_vfs_acquire();
+    int64_t put = ramfs_write(vfs_ramfs(), cp_dst, cp_off, cat_chunk, (uint64_t)n);
+    if (put > 0)
+        stamp_node(cp_dst);
+    fd_vfs_release();
+    if (put > 0) {
+        cp_off += (uint64_t)put;
+        cp_chunks++;
+    }
+    if (put < 0)
+        copy_finish((int)put, false);
+    else if (put < n)
+        copy_finish(cp_off >= RAMFS_FILE_MAX ? -FS_EFBIG : -FS_ENOSPC, false);
 }
 
 /* 0.9.1: the answer to "reboot". Only exactly "yes" restarts. */
@@ -730,6 +1080,13 @@ static bool end_process(int32_t pid, const char *how)
     return true;
 }
 
+/* 1.0 stage 9: the copy opened by copy_open starts (copy_step). */
+static void copy_begin(void)
+{
+    copying = true;
+    cp_start = timer_ticks();
+}
+
 static void submit(void)
 {
     uint32_t scrolls_before = screen.scrolls;
@@ -747,6 +1104,13 @@ static void submit(void)
         if (kill_pid) {
             if (answer_kill(line))
                 r = SHELL_RUN;              /* wait for its end, as for a program */
+        } else if (storage_asked) {         /* 1.0 stage 9: rm, cp, mv */
+            storage_asked = false;
+            struct shell_context ctx;
+            build_context(&ctx);
+            r = shell_answer(line, &ctx, &sink);
+            if (r == SHELL_COPY)
+                copy_begin();
         } else {
             answer_reboot(line);
         }
@@ -756,7 +1120,8 @@ static void submit(void)
         build_context(&ctx);
         uint64_t started = timer_ticks();
         r = shell_execute(line, &ctx, &sink);
-        confirming = r == SHELL_REBOOT || r == SHELL_KILL;
+        confirming = r == SHELL_REBOOT || r == SHELL_KILL || r == SHELL_ASK;
+        storage_asked = r == SHELL_ASK;
         if (session.timed) {                /* 0.12 stage 2: "time <command>" */
             timing = true;
             timing_start = started;
@@ -777,9 +1142,12 @@ static void submit(void)
             catting = true;
             cat_start = timer_ticks();
             shell_cat_init(&cat_text);
+        } else if (r == SHELL_COPY) {       /* 1.0 stage 9: copy_step copies it */
+            copy_begin();
         }
     }
-    if (r == SHELL_RUN || r == SHELL_SLEEP || r == SHELL_PRESSKEY || r == SHELL_CAT) {
+    if (r == SHELL_RUN || r == SHELL_SLEEP || r == SHELL_PRESSKEY || r == SHELL_CAT ||
+        r == SHELL_COPY) {
         render_all();                       /* 0.11: no prompt until it ends */
         place_cursor();
         return;
@@ -885,6 +1253,12 @@ void console_handle_key(const struct key_event *e)
             cat_finish(SHELL_CAT_CANCELLED "\n");
         return;
     }
+    if (copying) {
+        /* 1.0 stage 9: likewise for "cp": what was copied stays. */
+        if (is_ctrl_c(e))
+            copy_finish(0, true);
+        return;
+    }
     if (awaiting_key) {
         /* 0.12 stage 2: "presskey" ends at the next key press, which is not
          * typed; Ctrl+C cancels it. Releases and Shift, Ctrl, Alt, the lock
@@ -973,6 +1347,8 @@ void console_poll(void)
     }
     if (catting)                            /* 1.0 stage 8: one chunk per pass */
         cat_step();
+    if (copying)                            /* 1.0 stage 9: likewise */
+        copy_step();
     drain_program_output();
     char line[SHELL_END_LINE_MAX];
     for (uint32_t i = 0; i < bg_count; ) {

@@ -8,7 +8,9 @@
 # (stage 3b), and the [0.13] module_string checks are added at the end.
 # 1.0 stage 1 adds the padded test kernel's [1.0] checks at the end; stage
 # 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink);
-# stage 7 the System V start-up's (test=startup and a console session).
+# stage 7 the System V start-up's (test=startup and a console session);
+# stage 8 the console's file commands; stage 9 redirection, rm, cp, mv, df
+# and du (one console session).
 
 echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
@@ -599,13 +601,17 @@ expect_in_order "$LOG" "[1.0] Live label: the console's first lines after the ti
 expect_lines "$LOG" "[1.0] version: the version line, then 'Live mode (files in memory only)'" \
     "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$" "^Live mode \(files in memory only\)$" "$NEXT"
 expect_lines "$LOG" "[1.0] pwd: the shell starts in /home" "^madire> pwd$" "^/home$" "$NEXT"
-expect_lines "$LOG" "[1.0] help files: the section's title and its 8 commands in help order" \
+# 1.0 stage 9: rm, cp, mv, df and du after cat (13 commands; was 8).
+expect_lines "$LOG" "[1.0] help files: the section's title and its 13 commands in help order" \
     "^madire> help files$" "^files: Files and folders$" "^  pwd      Show the current folder$" \
     "^  cd       Change the current folder: cd \[path\]$" "^  ls       List a folder: ls \[-l\] \[path\]$" \
     "^  mkdir    Create a folder: mkdir <path>$" "^  rmdir    Remove an empty folder: rmdir <path>$" \
     "^  touch    Create an empty file, or update its time$" \
     "^  stat     Show a file's or folder's details: stat <path>$" \
-    "^  cat      Show a file's contents: cat <path>$" "$NEXT"
+    "^  cat      Show a file's contents: cat <path>$" \
+    "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$" "^  cp       Copy a file: cp \[-y\] <from> <to>$" \
+    "^  mv       Move or rename: mv \[-y\] <from> <to>$" "^  df       Show the filesystem's nodes and pages in use$" \
+    "^  du       Show the pages under a folder: du \[path\]$" "$NEXT"
 expect_lines "$LOG" "[1.0] help cat: purpose and usage" \
     "^madire> help cat$" "^cat: Show a file's contents: cat <path>$" "^Usage: cat <path>$" "$NEXT"
 expect_lines "$LOG" "[1.0] ls --help: purpose and usage" \
@@ -786,3 +792,287 @@ else
 fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[1.0] file session: no panic, dropped key, screen-rule violation or self-check"
+
+# ---- 1.0 stage 9: redirection, rm, cp, mv, df and du ----
+
+echo "== [1.0] Console: output redirection (> and >>), rm, cp, mv, df and du"
+# One console session through QMP, as stage 8's (a 50 ms gap and a 20 ms
+# hold), at -m 32M so that the file budget (about 5,400 pages) can be
+# filled for the copy that runs out of it. fsmake (-initrd, as in stage 8)
+# makes the files with known contents. Keys typed while a program, "cat" or
+# "cp" runs are not typed (only Ctrl+C reaches them), so the session waits
+# after each. Every typed line the checks read is unique in the session
+# (trailing spaces make repeated commands unique; the shell ignores them),
+# and the checks match it exactly.
+LOG=$OUT/serial-files9.log
+FSOCK=$OUT/qmp-files9.sock
+S="x{wait:1}help rm{ret}cp --help{ret}help mv{ret}df --help{ret}help du{ret}"
+S+="echo hello > a.txt{ret}cat a.txt{ret}{wait:1}echo world >> a.txt{ret}cat a.txt {ret}{wait:1}"
+S+="echo again > a.txt{ret}cat a.txt  {ret}{wait:1}echo hi>b.txt{ret}stat b.txt{ret}"
+S+="echo a >{ret}echo a > b > c{ret}echo a >>> c{ret}> c{ret}stat c{ret}stat b{ret}"
+S+="{wait:2}echo 1 2 3 4 5 > f8.txt{ret}cat f8.txt{ret}{wait:1}echo 1 2 3 4 5 6 > f9.txt{ret}stat f9.txt{ret}"
+S+="mkdir docs{ret}echo x > docs{ret}echo x > /nosuch/f{ret}"
+S+="clear > r.txt{ret}sleep 1 > r.txt{ret}run hello > r.txt{ret}stat r.txt{ret}"
+S+="{wait:2}nosuch > n.txt{ret}stat n.txt{ret}ls /nosuch > e.txt{ret}stat e.txt{ret}"
+S+="ls > l.txt{ret}cat l.txt{ret}{wait:1}ls {ret}dmesg 9999 > /tmp/log.txt{ret}{wait:1}stat /tmp/log.txt{ret}"
+S+="{wait:2}touch d.txt{ret}df{ret}df > d.txt{ret}cat d.txt{ret}{wait:1}"
+S+="run fsmake data.txt 12300{ret}{wait:3}du data.txt{ret}stat data.txt{ret}"
+S+="ls -l /home{ret}du /home{ret}du /{ret}df {ret}du /nosuch{ret}df x{ret}du a b{ret}"
+S+="{wait:2}cp data.txt copy.txt{ret}{wait:1}cat copy.txt{ret}{wait:2}"
+S+="echo short > copy.txt{ret}cp data.txt copy.txt {ret}no{ret}stat copy.txt{ret}"
+S+="cp data.txt copy.txt  {ret}yes{ret}{wait:1}stat copy.txt {ret}"
+S+="{wait:2}echo shorter > copy.txt{ret}cp -y data.txt copy.txt{ret}{wait:1}stat copy.txt  {ret}"
+S+="cp docs x{ret}cp data.txt docs{ret}cp nosuch x{ret}cp data.txt data.txt{ret}cp data.txt{ret}"
+S+="{wait:2}cat data.txt >> a.txt{ret}{wait:1}stat a.txt{ret}cat a.txt >> a.txt{ret}stat a.txt {ret}"
+S+="run -b fsmake big.dat 2097152{ret}{wait:3}"
+S+="cp big.dat big2.dat{ret}{wait:14}stat big2.dat{ret}"
+S+="cp big.dat big3.dat{ret}{wait:0.5}{ctrl+c}{wait:1}stat big3.dat{ret}"
+S+="run fsmake edge.dat 2097100{ret}{wait:3}cat data.txt >> edge.dat{ret}{wait:1}stat edge.dat{ret}"
+S+="{wait:2}rm a.txt{ret}no{ret}stat a.txt  {ret}rm a.txt {ret}yes{ret}stat a.txt   {ret}"
+S+="rm -y l.txt{ret}stat l.txt{ret}df  {ret}rm -y big2.dat{ret}{wait:1}df   {ret}"
+S+="{wait:2}rm docs{ret}rm /{ret}rm nosuch{ret}rm{ret}rm -x{ret}"
+S+="stat copy.txt   {ret}mv copy.txt moved.txt{ret}stat moved.txt{ret}stat copy.txt    {ret}"
+S+="{wait:2}mv moved.txt docs/moved.txt{ret}ls docs{ret}ls /home{ret}"
+S+="echo other > o.txt{ret}mv o.txt docs/moved.txt{ret}no{ret}stat o.txt{ret}"
+S+="mv o.txt docs/moved.txt {ret}yes{ret}stat docs/moved.txt{ret}stat o.txt {ret}"
+S+="{wait:2}echo thirdx > p.txt{ret}mv -y p.txt docs/moved.txt{ret}stat docs/moved.txt {ret}stat p.txt{ret}"
+S+="mkdir /tmp/m{ret}mv docs /tmp/m/docs{ret}ls /tmp/m{ret}ls /tmp/m/docs{ret}stat docs{ret}"
+S+="{wait:2}mv /tmp/m /tmp/m/docs/sub{ret}mv / x{ret}mv nosuch x{ret}mv data.txt /tmp{ret}mv a{ret}"
+for i in 01 02 03 04 05 06 07 08 09 10; do S+="{wait:1}run fsmake fill$i.dat 2097152{ret}{wait:3}"; done
+S+="cp big.dat full.dat{ret}{wait:3}stat full.dat{ret}"
+S+="echo end-of-fs9-test{ret}"
+rm -f "$LOG" "$FSOCK"
+T0F=$(date +%s%N)
+timeout 480 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
+    -qmp unix:"$FSOCK",server=on,wait=off -m 32M -kernel "$KERNEL" -initrd "$OUT/user/fsmake.elf" \
+    >/dev/null 2>&1 &
+FQPID=$!
+FOUT=$(python3 "$QMPKEYS" "$FSOCK" "$LOG" "System ready." --text "$S" --gap 0.05 --hold 20 \
+       --done $'\nend-of-fs9-test\n' --done-timeout 440 2>&1)
+echo "      $FOUT"
+echo "$FOUT" > "${LOG%.log}.keys.txt"
+sleep 1
+kill "$FQPID" 2>/dev/null
+wait "$FQPID" 2>/dev/null
+[ -f "$LOG" ] || : > "$LOG"
+boot_seconds "$LOG" "$T0F"
+grep -E "^madire> |^yes/no> |^console: (cp|Ctrl\+C|output)|^\[pid [0-9]+\] fsmake" "$LOG" | sed 's/^/      /'
+
+# fs9_block <typed line>: the console's lines after "madire> <typed line>"
+# (matched exactly, its first occurrence) up to the next prompt, without
+# the lines the console, programs and the heartbeat log meanwhile.
+fs9_block() {
+    S="madire> $1" awk '
+        on && /^(madire|yes\/no)> / { exit }
+        on && !/^(console: |\[pid [0-9]+\] |\[process [0-9]+ |uptime: [0-9]+ s$)/ { print }
+        !on && $0 == ENVIRON["S"] { on = 1 }' "$LOG"
+}
+# fs9_answer <typed line>: the lines after the answer to its question.
+fs9_answer() {
+    S="madire> $1" awk '
+        ans && /^madire> / { exit }
+        ans && !/^(console: |\[pid [0-9]+\] |uptime: [0-9]+ s$)/ { print }
+        on && !ans && /^yes\/no> / { ans = 1 }
+        !on && $0 == ENVIRON["S"] { on = 1 }' "$LOG"
+}
+fs9_size() { fs9_block "$1" | sed -nE 's/^Size:   ([0-9]+) bytes?$/\1/p'; }
+fs9_node() { fs9_block "$1" | sed -nE 's/^Node:   ([0-9]+)$/\1/p'; }
+fs9_used() { fs9_block "$1" | sed -nE 's/^Pages:      ([0-9]+) used of .*/\1/p'; }
+fs9_is() { [ "$(fs9_block "$1")" = "$2" ]; }
+fs9_missing() { fs9_is "stat $1" "stat: '${1%% *}': no such file or folder."; }
+# ck <status> <description>: a check from a condition's exit status.
+ck() { if [ "$1" = 0 ]; then pass "$2"; else fail "$2"; fi; }
+NL=$'\n'
+
+fs9_is "help rm" "rm: Remove a file: rm [-y] <path> (asks first)${NL}Usage: rm [-y] <path>" &&
+    fs9_is "cp --help" "cp: Copy a file: cp [-y] <from> <to>${NL}Usage: cp [-y] <from> <to>" &&
+    fs9_is "help mv" "mv: Move or rename: mv [-y] <from> <to>${NL}Usage: mv [-y] <from> <to>" &&
+    fs9_is "df --help" "df: Show the filesystem's nodes and pages in use${NL}Usage: df" &&
+    fs9_is "help du" "du: Show the pages under a folder: du [path]${NL}Usage: du [path]"
+ck $? "[1.0] help rm, cp, mv, df and du: each one's purpose and usage (help <command> and <command> --help)"
+fs9_is "echo hello > a.txt" "" && fs9_is "cat a.txt" "hello"
+ck $? "[1.0] echo hello > a.txt: nothing on the screen; cat a.txt shows hello"
+fs9_is "echo world >> a.txt" "" && fs9_is "cat a.txt " "hello${NL}world"
+ck $? "[1.0] echo world >> a.txt: appended; cat a.txt shows hello, then world"
+fs9_is "echo again > a.txt" "" && fs9_is "cat a.txt  " "again"
+ck $? "[1.0] echo again > a.txt: the file emptied first; cat a.txt shows only again"
+fs9_is "echo hi>b.txt" "hi>b.txt" && fs9_missing b.txt
+ck $? "[1.0] echo hi>b.txt: '>' inside a word is text (D11 (a)): hi>b.txt printed, no file b.txt"
+fs9_is "echo a >" "Redirection: '>' needs a file name after it." &&
+    fs9_is "echo a > b > c" "Redirection: only one '>' or '>>' per line." &&
+    fs9_is "echo a >>> c" "Redirection: '>>>' is not an operator (use > or >>)." &&
+    fs9_is "> c" "Redirection: no command before '>'." && fs9_missing c && fs9_missing b
+ck $? "[1.0] redirection errors: no file after '>', two redirections, '>>>', no command; each refused, nothing created"
+fs9_is "echo 1 2 3 4 5 > f8.txt" "" && fs9_is "cat f8.txt" "1 2 3 4 5" &&
+    fs9_is "echo 1 2 3 4 5 6 > f9.txt" "Too many arguments (max 8)." && fs9_missing f9.txt
+ck $? "[1.0] the file counts against the 8 words: echo 1 2 3 4 5 > f8.txt writes '1 2 3 4 5'; one word more: Too many arguments (max 8), no f9.txt"
+fs9_is "echo x > docs" "Output to 'docs': is a folder." &&
+    fs9_is "echo x > /nosuch/f" "Output to '/nosuch/f': no such file or folder."
+ck $? "[1.0] output to a folder or into a missing folder: refused (is a folder; no such file or folder)"
+fs9_is "clear > r.txt" "clear: its output cannot go to a file." &&
+    fs9_is "sleep 1 > r.txt" "sleep: its output cannot go to a file." &&
+    fs9_is "run hello > r.txt" "run: its output cannot go to a file." && fs9_missing r.txt
+ck $? "[1.0] clear, sleep and run refuse a redirection (its output cannot go to a file); no file made"
+fs9_is "nosuch > n.txt" "Unknown command: nosuch. Type 'help' for a list of commands.${NL}Did you mean: touch?" &&
+    fs9_missing n.txt
+ck $? "[1.0] an unknown command with '>': the unknown-command line and its suggestion on the screen, no file made"
+fs9_is "ls /nosuch > e.txt" "ls: '/nosuch': no such file or folder." && [ "$(fs9_size "stat e.txt")" = 0 ]
+ck $? "[1.0] a failing command with '>': its error on the screen, the file made and empty (0 bytes)"
+L1=$(fs9_block "cat l.txt")
+fs9_is "ls > l.txt" "" && [ -n "$L1" ] && fs9_is "ls " "$L1"
+ck $? "[1.0] ls > l.txt: the file holds ls's lines exactly (cat l.txt)"
+OL=$(grep -m1 -E "^console: output to '/tmp/log\.txt': [0-9]+ bytes in [0-9]+ writes, largest [0-9]+$" "$LOG")
+read -r ON OK OM <<< "$(sed -nE 's/.*: ([0-9]+) bytes in ([0-9]+) writes, largest ([0-9]+)$/\1 \2 \3/p' <<< "$OL")"
+echo "      dmesg to a file: ${ON:-?} bytes in ${OK:-?} writes, largest ${OM:-?}"
+fs9_is "dmesg 9999 > /tmp/log.txt" "" && [ -n "$ON" ] && [ "$ON" -gt 4096 ] && [ "$OM" -le 4096 ] &&
+    [ "$OK" -ge $(( (ON + 4095) / 4096 )) ] && [ "$(fs9_size "stat /tmp/log.txt")" = "$ON" ]
+ck $? "[1.0] dmesg 9999 > /tmp/log.txt: more than 4096 bytes, written in pieces of at most 4096 (one VFS-lock hold each); stat shows the logged size"
+D1=$(fs9_block "df")
+fs9_is "df > d.txt" "" && [ -n "$D1" ] && fs9_is "cat d.txt" "$D1"
+ck $? "[1.0] df > d.txt: the file holds df's four lines exactly"
+BUDGET=$(sed -nE 's/^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file, budget ([0-9]+) pages$/\1/p' "$LOG" | head -n 1)
+echo "      df: $(tr '\n' '|' <<< "$D1"); budget at boot ${BUDGET:-?} pages"
+BUDGET="$BUDGET" awk '
+    NR == 1 { ok = $0 == "Filesystem: live (RAM), mounted on / (files in memory only)" }
+    NR == 2 { ok = ok && match($0, /^Nodes:      [0-9]+ used of 1024 \([0-9]+ free\)$/) && $2 + substr($6, 2) == 1024 }
+    NR == 3 { ok = ok && match($0, /^Pages:      [0-9]+ used of [0-9]+ \([0-9]+ free\), 4 KiB each$/) &&
+              $5 == ENVIRON["BUDGET"] && $2 + substr($6, 2) == $5; u = $2; b = $5 }
+    NR == 4 { ok = ok && $0 == sprintf("Space:      %d KiB used of %d KiB (%d KiB free)", u * 4, b * 4, (b - u) * 4) }
+    END { exit !(ok && NR == 4) }' <<< "$D1"
+ck $? "[1.0] df: 'Filesystem: live (RAM), mounted on / (files in memory only)', nodes of 1024, pages of the boot log's budget"
+DU1=$(fs9_block "du /" | sed -nE 's/^([0-9]+) pages? .*/\1/p')
+echo "      du /: ${DU1:-?} pages; df: $(fs9_used "df ") pages used"
+[ -n "$DU1" ] && [ "$DU1" = "$(fs9_used "df ")" ]
+ck $? "[1.0] df: pages used equal du /'s pages (nothing removed is still open)"
+fs9_is "du data.txt" "5 pages (20 KiB) in 1 file and 0 folders" &&
+    fs9_block "stat data.txt" | grep -qxF "Pages:  5 (4 KiB each, the index page included)"
+ck $? "[1.0] du of a file: its stat pages (data.txt: 5 pages, 20 KiB, 1 file and 0 folders)"
+WANT=$(fs9_block "ls -l /home" | awk '
+    $1 == "-" { f++; if ($2 > 0) p += int(($2 + 4095) / 4096) + 1 }
+    $1 == "d" { d++ }
+    END { printf "%d %s (%d KiB) in %d %s and %d %s\n", p, p == 1 ? "page" : "pages", p * 4,
+                 f, f == 1 ? "file" : "files", d, d == 1 ? "folder" : "folders" }')
+echo "      du /home: '$(fs9_block "du /home")', from ls -l: '$WANT'"
+fs9_is "du /home" "$WANT"
+ck $? "[1.0] du /home: the pages, files and folders under it, as stat counts them"
+fs9_is "du /nosuch" "du: '/nosuch': no such file or folder." && fs9_is "df x" "Usage: df" &&
+    fs9_is "du a b" "Usage: du [path]"
+ck $? "[1.0] df and du errors: du /nosuch (no such file or folder), df x and du a b (usage)"
+# The text fsmake writes (stage 8's check), and cat's lines for it.
+CPCHK=$(python3 - "$LOG" <<'PYEOF'
+import sys
+log = open(sys.argv[1], encoding="latin-1").read().split("\n")
+def shown(data):
+    lines, cur = [], ""
+    for b in data:
+        if b == 10:
+            lines.append(cur); cur = ""; continue
+        if len(cur) == 79:
+            lines.append(cur); cur = ""
+        cur += chr(b) if 0x20 <= b <= 0x7E else "?"
+    if cur:
+        lines.append(cur)
+    return lines
+def text(n):
+    out = bytearray()
+    for off in range(n):
+        line, col = off // 64 + 1, off % 64
+        if col == 63: out.append(10)
+        elif col < 11: out += ("line %05d " % line).encode()[col:col + 1]
+        else: out.append(ord("a") + (line + col) % 26)
+    return out
+got, on = [], False
+for l in log:
+    if on:
+        if l.startswith("console: cat: ") or l.startswith("madire> "):
+            break
+        if not l.startswith(("console: ", "uptime: ", "[pid ")):
+            got.append(l)
+    elif l == "madire> cat copy.txt":
+        on = True
+print("OK" if got == shown(text(12300)) else "BAD %d lines" % len(got))
+PYEOF
+)
+echo "      cat copy.txt: $CPCHK"
+fs9_is "cp data.txt copy.txt" "" && [ "$CPCHK" = OK ]
+ck $? "[1.0] cp data.txt copy.txt: a new file with the same 12,300 bytes (cat prints it exactly)"
+Q="Replace file 'copy.txt'? Type 'yes' to confirm:"
+fs9_is "cp data.txt copy.txt " "$Q" && [ "$(fs9_answer "cp data.txt copy.txt ")" = "Copy cancelled." ] &&
+    [ "$(fs9_size "stat copy.txt")" = 6 ] && fs9_is "cp data.txt copy.txt  " "$Q" &&
+    [ -z "$(fs9_answer "cp data.txt copy.txt  ")" ] && [ "$(fs9_size "stat copy.txt ")" = 12300 ]
+ck $? "[1.0] cp onto an existing file asks: no keeps it (Copy cancelled.), yes replaces it"
+fs9_is "cp -y data.txt copy.txt" "" && [ "$(fs9_size "stat copy.txt  ")" = 12300 ]
+ck $? "[1.0] cp -y onto an existing file: replaced without a question"
+fs9_is "cp docs x" "cp: 'docs': is a folder." && fs9_is "cp data.txt docs" "cp: 'docs': is a folder." &&
+    fs9_is "cp nosuch x" "cp: 'nosuch': no such file or folder." &&
+    fs9_is "cp data.txt data.txt" "cp: 'data.txt' and 'data.txt' are the same file." &&
+    fs9_is "cp data.txt" "Usage: cp [-y] <from> <to>"
+ck $? "[1.0] cp errors: a folder as source or target (is a folder), a missing source, the same file, usage"
+grep -m1 -E "^console: cp: 2097152 bytes in [0-9]+ chunks" "$LOG" | sed 's/^/      /'
+grep -qE "^console: cp: 2097152 bytes in 512 chunks, [0-9]+ ticks$" "$LOG" &&
+    [ "$(fs9_size "stat big2.dat")" = 2097152 ] &&
+    fs9_block "stat big2.dat" | grep -qxF "Pages:  513 (4 KiB each, the index page included)"
+ck $? "[1.0] cp of a 2 MiB file: 2,097,152 bytes in 512 chunks; stat: 2097152 bytes, 513 pages"
+CN=$(sed -nE 's/^console: Ctrl\+C: cp cancelled after ([0-9]+) bytes \([0-9]+ ticks\)$/\1/p' "$LOG" | head -n 1)
+echo "      cp big.dat big3.dat: cancelled after ${CN:-?} bytes"
+[ -n "$CN" ] && [ "$CN" -lt 2097152 ] &&
+    fs9_is "cp big.dat big3.dat" "cp: cancelled.${NL}cp: 'big3.dat' holds the first $CN of 2097152 bytes." &&
+    [ "$(fs9_size "stat big3.dat")" = "$CN" ]
+ck $? "[1.0] cp cancelled with Ctrl+C: cp: cancelled., the target holds the first N bytes (N < 2097152, stat size N)"
+fs9_is "cat data.txt >> a.txt" "" && [ "$(fs9_size "stat a.txt")" = 12306 ]
+ck $? "[1.0] cat data.txt >> a.txt: the file's 12,300 bytes appended unchanged (size 6 + 12300)"
+fs9_is "cat a.txt >> a.txt" "cat: 'a.txt': is also the output file." && [ "$(fs9_size "stat a.txt ")" = 12306 ]
+ck $? "[1.0] cat a.txt >> a.txt: refused (is also the output file), the size unchanged"
+fs9_is "cat data.txt >> edge.dat" "Output to 'edge.dat': the file is at its size limit (2 MiB).${NL}Output to 'edge.dat': only the first 52 bytes were written." &&
+    [ "$(fs9_size "stat edge.dat")" = 2097152 ]
+ck $? "[1.0] output at the 2 MiB limit: cat data.txt >> edge.dat (2,097,100 bytes) writes 52 bytes, then the size-limit message; edge.dat 2097152 bytes"
+FULL=$(fs9_block "cp big.dat full.dat")
+FN=$(sed -nE "s/^cp: 'full\.dat' holds the first ([0-9]+) of 2097152 bytes\.$/\1/p" <<< "$FULL")
+echo "      cp big.dat full.dat: $(tr '\n' '|' <<< "$FULL")"
+[ -n "$FN" ] && [ "$FULL" = "cp: 'full.dat': no file space left (the budget is full).${NL}cp: 'full.dat' holds the first $FN of 2097152 bytes." ] &&
+    [ "$(fs9_size "stat full.dat")" = "$FN" ]
+ck $? "[1.0] cp when the file budget runs out: no file space left; the target holds the first N bytes it reports (stat size N)"
+fs9_is "rm a.txt" "Remove file 'a.txt'? Type 'yes' to confirm:" &&
+    [ "$(fs9_answer "rm a.txt")" = "Remove cancelled." ] && [ "$(fs9_size "stat a.txt  ")" = 12306 ] &&
+    [ -z "$(fs9_answer "rm a.txt ")" ] && fs9_missing "a.txt   "
+ck $? "[1.0] rm asks: no keeps the file (Remove cancelled.), yes removes it (then no such file or folder)"
+fs9_is "rm -y l.txt" "" && fs9_missing l.txt
+ck $? "[1.0] rm -y: removed without a question"
+U1=$(fs9_used "df  ")
+U2=$(fs9_used "df   ")
+echo "      df pages used: ${U1:-?} before rm -y big2.dat, ${U2:-?} after"
+fs9_is "rm -y big2.dat" "" && [ -n "$U1" ] && [ -n "$U2" ] && [ $((U1 - U2)) = 513 ]
+ck $? "[1.0] rm of a 2 MiB file: df's pages used fall by 513"
+fs9_is "rm docs" "rm: 'docs': is a folder (rmdir removes folders)." &&
+    fs9_is "rm /" "rm: '/': is a folder (rmdir removes folders)." &&
+    fs9_is "rm nosuch" "rm: 'nosuch': no such file or folder." && fs9_is "rm" "Usage: rm [-y] <path>" &&
+    fs9_is "rm -x" "Usage: rm [-y] <path>"
+ck $? "[1.0] rm errors: a folder (rmdir removes folders), '/', a missing file, usage (rm, rm -x)"
+N1=$(fs9_node "stat copy.txt   ")
+fs9_is "mv copy.txt moved.txt" "" && [ -n "$N1" ] && [ "$(fs9_node "stat moved.txt")" = "$N1" ] &&
+    fs9_missing "copy.txt    "
+ck $? "[1.0] mv renames: the same node number under the new name, the old name gone"
+fs9_is "mv moved.txt docs/moved.txt" "" && fs9_is "ls docs" "moved.txt" &&
+    ! fs9_block "ls /home" | grep -qxF "moved.txt"
+ck $? "[1.0] mv across folders: the file listed in docs, gone from /home"
+Q="Replace file 'docs/moved.txt'? Type 'yes' to confirm:"
+fs9_is "mv o.txt docs/moved.txt" "$Q" && [ "$(fs9_answer "mv o.txt docs/moved.txt")" = "Move cancelled." ] &&
+    [ "$(fs9_size "stat o.txt")" = 6 ] && fs9_is "mv o.txt docs/moved.txt " "$Q" &&
+    [ -z "$(fs9_answer "mv o.txt docs/moved.txt ")" ] && [ "$(fs9_size "stat docs/moved.txt")" = 6 ] &&
+    fs9_missing "o.txt "
+ck $? "[1.0] mv onto an existing file asks: no keeps both (Move cancelled.), yes replaces it"
+fs9_is "mv -y p.txt docs/moved.txt" "" && [ "$(fs9_size "stat docs/moved.txt ")" = 7 ] && fs9_missing p.txt
+ck $? "[1.0] mv -y onto an existing file: replaced without a question"
+fs9_is "mv docs /tmp/m/docs" "" && fs9_is "ls /tmp/m" "docs/" && fs9_is "ls /tmp/m/docs" "moved.txt" &&
+    fs9_missing docs
+ck $? "[1.0] mv of a folder across folders: docs into /tmp/m, its files with it"
+fs9_is "mv /tmp/m /tmp/m/docs/sub" "mv: '/tmp/m' -> '/tmp/m/docs/sub': a folder cannot move into itself." &&
+    fs9_is "mv / x" "mv: '/' -> 'x': '/', '.' and '..' cannot move." &&
+    fs9_is "mv nosuch x" "mv: 'nosuch' -> 'x': no such file or folder." &&
+    fs9_is "mv data.txt /tmp" "mv: 'data.txt' -> '/tmp': is a folder." && fs9_is "mv a" "Usage: mv [-y] <from> <to>"
+ck $? "[1.0] mv errors: a folder into itself, '/', a missing source, a file onto a folder, usage"
+w=$(max_width "$LOG" "^console: started$" "^end-of-fs9-test$")
+grep -q "^end-of-fs9-test$" "$LOG" && [ "$w" -le 79 ]
+ck $? "[1.0] stage 9 file session: every console line at most 79 characters"
+reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
+                                                      "[1.0] stage 9 file session: no panic, dropped key, screen-rule violation or self-check"

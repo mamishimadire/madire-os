@@ -11,7 +11,8 @@
  * set, unset, export, env, sleep, presskey, time and "kill -y" when it also
  * has a session, 0.12 stage 2; pwd, cd, ls, mkdir, rmdir, touch, stat and
  * cat, the help section "files" and the Live line of "version" when it has
- * files, 1.0 stage 8).
+ * files, 1.0 stage 8; rm, cp, mv, df, du and "> file" / ">> file" when it
+ * also has storage, 1.0 stage 9).
  *
  * Pure module: every value it prints comes from a read-only shell_context
  * filled in by the caller, and all output goes through a shell_output
@@ -210,6 +211,64 @@ void shell_date(int64_t seconds, char out[20]);
 #define SHELL_LIVE_LINE2    "Nothing is saved: all files are lost when the computer restarts."
 #define SHELL_LIVE_VERSION  "Live mode (files in memory only)"
 
+/*
+ * 1.0 stage 9: rm, cp, mv, df, du and output redirection (see
+ * shell_context.storage, which needs files too). As in stage 8, every call
+ * is bounded work under the VFS lock in the console (kernel/console/
+ * console.c); the shell only words the results. Each returns 0 (or a
+ * count) or -FS_E... (kernel/fs/fs_errno.h).
+ */
+struct shell_dfinfo {
+    uint32_t nodes, max_nodes;              /* nodes in use (the root included), the limit */
+    uint32_t pages, budget;                 /* file pages in use (index pages included), the budget */
+};
+
+struct shell_du {
+    uint64_t pages, files, folders;         /* under the path (a folder itself not counted) */
+};
+
+struct shell_storage {
+    int (*unlink)(void *ctx, const char *path);         /* a file's name removed */
+    int (*rename)(void *ctx, const char *from, const char *to);
+    /* cp: holds the file at from, creates the file at to (mode 0644) or
+     * empties it, and holds its write mark; *size: from's size. The
+     * console copies it, a chunk at a time, after SHELL_COPY. */
+    int (*copy_open)(void *ctx, const char *from, const char *to, uint64_t *size);
+    void (*df)(void *ctx, struct shell_dfinfo *out);    /* one hold */
+    /* du: du_open counts a file at once, or holds a folder; du_next counts
+     * at most 16 more entries: 1 while some are left, 0 at the end, or
+     * -FS_ENOENT (a folder was removed meanwhile); du_close gives it back. */
+    int (*du_open)(void *ctx, const char *path, struct shell_du *t);
+    int (*du_next)(void *ctx, struct shell_du *t);
+    void (*du_close)(void *ctx);
+    /* Output redirection: out_open creates the file at path (mode 0644),
+     * or empties it (append false) or keeps it (append true), and holds
+     * its write mark; out_write writes at most 4096 bytes in one hold, at
+     * the end of what it wrote before (the file's end for append): the
+     * count (a short one at a limit) or the error with nothing written;
+     * out_close gives the file back; out_is: path names the open file. */
+    int (*out_open)(void *ctx, const char *path, bool append);
+    int64_t (*out_write)(void *ctx, const uint8_t *buf, uint32_t len);
+    void (*out_close)(void *ctx);
+    bool (*out_is)(void *ctx, const char *path);
+    void *ctx;
+};
+
+/* How a copy ended: nothing when it was whole; else the reason (err, or
+ * cancelled: "cp: cancelled.") and what the target holds. */
+void shell_copy_end(const char *to, uint64_t done, uint64_t size, int err, bool cancelled,
+                    const struct shell_output *o);
+
+/* "cat" with its output in a file: after SHELL_CAT the console writes the
+ * file's bytes as they are (shell_redirect_raw: false once writing has
+ * stopped at a limit) and ends it with shell_redirect_end (the file given
+ * back, any limit reported). */
+bool shell_redirect_active(void);
+bool shell_redirect_raw(const uint8_t *bytes, uint32_t len);
+void shell_redirect_end(void);
+
+#define SHELL_CP_CANCELLED  "cp: cancelled."
+
 struct shell_context {
     const char *version;                    /* e.g. "0.5" */
     bool timer_ok;                          /* timer verified at boot */
@@ -267,11 +326,19 @@ struct shell_context {
      * lists them after "time", in the section "files") and "version" adds
      * the Live mode line. NULL leaves every output exactly as before. */
     const struct shell_files *files;
+    /* 1.0 stage 9, optional (with files): when set, "rm", "cp", "mv", "df"
+     * and "du" exist ("help" lists them after "cat", in the section
+     * "files"), and a line may send a command's output to a file with ">"
+     * or ">>" as separate words. NULL leaves every output exactly as before
+     * (">" is then an ordinary word). */
+    const struct shell_storage *storage;
 };
 
 enum shell_text {
     SHELL_TEXT,
     SHELL_ERROR,
+    SHELL_NOTE,         /* 1.0 stage 9: "Did you mean": shown as text, but never
+                         * sent to a file */
 };
 
 struct shell_output {
@@ -303,10 +370,22 @@ enum shell_result {
     SHELL_CAT,          /* 1.0 stage 8: "cat": the file is held (cat_open); the
                          * console prints it a chunk at a time (Ctrl+C
                          * cancels); no prompt until then */
+    SHELL_ASK,          /* 1.0 stage 9: rm, cp or mv asked; the next line
+                         * answers (shell_answer) */
+    SHELL_COPY,         /* 1.0 stage 9: "cp" opened both files (copy_open); the
+                         * console copies a chunk at a time (Ctrl+C cancels);
+                         * no prompt until then */
 };
 
 /* 0.11: what the console prints after the kill question. */
 #define SHELL_KILL_CANCELLED    "Kill cancelled."
+
+/* 1.0 stage 9: the answer to rm's, cp's or mv's question (SHELL_ASK), the
+ * line after it: exactly "yes" (as for reboot) does it (SHELL_COPY for cp:
+ * the copy starts); anything else prints "Remove cancelled." ("Copy
+ * cancelled.", "Move cancelled."). */
+enum shell_result shell_answer(const char *answer, const struct shell_context *c,
+                               const struct shell_output *o);
 
 /* 0.11: how a program run from the console ended (proc_core.h's
  * enum proc_end, as an int so this header stays independent of it). */

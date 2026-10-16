@@ -460,6 +460,16 @@ static void wmark_give(struct vnode *n)
                thread_name(me));
 }
 
+void fd_node_wmark_take(struct vnode *n)
+{
+    wmark_take(n);
+}
+
+void fd_node_wmark_give(struct vnode *n)
+{
+    wmark_give(n);
+}
+
 void fd_busy_check(const char *where)
 {
     int32_t me = thread_current();
