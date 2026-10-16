@@ -82,6 +82,18 @@ int32_t process_start_argv(const char *name, bool module, uint32_t argc, const c
                            uint32_t envc, const char *const *env_names,
                            const char *const *env_values);
 
+/* 1.0 stage 8 (S6-5): process_start_argv for a program that starts in
+ * folder cwd (its relative paths start there): the caller holds cwd (taken
+ * under the VFS lock, vfs_hold) and hands that hold over to the process
+ * only when this succeeds (a process ID > 0; its teardown drops it); on
+ * any failure the hold is still the caller's. NULL is the root (no hold).
+ * process_start_argv starts at the root. */
+struct vnode;
+int32_t process_start_argv_in(const char *name, bool module, uint32_t argc,
+                              const char *const *argv, uint32_t envc,
+                              const char *const *env_names, const char *const *env_values,
+                              struct vnode *cwd);
+
 /* 1.0 stage 7: start blocks allocated and not yet freed (each is freed
  * once its program is loaded, or when the process ends before that). */
 uint32_t process_start_blocks_live(void);

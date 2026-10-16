@@ -295,7 +295,7 @@ struct start_args {
  * does not fit is refused before anything is created. */
 static int32_t start(const char *name, const struct userimg *img, const uint8_t *file,
                      uint64_t size, const struct start_args *a, const struct fd_grant *grants,
-                     uint32_t ngrants)
+                     uint32_t ngrants, struct vnode *cwd)
 {
     int slot = -1;
     int32_t pid = -1;
@@ -321,6 +321,7 @@ static int32_t start(const char *name, const struct userimg *img, const uint8_t 
         r = PROC_ERR_FULL;              /* no open file left, or a bad grant */
     }
     if (r == PROC_OK) {
+        table.e[slot].fds.cwd = cwd;    /* 1.0 stage 8: the caller's hold, or NULL (the root) */
         images[slot] = img;
         files[slot] = file;
         file_sizes[slot] = size;
@@ -335,8 +336,10 @@ static int32_t start(const char *name, const struct userimg *img, const uint8_t 
         return -1;
     }
     int32_t tid = thread_create(name, process_thread, (void *)(intptr_t)slot, false);
-    if (tid < 0)
+    if (tid < 0) {
+        table.e[slot].fds.cwd = NULL;   /* stage 8: the hold stays the caller's */
         fd_teardown(&table.e[slot].fds);
+    }
     f = irq_save();
     if (tid < 0) {
         struct proc_result res;
@@ -369,7 +372,7 @@ static int32_t start_number(const char *name, const struct userimg *img, const u
     num[n] = 0;
     const char *argv[2] = { name, num };
     struct start_args a = { 2, 0, argv, 0, 0 };
-    return start(name, img, file, size, &a, grants, ngrants);
+    return start(name, img, file, size, &a, grants, ngrants, NULL);
 }
 
 int32_t process_start(const char *name, uint64_t arg)
@@ -408,17 +411,25 @@ int32_t process_start_argv(const char *name, bool module, uint32_t argc, const c
                            uint32_t envc, const char *const *env_names,
                            const char *const *env_values)
 {
+    return process_start_argv_in(name, module, argc, argv, envc, env_names, env_values, NULL);
+}
+
+int32_t process_start_argv_in(const char *name, bool module, uint32_t argc,
+                              const char *const *argv, uint32_t envc,
+                              const char *const *env_names, const char *const *env_values,
+                              struct vnode *cwd)
+{
     struct start_args a = { argc, envc, argv, env_names, env_values };
     if (module) {
         const struct progmod *m = progmod_find(progmod_table(), name);
         if (!m)
             return -1;
-        return start(m->name, 0, (const uint8_t *)phys_view(m->phys), m->size, &a, 0, 0);
+        return start(m->name, 0, (const uint8_t *)phys_view(m->phys), m->size, &a, 0, 0, cwd);
     }
     const struct userimg *img = userimg_find(user_images, user_images_count, name);
     if (!img || userimg_check(img) != USERIMG_OK)
         return -1;
-    return start(img->name, img, 0, 0, &a, 0, 0);
+    return start(img->name, img, 0, 0, &a, 0, 0, cwd);
 }
 
 enum proc_status process_kill(int32_t pid)

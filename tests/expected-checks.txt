@@ -33,6 +33,8 @@
 # 4; 1 unit suite (syscall_dir). Stage 7: 18 more: System V start-up:
 # test=startup (16) and a console session (2) in part 4; 1 unit suite
 # (startstack). Stage 7b: 3 more: test=klock's ticks inside holds (part
-# 2), test=selfcheckyieldlock (2) in part 4.
-1.0 174
-unit-suites 65
+# 2), test=selfcheckyieldlock (2) in part 4. Stage 8: 38 more: the
+# console's file commands and the Live label, one console session (part
+# 4); 1 unit suite (shell_fs10).
+1.0 212
+unit-suites 66

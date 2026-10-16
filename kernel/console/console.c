@@ -10,6 +10,10 @@
 #include "kernel/console/outq.h"
 #include "kernel/console/scrollback.h"
 #include "kernel/console/textbuf.h"
+#include "kernel/fs/fs_errno.h"
+#include "kernel/fs/fsys_core.h"
+#include "kernel/fs/ramfs_core.h"
+#include "kernel/fs/vfs.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/logbuf.h"
@@ -17,6 +21,7 @@
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/panic.h"
+#include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
 #include "kernel/proc/progmod.h"
@@ -61,6 +66,16 @@ static uint64_t timing_start;
 static struct outq program_outq;          /* 0.11 stage 5: foreground output */
 static int32_t outq_wait_logged_pid;
 static uint8_t outq_drain[256];
+/* 1.0 stage 8: the shell's own current folder (NULL is the root, with no
+ * hold, as in a process's descriptor table; any other folder is held),
+ * the folder "ls" lists and the file "cat" prints (both held meanwhile). */
+static struct vnode *sh_cwd;
+static struct vnode *ls_dir;
+static struct vnode *cat_node;
+static bool catting;
+static uint64_t cat_off, cat_start;
+static struct shell_cat cat_text;
+static uint8_t cat_chunk[4096];
 
 /* ---- Drawing (grid -> VGA) ---- */
 
@@ -223,6 +238,220 @@ static void shell_sink(void *ctx, const char *text, enum shell_text kind)
 
 static const struct shell_output sink = { shell_sink, 0 };
 
+/* ---- Files (1.0 stage 8) ---- */
+
+/*
+ * The shell's file commands reach the filesystem only here, on thread 0.
+ * Every call is one hold of the VFS lock (fd_vfs_acquire, with the lock's
+ * figures) around bounded work into kernel buffers: one path lookup, one
+ * batch of at most SHELL_LS_BATCH folder entries, or one chunk of at most
+ * 4096 bytes of a file. Nothing is printed, and nothing yields, sleeps or
+ * waits, while the lock is held (the klock self-checks would panic);
+ * thread 0 waits for the lock only by yielding (klock.h). Nodes are given
+ * back with fd_node_drop, outside the lock.
+ */
+
+static bool fs_up(void)
+{
+    return vfs_root()->root != 0;           /* the filesystem booted */
+}
+
+static struct vnode *cwd_node(void)
+{
+    return sh_cwd ? sh_cwd : vfs_root()->root;
+}
+
+/* A new hold of the shell's current folder for a program (NULL: the root). */
+static struct vnode *cwd_hold(void)
+{
+    struct vnode *n = sh_cwd;
+    if (!n)
+        return 0;
+    fd_vfs_acquire();
+    vfs_hold(n);
+    fd_vfs_release();
+    return n;
+}
+
+static int64_t fs_cwd_path(void *ctx, char *buf, uint32_t size)
+{
+    (void)ctx;
+    fd_vfs_acquire();
+    int64_t r = fsys_cwd_path(cwd_node(), vfs_root()->root, buf, size);
+    fd_vfs_release();
+    return r;
+}
+
+static bool fs_cwd_removed(void *ctx)
+{
+    (void)ctx;
+    fd_vfs_acquire();
+    bool gone = cwd_node()->parent == 0;    /* a removed folder has no parent */
+    fd_vfs_release();
+    return gone;
+}
+
+static int fs_chdir(void *ctx, const char *path)
+{
+    (void)ctx;
+    struct vfs *v = vfs_root();
+    struct vnode *n = 0;
+    fd_vfs_acquire();
+    int r = vfs_lookup(v, cwd_node(), path, &n);
+    if (r == 0 && n->type != VNODE_DIR)
+        r = -FS_ENOTDIR;
+    if (r == 0) {
+        struct vnode *old = sh_cwd;
+        if (n == v->root)
+            n = 0;                          /* the root needs no hold */
+        else
+            vfs_hold(n);                    /* the new one first: it may be the old */
+        sh_cwd = n;
+        if (old)
+            vfs_drop(v, old);               /* a folder has no pages to give back */
+    }
+    fd_vfs_release();
+    return r;
+}
+
+/* A node's facts (the VFS lock held). */
+static void fs_facts(const struct vnode *n, struct shell_finfo *f)
+{
+    uint32_t subdirs = 0;
+    if (n->type == VNODE_DIR)
+        for (const struct vnode *e = ramfs_first(n); e; e = ramfs_next(e))
+            if (e->type == VNODE_DIR)
+                subdirs++;
+    f->type = n->type == VNODE_DIR ? SHELL_FT_DIR : SHELL_FT_FILE;
+    f->pages = ramfs_file_pages(n);
+    f->nlink = n->nlink == 0 ? 0 : n->type == VNODE_DIR ? 2 + subdirs : 1;
+    f->mode = n->mode;
+    f->size = n->type == VNODE_DIR ? 0 : n->size;
+    f->ino = n->ino;
+    f->atime = n->atime;
+    f->mtime = n->mtime;
+    f->ctime = n->ctime;
+    f->name[0] = '\0';
+}
+
+static int fs_stat(void *ctx, const char *path, struct shell_finfo *out)
+{
+    (void)ctx;
+    struct vnode *n = 0;
+    fd_vfs_acquire();
+    int r = vfs_lookup(vfs_root(), cwd_node(), path, &n);
+    if (r == 0)
+        fs_facts(n, out);
+    fd_vfs_release();
+    return r;
+}
+
+static int fs_mkdir(void *ctx, const char *path)
+{
+    (void)ctx;
+    fd_vfs_acquire();
+    int r = vfs_create(vfs_root(), cwd_node(), path, VNODE_DIR, 0755, 0);
+    fd_vfs_release();
+    return r;
+}
+
+static int fs_rmdir(void *ctx, const char *path)
+{
+    (void)ctx;
+    fd_vfs_acquire();
+    int r = vfs_rmdir(vfs_root(), cwd_node(), path);
+    fd_vfs_release();
+    return r;
+}
+
+/* An empty file (mode 0644), or an existing file's or folder's access,
+ * modify and change times set to now. */
+static int fs_touch(void *ctx, const char *path)
+{
+    (void)ctx;
+    struct vfs *v = vfs_root();
+    fd_vfs_acquire();
+    int r = vfs_create(v, cwd_node(), path, VNODE_FILE, 0644, 0);
+    if (r == -FS_EEXIST || r == -FS_EISDIR) {
+        struct vnode *n = 0;
+        r = vfs_lookup(v, cwd_node(), path, &n);
+        if (r == 0)
+            n->atime = n->mtime = n->ctime = v->now();
+    }
+    fd_vfs_release();
+    return r;
+}
+
+static int fs_list_open(void *ctx, const char *path)
+{
+    (void)ctx;
+    struct vnode *n = 0;
+    fd_vfs_acquire();
+    int r = vfs_lookup(vfs_root(), cwd_node(), path, &n);
+    if (r == 0 && n->type != VNODE_DIR)
+        r = -FS_ENOTDIR;
+    if (r == 0) {
+        vfs_hold(n);
+        ls_dir = n;
+    }
+    fd_vfs_release();
+    return r;
+}
+
+static int fs_list_next(void *ctx, uint64_t *cursor, struct shell_finfo *rows, uint32_t max)
+{
+    (void)ctx;
+    int r = 0;
+    fd_vfs_acquire();
+    if (ls_dir != vfs_root()->root && !ls_dir->parent) {
+        r = -FS_ENOENT;                     /* removed meanwhile (as getdents64, S6-3) */
+    } else {
+        for (struct vnode *e = ramfs_entry_from(ls_dir, *cursor); e && (uint32_t)r < max;
+             e = ramfs_next(e)) {
+            size_t len = 0;
+            const char *s = ramfs_name(e, &len);
+            fs_facts(e, &rows[r]);
+            for (size_t i = 0; i < len && i < SHELL_NAME_MAX; i++)
+                rows[r].name[i] = s[i];
+            rows[r].name[len < SHELL_NAME_MAX ? len : SHELL_NAME_MAX] = '\0';
+            *cursor = (uint64_t)ramfs_seq(e) + 1;
+            r++;
+        }
+    }
+    fd_vfs_release();
+    return r;
+}
+
+static void fs_list_close(void *ctx)
+{
+    (void)ctx;
+    if (ls_dir)
+        fd_node_drop(ls_dir);
+    ls_dir = 0;
+}
+
+static int fs_cat_open(void *ctx, const char *path)
+{
+    (void)ctx;
+    struct vnode *n = 0;
+    fd_vfs_acquire();
+    int r = vfs_lookup(vfs_root(), cwd_node(), path, &n);
+    if (r == 0 && n->type == VNODE_DIR)
+        r = -FS_EISDIR;
+    if (r == 0) {
+        vfs_hold(n);
+        cat_node = n;
+        cat_off = 0;
+    }
+    fd_vfs_release();
+    return r;
+}
+
+static const struct shell_files files_ops = {
+    fs_cwd_path, fs_cwd_removed, fs_chdir, fs_stat, fs_mkdir, fs_rmdir, fs_touch,
+    fs_list_open, fs_list_next, fs_list_close, fs_cat_open, 0,
+};
+
 /* ---- Programs (0.11) ---- */
 
 /* shell_procs.start: a program module, by name (argv[0]); 1.0 stage 7:
@@ -237,13 +466,20 @@ static int32_t start_program(void *ctx, int argc, char **argv, uint32_t envc,
         return SHELL_RUN_NO_PROGRAM;
     if (background && bg_count >= PROC_MAX)
         return SHELL_RUN_FAILED;
+    /* 1.0 stage 8 (S6-5): the program starts in the shell's current
+     * folder. Its hold is taken here, under the VFS lock and before
+     * preemption is turned off (the lock is taken at count 0 only); the
+     * process takes it over if it starts, else it is dropped below. */
+    struct vnode *cwd = cwd_hold();
     if (!background)
         preempt_disable();
-    int32_t pid = process_start_argv(name, true, (uint32_t)argc, (const char *const *)argv, envc,
-                                     env_names, env_values);
+    int32_t pid = process_start_argv_in(name, true, (uint32_t)argc, (const char *const *)argv,
+                                        envc, env_names, env_values, cwd);
     if (pid <= 0) {
         if (!background)
             preempt_enable();
+        if (cwd)
+            fd_node_drop(cwd);
         return pid == PROCESS_START_E2BIG ? SHELL_RUN_TOO_BIG : SHELL_RUN_FAILED;
     }
     klogf("console: %s process %d '%s', argc %d\n",
@@ -363,6 +599,8 @@ static void build_context(struct shell_context *c)
     c->state = &shell_st;
     /* 0.12 stage 2: variables, sleep, presskey, time and kill -y. */
     c->session = &session;
+    /* 1.0 stage 8: the file commands, once the filesystem has booted. */
+    c->files = fs_up() ? &files_ops : 0;
 }
 
 /* 0.12 stage 2: Ctrl held with c (as for a foreground program). */
@@ -402,6 +640,44 @@ static void end_wait(const char *text)
     if (text)
         shell_sink(0, text, SHELL_TEXT);
     next_prompt();
+}
+
+/* 1.0 stage 8: "cat" ends (why: the cancel line, or 0 at the end of the
+ * file): its last line, the file given back, the next prompt. */
+static void cat_finish(const char *why)
+{
+    shell_cat_end(&cat_text, &sink);
+    catting = false;
+    fd_node_drop(cat_node);
+    cat_node = 0;
+    uint64_t ticks = timer_ticks() - cat_start;
+    if (why) {
+        klogf("console: Ctrl+C: cat cancelled after %llu bytes (%llu ticks)\n",
+              (unsigned long long)cat_off, (unsigned long long)ticks);
+        shell_sink(0, why, SHELL_TEXT);
+    } else {
+        klogf("console: cat: %llu bytes in %llu ticks\n", (unsigned long long)cat_off,
+              (unsigned long long)ticks);
+    }
+    next_prompt();
+}
+
+/* 1.0 stage 8: one chunk of the file per pass of the idle loop: read under
+ * the VFS lock into a kernel buffer, then shown after the release, so keys
+ * (Ctrl+C) are handled between chunks and other threads run. */
+static void cat_step(void)
+{
+    fd_vfs_acquire();
+    int64_t n = ramfs_read(vfs_ramfs(), cat_node, cat_off, cat_chunk, sizeof(cat_chunk));
+    fd_vfs_release();
+    if (n <= 0) {
+        cat_finish(0);
+        return;
+    }
+    shell_cat_put(&cat_text, cat_chunk, (uint32_t)n, &sink);
+    cat_off += (uint64_t)n;
+    render_all();
+    place_cursor();
 }
 
 /* 0.9.1: the answer to "reboot". Only exactly "yes" restarts. */
@@ -497,9 +773,13 @@ static void submit(void)
         } else if (r == SHELL_PRESSKEY) {
             awaiting_key = true;
             klogf("console: presskey: waiting for a key\n");
+        } else if (r == SHELL_CAT) {        /* 1.0 stage 8: cat_step prints it */
+            catting = true;
+            cat_start = timer_ticks();
+            shell_cat_init(&cat_text);
         }
     }
-    if (r == SHELL_RUN || r == SHELL_SLEEP || r == SHELL_PRESSKEY) {
+    if (r == SHELL_RUN || r == SHELL_SLEEP || r == SHELL_PRESSKEY || r == SHELL_CAT) {
         render_all();                       /* 0.11: no prompt until it ends */
         place_cursor();
         return;
@@ -544,6 +824,27 @@ void console_start(const struct memory_stats *mem)
     outq_wait_logged_pid = 0;
     write_screen("M A D I R E   O S\n", ATTR_TITLE);
     write_screen(MADIRE_OS_NAME " v" MADIRE_OS_VERSION "\n\n", ATTR_PROMPT);
+    if (fs_up()) {
+        /* 1.0 stage 8: the Live label (D6), on the screen and the serial
+         * port (not in the kernel log); the shell starts in /home, where
+         * "cd" alone goes (S8-13). */
+        static const char *const live[] = { SHELL_LIVE_LINE1 "\n", SHELL_LIVE_LINE2 "\n" };
+        for (uint32_t i = 0; i < 2; i++) {
+            write_screen(live[i], ATTR_TITLE);
+            preempt_disable();
+            serial_write(live[i]);
+            preempt_enable();
+        }
+        write_screen("\n", ATTR_TEXT);
+        struct vnode *home = 0;
+        fd_vfs_acquire();
+        if (vfs_lookup(vfs_root(), vfs_root()->root, "/home", &home) == 0 &&
+            home->type == VNODE_DIR) {
+            vfs_hold(home);
+            sh_cwd = home;
+        }
+        fd_vfs_release();
+    }
     write_screen("Type 'help' for a list of commands.\n\n", ATTR_TEXT);
 
     vga_cursor_show(true);
@@ -575,6 +876,13 @@ void console_handle_key(const struct key_event *e)
                   (unsigned)(timer_ticks() - sleep_start));
             end_wait(SHELL_SLEEP_CANCELLED "\n");
         }
+        return;
+    }
+    if (catting) {
+        /* 1.0 stage 8: only Ctrl+C reaches "cat" (it stops it); other keys
+         * are not typed. */
+        if (is_ctrl_c(e))
+            cat_finish(SHELL_CAT_CANCELLED "\n");
         return;
     }
     if (awaiting_key) {
@@ -663,6 +971,8 @@ void console_poll(void)
         klogf("console: sleep done after %u ticks\n", (unsigned)(timer_ticks() - sleep_start));
         end_wait(0);
     }
+    if (catting)                            /* 1.0 stage 8: one chunk per pass */
+        cat_step();
     drain_program_output();
     char line[SHELL_END_LINE_MAX];
     for (uint32_t i = 0; i < bg_count; ) {

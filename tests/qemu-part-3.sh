@@ -180,9 +180,10 @@ expect "$LOG" "System ready\."                        "[0.10] userchurn: System 
 
 echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
 # The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
-# 27 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
+# 28 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
 # added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio,
-# 25 until stage 6 added dirops, 26 until stage 7 added args) and on
+# 25 until stage 6 added dirops, 26 until stage 7 added args, 27 until
+# stage 8 added fsmake) and on
 # fixtures made from hello.elf by tests/elf-fixtures.py (one broken rule
 # each; manifest.txt holds the exact reason each must be refused with). No
 # kernel uses elf_core yet (stage 1).
@@ -191,7 +192,7 @@ FIX=$OUT/elf-fixtures
 EC=$("$ELFCHECK" "$OUT"/user/*.elf 2>&1)
 nprog=$(ls "$OUT"/user/*.elf 2>/dev/null | wc -l)
 nok=$(grep -cE '^[a-z0-9_]+\.elf: OK, [1-4] segments, [0-9]+ pages, entry 0x400[0-9a-f]{3}$' <<< "$EC")
-if [ "$nprog" -eq 27 ] && [ "$nok" -eq 27 ]; then pass "[0.11] elfcheck: all 27 built programs accepted"
+if [ "$nprog" -eq 28 ] && [ "$nok" -eq 28 ]; then pass "[0.11] elfcheck: all 28 built programs accepted"
 else fail "[0.11] elfcheck: $nok of $nprog built programs accepted: $(grep -v ': OK' <<< "$EC" | head -3)"; fi
 expect_line=$(grep -E '^hello\.elf: ' <<< "$EC")
 echo "      $expect_line"
@@ -245,6 +246,11 @@ expect_in_order "$LOG" "[0.11] program modules: the lines are in dmesg" \
     "^madire> dmesg 9999$" "^Program module 1 'hello': " "^Program module 7 'yield': " "^Program modules: 7 accepted"
 reject "$LOG" "PANIC"                                "[0.11] program modules: no panic"
 expect "$LOG" "System ready\."                       "[0.11] program modules: System ready"
+# 1.0 stage 8 (report only, decides no check): the agreed size of dmesg, the
+# bytes printed between the first "madire> dmesg 9999" line and the next
+# line starting "madire>" (lines as the console printed them, each with its
+# newline).
+echo "DMESG_BYTES=$(LC_ALL=C awk '!on && $0 == "madire> dmesg 9999" { on = 1; next } on && /^madire>/ { exit } on { n += length($0) + 1 } END { print n + 0 }' "$LOG")"
 
 # The screen's message line (row 23) shows nothing about program modules.
 LOG=$OUT/serial-progmod-screen.log

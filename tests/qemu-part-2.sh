@@ -688,7 +688,7 @@ LOG=$OUT/serial-shell012.log
 # it drain: with them all 848 presses and 848 releases arrived.
 X58=$(printf 'x%.0s' $(seq 1 58))
 S="x{wait:1}"
-S+="help{ret}help shell{ret}help system{ret}help programs{ret}"
+S+="help{ret}help shell{ret}help system{ret}help programs{ret}help files{ret}"
 S+="help shel{ret}help nosuch{ret}"
 S+="hlep{ret}ru{ret}Echo x{ret}ECHO x{ret}kil 5{ret}"
 S+="prompt{ret}prompt abc>{ret}echo under-new-prompt{ret}prompt{ret}"
@@ -709,7 +709,7 @@ S+="echo end-of-012-test{ret}"
 boot_text "$LOG" 180 "System ready." "$S" 0.03 $'\nend-of-012-test\n' -kernel "$KERNEL"
 
 NEXT="^(console: |madire> )"
-expect_lines "$LOG" "[0.12] help: today's list unchanged, then prompt, alias, unalias, the stage 2 commands and the sections" \
+expect_lines "$LOG" "[0.12] help: today's list unchanged, then prompt, alias, unalias, the stage 2 commands, the 1.0 file commands and the sections" \
     "^madire> help$" "^Available commands:$" "^  help     Show this list$" \
     "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
     "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
@@ -726,7 +726,11 @@ expect_lines "$LOG" "[0.12] help: today's list unchanged, then prompt, alias, un
     "^  export   Mark a variable as exported: export <NAME>$" "^  env      Show the exported variables$" \
     "^  sleep    Wait: sleep <seconds> \(1-3600, Ctrl\+C stops\)$" \
     "^  presskey Wait for a key press \(Ctrl\+C cancels\)$" "^  time     Time a command: time <command>$" \
-    "^Sections: shell system programs \(help <section>\)$" "$NEXT"
+    "^  pwd      Show the current folder$" "^  cd       Change the current folder: cd \[path\]$" \
+    "^  ls       List a folder: ls \[-l\] \[path\]$" "^  mkdir    Create a folder: mkdir <path>$" \
+    "^  rmdir    Remove an empty folder: rmdir <path>$" "^  touch    Create an empty file, or update its time$" \
+    "^  stat     Show a file's or folder's details: stat <path>$" "^  cat      Show a file's contents: cat <path>$" \
+    "^Sections: shell system programs files \(help <section>\)$" "$NEXT"
 expect_lines "$LOG" "[0.12] help shell: the shell's commands" \
     "^madire> help shell$" "^shell: The shell's own commands$" "^  help     " "^  clear    " "^  echo     " \
     "^  history  " "^  prompt   " "^  alias    " "^  unalias  " "^  set      " "^  unset    " "^  export   " \
@@ -738,19 +742,20 @@ expect_lines "$LOG" "[0.12] help programs: programs and processes" \
     "^madire> help programs$" "^programs: Programs and processes$" "^  ps       " "^  run      " \
     "^  kill     " "$NEXT"
 # Every command "help" lists is in exactly one section, and no section name
-# is a command (stage 2's new commands must be placed in a section).
+# is a command (stage 2's new commands must be placed in a section; 1.0
+# stage 8: the section "files" and its 8 commands, 34 in all).
 if awk '
         /^madire> / { cur = $0; next }
         cur == "madire> help" && /^  [a-z]/ { split($0, f, " "); all[f[1]] = 1; next }
-        cur ~ /^madire> help (shell|system|programs)$/ && /^  [a-z]/ { split($0, f, " "); in_sec[f[1]]++; next }
+        cur ~ /^madire> help (shell|system|programs|files)$/ && /^  [a-z]/ { split($0, f, " "); in_sec[f[1]]++; next }
         END {
             na = 0; for (c in all) { na++; if (in_sec[c] != 1) bad = 1 }
             for (c in in_sec) if (!(c in all)) bad = 1
-            split("shell system programs", s, " ")
-            for (i = 1; i <= 3; i++) if (s[i] in all) bad = 1
-            exit !(na == 26 && !bad)
+            split("shell system programs files", s, " ")
+            for (i = 1; i <= 4; i++) if (s[i] in all) bad = 1
+            exit !(na == 34 && !bad)
         }' "$LOG"; then
-    pass "[0.12] help sections: each of the 26 commands in exactly one section, no section named like a command"
+    pass "[0.12] help sections: each of the 34 commands in exactly one section, no section named like a command"
 else
     fail "[0.12] help sections: a command missing from the sections, in two, or a section named like a command"
 fi
@@ -760,8 +765,8 @@ expect_lines "$LOG" "[0.12] help nosuch: today's line only, no suggestion" \
     "^madire> help nosuch$" "^No help for 'nosuch': unknown command\.$" "$NEXT"
 expect_lines "$LOG" "[0.12] hlep: Did you mean: help, sleep?" \
     "^madire> hlep$" "^Unknown command: hlep\. Type 'help' for a list of commands\.$" "^Did you mean: help, sleep\?$" "$NEXT"
-expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (run, cpu, ps)" \
-    "^madire> ru$" "^Unknown command: ru\. " "^Did you mean: run, cpu, ps\?$" "$NEXT"
+expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (run, cd, cpu)" \
+    "^madire> ru$" "^Unknown command: ru\. " "^Did you mean: run, cd, cpu\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] Echo: case-sensitive, distance 1 (echo)" \
     "^madire> Echo x$" "^Unknown command: Echo\. " "^Did you mean: echo\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] ECHO: four letters differ, no suggestion" \
@@ -815,8 +820,8 @@ expect_lines "$LOG" "[0.12] unalias nosuch: a clear error" \
 expect_lines "$LOG" "[0.12] unalias without a name: usage" "^madire> unalias$" "^Usage: unalias <name>$"
 expect_lines "$LOG" "[0.12] an alias's line with 8 words: runs" "^madire> e5 6 7$" "^1 2 3 4 5 6 7$"
 expect_lines "$LOG" "[0.12] an alias's line with 9 words: refused" "^madire> e5 6 7 8$" "^Too many arguments \(max 8\)\.$"
-expect_lines "$LOG" "[0.12] lll: aliases are suggested too (ll, kill)" \
-    "^madire> lll$" "^Unknown command: lll\. " "^Did you mean: ll, kill\?$" "$NEXT"
+expect_lines "$LOG" "[0.12] lll: aliases are suggested too (ll, kill, ls)" \
+    "^madire> lll$" "^Unknown command: lll\. " "^Did you mean: ll, kill, ls\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] the 16th alias: added" "^madire> alias t13 echo 13$" "^Alias 't13' added\.$"
 expect_lines "$LOG" "[0.12] a 17th alias: refused (table full)" \
     "^madire> alias t14 echo 14$" "^alias: the table is full \(16 aliases\); remove one with unalias\.$"
