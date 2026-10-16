@@ -4,7 +4,7 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 
 **Current version:** 1.0 (Milestone 1.0: the filesystem; tag `v1.0`)
 
-![Madire OS v0.13 boot screen](docs/images/v0.13-boot.png)
+![Madire OS v1.0 boot screen](docs/images/v1.0-boot.png)
 
 1.0 gives Madire OS **files and folders**:
 
@@ -17,6 +17,10 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 - **`help` fits one screen** again: the commands' names by section; `help <command>` and `help <section>` give the details.
 - **Madire's own licence files** (`LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES`) at the root of every ISO.
 - **Tests:** 260 new QEMU checks, 13 new unit-test suites, a stress part (the lock under load, the kill race), and a VirtualBox `files` group.
+
+The console opens in Live mode; `help files` lists the file commands:
+
+![Live mode and help files (1.0)](docs/images/v1.0-files-help.png)
 
 0.13 replaced the bootloader: the ISO now boots through **Limine** (v12.9.3, BSD-2-Clause) instead of GRUB:
 
@@ -41,7 +45,7 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 
 Since 0.11 you **run programs from the console**: `run hello` loads an ELF program that the bootloader delivered as a boot module and shows its output on the screen; `run -b spin` runs one in the background; `ps` lists threads and processes; `kill <pid>` ends one (it asks first; `kill -y <pid>` doesn't); **Ctrl+C** ends the program in the foreground:
 
-![run hello: the program's output on the screen (0.13)](docs/images/v0.13-run-hello.png)
+![run hello: the program's output on the screen (1.0)](docs/images/v1.0-run-hello.png)
 
 Programs run in **user mode** (since 0.10), each in its own address space, and talk to the kernel only through system calls; a program that makes a mistake is ended alone, and the kernel carries on. The Diagnostics menu runs the built-in test programs:
 
@@ -51,9 +55,9 @@ After the boot checks, press any key to open the console. Output that scrolls of
 
 ![Madire OS v0.9.2 console: scrolled back](docs/images/scrollback-page1-v0.9.2.png)
 
-`help` lists the commands and ends with the sections; `help <command>` or `<command> --help` explains one:
+`help` fits one screen (since 1.0): the commands' names by section; `help <section>` lists one group with each purpose, and `help <command>` or `<command> --help` explains one:
 
-![Madire OS v0.13 console: help](docs/images/v0.13-help.png)
+![Madire OS v1.0 console: help](docs/images/v1.0-help.png)
 
 `uname -a`, `hostname`, `date`, `dmesg`, Up-arrow recall and `history` (0.9.1):
 
@@ -61,9 +65,9 @@ After the boot checks, press any key to open the console. Output that scrolls of
 
 `ps` lists the threads and processes (after boot only thread 0, the console itself, is left, and no process), and `mem` shows the higher-half kernel, NX and the kernel stack's high-water mark:
 
-![Madire OS v0.13 console: ps and version](docs/images/v0.13-ps-version.png)
+![Madire OS v1.0 console: ps and version](docs/images/v1.0-ps-version.png)
 
-![Madire OS v0.13 console: mem](docs/images/v0.13-mem.png)
+![Madire OS v1.0 console: mem](docs/images/v1.0-mem.png)
 
 It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written in C and NASM. So far the kernel:
 
@@ -105,7 +109,7 @@ It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written 
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
-**Tested at v0.13:** 1233 QEMU checks and 55 unit-test suites pass in the official regression on GitHub Actions, together with the reproducible-build check; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all its groups on the same ISO, booting all 27 Diagnostics entries through Limine's menu.
+**Tested at v1.0:** 1493 QEMU checks and 68 unit-test suites pass in the official regression on GitHub Actions (the final full run, 38966032674), together with the reproducible-build check (the stress part's 125 checks last ran in stage 8, before the shell's final changes); the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 604 of its rows on that run's ISO, booting all 27 Diagnostics entries through Limine's menu and running a whole session of file commands.
 
 ## Roadmap
 
@@ -116,19 +120,33 @@ A summary of [docs/roadmap.md](docs/roadmap.md); each step needs its own plan an
 - **Then, unscheduled and in this order:** graphics (a design guide first, then a framebuffer, fonts and the mouse), storage, an installer (virtual disks only at first), networking, the Linux-compatible foundation (system calls and a C library), TLS, audio and video, the Madire Browser, Linux apps, and in the long term Windows apps through Wine on top of the Linux layer.
 - **Alongside:** the modernisation track: UEFI, APIC, multi-core, USB, all RAM, Wi-Fi and Bluetooth; ARM64 later.
 
-## v0.13 in pictures
+## v1.0 in pictures
 
-Screenshots from the 0.13 VirtualBox acceptance run (`MadireOS-Test`, the v0.13 ISO of the final regression run).
+Screenshots from the 1.0 VirtualBox acceptance run (`MadireOS-Test`, the ISO of the final full regression run, 38966032674).
 
 Limine's menu with the **Diagnostics** directory open (the automation selects each entry by its position):
 
-![Limine's menu, Diagnostics open](docs/images/v0.13-boot-menu-diagnostics.png)
+![Limine's menu, Diagnostics open (1.0)](docs/images/v1.0-boot-menu-diagnostics.png)
 
-The boot screen of v0.13, with the self-tests passed:
+Files made with `>` and `>>`, read with `cat`; `echo hi>b.txt` stays one word (`>` must stand alone); `stat` shows a file's details:
 
-![v0.13 boot screen](docs/images/v0.13-boot.png)
+![echo, cat, touch, ls and stat](docs/images/v1.0-files-stat.png)
 
-`help` ends with the list of sections; `help system` and `help programs` show one group each:
+`cp` asks before replacing a file ("no" keeps it, "yes" replaces it; `-y` doesn't ask):
+
+![cp](docs/images/v1.0-files-cp.png)
+
+`mv` and `rm` ask the same way:
+
+![mv and rm](docs/images/v1.0-files-rm.png)
+
+Clear refusals, then `df` (Live mode, nodes and pages in use) and `du`:
+
+![errors, df and du](docs/images/v1.0-files-df.png)
+
+### The 0.12 shell commands (v0.13 screenshots)
+
+`help` ended with the list of sections in 0.13 (since 1.0 it fits one screen, above); `help system` and `help programs` show one group each:
 
 ![help system and help programs](docs/images/v0.13-help-sections.png)
 
