@@ -97,6 +97,24 @@ $mode = $info["uartmode1"]
 if (-not ($mode -like "file,*") -or -not (Test-SamePath $mode.Substring(5) $serial)) {
     $problems += "COM1 output is '$mode' (expected file,$serial)"
 }
+# 1.0 (stage 11): the storage, every controller and port: one SATA (AHCI)
+# controller; port 0 the documented unused disk MadireOS-Test.vdi, port 1
+# the optical drive (the script attaches the ISO under test there), nothing
+# else attached anywhere.
+$ctls = @($info.Keys | Where-Object { $_ -match '^storagecontrollername[0-9]+$' } | ForEach-Object { $info[$_] })
+if ($ctls.Count -ne 1 -or $ctls[0] -ne "SATA" -or $info["storagecontrollertype0"] -ne "IntelAhci") {
+    $problems += "storage controllers are '$($ctls -join ', ')' (expected one: SATA, IntelAhci)"
+}
+$disk = "$($info['SATA-0-0'])".Replace('\\', '\')
+if (-not $disk -or $disk -eq "none" -or (Split-Path $disk -Leaf) -ne "MadireOS-Test.vdi" -or $info.ContainsKey("SATA-tempeject-0-0")) {
+    $problems += "SATA port 0 is '$disk' (expected the hard disk MadireOS-Test.vdi)"
+}
+if (-not $info.ContainsKey("SATA-tempeject-1-0")) { $problems += "SATA port 1 is not an optical drive ('$($info['SATA-1-0'])')" }
+foreach ($c in $ctls) {
+    foreach ($k in @($info.Keys | Where-Object { $_ -match ('^' + [regex]::Escape($c) + '-[0-9]+-[0-9]+$') })) {
+        if ($k -notin @("SATA-0-0", "SATA-1-0") -and $info[$k] -ne "none") { $problems += "$k holds '$($info[$k])' (expected nothing)" }
+    }
+}
 if ($info["VMState"] -notin @("poweroff", "aborted")) {
     $problems += "the VM is '$($info['VMState'])'; power it off first (nothing is discarded here)"
 }
@@ -116,7 +134,7 @@ $summary = Join-Path $OutDir "$Prefix-summary.txt"
 $results = New-Object System.Collections.Generic.List[string]
 function Note([string]$s) { Write-Host $s; $script:results.Add($s) }
 
-Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log)"
+Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else)"
 foreach ($f in @($Iso, $ModuleIso)) {
     Note ("ISO: {0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf))
 }
@@ -189,9 +207,12 @@ function Absent([string]$name, [string]$pattern) {
 # 0.13: the width of the VM's screen now (from a screenshot's PNG header).
 # Limine draws its menu on a 1024x768 graphics screen; the BIOS splash and
 # Madire's text screen are 720x400 (or 640x480).
+# 1.0 (stage 11): 0 also when the VM has no screen yet (VirtualBox refuses
+# the screenshot, "Unsupported resolution 0x0"), instead of ending the run.
 function Get-ScreenWidth {
     $f = Join-Path $OutDir "$Prefix-screen-probe.png"
-    VBox controlvm $VM screenshotpng $f 2>$null | Out-Null
+    if (Test-Path $f) { Remove-Item $f -Confirm:$false }
+    try { VBox controlvm $VM screenshotpng $f 2>$null | Out-Null } catch { return 0 }
     if (-not (Test-Path $f)) { return 0 }
     $b = [IO.File]::ReadAllBytes($f)
     Remove-Item $f -Confirm:$false
@@ -208,9 +229,21 @@ function Get-ScreenWidth {
 # longer than the countdown, the menu must still be on the screen and the
 # serial log still empty (no kernel started). Returns $true if both hold,
 # otherwise notes the failure and returns $false.
+# 1.0 (stage 11): first the screen must exist: a screenshot is retried for
+# at most 10 s after startvm (the time is reported); if there is still none,
+# the menu counts as not shown (MISSING) and the run carries on.
+$script:ScreenWaits = New-Object System.Collections.Generic.List[int]
 function Start-Menu([string]$name) {
     if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
     VBox startvm $VM --type headless | Out-Null
+    $t0 = Get-Date
+    while ((Get-ScreenWidth) -eq 0 -and ((Get-Date) - $t0).TotalSeconds -lt 10) { Start-Sleep -Milliseconds 250 }
+    $waited = [int]((Get-Date) - $t0).TotalMilliseconds
+    if ((Get-ScreenWidth) -eq 0) {
+        Note ("{0,-16} {1,-8} /a screen within 10 s of startvm (no screenshot after {2} ms)/" -f $name, "MISSING", $waited)
+        return $false
+    }
+    $script:ScreenWaits.Add($waited)
     $until = (Get-Date).AddMilliseconds($MenuHoldMs + 30000)
     $shown = $false
     while (-not $shown -and (Get-Date) -lt $until) {
@@ -1111,6 +1144,13 @@ if ($Repeat -gt 0 -and ((Want "repeat") -or $Only.Count -eq 0)) {
 if ($script:DiagBooted.Count) {
     $pos = ($script:DiagBooted.Values | Sort-Object) -join ","
     Note ("boot menu (report only): {0} of 27 Diagnostics positions booted through the menu: {1}" -f $script:DiagBooted.Count, $pos)
+}
+
+# 1.0 (stage 11): how long the screen took to exist after startvm (report only).
+if ($script:ScreenWaits.Count) {
+    $sw = $script:ScreenWaits | Measure-Object -Maximum -Average
+    Note ("screen (report only): first screenshot after startvm in {0} menu boots: longest {1} ms, average {2:N0} ms (limit 10000)" -f
+          $sw.Count, $sw.Maximum, $sw.Average)
 }
 
 $results | Set-Content -Path $summary -Encoding ascii
