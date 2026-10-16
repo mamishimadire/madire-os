@@ -22,7 +22,7 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, repeat
+    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
     [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
@@ -419,7 +419,7 @@ if (Want "commands") {
     Stop-Run "commands" @("^mem: Show memory information$", "^Usage: mem$",
         "^Madire OS madire $VRe x86_64$", "^madire$",
         "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$",
-        "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  reboot   Restart the computer \(asks first\)$",
+        "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot$",
         "^Restart Madire OS now\? Type 'yes' to confirm:$", "^yes/no> no$", "^Restart cancelled\.$")
     $log = Join-Path $OutDir "$Prefix-commands.serial.log"
     if (Test-Path $log) {
@@ -689,20 +689,21 @@ if (Want "shell") {
 
     # help, its sections, "Did you mean"
     Cmd "clear"
-    Cmd "help" @("^  time     Time a command: time <command>$", "^Sections: shell system programs \(help <section>\)$")
+    Cmd "help" @("^  sleep  presskey  time$", "^Purposes and usage: help <command>; one section: help <section>\.$",
+                 "^Scroll back: Shift\+PgUp and Shift\+PgDn\.$")
     Start-Sleep -Seconds 1; Shot "shell-help"
     Cmd "clear"
     Cmd "help shell" @("^shell: The shell's own commands$", "^  help     Show this list$", "^  time     Time a command: time <command>$")
     Cmd "help system" @("^system: Information about the system$", "^  version  Show the Madire OS version$",
                         "^  reboot   Restart the computer \(asks first\)$")
     Cmd "help programs" @("^programs: Programs and processes$", "^  ps       Show threads and processes$",
-                          "^  run      Run a program: run \[-b\] <name> \[n\]$", "^  kill     End a process: kill <pid> \(asks first\)$")
+                          "^  run      Run a program: run \[-b\] <name> \[args\]$", "^  kill     End a process: kill <pid> \(asks first\)$")
     Start-Sleep -Seconds 1; Shot "shell-help-sections"
     Cmd "clear"
     Cmd "help shel" @("^No help for 'shel': unknown command\.$", "^Did you mean: shell, help, set\?$")
-    Cmd "help nosuch" @("^No help for 'nosuch': unknown command\.$")
+    Cmd "help nosuch" @("^No help for 'nosuch': unknown command\.$", "^Did you mean: touch\?$")
     Cmd "hlep" @(($NOSUCH -f "hlep"), "^Did you mean: help, sleep\?$")
-    Cmd "ru" @(($NOSUCH -f "ru"), "^Did you mean: run, cpu, ps\?$")
+    Cmd "ru" @(($NOSUCH -f "ru"), "^Did you mean: du, rm, run\?$")
     Cmd "Echo x" @(($NOSUCH -f "Echo"), "^Did you mean: echo\?$")
     Cmd "kil 5" @(($NOSUCH -f "kil"), "^Did you mean: kill\?$")
     Start-Sleep -Seconds 1; Shot "shell-didyoumean"
@@ -739,7 +740,7 @@ if (Want "shell") {
     Cmd "alias e5 echo 1 2 3 4 5" @("^Alias 'e5' added\.$")
     Cmd "e5 6 7" @("^1 2 3 4 5 6 7$")
     Cmd "e5 6 7 8" @("^Too many arguments \(max 8\)\.$")
-    Cmd "lll" @(($NOSUCH -f "lll"), "^Did you mean: ll, kill\?$")
+    Cmd "lll" @(($NOSUCH -f "lll"), "^Did you mean: ll, kill, ls\?$")
     Cmd "alias" @("^e5 +echo 1 2 3 4 5$", "^ll +echo replaced$", "^2 aliases \(at most 16\)$")
     Start-Sleep -Seconds 1; Shot "shell-alias"
     Cmd "unalias ll" @("^Alias 'll' removed\.$")
@@ -907,6 +908,177 @@ if (Want "shell") {
     }
     Absent "shell" "^key: "
     Absent "shell" "PANIC|Screen output from thread|events dropped|Unexpected IRQ"
+}
+# 1.0 (stage 11): the file commands, typed as in the shell group, with the
+# same expected lines as the QEMU [1.0] file sessions: the Live label, pwd,
+# ls, mkdir, cd, redirection (> and >>, '>' inside a word is text), stat,
+# cp, mv and rm asking first (no, then yes) and with -y, their errors, df
+# and du. The files are made by redirection and cp (the ISO has no fsmake).
+# Keys typed while cat, cp or a redirected command runs are not typed, so
+# the session waits for each one's end line in the serial log.
+# WaitMore <pattern> <before> <seconds>: until `pattern` has matched more
+# than `before` lines (or the time passes).
+function WaitMore([string]$pattern, [int]$before, [int]$seconds) {
+    for ($i = 0; $i -lt $seconds * 4; $i++) {
+        if ((CountLines $pattern) -gt $before) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    Start-Sleep -Milliseconds 300
+}
+# CmdWait: Cmd, then waits for one more line matching `done`.
+function CmdWait([string]$c, [string[]]$out, [string]$done) {
+    $before = CountLines $done
+    Cmd $c $out
+    WaitMore $done $before 15
+}
+# Answer: waits for the question, then types the answer and Enter.
+function Answer([string]$question, [int]$before, [string]$answer) {
+    WaitMore $question $before 10
+    TypeScan $answer; Enter
+}
+
+if (Want "files") {
+    $shellSeq = New-Object System.Collections.Generic.List[string]
+    $shellPrompt = "madire> "
+    $D = "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}"
+    $CAT = "^console: cat: [0-9]+ bytes in "
+    $CP = "^console: cp: [0-9]+ bytes in [0-9]+ chunks, "
+    $OUTL = "^console: output to '"
+    $QUEST = "^(Replace|Remove) file '.*'\? Type 'yes' to confirm:$"
+    Start-Run
+    Wait-Serial "System ready\." 40 | Out-Null
+    Start-Sleep -Seconds 1
+    Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    Expect @("^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file, budget 8192 pages$",
+             "^Filesystem self-test: PASS$", "^System ready\.", "^Live mode: files are kept in memory only\.$",
+             "^Nothing is saved: all files are lost when the computer restarts\.$")
+    Cmd "version" @("^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$", "^Live mode \(files in memory only\)$")
+    Cmd "pwd" @("^/home$")
+    Cmd "help files" @("^files: Files and folders$", "^  pwd      Show the current folder$",
+        "^  cd       Change the current folder: cd \[path\]$", "^  ls       List a folder: ls \[-l\] \[path\]$",
+        "^  mkdir    Create a folder: mkdir <path>$", "^  rmdir    Remove an empty folder: rmdir <path>$",
+        "^  touch    Create an empty file, or update its time$",
+        "^  stat     Show a file's or folder's details: stat <path>$",
+        "^  cat      Show a file's contents: cat <path>$",
+        "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$", "^  cp       Copy a file: cp \[-y\] <from> <to>$",
+        "^  mv       Move or rename: mv \[-y\] <from> <to>$", "^  df       Show the filesystem's nodes and pages in use$",
+        "^  du       Show the pages under a folder: du \[path\]$")
+    Start-Sleep -Seconds 1; Shot "files-help"
+
+    # folders, redirection, stat
+    Cmd "clear"
+    Cmd "ls /" @("^home/$", "^tmp/$")
+    Cmd "ls -l /" @("^d       0 $D home/$", "^d       0 $D tmp/$")
+    Cmd "mkdir docs"
+    Cmd "mkdir docs" @("^mkdir: 'docs': already exists\.$")
+    Cmd "cd docs"
+    Cmd "pwd" @("^/home/docs$")
+    CmdWait "echo hello > a.txt" @("^console: output to 'a\.txt': 6 bytes in 1 writes, largest 6$") $OUTL
+    CmdWait "cat a.txt" @("^hello$") $CAT
+    CmdWait "echo world >> a.txt" @("^console: output to 'a\.txt': 6 bytes in 1 writes, largest 6$") $OUTL
+    CmdWait "cat a.txt" @("^hello$", "^world$") $CAT
+    Cmd "echo hi>b.txt" @("^hi>b\.txt$")
+    Cmd "stat b.txt" @("^stat: 'b\.txt': no such file or folder\.$")
+    Cmd "touch t.txt"
+    Cmd "ls" @("^a\.txt$", "^t\.txt$")
+    Cmd "stat a.txt" @("^File:   a\.txt$", "^Type:   file$", "^Size:   12 bytes$",
+        "^Pages:  2 \(4 KiB each, the index page included\)$", "^Node:   [1-9][0-9]*$", "^Links:  1$",
+        "^Mode:   0644$", "^Access: ${D}:[0-9]{2}$", "^Modify: ${D}:[0-9]{2}$", "^Change: ${D}:[0-9]{2}$")
+    Start-Sleep -Seconds 1; Shot "files-stat"
+
+    # cp: a file of several chunks, asking first (no, then yes), -y, errors
+    Cmd "clear"
+    CmdWait "dmesg 9999 > log.txt" @("^console: output to 'log\.txt': [0-9]+ bytes in [0-9]+ writes, largest [0-9]+$") $OUTL
+    Cmd "stat log.txt" @("^Size:   [0-9]+ bytes$")
+    CmdWait "cp log.txt copy.txt" @("^console: cp: [0-9]+ bytes in [0-9]+ chunks, [0-9]+ ticks$") $CP
+    $q = CountLines $QUEST
+    Cmd "cp log.txt copy.txt" @("^Replace file 'copy\.txt'\? Type 'yes' to confirm:$")
+    Answer $QUEST $q "no"
+    Expect @("^yes/no> no$", "^Copy cancelled\.$")
+    $q = CountLines $QUEST
+    $c = CountLines $CP
+    Cmd "cp a.txt copy.txt" @("^Replace file 'copy\.txt'\? Type 'yes' to confirm:$")
+    Answer $QUEST $q "yes"
+    WaitMore $CP $c 15
+    Expect @("^yes/no> yes$", "^console: cp: 12 bytes in 1 chunks, [0-9]+ ticks$")
+    Cmd "stat copy.txt" @("^Size:   12 bytes$")
+    CmdWait "cp -y log.txt copy.txt" @("^console: cp: [0-9]+ bytes in [0-9]+ chunks, [0-9]+ ticks$") $CP
+    Cmd "cp nosuch x" @("^cp: 'nosuch': no such file or folder\.$")
+    Start-Sleep -Seconds 1; Shot "files-cp"
+
+    # mv and rm, asking first (no, then yes), and -y
+    Cmd "clear"
+    Cmd "mv copy.txt moved.txt"
+    Cmd "stat copy.txt" @("^stat: 'copy\.txt': no such file or folder\.$")
+    CmdWait "echo other > o.txt" @("^console: output to 'o\.txt': 6 bytes in 1 writes, largest 6$") $OUTL
+    $q = CountLines $QUEST
+    Cmd "mv o.txt moved.txt" @("^Replace file 'moved\.txt'\? Type 'yes' to confirm:$")
+    Answer $QUEST $q "no"
+    Expect @("^yes/no> no$", "^Move cancelled\.$")
+    Cmd "mv -y o.txt moved.txt"
+    CmdWait "cat moved.txt" @("^other$") $CAT
+    $q = CountLines $QUEST
+    Cmd "rm a.txt" @("^Remove file 'a\.txt'\? Type 'yes' to confirm:$")
+    Answer $QUEST $q "no"
+    Expect @("^yes/no> no$", "^Remove cancelled\.$")
+    $q = CountLines $QUEST
+    Cmd "rm a.txt" @("^Remove file 'a\.txt'\? Type 'yes' to confirm:$")
+    Answer $QUEST $q "yes"
+    Expect @("^yes/no> yes$")
+    Cmd "stat a.txt" @("^stat: 'a\.txt': no such file or folder\.$")
+    Cmd "rm -y t.txt"
+    Start-Sleep -Seconds 1; Shot "files-rm"
+
+    # errors, df and du
+    Cmd "clear"
+    Cmd "cd .."
+    Cmd "rm docs" @("^rm: 'docs': is a folder \(rmdir removes folders\)\.$")
+    Cmd "rmdir docs" @("^rmdir: 'docs': the folder is not empty\.$")
+    Cmd "echo a >" @("^Redirection: '>' needs a file name after it\.$")
+    Cmd "nosuch > n.txt" @(("^Unknown command: nosuch\. Type 'help' for a list of commands\.$"), "^Did you mean: touch\?$")
+    Cmd "stat n.txt" @("^stat: 'n\.txt': no such file or folder\.$")
+    Cmd "df" @("^Filesystem: live \(RAM\), mounted on / \(files in memory only\)$",
+        "^Nodes:      [0-9]+ used of 1024 \([0-9]+ free\)$", "^Pages:      [0-9]+ used of 8192 \([0-9]+ free\), 4 KiB each$",
+        "^Space:      [0-9]+ KiB used of 32768 KiB \([0-9]+ KiB free\)$")
+    Cmd "du /" @("^[0-9]+ pages? \([0-9]+ KiB\) in [0-9]+ files? and [0-9]+ folders?$")
+    Start-Sleep -Seconds 1; Shot "files-df"
+    Cmd "echo end-of-files-test" @("^end-of-files-test$")
+    Wait-Serial "^end-of-files-test$" 30 | Out-Null
+    Stop-Run "files" @("^System ready\.")
+    InOrder "files" $shellSeq
+    $log = Join-Path $OutDir "$Prefix-files.serial.log"
+    if (Test-Path $log) {
+        $lines = @(Get-Content -LiteralPath $log)
+        # The lines after a typed line's first occurrence, up to the next prompt.
+        $after = {
+            param([string]$typed)
+            $at = -1
+            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -ceq "madire> $typed") { $at = $i; break } }
+            if ($at -lt 0) { return @() }
+            $r = @()
+            for ($i = $at + 1; $i -lt $lines.Count -and -not ($lines[$i] -cmatch '^(madire|yes/no)> '); $i++) { $r += $lines[$i] }
+            return $r
+        }
+        $o = @(& $after "dmesg 9999 > log.txt" | Where-Object { $_ -cmatch "^console: output to 'log\.txt': ([0-9]+) bytes in ([0-9]+) writes, largest ([0-9]+)$" })
+        $sz = @(& $after "stat log.txt" | Where-Object { $_ -cmatch '^Size:   ([0-9]+) bytes$' })
+        $ok = $false; $desc = "no output or stat line"
+        if ($o.Count -eq 1 -and $sz.Count -eq 1) {
+            $m = [regex]::Match($o[0], "([0-9]+) bytes in ([0-9]+) writes, largest ([0-9]+)$")
+            $n = [long]$m.Groups[1].Value; $k = [long]$m.Groups[2].Value; $big = [long]$m.Groups[3].Value
+            $s = [long]([regex]::Match($sz[0], '([0-9]+) bytes$').Groups[1].Value)
+            $ok = $n -gt 4096 -and $big -le 4096 -and $k -ge [Math]::Ceiling($n / 4096) -and $s -eq $n
+            $desc = "$n bytes in $k writes, largest $big; stat $s bytes"
+        }
+        Note ("{0,-16} {1,-8} /dmesg 9999 > log.txt: more than 4096 bytes, pieces of at most 4096, stat shows the logged size: {2}/" -f
+              "files", $(if ($ok) { "OK" } else { "MISSING" }), $desc)
+        $pu = @(& $after "df" | ForEach-Object { if ($_ -cmatch '^Pages:      ([0-9]+) used of ') { $Matches[1] } })
+        $du = @(& $after "du /" | ForEach-Object { if ($_ -cmatch '^([0-9]+) pages? \(') { $Matches[1] } })
+        $ok = $pu.Count -eq 1 -and $du.Count -eq 1 -and $pu[0] -eq $du[0]
+        Note ("{0,-16} {1,-8} /df's pages used equal du /'s pages: df {2}, du {3}/" -f "files",
+              $(if ($ok) { "OK" } else { "MISSING" }), ($pu -join ","), ($du -join ","))
+    }
+    Absent "files" "^key: "
+    Absent "files" "PANIC|Screen output from thread|events dropped|Unexpected IRQ"
 }
 # Repeated normal boots (-Repeat N): the scheduler self-test runs at every
 # boot; each boot's result, ping-pong verdict and the preemptions during
