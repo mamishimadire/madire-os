@@ -689,7 +689,7 @@ LOG=$OUT/serial-shell012.log
 X58=$(printf 'x%.0s' $(seq 1 58))
 S="x{wait:1}"
 S+="help{ret}help shell{ret}help system{ret}help programs{ret}help files{ret}"
-S+="help shel{ret}help nosuch{ret}"
+S+="help shel{ret}help nosuchcommand{ret}"
 S+="hlep{ret}ru{ret}Echo x{ret}ECHO x{ret}kil 5{ret}"
 S+="prompt{ret}prompt abc>{ret}echo under-new-prompt{ret}prompt{ret}"
 S+="prompt 123456789{ret}prompt -x{ret}prompt a b{ret}prompt --reset{ret}prompt{ret}"
@@ -761,8 +761,11 @@ else
 fi
 expect_lines "$LOG" "[0.12] help shel: unknown, then Did you mean over sections and commands" \
     "^madire> help shel$" "^No help for 'shel': unknown command\.$" "^Did you mean: shell, help, set\?$" "$NEXT"
-expect_lines "$LOG" "[0.12] help nosuch: today's line only, no suggestion" \
-    "^madire> help nosuch$" "^No help for 'nosuch': unknown command\.$" "$NEXT"
+# 1.0 stage 8: typed as "nosuchcommand" (was "nosuch", within distance 2
+# of the new "touch"); 13 characters, more than 2 longer than every command
+# and section name, so no suggestion now or with stage 9's commands.
+expect_lines "$LOG" "[0.12] help nosuchcommand: today's line only, no suggestion" \
+    "^madire> help nosuchcommand$" "^No help for 'nosuchcommand': unknown command\.$" "$NEXT"
 expect_lines "$LOG" "[0.12] hlep: Did you mean: help, sleep?" \
     "^madire> hlep$" "^Unknown command: hlep\. Type 'help' for a list of commands\.$" "^Did you mean: help, sleep\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (run, cd, cpu)" \
