@@ -61,14 +61,50 @@ void fd_vfs_release(void)
 
 /* ---- the VFS side: nodes are dropped, and data moved, under its lock ---- */
 
+/* 1.0 stage 6 (S6-6 (a)): true when dropping this hold frees a file that
+ * still has pages: no name left and no other hold. Its pages are then
+ * given back in steps of at most FSYS_TRUNC_STEP per hold of the VFS lock
+ * (as ftruncate, K7 (b)) before the node itself is freed. The VFS lock
+ * held. */
+static bool dies_with_pages(const struct vnode *n)
+{
+    return n->type == VNODE_FILE && n->nlink == 0 && n->opens == 1 && ramfs_file_pages(n) > 0;
+}
+
+/* Drops one hold of each node, in order (a node may come twice: its other
+ * holds are dropped first, so the last one is seen as the last). At most
+ * FD_MAX + 1 nodes (a process's descriptors and its current folder). */
 static void drop_nodes(void *const *nodes, uint32_t n)
 {
     if (n == 0)
         return;
+    struct vnode *big[FD_MAX + 1];
+    uint32_t nb = 0;
     fd_vfs_acquire();
-    for (uint32_t i = 0; i < n; i++)
-        vfs_drop(vfs_root(), nodes[i]);
+    for (uint32_t i = 0; i < n; i++) {
+        struct vnode *x = nodes[i];
+        if (nb < FD_MAX + 1 && dies_with_pages(x))
+            big[nb++] = x;              /* kept held: freed in steps below */
+        else
+            vfs_drop(vfs_root(), x);
+    }
     fd_vfs_release();
+    if (nb == 0)
+        return;
+    /* No name and no other hold: nobody else can reach these nodes, so no
+     * writer holds their write marks. */
+    for (uint32_t j = 0; j < nb; j++)
+        fd_node_truncate(big[j], 0);
+    fd_vfs_acquire();
+    for (uint32_t j = 0; j < nb; j++)
+        vfs_drop(vfs_root(), big[j]);
+    fd_vfs_release();
+}
+
+void fd_node_drop(struct vnode *n)
+{
+    void *one = n;
+    drop_nodes(&one, 1);
 }
 
 static void put_file(uint32_t file)
@@ -128,11 +164,16 @@ bool fd_start_grants(struct fd_table *d, const struct fd_grant *g, uint32_t n)
 
 uint32_t fd_teardown(struct fd_table *d)
 {
-    void *nodes[FD_MAX] = { 0 };
+    void *nodes[FD_MAX + 1];
     uint32_t nn = 0;
     preempt_disable();
     uint32_t closed = fd_close_all(d, &files, nodes, &nn);
     figs.teardown_closed += closed;
+    if (d->cwd) {                                   /* 1.0 stage 6: its current folder */
+        nodes[nn++] = d->cwd;
+        d->cwd = NULL;
+        figs.cwd_dropped++;
+    }
     preempt_enable();
     drop_nodes(nodes, nn);
     return closed;
@@ -580,6 +621,69 @@ int64_t fd_file_lseek(uint32_t file, int64_t off, uint64_t whence)
     return r;
 }
 
+/* ---- 1.0 stage 6: getdents64 ---- */
+
+int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count)
+{
+    struct vnode *n = files.f[file].node;           /* fixed while the call holds a reference */
+    if (n->type != VNODE_DIR)
+        return -FS_ENOTDIR;
+    uint32_t total = (uint32_t)count;               /* unsigned int count, as Linux (F17) */
+    uint8_t kbuf[FD_CHUNK];
+    uint32_t done = 0;
+    int64_t err = 0;
+    busy_take(file);
+    do {                                            /* once at least: count 0 is EINVAL too */
+        uint32_t room = total - done < FD_CHUNK ? total - done : FD_CHUNK;
+        /* At most one buffer of records per hold; the offset moves only
+         * once they are in the caller's buffer (only the busy mark's
+         * holder moves it). */
+        struct hold h;
+        hold_begin(&h);
+        uint64_t cur = files.f[file].offset, next = cur;
+        bool more = false, gone = n->nlink == 0;
+        uint32_t used = gone ? 0 : fsys_dir_fill(n, cur, kbuf, room, &next, &more);
+        hold_end(&h, HOLD_OTHER);
+        if (gone) {
+            if (done == 0)
+                err = -FS_ENOENT;                   /* a removed folder (Linux) */
+            break;
+        }
+        if (used == 0) {
+            if (more && done == 0)
+                err = -FS_EINVAL;                   /* the next record does not fit */
+            break;                                  /* or the end of the folder */
+        }
+        uint32_t keep = used;
+        if (!user_writable(buf + done, used)) {
+            uint32_t valid = (uint32_t)valid_prefix(buf + done, used, true);
+            next = fsys_dir_keep(kbuf, used, valid, cur, &keep);
+            if (keep == 0) {
+                if (done == 0)
+                    err = -FS_EFAULT;
+                break;
+            }
+        }
+        preempt_disable();
+        bool copied = copy_to_user(buf + done, kbuf, keep);
+        if (copied)
+            files.f[file].offset = next;
+        preempt_enable();
+        if (!copied) {                              /* checked above: cannot happen */
+            if (done == 0)
+                err = -FS_EFAULT;
+            break;
+        }
+        done += keep;
+        if (keep < used || !more)
+            break;                                  /* a bad page next, or the end */
+        if (thread_need_resched())
+            thread_yield();
+    } while (done < total);
+    busy_give(file);
+    return done ? (int64_t)done : err;
+}
+
 /* ---- close, dup, dup2 ---- */
 
 int64_t fd_sys_close(struct fd_table *d, uint64_t fd)
@@ -634,6 +738,7 @@ void fd_figures(struct fd_figures *out)
     out->wmark_takes = figs.wmark_takes;
     out->wmark_contended = figs.wmark_contended;
     out->wmark_ahead_max = figs.wmark_ahead_max;
+    out->cwd_dropped = figs.cwd_dropped;
     preempt_enable();
 }
 

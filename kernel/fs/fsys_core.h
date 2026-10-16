@@ -18,6 +18,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "kernel/fs/vfs_core.h"
 #include "kernel/rtc_time.h"
@@ -151,5 +152,63 @@ bool fsys_wmark_try(struct vnode *n, uint16_t ticket, int32_t tid);
 bool fsys_wmark_release(struct vnode *n, int32_t tid);
 int32_t fsys_wmark_holder(const struct vnode *n);              /* thread id, or -1 */
 uint32_t fsys_wmark_waiting(const struct vnode *n);            /* tickets out, the holder's included */
+
+/*
+ * 1.0 stage 6: the folder calls' pure part (tests/unit/test_syscall_dir.c).
+ */
+
+#define FS_AT_REMOVEDIR 0x200u
+#define FS_DT_DIR       4u
+#define FS_DT_REG       8u
+#define FSYS_DIRENT_HEAD 19u            /* d_ino 8, d_off 8, d_reclen 2, d_type 1 */
+
+/* unlinkat's flags (int, the low 32 bits): 0 and *removedir, or -FS_EINVAL
+ * for any bit but AT_REMOVEDIR (Linux). */
+int fsys_unlinkat_flags(uint64_t flags, bool *removedir);
+
+/* The mode bits mkdir stores: the permission bits and the sticky bit
+ * (Linux keeps mode & 01777 for a folder; no umask in 1.0). */
+uint32_t fsys_mkdir_mode(uint64_t mode);
+
+/* A struct linux_dirent64 record's length for a name of len bytes: the
+ * 19-byte head, the name, its NUL, rounded up to 8. */
+uint32_t fsys_dirent_reclen(size_t len);
+
+/* Writes one record at buf (room bytes free): its length, or 0 when it
+ * does not fit (nothing written). The bytes after the NUL up to the
+ * record's end are zero. */
+uint32_t fsys_dirent_put(uint8_t *buf, uint32_t room, uint64_t ino, uint64_t off, uint8_t type,
+                         const char *name, size_t len);
+
+/*
+ * getdents64's offsets on a folder (stable while entries come and go):
+ * 0 is ".", 1 is "..", and 2 + s is the folder's first entry whose stamp
+ * (ramfs_seq) is at least s. A record's d_off is the offset after it: 1
+ * for ".", 2 for "..", stamp + 3 for an entry. An entry removed before it
+ * is read is never returned; one added during a listing is returned once,
+ * at the end (it takes the highest stamp); one renamed during a listing
+ * gets a new stamp, so it may be returned again (POSIX leaves a rename
+ * during a listing unspecified).
+ *
+ * fsys_dir_fill writes the records from offset `cursor` on into buf (at
+ * most room bytes, whole records only), for folder dir (not removed: its
+ * parent is known): the bytes written, *next the offset after the last
+ * one written (cursor if none), and *more whether a record follows
+ * (false at the end of the folder). The VFS lock held.
+ */
+uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, uint32_t room,
+                       uint64_t *next, bool *more);
+
+/* The offset after the last whole record within the first `valid` bytes of
+ * the `used` bytes fsys_dir_fill wrote, and that record's end (the bytes
+ * to keep: 0 if no whole record fits); cursor if none. */
+uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64_t cursor,
+                       uint32_t *keep);
+
+/* getcwd: the path of folder cwd into buf (size bytes), with its NUL:
+ * its length with the NUL, or -FS_ENOENT (cwd removed: no name left) or
+ * -FS_ENAMETOOLONG (the path and its NUL need more than size bytes). The
+ * VFS lock held. */
+int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size);
 
 #endif

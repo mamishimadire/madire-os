@@ -105,6 +105,28 @@ int fd_node_truncate(struct vnode *n, uint64_t length);
  * -EINVAL. */
 int64_t fd_file_lseek(uint32_t file, int64_t off, uint64_t whence);
 
+/*
+ * 1.0 stage 6. fd_file_getdents: getdents64 on a folder's open file, under
+ * its busy mark (Linux's position lock): whole struct linux_dirent64
+ * records from the open file's offset (fsys_core.h), at most 4096 bytes
+ * of them per hold of the VFS lock, copied out after each hold; the bytes
+ * written; -ENOTDIR (not a folder), -ENOENT (the folder was removed),
+ * -EINVAL (the next record does not fit), -EFAULT (no whole record could
+ * be written); after some records, the bytes so far. count is read from
+ * its low 32 bits (Linux's unsigned int; recorded with F17: descriptors
+ * stay strict 64-bit values, S4-2).
+ *
+ * fd_node_drop: gives back one hold of node n (no VFS lock held), as a
+ * close does: a file left with no name and no other hold gives its pages
+ * back in steps of at most FSYS_TRUNC_STEP per hold first (S6-6 (a); the
+ * same path as every last close and every teardown).
+ *
+ * The current folder (struct fd_table's cwd) is dropped by fd_teardown
+ * with the descriptors.
+ */
+int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count);
+void fd_node_drop(struct vnode *n);
+
 int64_t fd_sys_close(struct fd_table *d, uint64_t fd);
 int64_t fd_sys_dup(struct fd_table *d, uint64_t oldfd);
 int64_t fd_sys_dup2(struct fd_table *d, uint64_t oldfd, uint64_t newfd);
@@ -130,6 +152,7 @@ struct fd_figures {
      * mark itself, in its padding). */
     uint64_t wmark_takes, wmark_contended;
     uint32_t wmark_ahead_max;           /* most tickets ahead of a caller's (holder included) */
+    uint64_t cwd_dropped;               /* 1.0 stage 6: current folders dropped by teardowns */
 };
 void fd_figures(struct fd_figures *out);
 

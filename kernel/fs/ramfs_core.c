@@ -34,10 +34,11 @@ static struct ramfs_node *new_node(struct ramfs *fs, enum vnode_type type, uint3
     n->vn.wr_holder = n->vn.wr_spare = 0;
     n->name = 0;
     n->name_len = 0;
+    n->seq = 0;
     n->first = n->last = n->next = 0;
     n->entries = 0;
     n->pages = 0;
-    n->index = 0;
+    n->index = 0;                       /* a folder: next_seq 0 */
     fs->nodes++;
     return n;
 }
@@ -79,6 +80,7 @@ int ramfs_init(struct ramfs *fs, const struct ramfs_mem *mem, uint32_t max_nodes
 
 static void append(struct ramfs_node *dir, struct ramfs_node *n)
 {
+    n->seq = (uint32_t)dir->next_seq++;     /* stage 6: the highest stamp in dir */
     n->next = 0;
     if (dir->last)
         dir->last->next = n;
@@ -131,7 +133,7 @@ static int r_create(void *fsp, struct vnode *dir, const char *name, size_t len,
         fs->next_ino--;                 /* the number was never seen */
         return -FS_ENOMEM;
     }
-    n->name_len = len;
+    n->name_len = (uint32_t)len;
     append(RN(dir), n);
     *out = &n->vn;
     return 0;
@@ -160,7 +162,7 @@ static int r_move(void *fsp, struct vnode *node, struct vnode *dir, const char *
     unhook(RN(node->parent), n);
     fs->mem.free(n->name);
     n->name = p;
-    n->name_len = len;
+    n->name_len = (uint32_t)len;
     append(RN(dir), n);
     return 0;
 }
@@ -205,6 +207,19 @@ struct vnode *ramfs_next(const struct vnode *n)
 {
     struct ramfs_node *e = RN(n)->next;
     return e ? &e->vn : 0;
+}
+
+uint32_t ramfs_seq(const struct vnode *n)
+{
+    return RN(n)->seq;
+}
+
+struct vnode *ramfs_entry_from(const struct vnode *dir, uint64_t seq)
+{
+    for (struct ramfs_node *e = RN(dir)->first; e; e = e->next)
+        if (e->seq >= seq)
+            return &e->vn;
+    return 0;
 }
 
 /* ---- file data (stage 2) ---- */

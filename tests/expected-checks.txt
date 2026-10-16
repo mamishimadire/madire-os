@@ -28,6 +28,8 @@
 # and test=fdkill (11) in part 2, test=selfcheckcopylock (2) in part 4;
 # 2 unit suites (fdtable, usercopy_out). Stage 5: 44 more: the file system
 # calls: the boot clock line, test=fileio (22), test=bigio (13) and
-# test=filecontend (8) in part 2; 1 unit suite (syscall_fs).
-1.0 119
-unit-suites 63
+# test=filecontend (8) in part 2; 1 unit suite (syscall_fs). Stage 6: 34
+# more: the folder calls: test=dirops (23) and test=fsunlink (11) in part
+# 4; 1 unit suite (syscall_dir).
+1.0 153
+unit-suites 64

@@ -1089,7 +1089,7 @@ fio_case fileio 6 "" \
 fio_case fileio 7 "" \
     "[1.0] fileio: ftruncate grows a file to 1 MiB taking no page (the hole reads as zeros), shrinks it freeing pages, to exactly 2 MiB OK; the offset unchanged"
 fio_case fileio 8 "" \
-    "[1.0] fileio: openat: a folder fd (O_DIRECTORY) as dirfd, AT_FDCWD (the root until stage 6) and an absolute path with a bad dirfd open the same node; newfstatat with AT_EMPTY_PATH and \"\" stats the dirfd itself; read on a folder fd EISDIR"
+    "[1.0] fileio: openat: a folder fd (O_DIRECTORY) as dirfd, AT_FDCWD (the current folder, / at a program's start) and an absolute path with a bad dirfd open the same node; newfstatat with AT_EMPTY_PATH and \"\" stats the dirfd itself; read on a folder fd EISDIR"
 fio_case fileio 9 "" \
     "[1.0] fileio: the console descriptors: lseek ESPIPE on fds 0, 1 and 2; fstat shows a character device (S_IFCHR)"
 expect "$LOG" "^File test: fileio 10 \(EMFILE from open\): process [0-9]+ exited, status 0 \(expected 0\); open files while it held 13 files and the console: [0-9]+ \([0-9]+ before \+ 15\): the refused open took none: OK$" \

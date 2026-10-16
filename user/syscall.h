@@ -30,9 +30,20 @@
 #define SYS_OPENAT      257
 #define SYS_NEWFSTATAT  262
 
+#define SYS_GETCWD      79              /* 1.0 stage 6 */
+#define SYS_CHDIR       80
+#define SYS_RENAME      82
+#define SYS_MKDIR       83
+#define SYS_RMDIR       84
+#define SYS_UNLINK      87
+#define SYS_GETDENTS64  217
+#define SYS_MKDIRAT     258
+#define SYS_UNLINKAT    263
+
 #define ENOENT       2
 #define EBADF        9
 #define EFAULT       14
+#define EBUSY        16
 #define EEXIST       17
 #define ENOTDIR      20
 #define EISDIR       21
@@ -42,8 +53,10 @@
 #define EFBIG        27
 #define ENOSPC       28
 #define ESPIPE       29
+#define ERANGE       34
 #define ENAMETOOLONG 36
 #define ENOSYS       38
+#define ENOTEMPTY    39
 
 /* 1.0 stage 5: open flags, *at flags, lseek, st_mode (x86-64) */
 #define O_RDONLY    0x0
@@ -67,6 +80,8 @@
 #define S_IFDIR 0040000u
 #define S_IFCHR 0020000u
 #define S_IFREG 0100000u
+#define DT_DIR 4                        /* 1.0 stage 6: getdents64's d_type */
+#define DT_REG 8
 
 struct timespec {
     int64_t tv_sec;
@@ -173,6 +188,53 @@ static inline long sys_lseek(uint64_t fd, int64_t off, uint64_t whence)
 static inline long sys_ftruncate(uint64_t fd, int64_t length)
 {
     return syscall6(SYS_FTRUNCATE, fd, (uint64_t)length, 0, 0, 0, 0);
+}
+
+/* 1.0 stage 6 */
+static inline long sys_getcwd(char *buf, uint64_t size)
+{
+    return syscall6(SYS_GETCWD, (uint64_t)(uintptr_t)buf, size, 0, 0, 0, 0);
+}
+
+static inline long sys_chdir(const char *path)
+{
+    return syscall6(SYS_CHDIR, (uint64_t)(uintptr_t)path, 0, 0, 0, 0, 0);
+}
+
+static inline long sys_rename(const char *oldpath, const char *newpath)
+{
+    return syscall6(SYS_RENAME, (uint64_t)(uintptr_t)oldpath, (uint64_t)(uintptr_t)newpath, 0, 0,
+                    0, 0);
+}
+
+static inline long sys_mkdir(const char *path, uint64_t mode)
+{
+    return syscall6(SYS_MKDIR, (uint64_t)(uintptr_t)path, mode, 0, 0, 0, 0);
+}
+
+static inline long sys_rmdir(const char *path)
+{
+    return syscall6(SYS_RMDIR, (uint64_t)(uintptr_t)path, 0, 0, 0, 0, 0);
+}
+
+static inline long sys_unlink(const char *path)
+{
+    return syscall6(SYS_UNLINK, (uint64_t)(uintptr_t)path, 0, 0, 0, 0, 0);
+}
+
+static inline long sys_getdents64(uint64_t fd, void *dirp, uint64_t count)
+{
+    return syscall6(SYS_GETDENTS64, fd, (uint64_t)(uintptr_t)dirp, count, 0, 0, 0);
+}
+
+static inline long sys_mkdirat(uint64_t dirfd, const char *path, uint64_t mode)
+{
+    return syscall6(SYS_MKDIRAT, dirfd, (uint64_t)(uintptr_t)path, mode, 0, 0, 0);
+}
+
+static inline long sys_unlinkat(uint64_t dirfd, const char *path, uint64_t flags)
+{
+    return syscall6(SYS_UNLINKAT, dirfd, (uint64_t)(uintptr_t)path, flags, 0, 0, 0);
 }
 
 static inline long sys_sched_yield(void)

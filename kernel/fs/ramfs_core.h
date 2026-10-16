@@ -52,12 +52,20 @@ struct ramfs_pages {
 struct ramfs_node {
     struct vnode vn;                    /* first: a vnode pointer is a ramfs_node pointer */
     char *name;                         /* not NUL-terminated; NULL for the root */
-    size_t name_len;
+    uint32_t name_len;                  /* at most PATH_NAME_MAX (255) */
+    /* 1.0 stage 6: the entry's stamp in its folder, taken from the
+     * folder's next_seq when it was added there (creation or rename), so
+     * a folder's entries are in increasing stamp order: getdents64's
+     * offsets (fsys_core.h). */
+    uint32_t seq;
     struct ramfs_node *first, *last;    /* a folder's entries */
     struct ramfs_node *next;            /* the next entry of its folder */
     uint32_t entries;
     uint32_t pages;                     /* a file's pages, its index page included */
-    uint64_t index;                     /* a file's index page, 0 while it has no data page */
+    union {
+        uint64_t index;                 /* a file's index page, 0 while it has no data page */
+        uint64_t next_seq;              /* 1.0 stage 6: a folder's next entry stamp */
+    };
 };
 
 /* 1.0 stage 5: at most 128 bytes, so its heap block stays 144 (stage 2,
@@ -139,5 +147,13 @@ const char *ramfs_name(const struct vnode *n, size_t *len);
  * (NULL at the end). */
 struct vnode *ramfs_first(const struct vnode *dir);
 struct vnode *ramfs_next(const struct vnode *n);
+
+/* 1.0 stage 6: an entry's stamp in its folder (see struct ramfs_node),
+ * and a folder's first entry whose stamp is at least seq (NULL if none).
+ * Stamps count up per folder from 0 and are never reused within it (a
+ * folder takes at most 2^32 entries in its life: far more than the 1024
+ * nodes of the filesystem can make in any test). */
+uint32_t ramfs_seq(const struct vnode *n);
+struct vnode *ramfs_entry_from(const struct vnode *dir, uint64_t seq);
 
 #endif

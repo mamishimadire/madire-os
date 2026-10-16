@@ -26,6 +26,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/fs/dirtest.h"
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
@@ -582,6 +583,13 @@ static void run_diagnostics(void)
         diag_message("File contention test: the busy mark and the VFS lock under load...");
         diag_message(fsiotest_contend() ? "File contention test: done"
                                         : "File contention test: FAIL (see serial log)");
+    } else if (cmdline_has("test=dirops")) {      /* 1.0 stage 6 */
+        diag_message("Dir test: getcwd, chdir, mkdir, rmdir, unlink, rename, getdents64...");
+        diag_message(dirtest_dirops() ? "Dir test: done" : "Dir test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fsunlink")) {    /* 1.0 stage 6 */
+        diag_message("Unlink test: open files and folders unlinked, renamed over, removed...");
+        diag_message(dirtest_fsunlink() ? "Unlink test: done"
+                                        : "Unlink test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();

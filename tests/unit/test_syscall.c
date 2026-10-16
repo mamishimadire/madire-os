@@ -21,6 +21,17 @@ static void test_implemented_numbers(void)
     CHECK_EQ(syscall_lookup(257), SC_OPENAT);
     CHECK_EQ(syscall_lookup(262), SC_NEWFSTATAT);
     CHECK(strcmp(syscall_name(SC_NEWFSTATAT), "newfstatat") == 0);
+    CHECK_EQ(syscall_lookup(79), SC_GETCWD);                /* 1.0 stage 6 */
+    CHECK_EQ(syscall_lookup(80), SC_CHDIR);
+    CHECK_EQ(syscall_lookup(82), SC_RENAME);
+    CHECK_EQ(syscall_lookup(83), SC_MKDIR);
+    CHECK_EQ(syscall_lookup(84), SC_RMDIR);
+    CHECK_EQ(syscall_lookup(87), SC_UNLINK);
+    CHECK_EQ(syscall_lookup(217), SC_GETDENTS64);
+    CHECK_EQ(syscall_lookup(258), SC_MKDIRAT);
+    CHECK_EQ(syscall_lookup(263), SC_UNLINKAT);
+    CHECK(strcmp(syscall_name(SC_GETDENTS64), "getdents64") == 0);
+    CHECK(strcmp(syscall_name(SC_UNLINKAT), "unlinkat") == 0);
     CHECK_EQ(syscall_lookup(1), SC_WRITE);
     CHECK_EQ(syscall_lookup(24), SC_SCHED_YIELD);
     CHECK_EQ(syscall_lookup(35), SC_NANOSLEEP);
@@ -37,9 +48,10 @@ static void test_everything_else_is_unknown(void)
     for (uint64_t nr = 0; nr < 1024; nr++)
         if (syscall_lookup(nr) != SC_UNKNOWN)
             implemented++;
-    CHECK_EQ(implemented, 18);                      /* 6 until 1.0 stage 4: + 0, 3, 32, 33;
+    CHECK_EQ(implemented, 27);                      /* 6 until 1.0 stage 4: + 0, 3, 32, 33;
                                                      * 10 until stage 5: + 2, 4, 5, 6, 8, 77,
-                                                     * 257, 262 */
+                                                     * 257, 262; 18 until stage 6: + 79, 80,
+                                                     * 82, 83, 84, 87, 217, 258, 263 */
     static const uint64_t others[] = {
         /* 16 (ioctl, deferred) replaced 2 (open) in 1.0 stage 5 */
         7, 16, 9, 23, 25, 34, 36, 38, 40, 57, 59, 62, 230, 232, 334, 335, 547,

@@ -1040,7 +1040,7 @@ static const struct us_case us_cases[] = {
     { "exitcode", 3, "return 44 from main (crt0's exit)",           44 },
     { "getpid",   0, "getpid twice, exits with it",                 -1 },
     { "yield",    0, "100 sched_yield calls, each 0",                0 },
-    { "enosys",   0, "1016 numbers without a call: -ENOSYS each",    0 },
+    { "enosys",   0, "1007 numbers without a call: -ENOSYS each",    0 },
     { "sysregs",  0, "registers and RFLAGS across a call",           0 },
 };
 #define US_CASES (int)(sizeof(us_cases) / sizeof(us_cases[0]))
@@ -1083,7 +1083,8 @@ bool usertest_usersys(void)
      * enosys 2; since stage 5b, before that these were -ENOSYS too);
      * -ENOSYS 1024 (enosys; 1028 until 1.0 stage 4 implemented read,
      * close, dup and dup2); 1016 since stage 5 (open, stat, fstat, lstat,
-     * lseek, ftruncate, openat, newfstatat). */
+     * lseek, ftruncate, openat, newfstatat); 1007 since stage 6 (getcwd,
+     * chdir, rename, mkdir, rmdir, unlink, getdents64, mkdirat, unlinkat). */
     syscall_counts(&c1);
     uint64_t gp = c1.by_id[SC_GETPID] - c0.by_id[SC_GETPID];
     uint64_t sy = c1.by_id[SC_SCHED_YIELD] - c0.by_id[SC_SCHED_YIELD];
@@ -1091,7 +1092,7 @@ bool usertest_usersys(void)
     uint64_t eg = c1.by_id[SC_EXIT_GROUP] - c0.by_id[SC_EXIT_GROUP];
     uint64_t wr = c1.by_id[SC_WRITE] - c0.by_id[SC_WRITE];
     uint64_t en = c1.enosys - c0.enosys;
-    line_ok = gp == 3 && sy == 100 && ex == 7 && eg == 1 && wr == 4 && en == 1016;
+    line_ok = gp == 3 && sy == 100 && ex == 7 && eg == 1 && wr == 4 && en == 1007;
     klogf("%s: system calls made: getpid %llu, sched_yield %llu, exit %llu, exit_group %llu, "
           "write %llu, -ENOSYS %llu: %s\n", t, (unsigned long long)gp, (unsigned long long)sy,
           (unsigned long long)ex, (unsigned long long)eg, (unsigned long long)wr,

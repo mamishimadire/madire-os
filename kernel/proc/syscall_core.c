@@ -24,6 +24,15 @@ enum syscall_id syscall_lookup(uint64_t nr)
     case SYS_FTRUNCATE:   return SC_FTRUNCATE;
     case SYS_OPENAT:      return SC_OPENAT;
     case SYS_NEWFSTATAT:  return SC_NEWFSTATAT;
+    case SYS_GETCWD:      return SC_GETCWD;
+    case SYS_CHDIR:       return SC_CHDIR;
+    case SYS_RENAME:      return SC_RENAME;
+    case SYS_MKDIR:       return SC_MKDIR;
+    case SYS_RMDIR:       return SC_RMDIR;
+    case SYS_UNLINK:      return SC_UNLINK;
+    case SYS_GETDENTS64:  return SC_GETDENTS64;
+    case SYS_MKDIRAT:     return SC_MKDIRAT;
+    case SYS_UNLINKAT:    return SC_UNLINKAT;
     default:              return SC_UNKNOWN;
     }
 }
@@ -55,6 +64,15 @@ const char *syscall_name(enum syscall_id id)
     case SC_FTRUNCATE:   return "ftruncate";
     case SC_OPENAT:      return "openat";
     case SC_NEWFSTATAT:  return "newfstatat";
+    case SC_GETCWD:      return "getcwd";
+    case SC_CHDIR:       return "chdir";
+    case SC_RENAME:      return "rename";
+    case SC_MKDIR:       return "mkdir";
+    case SC_RMDIR:       return "rmdir";
+    case SC_UNLINK:      return "unlink";
+    case SC_GETDENTS64:  return "getdents64";
+    case SC_MKDIRAT:     return "mkdirat";
+    case SC_UNLINKAT:    return "unlinkat";
     case SC_COUNT:       break;
     }
     return "unknown";

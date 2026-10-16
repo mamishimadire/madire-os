@@ -201,6 +201,33 @@ void syscall_dispatch(struct interrupt_frame *frame)
     case SC_FTRUNCATE:
         r = fsys_sys_ftruncate(frame->rdi, frame->rsi);
         break;
+    case SC_GETCWD:                     /* 1.0 stage 6 (kernel/fs/fsys.c) */
+        r = fsys_sys_getcwd(frame->rdi, frame->rsi);
+        break;
+    case SC_CHDIR:
+        r = fsys_sys_chdir(frame->rdi);
+        break;
+    case SC_RENAME:
+        r = fsys_sys_rename(frame->rdi, frame->rsi);
+        break;
+    case SC_MKDIR:
+        r = fsys_sys_mkdirat(FS_AT_FDCWD, frame->rdi, frame->rsi);
+        break;
+    case SC_MKDIRAT:
+        r = fsys_sys_mkdirat(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_RMDIR:
+        r = fsys_sys_unlinkat(FS_AT_FDCWD, frame->rdi, FS_AT_REMOVEDIR);
+        break;
+    case SC_UNLINK:
+        r = fsys_sys_unlinkat(FS_AT_FDCWD, frame->rdi, 0);
+        break;
+    case SC_UNLINKAT:
+        r = fsys_sys_unlinkat(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_GETDENTS64:
+        r = fsys_sys_getdents64(frame->rdi, frame->rsi, frame->rdx);
+        break;
     case SC_NANOSLEEP:
         r = sys_nanosleep(frame->rdi);
         break;

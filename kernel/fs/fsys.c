@@ -37,13 +37,22 @@ static int path_in(uint64_t u, char *buf)
     return -FS_ENAMETOOLONG;
 }
 
+/* 1.0 stage 6: the calling process's current folder (NULL in its table is
+ * the root). Only its own thread changes it (chdir) or drops it (its
+ * teardown), and it is held meanwhile, so it is read without the lock. */
+static struct vnode *cwd_node(void)
+{
+    struct vnode *c = process_current_fds()->cwd;
+    return c ? c : vfs_root()->root;
+}
+
 /* The start folder of a relative path (see fsys.h); *held: the open file
  * referenced for the call (fd_put), or NO_FILE. */
 static int start_folder(uint64_t dirfd, struct vnode **start, uint32_t *held)
 {
     *held = NO_FILE;
     if (dirfd == FS_AT_FDCWD) {
-        *start = vfs_root()->root;              /* no current folder until stage 6 */
+        *start = cwd_node();                    /* stage 6: the current folder */
         return 0;
     }
     uint32_t file = 0;
@@ -189,7 +198,7 @@ static int64_t stat_fd(uint64_t fd, uint64_t ust, bool fdcwd)
     struct fsys_facts f = { 0 };
     if (fdcwd && fd == FS_AT_FDCWD) {
         fd_vfs_acquire();
-        node_facts(vfs_root()->root, &f);
+        node_facts(cwd_node(), &f);             /* stage 6: the current folder */
         fd_vfs_release();
         return put_stat(&f, ust);
     }
@@ -276,6 +285,155 @@ int64_t fsys_sys_ftruncate(uint64_t fd, uint64_t length)
         r = -FS_EFBIG;
     else
         r = fd_node_truncate(n, length);
+    fd_put(file);
+    return r;
+}
+
+/* ---- 1.0 stage 6: the folder calls ---- */
+
+/* A path call's start: the path copied in (into PATH_MAX_BYTES at path)
+ * and the folder a relative one starts at; *held as start_folder. The
+ * empty path: -ENOENT (no AT_EMPTY_PATH for these calls). */
+static int path_start(uint64_t dirfd, uint64_t upath, char *path, struct vnode **start,
+                      uint32_t *held)
+{
+    *held = NO_FILE;
+    *start = vfs_root()->root;
+    int r = path_in(upath, path);
+    if (r < 0)
+        return r;
+    if (path[0] == '\0')
+        return -FS_ENOENT;
+    if (!fsys_absolute(path))
+        return start_folder(dirfd, start, held);
+    return 0;
+}
+
+int64_t fsys_sys_mkdirat(uint64_t dirfd, uint64_t upath, uint64_t mode)
+{
+    char path[PATH_MAX_BYTES];
+    struct vnode *start = NULL;
+    uint32_t held = NO_FILE;
+    int r = path_start(dirfd, upath, path, &start, &held);
+    if (r == 0) {
+        fd_vfs_acquire();
+        r = vfs_create(vfs_root(), start, path, VNODE_DIR, fsys_mkdir_mode(mode), NULL);
+        fd_vfs_release();
+    }
+    if (held != NO_FILE)
+        fd_put(held);
+    return r;
+}
+
+int64_t fsys_sys_unlinkat(uint64_t dirfd, uint64_t upath, uint64_t flags)
+{
+    bool removedir = false;
+    int r = fsys_unlinkat_flags(flags, &removedir);    /* EINVAL first, as Linux */
+    if (r < 0)
+        return r;
+    char path[PATH_MAX_BYTES];
+    struct vnode *start = NULL, *victim = NULL;
+    uint32_t held = NO_FILE;
+    r = path_start(dirfd, upath, path, &start, &held);
+    if (r == 0) {
+        struct vfs *v = vfs_root();
+        fd_vfs_acquire();
+        if (removedir) {
+            r = vfs_rmdir(v, start, path);              /* a folder has no pages */
+        } else {
+            /* The file is held across the unlink, so that a last hold
+             * frees its pages in steps (fd_node_drop), not in this hold. */
+            struct vnode *n = NULL;
+            if (vfs_lookup(v, start, path, &n) == 0 && n->type == VNODE_FILE) {
+                vfs_hold(n);
+                victim = n;
+            }
+            r = vfs_unlink(v, start, path);
+        }
+        fd_vfs_release();
+    }
+    if (victim)
+        fd_node_drop(victim);
+    if (held != NO_FILE)
+        fd_put(held);
+    return r;
+}
+
+int64_t fsys_sys_rename(uint64_t uold, uint64_t unew)
+{
+    char opath[PATH_MAX_BYTES], npath[PATH_MAX_BYTES];
+    int r = path_in(uold, opath);
+    if (r < 0)
+        return r;
+    r = path_in(unew, npath);
+    if (r < 0)
+        return r;
+    struct vfs *v = vfs_root();
+    struct vnode *start = cwd_node(), *n = NULL, *victim = NULL;
+    fd_vfs_acquire();
+    /* A file it may replace is held across the rename (as in unlinkat). */
+    if (vfs_lookup(v, start, npath, &n) == 0 && n->type == VNODE_FILE) {
+        vfs_hold(n);
+        victim = n;
+    }
+    r = vfs_rename(v, start, opath, start, npath);
+    fd_vfs_release();
+    if (victim)
+        fd_node_drop(victim);
+    return r;
+}
+
+int64_t fsys_sys_chdir(uint64_t upath)
+{
+    char path[PATH_MAX_BYTES];
+    int r = path_in(upath, path);
+    if (r < 0)
+        return r;
+    struct fd_table *d = process_current_fds();
+    struct vfs *v = vfs_root();
+    struct vnode *n = NULL;
+    fd_vfs_acquire();
+    r = vfs_lookup(v, cwd_node(), path, &n);
+    if (r == 0 && n->type != VNODE_DIR)
+        r = -FS_ENOTDIR;
+    if (r == 0) {
+        struct vnode *old = d->cwd;
+        if (n == v->root)
+            n = NULL;                           /* the root needs no hold */
+        else
+            vfs_hold(n);                        /* the new one first: it may be the old */
+        d->cwd = n;
+        if (old)
+            vfs_drop(v, old);                   /* a removed folder is freed now */
+    }
+    fd_vfs_release();
+    return r;
+}
+
+int64_t fsys_sys_getcwd(uint64_t ubuf, uint64_t size)
+{
+    char path[PATH_MAX_BYTES];
+    fd_vfs_acquire();
+    int64_t len = fsys_cwd_path(cwd_node(), vfs_root()->root, path, sizeof(path));
+    fd_vfs_release();
+    if (len < 0)
+        return len;                             /* ENOENT, ENAMETOOLONG */
+    if ((uint64_t)len > size)
+        return -FS_ERANGE;                      /* also size 0 (the system call, S6-1) */
+    preempt_disable();
+    bool ok = copy_to_user(ubuf, path, (uint64_t)len);
+    preempt_enable();
+    return ok ? len : -FS_EFAULT;
+}
+
+int64_t fsys_sys_getdents64(uint64_t fd, uint64_t ubuf, uint64_t count)
+{
+    uint32_t file = 0;
+    uint8_t kind = 0, access = 0;
+    struct vnode *n = NULL;
+    if (fd_get(process_current_fds(), fd, &file, &kind, &access, &n) < 0)
+        return -FS_EBADF;
+    int64_t r = kind == OFILE_FILE ? fd_file_getdents(file, ubuf, count) : -FS_ENOTDIR;
     fd_put(file);
     return r;
 }

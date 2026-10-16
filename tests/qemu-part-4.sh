@@ -6,7 +6,8 @@
 # come from limine.conf and every test ISO is made with Limine (stage 3a);
 # the checks and their logs are named "boot menu" and serial-bootmenu-*
 # (stage 3b), and the [0.13] module_string checks are added at the end.
-# 1.0 stage 1 adds the padded test kernel's [1.0] checks at the end.
+# 1.0 stage 1 adds the padded test kernel's [1.0] checks at the end; stage
+# 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink).
 
 echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
@@ -277,3 +278,93 @@ if [ -n "$SI" ] && [ "$SI" = "$SK" ] && [ -n "$SP" ] && [ "$SP" != "$SK" ]; then
 else
     fail "[1.0] the ISO's kernel (${SI:-missing}) against the kernel (${SK}) and the padded kernel (${SP:-missing})"
 fi
+
+# ---- 1.0 stage 6: the folder calls (B1, B3, B4, B5, B7) ----
+# Deviations (approved): getcwd answers ERANGE for size 0, the system
+# call's answer (B1 said EINVAL, the C library's; S6-1); ENAMETOOLONG for
+# a current folder whose path is over 4096 bytes (S6-2); getdents64 ENOENT
+# on a removed folder (S6-3); '..' of a removed folder ENOENT (S6-4: Linux
+# follows the old parent); programs start at / until stage 8 (S6-5); a
+# file's pages given back in steps of at most 64 per hold on unlink,
+# rename-over, a last close and a teardown (S6-6); test=dirops added to
+# B7 (S6-8); getdents64's count read as 32 bits (recorded with F17).
+
+echo "== [1.0] test=dirops: getcwd, chdir, mkdir, mkdirat, rmdir, unlink, unlinkat, rename, getdents64 (-m 32M)"
+LOG=$OUT/serial-dirops.log
+DREADY="System ready. Press any key to open the console."
+boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -append "test=dirops"
+grep -E "^Dir test: " "$LOG" | sed 's/^/      /'
+# do_case <arg> <description>: dirops <arg> exited with status 0 (every
+# result it checked was right).
+do_case() {
+    expect "$LOG" "^Dir test: dirops $1 \(.*\): process [0-9]+ exited, status 0 \(expected 0\): OK$" "$2"
+}
+do_case 1 \
+    "[1.0] dirops: getcwd at start is / (returns 2, the length with its NUL); chdir to /tmp, .., tmp, ./tmp/ and / each moves the current folder and getcwd follows (/tmp returns 5)"
+do_case 2 \
+    "[1.0] dirops: getcwd: ERANGE for a buffer one byte short (the exact size works) and for size 0; EFAULT (NULL, unmapped, read-only and kernel buffers); no byte written past the NUL"
+do_case 3 \
+    "[1.0] dirops: chdir: ENOENT (a missing folder, the empty path), ENOTDIR (a file, a file on the way, a file with a trailing '/'), ENAMETOOLONG (a 256-byte name, no NUL within 4096 bytes), EFAULT (NULL, unmapped, kernel paths); the current folder unchanged after each"
+do_case 4 \
+    "[1.0] dirops: relative paths start at the current folder: after chdir /tmp, open, stat, mkdir, unlink and rename with relative names act in /tmp; AT_FDCWD is the current folder for openat, newfstatat (also \"\" with AT_EMPTY_PATH), mkdirat and unlinkat; a folder dirfd and an absolute path ignore it"
+do_case 5 \
+    "[1.0] dirops: mkdir makes a folder (S_IFDIR, mode & 01777 stored, the parent's links + 1), also with a trailing '/'; EEXIST (a folder, a file, '/', '.', '..', /tmp/.), ENOENT (a missing parent, the empty path, inside a removed folder), ENOTDIR (a file on the way), ENAMETOOLONG, EFAULT"
+do_case 6 \
+    "[1.0] dirops: mkdirat: a folder dirfd, AT_FDCWD and an absolute path with a bad dirfd; EBADF (not open, relative path), ENOTDIR (a file or the console as dirfd)"
+do_case 7 \
+    "[1.0] dirops: rmdir removes an empty folder (the parent's links - 1, the name then ENOENT), also with a trailing '/'; EBUSY ('/'), EINVAL ('.', d/.), ENOTEMPTY ('..', d/.., a folder with entries), ENOTDIR (a file, file/), ENOENT (missing, the empty path), ENAMETOOLONG, EFAULT"
+do_case 8 \
+    "[1.0] dirops: unlink removes a file (then ENOENT); EISDIR (a folder, '/', '.', '..', d/); ENOTDIR (file/, a file on the way); ENOENT (missing, missing/, the empty path); ENAMETOOLONG, EFAULT"
+do_case 9 \
+    "[1.0] dirops: unlinkat: flags 0 as unlink, AT_REMOVEDIR as rmdir (ENOTDIR on a file, EISDIR without it on a folder); EINVAL for any other flag bit (0x100, 0x400, 0x1000, combined); EBADF and ENOTDIR for dirfd; AT_FDCWD the current folder"
+do_case 10 \
+    "[1.0] dirops: rename: a file across folders (same node number, the old name ENOENT), a file over a file (the new name has the moved node), a folder over an empty folder, a folder across folders with the current folder inside it (getcwd shows the new path), the same name and the same node by two paths 0 with nothing changed"
+do_case 11 \
+    "[1.0] dirops: rename errors: ENOENT (missing source, missing target folder, the empty path), ENOTDIR (a folder onto a file, a file on the way, a file with a trailing '/' on either side), EISDIR (a file onto a folder), ENOTEMPTY (onto a folder with entries, a/b onto a), EINVAL (a folder into its own subfolder), EBUSY ('/', '.' or '..' on either side), ENAMETOOLONG, EFAULT (either path); nothing changed after each"
+do_case 12 \
+    "[1.0] dirops: getdents64 lists '.' and '..' first (the folder's and the parent's node numbers; both 1 on /), then the entries in creation order with d_type DT_DIR or DT_REG, d_reclen 8-aligned (19 + name + NUL), names NUL-terminated; 0 at the end"
+do_case 13 \
+    "[1.0] dirops: getdents64 with small buffers: one record per call when the buffer holds exactly one; a buffer one byte short of the next record EINVAL with the offset unchanged; only whole records returned"
+do_case 14 \
+    "[1.0] dirops: getdents64 between calls: d_off strictly increasing and lseek to a record's d_off resumes after it; an entry removed before it was read is not returned, none is returned twice across these removals and creations (not across renames: POSIX leaves a rename during a listing unspecified), an entry created during the listing is returned once at the end; lseek 0 starts again"
+do_case 15 \
+    "[1.0] dirops: getdents64 errors: EBADF (closed, 16, -1), ENOTDIR (a file fd, the console fds), EFAULT (NULL, unmapped, read-only, kernel; offset unchanged); a buffer that turns bad after the first record returns that record"
+do_case 16 \
+    "[1.0] dirops: name and path limits: a 255-byte name made, renamed and listed (d_reclen 280), 256 bytes ENAMETOOLONG; getcwd of a current folder whose path is over 4096 bytes ENAMETOOLONG"
+expect "$LOG" "^Dir test: errno matrix: nothing changed: nodes ([0-9]+) -> \1, data pages ([0-9]+) -> \2, open files ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes: OK$" \
+    "[1.0] dirops: the errno matrix changed nothing: nodes, data pages, open files and heap bytes back to the start"
+expect "$LOG" "^Dir test: ENOSPC: 1024 nodes in use \(the limit 1024; [0-9]+ made by the kernel\); mkdir ENOSPC, /tmp/do-x not created, nodes still 1024; a rename \(and back\) still worked \(dirops 17: process [0-9]+ exited, status 0, expected 0\): OK$" \
+    "[1.0] dirops: ENOSPC: with 1024 nodes in use mkdir returns ENOSPC, nothing created; rename still works"
+expect "$LOG" "^Dir test: current folders: dirops 18 in /tmp/cw1 exited \(status 0\), dirops 19 in /tmp/cw2 killed by a CPU exception \(vector 14\), dirops 20 in /tmp/cw3 killed; their holds given back \(opens 0 0 0\), 3 current folders dropped by their teardowns; the folders removed; nodes ([0-9]+) -> \1: OK$" \
+    "[1.0] dirops: current folders released: processes ended by exit, by a fault and by a kill while in /tmp/cw1..3: every hold given back (each folder's opens 0), each folder then removable, nodes back to the start"
+expect "$LOG" "^Dir test: VFS lock holds: the folder calls and dirops 21's listing of a folder of 1000 entries made by the kernel \(process [0-9]+ exited, status 0, expected 0; 1002 records, at most 4096 bytes of records per hold\) held the VFS lock [0-9]+ times, longest hold [0-2] ticks; getdents64 and lseek holds [1-9][0-9]*, longest [0-2] ticks; each at most 2: OK$" \
+    "[1.0] dirops: the folder calls held the VFS lock only in bounded pieces (getdents64 on a folder of 1000 entries among them, at most 4096 bytes of records per hold): longest hold at most 2 ticks"
+expect "$LOG" "^Dir test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] dirops: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^Dir test: PASS$"                     "[1.0] dirops: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] dirops: no crash screen, no panic"
+
+echo "== [1.0] test=fsunlink: open files and folders unlinked, renamed over, removed (-m 32M)"
+LOG=$OUT/serial-fsunlink.log
+boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -append "test=fsunlink"
+grep -E "^Unlink test: |^\[pid [0-9]+\] dirops: polls" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Unlink test: unlinked open file: dirops 30 unlinked /tmp/un-a \(10000 bytes\) open as its fd 3, read and wrote it \(process [0-9]+ exited, status 0, expected 0\); after it the node lived on the kernel's hold: links 0, size 10100, 4 pages, the 100 bytes it wrote read back, nodes ([0-9]+) -> \1, data pages ([0-9]+) -> \2; freed at the last close: nodes [0-9]+, data pages [0-9]+: OK$" \
+    "[1.0] fsunlink: an unlinked open file stays readable and writable through its fd (fstat links 0, size kept); its pages counted until the last close, then freed exactly"
+expect "$LOG" "^Unlink test: unlink of a file not open: dirops 31 unlinked /tmp/un-big \(2 MiB, 513 pages; process [0-9]+ exited, status 0, expected 0\): its pages given back in 9 holds of at most 64; nodes [0-9]+ -> [0-9]+, data pages [0-9]+ -> [0-9]+: OK$" \
+    "[1.0] fsunlink: unlink of a 2 MiB file not open frees its 513 pages in 9 holds of at most 64 pages"
+expect "$LOG" "^Unlink test: last close by a program: /tmp/un-big2 \(2 MiB\) unlinked and the kernel's hold closed while dirops 32 held it as fd 3 \(data pages still ([0-9]+), \1 before\); its close\(3\) freed it \(process [0-9]+ exited, status 0, expected 0\): pages given back in 9 holds of at most 64; nodes [0-9]+ -> [0-9]+, data pages [0-9]+ -> [0-9]+: OK$" \
+    "[1.0] fsunlink: the last close (by a program) of an unlinked 2 MiB file frees it in 9 holds of at most 64 pages"
+expect "$LOG" "^Unlink test: teardowns: dirops 33 \(killed\) and dirops 34 \(killed by a CPU exception, vector 14\) held the last fd of an unlinked 2 MiB file each \(data pages still ([0-9]+), \1 before\); their teardowns gave the pages back in 18 holds of at most 64; nodes [0-9]+ -> [0-9]+, data pages [0-9]+ -> [0-9]+: OK$" \
+    "[1.0] fsunlink: processes killed and faulted holding the last fd of an unlinked file: their teardowns free it in steps, nothing leaked"
+expect "$LOG" "^Unlink test: writers: dirops 35 and 36 wrote 32 x 32 KiB each to /tmp/un-w and /tmp/un-v, every write the full count; after 8 writes un-w was unlinked \(dirops 37: exited, status 0\) and un-v renamed over \(dirops 38: exited, status 0\); both read their 1 MiB back through the fd \(statuses 0, 0\); freed at their close: nodes ([0-9]+) -> [0-9]+, data pages ([0-9]+) -> [0-9]+ \(\+2: dirops 38's file\), then \1, \2: OK$" \
+    "[1.0] fsunlink: unlink and rename-over while another process writes 32 x 32 KiB: every write returns the full count, the data stays readable through the fd until close, then freed"
+expect "$LOG" "^Unlink test: rename onto an open file: dirops 39 \(process [0-9]+ exited, status 0, expected 0\) renamed /tmp/un-new over /tmp/un-old open as its fd 3, read the old 100 bytes through it and the new 200 through the name; the replaced node freed at its last close: nodes ([0-9]+) -> [0-9]+, data pages ([0-9]+) -> [0-9]+ \(the remaining file\), then \1, \2: OK$" \
+    "[1.0] fsunlink: rename onto an open file: the open fd reads the old data, the new name the new; the replaced node freed at its last close"
+expect "$LOG" "^Unlink test: rmdir of the current folder: getcwd, creating, stat '.' and '..' and chdir '..' answered, chdir / freed it \(dirops 40: process [0-9]+ exited, status 0, expected 0\): nodes ([0-9]+) -> \1: OK$" \
+    "[1.0] fsunlink: rmdir of the current folder returns 0; then getcwd ENOENT, creating a relative name ENOENT, stat \".\" links 0, \"..\" ENOENT; chdir / works and frees the removed folder's node"
+expect "$LOG" "^Unlink test: rmdir of a folder open as an fd: getdents64 ENOENT, fstat links 0, freed at its close \(dirops 41: process [0-9]+ exited, status 0, expected 0\): nodes ([0-9]+) -> \1: OK$" \
+    "[1.0] fsunlink: rmdir of a folder open as an fd: getdents64 ENOENT, fstat links 0; the node freed at its close"
+expect "$LOG" "^Unlink test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fsunlink: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^Unlink test: PASS$"                  "[1.0] fsunlink: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] fsunlink: no crash screen, no panic"

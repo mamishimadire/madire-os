@@ -42,8 +42,10 @@ fi
 # 1.0 stage 4: 1024 unknown numbers (1028 until read, close, dup and dup2
 # were implemented; enosys skips those four). 1.0 stage 5: 1016 (open,
 # stat, fstat, lstat, lseek, ftruncate, openat and newfstatat skipped too).
-expect "$LOG" "^User syscall test: system calls made: getpid 3, sched_yield 100, exit 7, exit_group 1, write 4, -ENOSYS 1016: OK$" \
-                                                      "[0.10] usersys: exactly the calls made were counted; 1016 unknown numbers (0-1023, x32, >= 2^32, -1, Madire range) gave -ENOSYS"
+# 1.0 stage 6: 1007 (getcwd, chdir, rename, mkdir, rmdir, unlink,
+# getdents64, mkdirat and unlinkat skipped too).
+expect "$LOG" "^User syscall test: system calls made: getpid 3, sched_yield 100, exit 7, exit_group 1, write 4, -ENOSYS 1007: OK$" \
+                                                      "[0.10] usersys: exactly the calls made were counted; 1007 unknown numbers (0-1023, x32, >= 2^32, -1, Madire range) gave -ENOSYS"
 expect "$LOG" "^User syscall test: spin kept running in ring 3 meanwhile, then was killed: OK$" \
                                                       "[0.10] usersys: another process kept running in ring 3"
 TD=$(grep -m1 -E '^User syscall test: [0-9]+ address spaces torn down' "$LOG")
@@ -178,8 +180,9 @@ expect "$LOG" "System ready\."                        "[0.10] userchurn: System 
 
 echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
 # The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
-# 25 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
-# added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio) and on fixtures made from hello.elf by
+# 26 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
+# added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio,
+# 25 until stage 6 added dirops) and on fixtures made from hello.elf by
 # tests/elf-fixtures.py (one broken rule each; manifest.txt holds the exact
 # reason each must be refused with). No kernel uses elf_core yet (stage 1).
 ELFCHECK=$OUT/elfcheck
@@ -187,7 +190,7 @@ FIX=$OUT/elf-fixtures
 EC=$("$ELFCHECK" "$OUT"/user/*.elf 2>&1)
 nprog=$(ls "$OUT"/user/*.elf 2>/dev/null | wc -l)
 nok=$(grep -cE '^[a-z0-9_]+\.elf: OK, [1-4] segments, [0-9]+ pages, entry 0x400[0-9a-f]{3}$' <<< "$EC")
-if [ "$nprog" -eq 25 ] && [ "$nok" -eq 25 ]; then pass "[0.11] elfcheck: all 25 built programs accepted"
+if [ "$nprog" -eq 26 ] && [ "$nok" -eq 26 ]; then pass "[0.11] elfcheck: all 26 built programs accepted"
 else fail "[0.11] elfcheck: $nok of $nprog built programs accepted: $(grep -v ': OK' <<< "$EC" | head -3)"; fi
 expect_line=$(grep -E '^hello\.elf: ' <<< "$EC")
 echo "      $expect_line"

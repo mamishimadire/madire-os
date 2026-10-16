@@ -77,6 +77,12 @@ struct ofile_table {
 struct fd_table {
     uint16_t fd[FD_MAX];                /* an index into the ofile table, or FD_NONE */
     uint16_t cloexec;                   /* 1.0 stage 5: bit n = descriptor n's close-on-exec */
+    /* 1.0 stage 6: the process's current folder, a struct vnode held
+     * (vfs_hold) while it is the current folder; NULL is the root, which
+     * is never freed and so needs no hold (every process starts there).
+     * Set by chdir only (kernel/fs/fsys.c), dropped at teardown
+     * (kernel/proc/fd.c, fd_teardown), never touched by the calls below. */
+    void *cwd;
 };
 
 /* errno values (Linux x86-64), returned as -errno */

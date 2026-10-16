@@ -1,7 +1,9 @@
 /* The file system calls, the pure part (see fsys_core.h). The host unit
- * tests build this file too (tests/unit/test_syscall_fs.c). */
+ * tests build this file too (tests/unit/test_syscall_fs.c, and since stage 6
+ * tests/unit/test_syscall_dir.c). */
 #include "kernel/fs/fsys_core.h"
 #include "kernel/fs/fs_errno.h"
+#include "kernel/fs/ramfs_core.h"
 #include "kernel/proc/fdtable_core.h"
 
 int fsys_open_flags(uint64_t flags, struct fsys_open *o)
@@ -178,4 +180,154 @@ int32_t fsys_wmark_holder(const struct vnode *n)
 uint32_t fsys_wmark_waiting(const struct vnode *n)
 {
     return (uint16_t)(n->wr_next - n->wr_serving);
+}
+
+/* ---- 1.0 stage 6: the folder calls ---- */
+
+int fsys_unlinkat_flags(uint64_t flags, bool *removedir)
+{
+    uint32_t f = (uint32_t)flags;       /* int flags: the low 32 bits */
+    if (f & ~FS_AT_REMOVEDIR)
+        return -FS_EINVAL;
+    *removedir = (f & FS_AT_REMOVEDIR) != 0;
+    return 0;
+}
+
+uint32_t fsys_mkdir_mode(uint64_t mode)
+{
+    return (uint32_t)(mode & 01777u);
+}
+
+uint32_t fsys_dirent_reclen(size_t len)
+{
+    return (uint32_t)((FSYS_DIRENT_HEAD + len + 1 + 7) & ~(size_t)7);
+}
+
+static void put64(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+
+static uint64_t get64(const uint8_t *p)
+{
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= (uint64_t)p[i] << (8 * i);
+    return v;
+}
+
+uint32_t fsys_dirent_put(uint8_t *buf, uint32_t room, uint64_t ino, uint64_t off, uint8_t type,
+                         const char *name, size_t len)
+{
+    uint32_t rl = fsys_dirent_reclen(len);
+    if (rl > room)
+        return 0;
+    put64(buf, ino);
+    put64(buf + 8, off);
+    buf[16] = (uint8_t)(rl & 0xFF);
+    buf[17] = (uint8_t)(rl >> 8);
+    buf[18] = type;
+    for (size_t i = 0; i < len; i++)
+        buf[FSYS_DIRENT_HEAD + i] = (uint8_t)name[i];
+    for (uint32_t i = FSYS_DIRENT_HEAD + (uint32_t)len; i < rl; i++)
+        buf[i] = 0;                     /* the NUL and the padding */
+    return rl;
+}
+
+uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, uint32_t room,
+                       uint64_t *next, bool *more)
+{
+    uint32_t used = 0;
+    const struct vnode *e = NULL;
+    bool looked = false;
+    *next = cursor;
+    *more = false;
+    for (;;) {
+        uint64_t ino, off;
+        uint8_t type = FS_DT_DIR;
+        const char *name;
+        size_t len;
+        if (*next == 0) {
+            ino = dir->ino;
+            off = 1;
+            name = ".";
+            len = 1;
+        } else if (*next == 1) {
+            ino = dir->parent ? dir->parent->ino : dir->ino;
+            off = 2;
+            name = "..";
+            len = 2;
+        } else {
+            if (!looked) {
+                e = ramfs_entry_from(dir, *next - 2);
+                looked = true;
+            }
+            if (!e)
+                return used;            /* the end of the folder */
+            ino = e->ino;
+            off = (uint64_t)ramfs_seq(e) + 3;
+            type = e->type == VNODE_DIR ? FS_DT_DIR : FS_DT_REG;
+            name = ramfs_name(e, &len);
+        }
+        uint32_t r = fsys_dirent_put(buf + used, room - used, ino, off, type, name, len);
+        if (r == 0) {
+            *more = true;               /* the next record does not fit */
+            return used;
+        }
+        used += r;
+        *next = off;
+        if (e)
+            e = ramfs_next(e);          /* entries are in stamp order */
+    }
+}
+
+uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64_t cursor,
+                       uint32_t *keep)
+{
+    uint32_t pos = 0;
+    uint64_t cur = cursor;
+    *keep = 0;
+    while (pos + FSYS_DIRENT_HEAD <= used) {
+        uint32_t rl = (uint32_t)buf[pos + 16] | ((uint32_t)buf[pos + 17] << 8);
+        if (rl == 0 || pos + rl > used || pos + rl > valid)
+            break;
+        cur = get64(buf + pos + 8);
+        pos += rl;
+        *keep = pos;
+    }
+    return cur;
+}
+
+int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size)
+{
+    if (cwd->nlink == 0)
+        return -FS_ENOENT;              /* removed: no path names it */
+    if (size < 2)
+        return -FS_ENAMETOOLONG;
+    if (cwd == root) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        return 2;
+    }
+    /* Built from the end of buf backwards, one name per folder up to the
+     * root, then moved to its start. */
+    size_t pos = size;
+    buf[--pos] = '\0';
+    for (const struct vnode *n = cwd; n != root; n = n->parent) {
+        if (!n->parent)
+            return -FS_ENOENT;          /* cannot happen: only an empty folder is removed */
+        size_t len;
+        const char *name = ramfs_name(n, &len);
+        if (pos < len + 1)
+            return -FS_ENAMETOOLONG;
+        pos -= len;
+        for (size_t i = 0; i < len; i++)
+            buf[pos + i] = name[i];
+        buf[--pos] = '/';
+    }
+    size_t total = size - pos;
+    for (size_t i = 0; i < total; i++)
+        buf[i] = buf[pos + i];
+    return (int64_t)total;
 }

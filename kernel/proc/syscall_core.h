@@ -37,9 +37,19 @@
  *   39   getpid()                     the process ID
  *   60   exit(status)                 ends the process; status & 0xFF
  *   77   ftruncate(fd, length)        1.0 stage 5
+ *   79   getcwd(buf, size)            1.0 stage 6 (kernel/fs/fsys.c): the length
+ *                                     with the NUL
+ *   80   chdir(path)                  1.0 stage 6
+ *   82   rename(old, new)             1.0 stage 6
+ *   83   mkdir(path, mode)            1.0 stage 6: mkdirat(AT_FDCWD, ...)
+ *   84   rmdir(path)                  1.0 stage 6: unlinkat(AT_FDCWD, ..., AT_REMOVEDIR)
+ *   87   unlink(path)                 1.0 stage 6: unlinkat(AT_FDCWD, ..., 0)
+ *   217  getdents64(fd, dirp, count)  1.0 stage 6 (kernel/proc/fd.c)
  *   231  exit_group(status)           the same (one thread per process)
  *   257  openat(dirfd, path, flags, mode)        1.0 stage 5
+ *   258  mkdirat(dirfd, path, mode)              1.0 stage 6
  *   262  newfstatat(dirfd, path, st, flags)      1.0 stage 5
+ *   263  unlinkat(dirfd, path, flags)            1.0 stage 6
  *
  * Every other number, compared as the full 64-bit RAX (so the x32 bit
  * 0x40000000, values of 2^32 and above, and -1 are all unknown), returns
@@ -69,6 +79,15 @@
 #define SYS_FTRUNCATE   77u
 #define SYS_OPENAT      257u
 #define SYS_NEWFSTATAT  262u
+#define SYS_GETCWD      79u             /* 1.0 stage 6 */
+#define SYS_CHDIR       80u
+#define SYS_RENAME      82u
+#define SYS_MKDIR       83u
+#define SYS_RMDIR       84u
+#define SYS_UNLINK      87u
+#define SYS_GETDENTS64  217u
+#define SYS_MKDIRAT     258u
+#define SYS_UNLINKAT    263u
 
 #define SYS_MADIRE_FIRST 0x10000000ull
 #define SYS_MADIRE_LAST  0x1000FFFFull
@@ -102,6 +121,15 @@ enum syscall_id {
     SC_FTRUNCATE,
     SC_OPENAT,
     SC_NEWFSTATAT,
+    SC_GETCWD,                      /* 1.0 stage 6 */
+    SC_CHDIR,
+    SC_RENAME,
+    SC_MKDIR,
+    SC_RMDIR,
+    SC_UNLINK,
+    SC_GETDENTS64,
+    SC_MKDIRAT,
+    SC_UNLINKAT,
     SC_COUNT                        /* the number of ids */
 };
 

@@ -63,6 +63,7 @@ void fd_table_init(struct fd_table *d)
     for (uint32_t i = 0; i < FD_MAX; i++)
         d->fd[i] = FD_NONE;
     d->cloexec = 0;
+    d->cwd = NULL;                      /* 1.0 stage 6: the root */
 }
 
 int fd_lookup(const struct fd_table *d, uint64_t fd, uint32_t *idx)
