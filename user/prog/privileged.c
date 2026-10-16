@@ -4,8 +4,9 @@
  *   7 rdmsr   8 invlpg   9 sti */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     static const struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gdtr = { 0, 0 };
     uint64_t v = 0;
     switch (arg) {

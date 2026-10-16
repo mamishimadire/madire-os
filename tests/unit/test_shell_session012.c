@@ -21,10 +21,22 @@ static struct history hist;
 static int starts, kill_asks;
 static int32_t asked_pid;
 
-static int32_t fake_start(void *c, const char *name, uint64_t arg, bool background)
+/* 1.0 stage 7: the environment "run" hands over, "NAME=value" lines. */
+static char started_env[512];
+
+static int32_t fake_start(void *c, int argc, char **argv, uint32_t envc,
+                          const char *const *env_names, const char *const *env_values,
+                          bool background)
 {
-    (void)c; (void)name; (void)arg; (void)background;
+    (void)c; (void)argc; (void)argv; (void)background;
     starts++;
+    started_env[0] = '\0';
+    for (uint32_t i = 0; i < envc; i++) {
+        strncat(started_env, env_names[i], sizeof(started_env) - strlen(started_env) - 1);
+        strncat(started_env, "=", sizeof(started_env) - strlen(started_env) - 1);
+        strncat(started_env, env_values[i], sizeof(started_env) - strlen(started_env) - 1);
+        strncat(started_env, "\n", sizeof(started_env) - strlen(started_env) - 1);
+    }
     return 7;
 }
 
@@ -171,7 +183,7 @@ static void test_help(void)
     CHECK_EQ(run("help programs"), SHELL_OK);
     CHECK(strcmp(out, "programs: Programs and processes\n"
                       "  ps       Show threads and processes\n"
-                      "  run      Run a program: run [-b] <name> [n]\n"
+                      "  run      Run a program: run [-b] <name> [args]\n"
                       "  kill     End a process: kill <pid> (asks first)\n") == 0);
     static const char *const topics[][2] = {
         { "set",      "set: Show or set variables: set [NAME[=value]]\n"
@@ -487,6 +499,29 @@ static void test_unset_export_env(void)
     CHECK(strcmp(out, "A=1\n") == 0);
 }
 
+/* 1.0 stage 7: "run" hands the exported variables (only those, in "env"
+ * order, with their current values) to the program as its environment. */
+static void test_run_env(void)
+{
+    reset();
+    CHECK_EQ(run("run hello"), SHELL_RUN);
+    CHECK_EQ(starts, 1);
+    CHECK(strcmp(started_env, "") == 0);            /* nothing exported */
+    run("set B=2");
+    run("set A=1 x");
+    run("set C=3");
+    run("export B");
+    CHECK_EQ(run("run hello"), SHELL_RUN);
+    CHECK(strcmp(started_env, "B=2\n") == 0);       /* A and C are not exported */
+    run("export A");
+    run("set B=");
+    CHECK_EQ(run("run -b hello 1"), SHELL_OK);
+    CHECK(strcmp(started_env, "A=1 x\nB=\n") == 0);
+    run("unset A");
+    CHECK_EQ(run("run hello"), SHELL_RUN);
+    CHECK(strcmp(started_env, "B=\n") == 0);
+}
+
 static void test_sleep(void)
 {
     reset();
@@ -698,6 +733,7 @@ int main(void)
     RUN(test_set_names);
     RUN(test_set_bounds);
     RUN(test_unset_export_env);
+    RUN(test_run_env);
     RUN(test_sleep);
     RUN(test_presskey);
     RUN(test_time);

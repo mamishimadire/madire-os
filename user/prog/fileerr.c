@@ -167,8 +167,9 @@ static void group_ftruncate(void)
         want("fileerr 6: close: ", sys_close(fd), 0);
 }
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     switch (arg) {
     case 1: group_open(); break;
     case 2: group_stat(); break;

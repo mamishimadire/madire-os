@@ -1,7 +1,9 @@
 /* User programs (see process.h). */
+#include "kernel/arch/x86/cpuid.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/arch/x86/pagefault.h"
 #include "kernel/kprintf.h"
+#include "kernel/memory/kmalloc.h"
 #include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pte.h"
@@ -59,7 +61,7 @@ static bool map_segment(struct uspace *as, const struct load_segment *s, uint64_
     return true;
 }
 
-bool process_load_plan(struct uspace *as, const struct load_plan *plan,
+bool process_load_plan(struct uspace *as, const struct load_plan *plan, const uint8_t *top_page,
                        struct process_load_stats *st)
 {
     st->text = st->data = st->stack = st->in_modules = 0;
@@ -70,9 +72,13 @@ bool process_load_plan(struct uspace *as, const struct load_plan *plan,
         uint64_t flags = s->exec ? 0 : (s->write ? PTE_WRITE | nx : nx);
         ok = map_segment(as, s, flags, s->exec ? &st->text : &st->data, st);
     }
+    /* 1.0 stage 7: the stack's top page holds the start block. */
     const struct load_segment stack = { VM_USER_STACK_TOP - VM_USER_STACK_SIZE, 0,
-                                        VM_USER_STACK_SIZE, 0, true, false };
-    ok = ok && map_segment(as, &stack, PTE_WRITE | nx, &st->stack, st);
+                                        VM_USER_STACK_SIZE - STARTBLOCK_SIZE, 0, true, false };
+    const struct load_segment top = { STARTBLOCK_BASE, top_page ? STARTBLOCK_SIZE : 0,
+                                      STARTBLOCK_SIZE, top_page, true, false };
+    ok = ok && map_segment(as, &stack, PTE_WRITE | nx, &st->stack, st) &&
+         map_segment(as, &top, PTE_WRITE | nx, &st->stack, st);
     uint32_t f = irq_save();
     load_totals.loads++;
     load_totals.pages += st->text + st->data + st->stack;
@@ -81,13 +87,72 @@ bool process_load_plan(struct uspace *as, const struct load_plan *plan,
     return ok;
 }
 
+/* ---- 1.0 stage 7: start blocks ---- */
+
+static uint32_t blocks_live;
+static uint64_t start_hwcap;
+static bool start_hwcap_read;
+
+/* AT_HWCAP: CPUID leaf 1 EDX, read once, on a program's own kernel stack
+ * (never thread 0's: its boot peak is a baseline). */
+static uint64_t hwcap(void)
+{
+    if (!start_hwcap_read) {
+        struct cpuid_raw raw;
+        cpuid_read_all(&raw);
+        start_hwcap = raw.has_leaf1 ? raw.leaf1[3] : 0;
+        start_hwcap_read = true;
+    }
+    return start_hwcap;
+}
+
+static struct start_block *block_new(void)
+{
+    struct start_block *b = kmalloc(sizeof(*b));
+    if (b) {
+        uint32_t f = irq_save();
+        blocks_live++;
+        irq_restore(f);
+    }
+    return b;
+}
+
+static void block_free(struct start_block *b)
+{
+    if (!b)
+        return;
+    kfree(b);
+    uint32_t f = irq_save();
+    blocks_live--;
+    irq_restore(f);
+}
+
+uint32_t process_start_blocks_live(void)
+{
+    uint32_t f = irq_save();
+    uint32_t n = blocks_live;
+    irq_restore(f);
+    return n;
+}
+
 bool process_load(struct uspace *as, const struct userimg *img, struct process_load_stats *st)
 {
     struct load_plan plan;
     st->text = st->data = st->stack = st->in_modules = 0;
     if (!loadplan_from_userimg(img, &plan))
         return false;
-    return process_load_plan(as, &plan, st);
+    struct start_block *b = block_new();
+    if (!b)
+        return false;
+    const char *argv[1] = { img->name };
+    bool ok = startblock_strings(b, img->name, 1, argv, 0, 0, 0) == 0;
+    if (ok) {
+        struct start_aux aux = { plan.entry, 0, 0, hwcap() };
+        startblock_finish(b, &aux);
+        ok = process_load_plan(as, &plan, b->page, st);
+    }
+    block_free(b);
+    return ok;
 }
 
 void process_load_totals(struct process_load_totals *out)
@@ -107,7 +172,7 @@ static struct uspace spaces[PROC_MAX];
 static const struct userimg *images[PROC_MAX];     /* a built-in image, or */
 static const uint8_t *files[PROC_MAX];             /* 0.11: an ELF file (checked again at load) */
 static uint64_t file_sizes[PROC_MAX];
-static uint64_t args[PROC_MAX];
+static struct start_block *blocks[PROC_MAX];       /* 1.0 stage 7: until loaded */
 static volatile uint64_t user_returns[PROC_MAX];
 static uint64_t fault_addresses[PROC_MAX];          /* 0.11: "run" */
 static uint8_t slot_of_tid[SCHED_MAX_THREADS];  /* slot + 1; 0 = not a process */
@@ -138,6 +203,10 @@ static void table_init(void)
 static void process_finish(int slot, enum proc_end end, int32_t code) __attribute__((noreturn));
 static void process_finish(int slot, enum proc_end end, int32_t code)
 {
+    /* 1.0 stage 7: a start block not yet used (an end before ring 3). */
+    struct start_block *b = blocks[slot];
+    blocks[slot] = 0;
+    block_free(b);
     /* 1.0 stage 4: every descriptor closed first (by the process's own
      * thread, as its address space is); no busy mark is held here. */
     fd_busy_check("process_finish");
@@ -173,6 +242,7 @@ static int32_t process_thread(void *arg)
      * not trusted alone. A refused file never gets an address space. */
     struct load_plan plan;
     bool planned;
+    struct start_aux aux = { 0, 0, 0, hwcap() };
     if (images[slot]) {
         planned = loadplan_from_userimg(images[slot], &plan);
     } else {
@@ -184,16 +254,24 @@ static int32_t process_thread(void *arg)
             process_finish(slot, PROC_END_LOAD_FAILED, (int32_t)er);
         }
         loadplan_from_elf(files[slot], &ep, &plan);
+        startblock_elf_phdr(files[slot], &ep, &aux.phdr, &aux.phnum);
         planned = true;
     }
     struct process_load_stats st;
     if (!planned || !uspace_create(&spaces[slot]))
         process_finish(slot, PROC_END_FAULT, -1);
+    /* 1.0 stage 7: the start block's pointers and auxiliary vector, then
+     * the block into the stack's top page; it is not needed after that. */
+    struct start_block *b = blocks[slot];
+    aux.entry = plan.entry;
+    startblock_finish(b, &aux);
     uspace_enter(&spaces[slot]);
-    if (!process_load_plan(&spaces[slot], &plan, &st))
+    if (!process_load_plan(&spaces[slot], &plan, b->page, &st))
         process_finish(slot, PROC_END_FAULT, -1);
     struct user_iret frame;
-    user_iret_build_entry(&frame, plan.entry);
+    user_iret_build_entry(&frame, plan.entry, startblock_rsp(b));
+    blocks[slot] = 0;
+    block_free(b);
 
     /* A kill requested before ring 3 ends the process here; one requested
      * from now on is seen at its first return to ring 3. */
@@ -202,16 +280,32 @@ static int32_t process_thread(void *arg)
     irq_restore(f);
     if (kill)
         process_finish(slot, PROC_END_KILLED, 0);
-    enter_user(&frame, args[slot]);
+    enter_user(&frame);
 }
 
+/* 1.0 stage 7: a start's arguments and environment. */
+struct start_args {
+    uint32_t argc, envc;
+    const char *const *argv, *const *names, *const *values;
+};
+
 /* A process for a built-in image (img) or an ELF file (file, size), with
- * the console descriptors and (1.0 stage 4) the kernel's grants. */
+ * the console descriptors and (1.0 stage 4) the kernel's grants; 1.0
+ * stage 7: its start block's strings are laid out here, so a list that
+ * does not fit is refused before anything is created. */
 static int32_t start(const char *name, const struct userimg *img, const uint8_t *file,
-                     uint64_t size, uint64_t arg, const struct fd_grant *grants, uint32_t ngrants)
+                     uint64_t size, const struct start_args *a, const struct fd_grant *grants,
+                     uint32_t ngrants)
 {
     int slot = -1;
     int32_t pid = -1;
+    struct start_block *b = block_new();
+    if (!b)
+        return -1;
+    if (startblock_strings(b, name, a->argc, a->argv, a->envc, a->names, a->values) < 0) {
+        block_free(b);
+        return PROCESS_START_E2BIG;
+    }
     uint32_t f = irq_save();
     table_init();
     enum proc_status r = proc_alloc(&table, name, &slot, &pid);
@@ -230,14 +324,16 @@ static int32_t start(const char *name, const struct userimg *img, const uint8_t 
         images[slot] = img;
         files[slot] = file;
         file_sizes[slot] = size;
-        args[slot] = arg;
+        blocks[slot] = b;
         user_returns[slot] = 0;
         fault_addresses[slot] = 0;
         spaces[slot].pml4 = 0;
     }
     irq_restore(f);
-    if (r != PROC_OK)
+    if (r != PROC_OK) {
+        block_free(b);
         return -1;
+    }
     int32_t tid = thread_create(name, process_thread, (void *)(intptr_t)slot, false);
     if (tid < 0)
         fd_teardown(&table.e[slot].fds);
@@ -246,12 +342,34 @@ static int32_t start(const char *name, const struct userimg *img, const uint8_t 
         struct proc_result res;
         proc_exit(&table, slot, PROC_END_FAULT, -1);
         proc_reap(&table, pid, &res);
+        blocks[slot] = 0;
         pid = -1;
     } else {
         proc_set_tid(&table, slot, tid);
     }
     irq_restore(f);
+    if (tid < 0)
+        block_free(b);
     return pid;
+}
+
+/* 1.0 stage 7: argv = { name, "<arg>" }, no environment. */
+static int32_t start_number(const char *name, const struct userimg *img, const uint8_t *file,
+                            uint64_t size, uint64_t arg, const struct fd_grant *grants,
+                            uint32_t ngrants)
+{
+    char num[24], digits[20];
+    int n = 0;
+    do {
+        digits[n++] = (char)('0' + arg % 10);
+        arg /= 10;
+    } while (arg);
+    for (int i = 0; i < n; i++)
+        num[i] = digits[n - 1 - i];
+    num[n] = 0;
+    const char *argv[2] = { name, num };
+    struct start_args a = { 2, 0, argv, 0, 0 };
+    return start(name, img, file, size, &a, grants, ngrants);
 }
 
 int32_t process_start(const char *name, uint64_t arg)
@@ -259,7 +377,7 @@ int32_t process_start(const char *name, uint64_t arg)
     const struct userimg *img = userimg_find(user_images, user_images_count, name);
     if (!img || userimg_check(img) != USERIMG_OK)
         return -1;
-    return start(img->name, img, 0, 0, arg, 0, 0);
+    return start_number(img->name, img, 0, 0, arg, 0, 0);
 }
 
 int32_t process_start_fds(const char *name, uint64_t arg, const struct fd_grant *grants,
@@ -268,14 +386,14 @@ int32_t process_start_fds(const char *name, uint64_t arg, const struct fd_grant 
     const struct userimg *img = userimg_find(user_images, user_images_count, name);
     if (!img || userimg_check(img) != USERIMG_OK)
         return -1;
-    return start(img->name, img, 0, 0, arg, grants, ngrants);
+    return start_number(img->name, img, 0, 0, arg, grants, ngrants);
 }
 
 int32_t process_start_file(const char *name, const uint8_t *file, uint64_t size, uint64_t arg)
 {
     if (!name || !file)
         return -1;
-    return start(name, 0, file, size, arg, 0, 0);
+    return start_number(name, 0, file, size, arg, 0, 0);
 }
 
 int32_t process_start_program(const char *name, uint64_t arg)
@@ -284,6 +402,23 @@ int32_t process_start_program(const char *name, uint64_t arg)
     if (!m)
         return -1;
     return process_start_file(m->name, (const uint8_t *)phys_view(m->phys), m->size, arg);
+}
+
+int32_t process_start_argv(const char *name, bool module, uint32_t argc, const char *const *argv,
+                           uint32_t envc, const char *const *env_names,
+                           const char *const *env_values)
+{
+    struct start_args a = { argc, envc, argv, env_names, env_values };
+    if (module) {
+        const struct progmod *m = progmod_find(progmod_table(), name);
+        if (!m)
+            return -1;
+        return start(m->name, 0, (const uint8_t *)phys_view(m->phys), m->size, &a, 0, 0);
+    }
+    const struct userimg *img = userimg_find(user_images, user_images_count, name);
+    if (!img || userimg_check(img) != USERIMG_OK)
+        return -1;
+    return start(img->name, img, 0, 0, &a, 0, 0);
 }
 
 enum proc_status process_kill(int32_t pid)

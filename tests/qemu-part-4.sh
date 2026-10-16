@@ -7,7 +7,8 @@
 # the checks and their logs are named "boot menu" and serial-bootmenu-*
 # (stage 3b), and the [0.13] module_string checks are added at the end.
 # 1.0 stage 1 adds the padded test kernel's [1.0] checks at the end; stage
-# 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink).
+# 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink);
+# stage 7 the System V start-up's (test=startup and a console session).
 
 echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
@@ -368,3 +369,126 @@ expect "$LOG" "^Unlink test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) 
     "[1.0] fsunlink: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
 expect "$LOG" "^Unlink test: PASS$"                  "[1.0] fsunlink: PASS"
 reject "$LOG" "PANIC"                                 "[1.0] fsunlink: no crash screen, no panic"
+
+# ---- 1.0 stage 7: System V start-up (D3) ----
+# Decisions (approved): no AT_RANDOM (S7-2, recorded as a deviation); the
+# environment is the shell's exported variables (S7-3); a program refuses
+# a bad number itself (u_arg, status 2; S7-4); args enters at its own stub
+# (args_entry, linked with -e) which records the registers and jumps to
+# crt0's _start (S7-5); the start block is at most 4096 bytes, E2BIG beyond
+# (S7-6, recorded with F17). args is a built-in image and, here, a module
+# (QEMU -initrd); it is not in limine.conf.
+
+echo "== [1.0] Built-in images: entry points from the ELF header (report only, no check)"
+# scripts/user-images.sh takes each image's entry from e_entry since stage
+# 7 (it took nm's _start before): the two agree for every program but args.
+same=0 total=0
+for e in "$OUT"/user/*.elf; do
+    total=$((total + 1))
+    ee=$(readelf -h "$e" | awk '$1 == "Entry" && $2 == "point" { print $4 }')
+    ss=$(nm "$e" | awk '$3 == "_start" { print $1 }')
+    if [ -n "$ee" ] && [ -n "$ss" ] && [ "$(( ee ))" -eq "$(( 0x$ss ))" ]; then
+        same=$((same + 1))
+    else
+        echo "      $(basename "$e"): e_entry $ee, _start 0x$ss (differ)"
+    fi
+done
+echo "      e_entry == _start for $same of $total programs"
+
+echo "== [1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
+LOG=$OUT/serial-startup.log
+boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -initrd "$OUT/user/args.elf" -append "test=startup"
+grep -E "^Startup test: |^\[pid [0-9]+\] args: (auxv|AT_|layout|registers|[0-9]+ wrong)" "$LOG" | sed 's/^/      /'
+# st_pid <case>: the process of "Startup test: case <case> (...)".
+st_pid() { grep -m1 -E "^Startup test: case $1 \(" "$LOG" | sed -nE 's/.*: process ([0-9]+) exited.*/\1/p'; }
+# st_lines <pid>: its args lines, without the prefix.
+st_lines() { sed -nE "s/^\[pid $1\] (args: .*)$/\1/p" "$LOG"; }
+P1=$(st_pid 1); P2=$(st_pid 2); P3=$(st_pid 3); P4=$(st_pid 4); P5=$(st_pid 5)
+P1=${P1:-x}; P2=${P2:-x}; P3=${P3:-x}; P4=${P4:-x}; P5=${P5:-x}
+expect_in_order "$LOG" "[1.0] startup: built-in args: argc 4, argv 'args' 'one' 'two' 'three' received exactly" \
+    "^\[pid $P1\] args: argc 4$" "^\[pid $P1\] args: argv\[0\] 'args'$" "^\[pid $P1\] args: argv\[1\] 'one'$" \
+    "^\[pid $P1\] args: argv\[2\] 'two'$" "^\[pid $P1\] args: argv\[3\] 'three'$" "^\[pid $P1\] args: envc 2$"
+expect_in_order "$LOG" "[1.0] startup: built-in args: envc 2, envp 'HOME=/home' 'X=1' received exactly, envp[2] NULL" \
+    "^\[pid $P1\] args: envc 2$" "^\[pid $P1\] args: envp\[0\] 'HOME=/home'$" "^\[pid $P1\] args: envp\[1\] 'X=1'$" \
+    "^\[pid $P1\] args: auxv: "
+expect_in_order "$LOG" "[1.0] startup: auxv: each type once, AT_NULL last, PAGESZ 4096, CLKTCK 100, ENTRY = the program's entry point, BASE/FLAGS/SECURE/UID/EUID/GID/EGID 0, HWCAP = CPUID.1:EDX, HWCAP2 0; a built-in's AT_PHDR 0, AT_PHNUM 0" \
+    "^\[pid $P1\] args: auxv: 18 entries, each type once, AT_NULL last: OK$" \
+    "^\[pid $P1\] args: auxv values: PAGESZ 4096, CLKTCK 100, ENTRY = the entry point, BASE FLAGS SECURE UID EUID GID EGID HWCAP2 0, HWCAP = CPUID\.1:EDX: OK$" \
+    "^\[pid $P1\] args: AT_PHDR 0x0000000000000000, AT_PHENT 56, AT_PHNUM 0: OK$"
+expect "$LOG" "^\[pid $P1\] args: AT_PLATFORM 'x86_64', AT_EXECFN 'args': OK$" \
+    "[1.0] startup: AT_PLATFORM 'x86_64' and AT_EXECFN 'args' point inside the start block"
+expect "$LOG" "^\[pid $P1\] args: layout: RSP 0x00007fffffffe[0-9a-f]{2}0 16-byte aligned, argc/argv/envp/auxv contiguous, strings above auxv in order, 8 zero bytes at the top: OK$" \
+    "[1.0] startup: layout: RSP 16-byte aligned at entry, argc/argv/envp/auxv contiguous, strings above auxv in order, 8 zero bytes at the stack top, block inside the top page"
+REGS="registers at entry: 0 except RSP, RFLAGS 0x0000000000000202: OK"
+if grep -qxF "[pid $P1] args: $REGS" "$LOG" && grep -qxF "[pid $P2] args: $REGS" "$LOG"; then
+    pass "[1.0] startup: args (built-in and module, through its args_entry stub): every general register 0 at entry except RSP, RFLAGS 0x202"
+else
+    fail "[1.0] startup: args's register line missing or wrong for process $P1 (built-in) or $P2 (module)"
+fi
+expect_in_order "$LOG" "[1.0] startup: built-in args exited with status 0 (no wrong value)" \
+    "^\[pid $P1\] args: 0 wrong$" "^Startup test: case 1 \(built-in, .*\): process $P1 exited, status 0 \(expected 0\): OK$"
+# The module: AT_PHDR and AT_PHNUM as Linux computes them from args.elf's
+# headers (the address of the headers if a PT_LOAD's file bytes hold them,
+# else 0); every other line the same as the built-in's.
+AE=$OUT/user/args.elf
+PHNUM=$(readelf -hW "$AE" | awk -F: '/Number of program headers/ { gsub(/ /, "", $2); print $2 }')
+PHOFF=$(readelf -hW "$AE" | awk -F: '/Start of program headers/ { split($2, f, " "); print f[1] }')
+PHDR=0
+while read -r off va fsz; do
+    if [ $(( off )) -le "$PHOFF" ] && [ "$PHOFF" -lt $(( off + fsz )) ]; then PHDR=$(( va + PHOFF - off )); break; fi
+done < <(readelf -lW "$AE" | awk '$1 == "LOAD" { print $2, $3, $5 }')
+PHLINE=$(printf 'args: AT_PHDR 0x%016x, AT_PHENT 56, AT_PHNUM %d: OK' "$PHDR" "${PHNUM:-0}")
+echo "      args.elf: e_phoff $PHOFF, e_phnum $PHNUM: expected '$PHLINE'"
+if [ "$P1" != x ] && [ "$P2" != x ] && grep -qxF "[pid $P2] $PHLINE" "$LOG" &&
+   [ "$(st_lines "$P1" | grep -v '^args: AT_PHDR ')" = "$(st_lines "$P2" | grep -v '^args: AT_PHDR ')" ] &&
+   grep -qE "^Startup test: case 2 \(module, .*\): process $P2 exited, status 0 \(expected 0\): OK$" "$LOG"; then
+    pass "[1.0] startup: ELF module args: the same argv, envp, auxv and layout lines as the built-in; AT_PHDR/AT_PHNUM from its own headers; status 0"
+else
+    fail "[1.0] startup: module args (process $P2) differs from the built-in (process $P1), or its AT_PHDR line is not '$PHLINE'"
+fi
+expect_in_order "$LOG" "[1.0] startup: argc 1 and no environment: envc 0, envp[0] NULL, status 0" \
+    "^\[pid $P3\] args: argc 1$" "^\[pid $P3\] args: argv\[0\] 'args'$" "^\[pid $P3\] args: envc 0$" \
+    "^\[pid $P3\] args: layout: .*: OK$" "^\[pid $P3\] args: 0 wrong$" \
+    "^Startup test: case 3 \(.*\): process $P3 exited, status 0 \(expected 0\): OK$"
+L255=$(printf 'abcdefghijklmnopqrstuvwxyz%.0s' 1 2 3 4 5 6 7 8 9 10)
+L255=${L255:0:255}
+expect_in_order "$LOG" "[1.0] startup: an empty argument and a 255-byte argument received exactly" \
+    "^\[pid $P4\] args: argc 3$" "^\[pid $P4\] args: argv\[1\] ''$" "^\[pid $P4\] args: argv\[2\] '$L255'$" \
+    "^\[pid $P4\] args: 0 wrong$" "^Startup test: case 4 \(.*\): process $P4 exited, status 0 \(expected 0\): OK$"
+XL=$(sed -nE "s/^Startup test: a start block of exactly 4096 bytes \(argv 'args' and ([0-9]+) bytes\): process ([0-9]+) exited, status 0 \(expected 0\): OK$/\1 \2/p" "$LOG")
+XN=${XL% *}; XP=${XL#* }; XN1=x
+[ -n "$XL" ] && XN1=$(( XN + 1 ))
+if [ -n "$XL" ] && grep -qxF "[pid $XP] args: argv[1] $XN bytes" "$LOG" &&
+   grep -qE "^\[pid $XP\] args: layout: RSP 0x00007fffffffe000 .*: OK$" "$LOG" && grep -qxF "[pid $XP] args: 0 wrong" "$LOG"; then
+    pass "[1.0] startup: a start block of exactly 4096 bytes starts (RSP at the top page's start), status 0"
+else
+    fail "[1.0] startup: the 4096-byte start block (argument '${XN:-?}' bytes, process ${XP:-?})"
+fi
+expect "$LOG" "^Startup test: one byte more \(${XN1}\): refused with -7 \(E2BIG\), processes ([0-9]+) -> \1, heap ([0-9]+) -> \2 bytes, ([0-9]+) -> \3 blocks, start blocks live 0: OK$" \
+    "[1.0] startup: one byte more refused with E2BIG: no process slot taken, heap used bytes and blocks unchanged"
+expect_in_order "$LOG" "[1.0] startup: kernel numeric start: argv 'args' '7' (argc 2)" \
+    "^\[pid $P5\] args: argc 2$" "^\[pid $P5\] args: argv\[0\] 'args'$" "^\[pid $P5\] args: argv\[1\] '7'$" \
+    "^Startup test: case 5 \(numeric start, .*\): process $P5 exited, status 0 \(expected 0\): OK$"
+expect "$LOG" "^Startup test: 20 starts killed before ring 3: 20 killed, 20 with no return to ring 3; start blocks live 0 -> 0; heap ([0-9]+) -> \1 bytes, ([0-9]+) -> \2 blocks; processes ([0-9]+) -> \3: OK$" \
+    "[1.0] startup: 20 starts killed before ring 3: every start block freed (live 0), heap used bytes and blocks back to the start"
+expect "$LOG" "^Startup test: waits: the longest bounded wait [0-9]+ ticks of its 300-tick limit \(margin [0-9]+%\)$" \
+    "[1.0] startup: waits within their limits (margins reported)"
+if grep -qxF "Startup test: PASS" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.0] startup: PASS, no panic"
+else
+    fail "[1.0] startup: no PASS line, or a panic"
+fi
+
+echo "== [1.0] run with arguments and exported variables (a console session through QMP)"
+LOG=$OUT/serial-startup-run.log
+S="x{ret}run args a b{ret}{wait:1}set X=1{ret}set Y=2{ret}export X{ret}run args{ret}{wait:1}"
+S+="echo end-of-startup-test{ret}"
+boot_text "$LOG" 60 "System ready." "$S" 0.05 $'\nend-of-startup-test\n' -m 32M -kernel "$KERNEL" -initrd "$OUT/user/args.elf"
+grep -E "^madire> |^\[pid [0-9]+\] args: (arg|env)|^\[process " "$LOG" | sed 's/^/      /'
+expect_in_order "$LOG" "[1.0] run args a b: argv reaches a module program through the shell (argc 3, 'args' 'a' 'b')" \
+    "^madire> run args a b$" "^\[pid [0-9]+\] args: argc 3$" "^\[pid [0-9]+\] args: argv\[0\] 'args'$" \
+    "^\[pid [0-9]+\] args: argv\[1\] 'a'$" "^\[pid [0-9]+\] args: argv\[2\] 'b'$" "^\[pid [0-9]+\] args: envc 0$" \
+    "^\[process [0-9]+ 'args' exited, status 0\]$"
+expect_in_order "$LOG" "[1.0] run args with X exported (set, export): envp holds exactly 'X=1'; Y, set but not exported, is absent" \
+    "^madire> run args$" "^\[pid [0-9]+\] args: argc 1$" "^\[pid [0-9]+\] args: envc 1$" \
+    "^\[pid [0-9]+\] args: envp\[0\] 'X=1'$" "^\[pid [0-9]+\] args: 0 wrong$" "^\[process [0-9]+ 'args' exited, status 0\]$"

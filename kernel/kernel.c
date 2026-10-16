@@ -47,6 +47,7 @@
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/progmod.h"
 #include "kernel/proc/schedtest.h"
+#include "kernel/proc/starttest.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/syscall.h"
 #include "kernel/proc/usertest.h"
@@ -590,6 +591,10 @@ static void run_diagnostics(void)
         diag_message("Unlink test: open files and folders unlinked, renamed over, removed...");
         diag_message(dirtest_fsunlink() ? "Unlink test: done"
                                         : "Unlink test: FAIL (see serial log)");
+    } else if (cmdline_has("test=startup")) {     /* 1.0 stage 7 */
+        diag_message("Startup test: argc, argv, envp and auxv from args...");
+        diag_message(starttest_startup() ? "Startup test: done"
+                                         : "Startup test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();

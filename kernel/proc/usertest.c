@@ -520,7 +520,7 @@ static int32_t us_spin_thread(void *arg)
     }
     user_iret_build(&us_frame, img);
     us_state = 1;
-    enter_user(&us_frame, 0);           /* arg 0: spin's pure loop, no system calls */
+    enter_user(&us_frame);             /* argv { "spin" }: spin's pure loop, no system calls */
 }
 
 bool usertest_userspin(void)
@@ -1839,7 +1839,7 @@ static int32_t sc_ring3_thread(void *arg)
         (void)irq_save();
         uspace_test_forget(sc_as.pml4);
     }
-    enter_user(&sc_frame, 0);       /* arg 0: spin's pure loop, no system calls */
+    enter_user(&sc_frame);         /* argv { "spin" }: spin's pure loop, no system calls */
 }
 
 static void sc_ring3(int mode)

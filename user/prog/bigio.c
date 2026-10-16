@@ -289,8 +289,9 @@ static void case_worker(int truncating)
     }
 }
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     switch (arg) {
     case 1: case_single(); break;
     case 2: case_mib(); break;

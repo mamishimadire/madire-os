@@ -39,8 +39,9 @@ static void add_str(char *buf, uint64_t *n, const char *s)
 
 static const char controls[] = "ctl: tab\there bell\x07 esc\x1b[31mred cr\rend del\x7f\n";
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     uint64_t count = (uint64_t)(arg & 0xFFFF);
     if (count == 0)
         count = 10;

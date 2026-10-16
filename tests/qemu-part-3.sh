@@ -180,17 +180,18 @@ expect "$LOG" "System ready\."                        "[0.10] userchurn: System 
 
 echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
 # The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
-# 26 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
+# 27 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
 # added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio,
-# 25 until stage 6 added dirops) and on fixtures made from hello.elf by
-# tests/elf-fixtures.py (one broken rule each; manifest.txt holds the exact
-# reason each must be refused with). No kernel uses elf_core yet (stage 1).
+# 25 until stage 6 added dirops, 26 until stage 7 added args) and on
+# fixtures made from hello.elf by tests/elf-fixtures.py (one broken rule
+# each; manifest.txt holds the exact reason each must be refused with). No
+# kernel uses elf_core yet (stage 1).
 ELFCHECK=$OUT/elfcheck
 FIX=$OUT/elf-fixtures
 EC=$("$ELFCHECK" "$OUT"/user/*.elf 2>&1)
 nprog=$(ls "$OUT"/user/*.elf 2>/dev/null | wc -l)
 nok=$(grep -cE '^[a-z0-9_]+\.elf: OK, [1-4] segments, [0-9]+ pages, entry 0x400[0-9a-f]{3}$' <<< "$EC")
-if [ "$nprog" -eq 26 ] && [ "$nok" -eq 26 ]; then pass "[0.11] elfcheck: all 26 built programs accepted"
+if [ "$nprog" -eq 27 ] && [ "$nok" -eq 27 ]; then pass "[0.11] elfcheck: all 27 built programs accepted"
 else fail "[0.11] elfcheck: $nok of $nprog built programs accepted: $(grep -v ': OK' <<< "$EC" | head -3)"; fi
 expect_line=$(grep -E '^hello\.elf: ' <<< "$EC")
 echo "      $expect_line"
@@ -556,7 +557,7 @@ S+="run nullptr{ret}{wait:1}"
 S+="run -b spin{ret}{wait:1}"
 S+="ps{ret}"
 S+="run nosuch{ret}"
-S+="run hello x{ret}"
+S+="run hello x{ret}{wait:1}"                       # 1.0 stage 7: hello runs (and refuses 'x')
 S+="echo end-of-run-test{ret}"
 boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-run-test\n' -m 32M -kernel "$KERNEL" -initrd "$PM"
 grep -E "^madire> (run|ps)|^\[process |^run: |^PID |^ *[0-9]+  (running|ended) |^[0-9]+ process|Hello from user mode|'nullptr' ended by" "$LOG" | sed 's/^/      /'
@@ -581,11 +582,14 @@ expect_in_order "$LOG" "[0.11] ps: the thread table as before, then the processe
     "^madire> run nosuch$"
 expect_next "$LOG" "[0.11] run nosuch: refused, no program of that name" \
     "^madire> run nosuch$" "^run: no program named 'nosuch'\.$"
-expect_next "$LOG" "[0.11] run hello x: a bad argument refused" \
-    "^madire> run hello x$" "^run: 'x' is not a number from 0 to 4294967295\.$"
+# 1.0 stage 7: the words after the name are the program's arguments; the
+# program refuses a bad number itself (u_arg: one line, status 2).
+expect_in_order "$LOG" "[0.11] run hello x: a bad argument refused (by the program since 1.0: one line, status 2)" \
+    "^madire> run hello x$" "^\[pid [0-9]+\] hello: 'x' is not a number from 0 to 4294967295\.$" \
+    "^\[process [0-9]+ 'hello' exited, status 2\]$"
 # (after the first "run hello": the boot self-test runs hello once too)
 n=$(sed -n '/^madire> run hello$/,$p' "$LOG" | grep -cE "^\[pid [0-9]+\] Hello from user mode$")
-if [ "$n" -eq 1 ]; then pass "[0.11] run: hello ran exactly once (the refused lines started nothing)"
+if [ "$n" -eq 1 ]; then pass "[0.11] run: hello's line exactly once (run nosuch started nothing; hello refused 'x' without it)"
 else fail "[0.11] run: hello's line $n times, expected 1"; fi
 # The console's own lines (the serial log also holds kernel log lines,
 # which never reach the screen).

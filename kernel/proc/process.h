@@ -37,16 +37,19 @@ struct process_load_stats {
 /* Checks the image (userimg_check) and maps it into the address space,
  * which the calling thread must have entered: its code read + execute at
  * VM_USER_TEXT, its data and bss read + write + no-execute at VM_USER_DATA,
- * and a zeroed stack (read + write + no-execute) ending at
- * VM_USER_STACK_TOP. Every frame is filled before it is mapped. false: a
- * bad image or no memory (what was mapped stays for uspace_destroy). */
+ * and a stack (read + write + no-execute) ending at VM_USER_STACK_TOP,
+ * zeroed but for (1.0 stage 7) the default start block in its top page:
+ * argv = { the image's name }, no environment (startblock_default_rsp).
+ * Every frame is filled before it is mapped. false: a bad image or no
+ * memory (what was mapped stays for uspace_destroy). */
 bool process_load(struct uspace *as, const struct userimg *img, struct process_load_stats *st);
 
 /* 0.11: the one loading path. process_load turns the image into a plan and
  * calls this; ELF programs come here too. Every page is a fresh frame
  * filled from the plan's bytes (never a page of the source); the stack is
- * added as before. */
-bool process_load_plan(struct uspace *as, const struct load_plan *plan,
+ * added as before, its top page filled from top_page (1.0 stage 7: the
+ * start block's STARTBLOCK_SIZE bytes; NULL: zeros). */
+bool process_load_plan(struct uspace *as, const struct load_plan *plan, const uint8_t *top_page,
                        struct process_load_stats *st);
 
 /* 0.11: what every load added up to since boot (test=elfrun). */
@@ -55,16 +58,36 @@ struct process_load_totals {
 };
 void process_load_totals(struct process_load_totals *out);
 
-/* userenter.asm: starts the program in ring 3 with RDI = arg. */
-void enter_user(const struct user_iret *frame, uint64_t arg) __attribute__((noreturn));
+/* userenter.asm: starts the program in ring 3, every general register 0
+ * (1.0 stage 7; RSP from the frame: the start block). */
+void enter_user(const struct user_iret *frame) __attribute__((noreturn));
 
-/* Starts the built-in image `name` as a new process with RDI = arg.
- * Returns its process ID (> 0), or -1: no such image, the process table
- * is full, or no thread could be created. */
+/* Starts the built-in image `name` as a new process. 1.0 stage 7: the
+ * number reaches it as its one argument, argv = { name, "<arg>" } in
+ * decimal (until then RDI = arg), with no environment. Returns its process
+ * ID (> 0), or -1: no such image, the process table is full, no memory for
+ * the start block, or no thread could be created. */
 int32_t process_start(const char *name, uint64_t arg);
 
+/* 1.0 stage 7: what a start returns when the start block (loadplan.h)
+ * would not fit its 4096 bytes: -E2BIG; nothing was created. */
+#define PROCESS_START_E2BIG (-STARTBLOCK_E2BIG)
+
+/* 1.0 stage 7: the System V start with any arguments and environment: the
+ * program module `name` (module) or the built-in image `name`, with
+ * argv[0..argc-1] and the strings env_names[i] '=' env_values[i] as its
+ * environment. Returns the process ID, -1 as process_start (or no such
+ * module), or PROCESS_START_E2BIG. */
+int32_t process_start_argv(const char *name, bool module, uint32_t argc, const char *const *argv,
+                           uint32_t envc, const char *const *env_names,
+                           const char *const *env_values);
+
+/* 1.0 stage 7: start blocks allocated and not yet freed (each is freed
+ * once its program is loaded, or when the process ends before that). */
+uint32_t process_start_blocks_live(void);
+
 /* 0.11: a process for an ELF file in kernel-reachable memory (a module,
- * through the physical view). The file is checked (again) by the
+ * through the physical view), argv as process_start's. The file is checked (again) by the
  * process's own thread before anything is mapped; a refused file ends the
  * process with PROC_END_LOAD_FAILED (code = the elf_check result) before
  * it has an address space. Returns the process ID or -1, as above. */

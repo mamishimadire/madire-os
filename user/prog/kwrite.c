@@ -5,8 +5,9 @@
 
 static const uint64_t targets[] = { K_TEXT, K_PML4, K_HEAP, K_PHYS_VGA };
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     uint64_t a = targets[(uint64_t)arg < 4 ? arg : 0];
     *(volatile uint64_t *)a = 0x4D414449524521ull;     /* "MADIRE!" */
     u_puts("kwrite: KERNEL MEMORY WAS WRITABLE\n");

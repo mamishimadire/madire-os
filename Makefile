@@ -136,6 +136,11 @@ $(BUILD)/user/%.o: user/prog/%.c user/syscall.h user/ulib.h
 $(BUILD)/user/%.elf: $(BUILD)/user/crt0.o $(BUILD)/user/%.o user/link.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(BUILD)/user/crt0.o $(BUILD)/user/$*.o
 
+# 1.0 stage 7: args enters at its own stub (args_entry, user/prog/args.c),
+# which records the registers at entry and jumps to crt0's _start.
+$(BUILD)/user/args.elf: $(BUILD)/user/crt0.o $(BUILD)/user/args.o user/link.ld
+	$(LD) $(USER_LDFLAGS) -e args_entry -o $@ $(BUILD)/user/crt0.o $(BUILD)/user/args.o
+
 $(BUILD)/user/images.asm: $(USER_ELFS) scripts/user-images.sh
 	sh scripts/user-images.sh $(BUILD)/user $(USER_PROGS) > $@.tmp
 	mv $@.tmp $@

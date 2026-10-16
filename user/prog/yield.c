@@ -2,9 +2,8 @@
  * number that did not. */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     int bad = 0;
     for (int i = 0; i < 100; i++)
         if (sys_sched_yield() != 0)

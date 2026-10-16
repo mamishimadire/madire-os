@@ -6,8 +6,9 @@
 
 static const uint64_t targets[] = { K_TEXT, K_PML4, K_HEAP, K_PHYS_VGA };
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     uint64_t a = targets[(uint64_t)arg < 4 ? arg : 0];
     volatile uint64_t v = *(volatile const uint64_t *)a;
     (void)v;

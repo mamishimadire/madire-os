@@ -19,9 +19,8 @@ static int implemented(uint64_t nr)
            nr == SYS_UNLINKAT;
 }
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     int bad = 0, tried = 0;
     for (uint64_t nr = 0; nr < 1024; nr++) {
         if (implemented(nr))

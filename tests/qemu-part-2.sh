@@ -464,7 +464,7 @@ expect "$LOG" "^User-mode test: [1-9][0-9]* built-in images checked: ok; 'spin':
                                                       "[0.10] userspin: every built-in image checked; spin found"
 expect "$LOG" "^User-mode test: thread [1-9][0-9]* 'spin' loaded the image into its own address space: [1-9][0-9]* code, [0-9]+ data and 8 stack pages: OK$" \
                                                       "[0.10] userspin: spin's code, data and 32 KiB stack mapped in its own address space"
-expect "$LOG" "^User-mode test: IRETQ frame RIP=0x00000000004[0-9a-f]{5} CS=0x003b RFLAGS=0x0000000000000202 RSP=0x00007ffffffff000 SS=0x0033 \(IF=1, IOPL=0, RIP inside the code\): OK$" \
+expect "$LOG" "^User-mode test: IRETQ frame RIP=0x00000000004[0-9a-f]{5} CS=0x003b RFLAGS=0x0000000000000202 RSP=0x00007fffffffee90 SS=0x0033 \(IF=1, IOPL=0, RIP inside the code\): OK$" \
                                                       "[0.10] userspin: enter_user's IRETQ frame: CS 0x3B, SS 0x33, IF=1, IOPL=0, RIP inside the code"
 FI=$(grep -m1 -E '^User-mode test: first timer interrupt from ring 3, ' "$LOG")
 FAT=$(sed -nE 's/.*frame at 0x([0-9a-f]{16}) = RSP0 0x([0-9a-f]{16}) - 176, RSP0 = the thread.s stack top 0x([0-9a-f]{16}): OK$/\1 \2 \3/p' <<< "$FI")
@@ -718,7 +718,7 @@ expect_lines "$LOG" "[0.12] help: today's list unchanged, then prompt, alias, un
     "^  history  Show previous commands \(Up/Down recall\)$" "^  uname    Show the system name: uname \[-a\]$" \
     "^  hostname Show the computer's name$" "^  date     Show the date and time \(RTC\)$" \
     "^  dmesg    Show kernel messages: dmesg \[lines\]$" "^  reboot   Restart the computer \(asks first\)$" \
-    "^  run      Run a program: run \[-b\] <name> \[n\]$" "^  kill     End a process: kill <pid> \(asks first\)$" \
+    "^  run      Run a program: run \[-b\] <name> \[args\]$" "^  kill     End a process: kill <pid> \(asks first\)$" \
     "^  prompt   Show or change the prompt: prompt \[text\]$" \
     "^  alias    Show or make short names: alias \[name \[command\]\]$" \
     "^  unalias  Remove a short name: unalias <name>$" \

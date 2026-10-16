@@ -943,8 +943,9 @@ static void case_rmdir_open(void)
     want("dirops 41: close: ", sys_close(3), 0);
 }
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     switch (arg) {
     case 1: case_moves(); break;
     case 2: case_getcwd_errors(); break;

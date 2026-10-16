@@ -225,25 +225,29 @@ static const struct shell_output sink = { shell_sink, 0 };
 
 /* ---- Programs (0.11) ---- */
 
-/* shell_procs.start: a program module, by name. */
-static int32_t start_program(void *ctx, const char *name, uint64_t arg, bool background)
+/* shell_procs.start: a program module, by name (argv[0]); 1.0 stage 7:
+ * with its arguments and environment (System V start-up). */
+static int32_t start_program(void *ctx, int argc, char **argv, uint32_t envc,
+                             const char *const *env_names, const char *const *env_values,
+                             bool background)
 {
     (void)ctx;
+    const char *name = argv[0];
     if (!progmod_find(progmod_table(), name))
         return SHELL_RUN_NO_PROGRAM;
     if (background && bg_count >= PROC_MAX)
         return SHELL_RUN_FAILED;
     if (!background)
         preempt_disable();
-    int32_t pid = process_start_program(name, arg);
+    int32_t pid = process_start_argv(name, true, (uint32_t)argc, (const char *const *)argv, envc,
+                                     env_names, env_values);
     if (pid <= 0) {
         if (!background)
             preempt_enable();
-        return SHELL_RUN_FAILED;
+        return pid == PROCESS_START_E2BIG ? SHELL_RUN_TOO_BIG : SHELL_RUN_FAILED;
     }
-    klogf("console: %s process %d '%s', argument %llu\n",
-          background ? "started in the background:" : "running", (int)pid, name,
-          (unsigned long long)arg);
+    klogf("console: %s process %d '%s', argc %d\n",
+          background ? "started in the background:" : "running", (int)pid, name, argc);
     if (background)
         bg_list[bg_count++] = pid;
     else

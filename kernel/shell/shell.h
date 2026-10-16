@@ -57,15 +57,20 @@ struct shell_process {
 /* 0.11: what "start" returns when it did not start a process. */
 #define SHELL_RUN_NO_PROGRAM (-1)           /* no program module of that name */
 #define SHELL_RUN_FAILED     (-2)           /* no free process slot or thread */
+#define SHELL_RUN_TOO_BIG    (-3)           /* 1.0 stage 7: the start block would not fit (E2BIG) */
 
 /* 0.11: user programs (see shell_context.procs). */
 struct shell_procs {
     const struct shell_process *rows;       /* for "ps", after the threads */
     uint32_t count;
-    /* Starts program module `name` with `arg` (its RDI); returns the
-     * process ID (> 0) or one of SHELL_RUN_*. For a foreground run the
-     * caller waits for the process after shell_execute returns SHELL_RUN. */
-    int32_t (*start)(void *ctx, const char *name, uint64_t arg, bool background);
+    /* Starts program module argv[0] with its arguments argv[0..argc-1]
+     * and (1.0 stage 7) the environment env_names[i] '=' env_values[i];
+     * returns the process ID (> 0) or one of SHELL_RUN_*. For a foreground
+     * run the caller waits for the process after shell_execute returns
+     * SHELL_RUN. */
+    int32_t (*start)(void *ctx, int argc, char **argv, uint32_t envc,
+                     const char *const *env_names, const char *const *env_values,
+                     bool background);
     /* 0.11 stage 4b: "kill <pid>" asks first. The shell hands over the
      * process to end; the caller ends it only if the answer is "yes". */
     void (*ask_kill)(void *ctx, int32_t pid);

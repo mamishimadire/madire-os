@@ -22,8 +22,9 @@ static int fill(void)
     return r == -EMFILE ? n : -1;
 }
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     volatile uint64_t n = 0;
     if (arg <= 2) {
         if (fill() < 0)

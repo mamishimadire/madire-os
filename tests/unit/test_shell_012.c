@@ -20,9 +20,12 @@ static struct shell_state st;
 static struct history hist;
 static int starts, kill_asks;
 
-static int32_t fake_start(void *c, const char *name, uint64_t arg, bool background)
+static int32_t fake_start(void *c, int argc, char **argv, uint32_t envc,
+                          const char *const *env_names, const char *const *env_values,
+                          bool background)
 {
-    (void)c; (void)name; (void)arg; (void)background;
+    (void)c; (void)argc; (void)argv; (void)envc; (void)env_names; (void)env_values;
+    (void)background;
     starts++;
     return 7;
 }
@@ -86,7 +89,7 @@ static void reset(void)
 }
 
 static const char *const help_tail =
-    "  run      Run a program: run [-b] <name> [n]\n"
+    "  run      Run a program: run [-b] <name> [args]\n"
     "  kill     End a process: kill <pid> (asks first)\n"
     "  prompt   Show or change the prompt: prompt [text]\n"
     "  alias    Show or make short names: alias [name [command]]\n"
@@ -169,7 +172,7 @@ static void test_sections(void)
     CHECK_EQ(run("help programs"), SHELL_OK);
     CHECK(strcmp(out, "programs: Programs and processes\n"
                       "  ps       Show threads and processes\n"
-                      "  run      Run a program: run [-b] <name> [n]\n"
+                      "  run      Run a program: run [-b] <name> [args]\n"
                       "  kill     End a process: kill <pid> (asks first)\n") == 0);
     CHECK_EQ(errors, 0);
     /* help <command> is unchanged; the new commands have help too. */

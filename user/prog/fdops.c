@@ -138,8 +138,9 @@ static int file_cases(long arg)
     return bad;
 }
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg >= 10)
         return file_cases(arg);
     console_cases(arg);

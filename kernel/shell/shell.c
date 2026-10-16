@@ -551,7 +551,7 @@ bool shell_reboot_confirmed(const char *answer)
 
 /* ---- 0.11: run (only when the context has procs) ---- */
 
-#define RUN_USAGE      "run [-b] <program> [number]"
+#define RUN_USAGE      "run [-b] <program> [argument...]"
 #define KILL_Y_USAGE   "kill [-y] <pid>"        /* 0.12 stage 2, with a session */
 #define RUN_NAME_SHOWN 40       /* longer names are shortened, so the line fits */
 
@@ -593,9 +593,29 @@ static bool parse_arg(const char *s, uint64_t *out)
     return true;
 }
 
+/* 1.0 stage 7: the exported variables, as a program's environment (in
+ * "env" order); static, not on the console's stack. */
+static const char *run_env_names[SHELL_VAR_MAX], *run_env_values[SHELL_VAR_MAX];
+
+static uint32_t run_env(const struct shell_context *c)
+{
+    uint32_t n = 0;
+    for (uint32_t k = 0; c->session && k < c->session->var_count && n < SHELL_VAR_MAX; k++) {
+        const struct shell_var *v = &c->session->vars[k];
+        if (v->exported) {
+            run_env_names[n] = v->name;
+            run_env_values[n] = v->value;
+            n++;
+        }
+    }
+    return n;
+}
+
 /* "run hello", "run exitcode 1", "run -b spin": a program module, in the
  * foreground (the console waits; its output goes to the serial log and
- * dmesg) or in the background. */
+ * dmesg) or in the background. 1.0 stage 7: the words from the name on
+ * are its arguments (argv), the exported variables its environment; the
+ * program checks its arguments itself. */
 static enum shell_result cmd_run(int argc, char **argv, const struct shell_context *c,
                                  const struct shell_output *o)
 {
@@ -604,26 +624,23 @@ static enum shell_result cmd_run(int argc, char **argv, const struct shell_conte
     bool background = argc > 1 && str_eq(argv[1], "-b");
     if (background)
         i++;
-    if (i >= argc || argc - i > 2 || argv[i][0] == '-')
+    if (i >= argc || argv[i][0] == '-')
         return usage_error(o, RUN_USAGE);
     const char *name = argv[i];
-    uint64_t arg = 0;
-    if (argc - i == 2 && !parse_arg(argv[i + 1], &arg)) {
-        l_reset(&l);
-        l_str(&l, "run: '");
-        l_name(&l, argv[i + 1]);
-        l_str(&l, "' is not a number from 0 to 4294967295.");
-        emit(o, &l, SHELL_ERROR);
-        return SHELL_BAD_ARGS;
-    }
     const struct shell_procs *p = c->procs;
-    int32_t pid = p->start(p->ctx, name, arg, background);
-    if (pid == SHELL_RUN_NO_PROGRAM || pid == SHELL_RUN_FAILED || pid <= 0) {
+    uint32_t envc = run_env(c);
+    int32_t pid = p->start(p->ctx, argc - i, argv + i, envc, run_env_names, run_env_values,
+                           background);
+    if (pid == SHELL_RUN_NO_PROGRAM || pid == SHELL_RUN_FAILED || pid == SHELL_RUN_TOO_BIG ||
+        pid <= 0) {
         l_reset(&l);
         l_str(&l, pid == SHELL_RUN_NO_PROGRAM ? "run: no program named '"
+                  : pid == SHELL_RUN_TOO_BIG  ? "run: argument list too long for '"
                                               : "run: could not start '");
         l_name(&l, name);
-        l_str(&l, pid == SHELL_RUN_NO_PROGRAM ? "'." : "' (no free process slot).");
+        l_str(&l, pid == SHELL_RUN_NO_PROGRAM ? "'."
+                  : pid == SHELL_RUN_TOO_BIG  ? "'."
+                                              : "' (no free process slot).");
         emit(o, &l, SHELL_ERROR);
         return SHELL_BAD_ARGS;
     }
@@ -778,7 +795,8 @@ static const struct command extra_commands[] = {
 static const struct command ps_procs_command =
     { "ps",      "ps",            "Show threads and processes", 0, cmd_ps, SECTION_PROGRAMS };
 static const struct command run_command =
-    { "run",     RUN_USAGE,       "Run a program: run [-b] <name> [n]", 3, cmd_run, SECTION_PROGRAMS };
+    { "run",     RUN_USAGE,       "Run a program: run [-b] <name> [args]", SHELL_MAX_ARGS - 1, cmd_run,
+      SECTION_PROGRAMS };
 static const struct command kill_command =
     { "kill",    "kill <pid>",    "End a process: kill <pid> (asks first)", 1, cmd_kill, SECTION_PROGRAMS };
 

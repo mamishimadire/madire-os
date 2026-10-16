@@ -7,8 +7,9 @@
 
 static volatile uint64_t shared_va[64] = { 0x1122334455667788ull };
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg != 1 && arg != 2)
         return 2;
     uint64_t mine = 0xA5A5000000000000ull | (uint64_t)arg;

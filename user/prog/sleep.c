@@ -5,8 +5,9 @@
  *   arg 2: nanosleep for 10 s (0.11: a kill or Ctrl+C wakes it at once). */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg == 2) {
         struct timespec t = { 10, 0 };
         return (int)sys_nanosleep(&t, 0);

@@ -358,8 +358,9 @@ static void case_enospc(void)
     want("fileio 12: close: ", sys_close(3), 0);
 }
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     switch (arg) {
     case 1: case_create(); break;
     case 2: case_flags(); break;

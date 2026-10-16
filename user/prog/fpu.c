@@ -9,8 +9,9 @@
  * manuals specify.) */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     switch (arg) {
     case 0: __asm__ volatile ("fld1"); break;
     case 1: __asm__ volatile ("pxor %mm0, %mm0"); break;
