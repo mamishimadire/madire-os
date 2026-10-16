@@ -107,6 +107,19 @@ done
 if [ -z "$RBAD" ]; then pass "[1.0] ISO: /LICENSE, /NOTICE and /THIRD_PARTY_NOTICES present and byte-identical to the repository's"
 else fail "[1.0] ISO: missing or different from the repository's:$RBAD"; fi
 
+echo "== [1.0] docs: every .md file valid UTF-8"
+# 1.0 stage 10: two Windows-1252 bytes reached docs/commands.md in stage 8
+# (5cd7daf); every Markdown file under docs/ must decode as UTF-8 (the
+# images are not text and are left out).
+UBAD="" UN=0
+while IFS= read -r f; do
+    UN=$((UN + 1))
+    iconv -f UTF-8 -t UTF-8 "$f" >/dev/null 2>&1 || UBAD="$UBAD ${f#"$REPO"/}"
+done < <(find "$REPO/docs" -type f -name '*.md' | LC_ALL=C sort)
+echo "      $UN files"
+if [ "$UN" -gt 0 ] && [ -z "$UBAD" ]; then pass "[1.0] docs: every .md file under docs/ is valid UTF-8"
+else fail "[1.0] docs: not valid UTF-8:${UBAD:- no .md file found}"; fi
+
 echo "== [0.13] limine.conf: every program module names itself"
 # Limine passes only module_string to the kernel, so every program module of
 # the default entry needs "module_string: <its file name without .elf>".

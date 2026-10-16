@@ -124,6 +124,30 @@ static const char *const new_rows =
     "  presskey Wait for a key press (Ctrl+C cancels)\n"
     "  time     Time a command: time <command>\n";
 
+/* 1.0 stage 10 (D2): "help" on one screen, without and with the session. */
+static const char *const help_012 =
+    "Available commands:\n"
+    "shell: The shell's own commands\n"
+    "  help  clear  echo  history  prompt  alias  unalias\n"
+    "system: Information about the system\n"
+    "  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot\n"
+    "programs: Programs and processes\n"
+    "  ps  run  kill\n"
+    "Purposes and usage: help <command>; one section: help <section>.\n"
+    "Scroll back: Shift+PgUp and Shift+PgDn.\n";
+
+static const char *const help_session =
+    "Available commands:\n"
+    "shell: The shell's own commands\n"
+    "  help  clear  echo  history  prompt  alias  unalias  set  unset  export  env\n"
+    "  sleep  presskey  time\n"
+    "system: Information about the system\n"
+    "  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot\n"
+    "programs: Programs and processes\n"
+    "  ps  run  kill\n"
+    "Purposes and usage: help <command>; one section: help <section>.\n"
+    "Scroll back: Shift+PgUp and Shift+PgDn.\n";
+
 static const char *const new_names[] = { "set", "unset", "export", "env", "sleep", "presskey", "time" };
 
 static void test_without_session_nothing_changes(void)
@@ -133,8 +157,7 @@ static void test_without_session_nothing_changes(void)
     ctx.session = NULL;
     CHECK_EQ(run("help"), SHELL_OK);
     strcpy(before, out);
-    CHECK(ends_with(out, "  unalias  Remove a short name: unalias <name>\n"
-                         "Sections: shell system programs (help <section>)\n"));
+    CHECK(strcmp(out, help_012) == 0);      /* 1.0 stage 10: "shell" ends with unalias */
     for (unsigned i = 0; i < 7; i++) {
         char want[96];
         CHECK_EQ(run(new_names[i]), SHELL_UNKNOWN);
@@ -153,16 +176,13 @@ static void test_without_session_nothing_changes(void)
     CHECK(strcmp(out, "Unknown command: hlep. Type 'help' for a list of commands.\n"
                       "Did you mean: help?\n") == 0);
 
-    /* With the session, "help" is the stage 1 list with the seven new rows
-     * after "unalias", then the sections line: no existing row moves. */
+    /* With the session, "help" has the seven new names after "unalias" in
+     * the section "shell" (1.0 stage 10, D2: was seven rows after it). */
     reset();
     CHECK_EQ(run("help"), SHELL_OK);
-    size_t keep = strlen(before) - strlen("Sections: shell system programs (help <section>)\n");
-    CHECK(strncmp(out, before, keep) == 0);
-    char want[2048];
-    snprintf(want, sizeof(want), "%sSections: shell system programs (help <section>)\n", new_rows);
-    CHECK(strcmp(out + keep, want) == 0);
-    CHECK(strstr(out, "  kill     End a process: kill <pid> (asks first)\n") != NULL);
+    CHECK(strcmp(out, help_session) == 0);
+    CHECK(strstr(out, "  unalias  set  unset  export  env\n  sleep  presskey  time\n") != NULL);
+    CHECK(strstr(out, "  ps  run  kill\n") != NULL);
 }
 
 static void test_help(void)
@@ -227,6 +247,31 @@ static unsigned row_names(const char *text, char names[40][16])
     return n;
 }
 
+/* 1.0 stage 10: every name on "help"'s indented lines (several per line). */
+static unsigned help_names(const char *text, char names[40][16])
+{
+    unsigned n = 0;
+    for (const char *p = text; *p && n < 40; ) {
+        const char *end = strchr(p, '\n');
+        if (p[0] == ' ' && p[1] == ' ') {
+            for (const char *q = p; *q && *q != '\n' && n < 40; ) {
+                while (*q == ' ')
+                    q++;
+                if (!*q || *q == '\n')
+                    break;
+                unsigned k = 0;
+                for (; *q && *q != ' ' && *q != '\n'; q++)
+                    if (k < 15)
+                        names[n][k++] = *q;
+                names[n][k] = '\0';
+                n++;
+            }
+        }
+        p = end ? end + 1 : p + strlen(p);
+    }
+    return n;
+}
+
 /* (B) Every command "help" lists is in exactly one section; the 7 new ones
  * are in the shell section. */
 static void test_section_completeness(void)
@@ -236,7 +281,7 @@ static void test_section_completeness(void)
     unsigned n_all, n_in[3];
     reset();
     run("help");
-    n_all = row_names(out, all);
+    n_all = help_names(out, all);
     CHECK_EQ(n_all, 26);
     for (unsigned s = 0; s < 3; s++) {
         char cmd[32];

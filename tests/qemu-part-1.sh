@@ -320,11 +320,11 @@ if [ "$PROMPTS" -eq 32 ]; then pass "[0.5] Enter: all 32 lines submitted"
 else fail "[0.5] Enter: expected 32 submitted lines, got $PROMPTS"; fi
 expect_next "$LOG" "[0.5] empty line: new prompt, no output"   "^madire> $"      "^madire>    $"
 expect_next "$LOG" "[0.5] blank line: new prompt, no output"   "^madire>    $"   "^madire> help$"
+# 1.0 stage 10 (D2): help lists the names by section, several per line
+# (the purposes: help <section>, help <command>).
 expect_in_order "$LOG" "[0.5] help lists all seven commands" \
-    "^madire> help$" "^Available commands:$" "^  help     Show this list$" \
-    "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
-    "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
-    "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
+    "^madire> help$" "^Available commands:$" "^shell: The shell's own commands$" \
+    "^  help  clear  echo  " "^system: Information about the system$" "^  version  uptime  mem  cpu  "
 expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
@@ -1067,7 +1067,7 @@ expect_in_order "$LOG" "[0.9] ps: header, thread 0 'kernel' running, count" \
     "^madire> ps$" "^TID  STATE      TICKS    STACK PEAK    NAME$" \
     "^  0  running +[0-9]+ +[0-9]+/16384   kernel$" "^1 thread$"
 expect_in_order "$LOG" "[0.9] help: ps listed after the seven commands" \
-    "^madire> help$" "^  echo     Print text: echo <text>$" "^  ps       Show threads and processes$"
+    "^madire> help$" "^  help  clear  echo  " "^  version  uptime  mem  cpu  " "^  ps  run  kill$"
 w=$(max_width "$LOG" "^madire> ps$" "^madire> help$")
 if grep -q "^madire> ps$" "$LOG" && [ "$w" -le 79 ]; then pass "[0.9] ps: every line at most 79 characters (longest $w)"
 else fail "[0.9] ps: a line of $w characters (limit 79)"; fi

@@ -310,9 +310,11 @@ static void test_without_storage_nothing_changes(void)
     reset();
     ctx.storage = NULL;
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(ends_with(out, "  cat      Show a file's contents: cat <path>\n"
-                         "Sections: shell system programs files (help <section>)\n"));
-    CHECK_EQ(lines_written, 1 + 34 + 1);
+    CHECK(ends_with(out, "files: Files and folders\n"
+                         "  pwd  cd  ls  mkdir  rmdir  touch  stat  cat\n"
+                         "Purposes and usage: help <command>; one section: help <section>.\n"
+                         "Scroll back: Shift+PgUp and Shift+PgDn.\n"));
+    CHECK_EQ(lines_written, 12);            /* 1.0 stage 10: one screen (was 1 + 34 + 1) */
     for (unsigned i = 0; i < 5; i++) {
         char line[16], want[96];
         snprintf(line, sizeof(line), "%s x", names[i]);
@@ -335,13 +337,12 @@ static void test_without_storage_nothing_changes(void)
 
 static void test_help_and_suggestions(void)
 {
-    char want[2048];
     reset();
     CHECK_EQ(run("help"), SHELL_OK);
-    snprintf(want, sizeof(want), "  cat      Show a file's contents: cat <path>\n%s"
-             "Sections: shell system programs files (help <section>)\n", rows9);
-    CHECK(ends_with(out, want));
-    CHECK_EQ(lines_written, 1 + 39 + 1);
+    CHECK(ends_with(out, "  pwd  cd  ls  mkdir  rmdir  touch  stat  cat  rm  cp  mv  df  du\n"
+                         "Purposes and usage: help <command>; one section: help <section>.\n"
+                         "Scroll back: Shift+PgUp and Shift+PgDn.\n"));
+    CHECK_EQ(lines_written, 12);            /* 1.0 stage 10: one screen (was 1 + 39 + 1) */
     CHECK_EQ(run("help files"), SHELL_OK);
     CHECK(ends_with(out, rows9));
     CHECK_EQ(lines_written, 1 + 13);
@@ -476,7 +477,7 @@ static void test_redirect_chunks(void)
     CHECK(file_len == strlen(screen) && memcmp(file, screen, file_len) == 0);
     CHECK(file_len > 8192 && writes == (file_len + 4095) / 4096 && largest == 4096);
     CHECK_EQ(run("help > h.txt"), SHELL_OK);
-    CHECK(file_len > 1000 && memcmp(file, "Available commands:\n", 20) == 0);
+    CHECK(file_len == 502 && memcmp(file, "Available commands:\n", 20) == 0);  /* 1.0 stage 10 */
     CHECK_EQ(run("time echo x > t"), SHELL_OK);         /* the command's output; time's line later */
     CHECK(file_is("x\n") && ss.timed);
 }

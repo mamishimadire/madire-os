@@ -218,6 +218,19 @@ static const char *const rows =
     "  stat     Show a file's or folder's details: stat <path>\n"
     "  cat      Show a file's contents: cat <path>\n";
 
+/* 1.0 stage 10 (D2): "help" on one screen, without files. */
+static const char *const help_session =
+    "Available commands:\n"
+    "shell: The shell's own commands\n"
+    "  help  clear  echo  history  prompt  alias  unalias  set  unset  export  env\n"
+    "  sleep  presskey  time\n"
+    "system: Information about the system\n"
+    "  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot\n"
+    "programs: Programs and processes\n"
+    "  ps  run  kill\n"
+    "Purposes and usage: help <command>; one section: help <section>.\n"
+    "Scroll back: Shift+PgUp and Shift+PgDn.\n";
+
 /* ---- without files: nothing changes ---- */
 
 static void test_without_files_nothing_changes(void)
@@ -225,8 +238,7 @@ static void test_without_files_nothing_changes(void)
     reset();
     ctx.files = NULL;
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(ends_with(out, "  time     Time a command: time <command>\n"
-                         "Sections: shell system programs (help <section>)\n"));
+    CHECK(strcmp(out, help_session) == 0);  /* 1.0 stage 10: no section "files" */
     CHECK(strstr(out, "pwd") == NULL);
     for (unsigned i = 0; i < 8; i++) {
         char want[96];
@@ -252,10 +264,11 @@ static void test_help_and_version(void)
     char want[2048];
     reset();
     CHECK_EQ(run("help"), SHELL_OK);
-    snprintf(want, sizeof(want), "  time     Time a command: time <command>\n%s"
-             "Sections: shell system programs files (help <section>)\n", rows);
-    CHECK(ends_with(out, want));
-    CHECK_EQ(lines_written, 1 + 34 + 1);
+    CHECK(ends_with(out, "files: Files and folders\n"
+                         "  pwd  cd  ls  mkdir  rmdir  touch  stat  cat\n"
+                         "Purposes and usage: help <command>; one section: help <section>.\n"
+                         "Scroll back: Shift+PgUp and Shift+PgDn.\n"));
+    CHECK_EQ(lines_written, 12);            /* 1.0 stage 10: one screen (was 1 + 34 + 1) */
     CHECK_EQ(run("help files"), SHELL_OK);
     snprintf(want, sizeof(want), "files: Files and folders\n%s", rows);
     CHECK(strcmp(out, want) == 0);

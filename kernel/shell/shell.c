@@ -2066,7 +2066,10 @@ static enum shell_result help_unknown(const struct shell_output *o, const char *
     return SHELL_UNKNOWN;
 }
 
-static void help_row(const struct shell_output *o, const struct command *cmd)
+/* 1.0 stage 10: noinline, since "help_section" (inlined into execute) is
+ * now its only caller; inlined, its line buffer would deepen execute's
+ * frame, which is on the boot stack's deepest path. */
+static __attribute__((noinline)) void help_row(const struct shell_output *o, const struct command *cmd)
 {
     struct line l;
     l_reset(&l);
@@ -2077,6 +2080,32 @@ static void help_row(const struct shell_output *o, const struct command *cmd)
     emit(o, &l, SHELL_TEXT);
 }
 
+#define HELP_WIDTH 79           /* 1.0 stage 10: a line of names fits 79 columns */
+
+/* 1.0 stage 10 (D2): the names in `list` of one section (-1: all), two
+ * spaces apart after a two-space indent; a line fills while the next name
+ * still fits in HELP_WIDTH columns. */
+static void help_names(const struct shell_output *o, const struct command *const *list, uint32_t n,
+                       int section)
+{
+    struct line l;
+    l_reset(&l);
+    for (uint32_t i = 0; i < n; i++) {
+        if (section >= 0 && list[i]->section != section)
+            continue;
+        if (l.n && l.n + 2 + str_len(list[i]->name) > HELP_WIDTH)
+            emit(o, &l, SHELL_TEXT);
+        l_str(&l, "  ");
+        l_str(&l, list[i]->name);
+    }
+    if (l.n)
+        emit(o, &l, SHELL_TEXT);
+}
+
+/* 1.0 stage 10 (D2): "help" fits one screen. With state (the console):
+ * each section's title and its names, then how to see the purposes and
+ * the scrollback keys; without state, one block of names. The purposes
+ * are in "help <section>" and "help <command>". */
 static enum shell_result cmd_help(int argc, char **argv, const struct shell_context *c,
                                   const struct shell_output *o)
 {
@@ -2084,11 +2113,23 @@ static enum shell_result cmd_help(int argc, char **argv, const struct shell_cont
     uint32_t n = offered(c, list);
     (void)argc; (void)argv;
     say(o, "Available commands:", SHELL_TEXT);
-    for (uint32_t i = 0; i < n; i++)
-        help_row(o, list[i]);
-    if (c->state)
-        say(o, c->files ? "Sections: shell system programs files (help <section>)"
-                        : "Sections: shell system programs (help <section>)", SHELL_TEXT);
+    if (!c->state) {
+        help_names(o, list, n, -1);
+        if (c->extras)                      /* 0.9.1: help <command> */
+            say(o, "Purposes and usage: help <command>.", SHELL_TEXT);
+        return SHELL_OK;
+    }
+    for (uint32_t s = 0; s < sections_offered(c); s++) {
+        struct line l;
+        l_reset(&l);
+        l_str(&l, section_names[s]);
+        l_str(&l, ": ");
+        l_str(&l, section_titles[s]);
+        emit(o, &l, SHELL_TEXT);
+        help_names(o, list, n, (int)s);
+    }
+    say(o, "Purposes and usage: help <command>; one section: help <section>.", SHELL_TEXT);
+    say(o, "Scroll back: Shift+PgUp and Shift+PgDn.", SHELL_TEXT);
     return SHELL_OK;
 }
 

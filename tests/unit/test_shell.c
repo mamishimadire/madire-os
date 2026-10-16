@@ -62,15 +62,10 @@ static void test_help_lists_all_commands(void)
 {
     reset_context();
     CHECK_EQ(run("help"), SHELL_OK);
+    /* 1.0 stage 10 (D2): the names, several per line; purposes: help <command>. */
     CHECK(strcmp(out,
         "Available commands:\n"
-        "  help     Show this list\n"
-        "  clear    Clear the screen\n"
-        "  version  Show the Madire OS version\n"
-        "  uptime   Show time since boot\n"
-        "  mem      Show memory information\n"
-        "  cpu      Show processor information\n"
-        "  echo     Print text: echo <text>\n") == 0);
+        "  help  clear  version  uptime  mem  cpu  echo\n") == 0);
     CHECK_EQ(errors, 0);
 }
 

@@ -88,13 +88,23 @@ static void reset(void)
     ctx.state = &st;
 }
 
+/* 1.0 stage 10 (D2): "help" on one screen: each section's names. */
+static const char *const help_012 =
+    "Available commands:\n"
+    "shell: The shell's own commands\n"
+    "  help  clear  echo  history  prompt  alias  unalias\n"
+    "system: Information about the system\n"
+    "  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot\n"
+    "programs: Programs and processes\n"
+    "  ps  run  kill\n"
+    "Purposes and usage: help <command>; one section: help <section>.\n"
+    "Scroll back: Shift+PgUp and Shift+PgDn.\n";
+
 static const char *const help_tail =
-    "  run      Run a program: run [-b] <name> [args]\n"
-    "  kill     End a process: kill <pid> (asks first)\n"
-    "  prompt   Show or change the prompt: prompt [text]\n"
-    "  alias    Show or make short names: alias [name [command]]\n"
-    "  unalias  Remove a short name: unalias <name>\n"
-    "Sections: shell system programs (help <section>)\n";
+    "programs: Programs and processes\n"
+    "  ps  run  kill\n"
+    "Purposes and usage: help <command>; one section: help <section>.\n"
+    "Scroll back: Shift+PgUp and Shift+PgDn.\n";
 
 static bool ends_with(const char *s, const char *tail)
 {
@@ -129,16 +139,12 @@ static void test_without_state_nothing_changes(void)
     CHECK_EQ(run("help x y"), SHELL_BAD_ARGS);
     CHECK(strcmp(out, "Usage: help [command]\n") == 0);
 
-    /* With state, "help" is the same list with the three new rows and the
-     * sections line appended: no existing row moves or changes. */
+    /* With state, "help" lists the names by section, the three new ones in
+     * "shell" (1.0 stage 10, D2: was the same list with them appended). */
     reset();
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(strncmp(out, before, strlen(before)) == 0);
-    CHECK(strcmp(out + strlen(before),
-                 "  prompt   Show or change the prompt: prompt [text]\n"
-                 "  alias    Show or make short names: alias [name [command]]\n"
-                 "  unalias  Remove a short name: unalias <name>\n"
-                 "Sections: shell system programs (help <section>)\n") == 0);
+    CHECK(strncmp(out, "Available commands:\n", 20) == 0);
+    CHECK(strcmp(out, help_012) == 0);
     CHECK(ends_with(out, help_tail));
     CHECK_EQ(run("help x y"), SHELL_BAD_ARGS);
     CHECK(strcmp(out, "Usage: help [section | command]\n") == 0);
@@ -206,6 +212,31 @@ static unsigned row_names(const char *text, char names[32][16])
     return n;
 }
 
+/* 1.0 stage 10: every name on "help"'s indented lines (several per line). */
+static unsigned help_names(const char *text, char names[32][16])
+{
+    unsigned n = 0;
+    for (const char *p = text; *p && n < 32; ) {
+        const char *end = strchr(p, '\n');
+        if (p[0] == ' ' && p[1] == ' ') {
+            for (const char *q = p; *q && *q != '\n' && n < 32; ) {
+                while (*q == ' ')
+                    q++;
+                if (!*q || *q == '\n')
+                    break;
+                unsigned k = 0;
+                for (; *q && *q != ' ' && *q != '\n'; q++)
+                    if (k < 15)
+                        names[n][k++] = *q;
+                names[n][k] = '\0';
+                n++;
+            }
+        }
+        p = end ? end + 1 : p + strlen(p);
+    }
+    return n;
+}
+
 /* (B) Every command "help" lists is in exactly one section, every section
  * row is a listed command, and no section name is a command name. */
 static void test_section_completeness(void)
@@ -215,7 +246,7 @@ static void test_section_completeness(void)
     unsigned n_all, n_in[3];
     reset();
     run("help");
-    n_all = row_names(out, all);
+    n_all = help_names(out, all);
     CHECK_EQ(n_all, 19);
     for (unsigned s = 0; s < 3; s++) {
         char cmd[32];

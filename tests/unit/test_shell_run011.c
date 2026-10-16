@@ -98,7 +98,7 @@ static void test_without_procs_nothing_changes(void)
     CHECK(strcmp(out, "Unknown command: run. Type 'help' for a list of commands.\n") == 0);
     CHECK_EQ(starts, 0);
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(strstr(out, "  ps       Show threads\n") != NULL);
+    CHECK(strstr(out, "  echo  ps  history  ") != NULL);    /* 1.0 stage 10: names only */
     CHECK(strstr(out, "run") == NULL);
     CHECK_EQ(run("ps"), SHELL_OK);
     CHECK(strcmp(out, "TID  STATE      TICKS    STACK PEAK    NAME\n"
@@ -110,13 +110,11 @@ static void test_help(void)
 {
     reset();
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(strstr(out, "  echo     Print text: echo <text>\n"
-                      "  ps       Show threads and processes\n"
-                      "  history  Show previous commands (Up/Down recall)\n") != NULL);
+    /* 1.0 stage 10 (D2): the names, several per line. */
+    CHECK(strstr(out, "  echo  ps  history  ") != NULL);
     /* run follows reboot (stage 4b: then kill, the last) */
-    const char *tail = "  reboot   Restart the computer (asks first)\n"
-                       "  run      Run a program: run [-b] <name> [args]\n"
-                       "  kill     End a process: kill <pid> (asks first)\n";
+    const char *tail = "  date  dmesg  reboot  run  kill\n"
+                       "Purposes and usage: help <command>.\n";
     CHECK(strlen(out) >= strlen(tail) && strcmp(out + strlen(out) - strlen(tail), tail) == 0);
     CHECK_EQ(run("help run"), SHELL_OK);
     CHECK(strcmp(out, "run: Run a program: run [-b] <name> [args]\n"
