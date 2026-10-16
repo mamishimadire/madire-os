@@ -43,6 +43,24 @@ ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
 C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
+# 1.0 stage 1 (D1): a test-only kernel padded past 2 MiB. KERNEL_PAD=<n>[K|M]
+# links one more object, a .bss pad of that size, so the image ends that
+# much higher. It is never the shipped kernel: it builds only into its own
+# BUILD directory (make padkernel: build/pad), never into build/, so the
+# ISO and make repro (which build without KERNEL_PAD) never see it.
+ifneq ($(KERNEL_PAD),)
+ifeq ($(BUILD),build)
+$(error KERNEL_PAD builds a test-only kernel: give it its own BUILD directory (make padkernel builds build/pad))
+endif
+KPAD_BYTES := $(shell printf '%s' '$(KERNEL_PAD)' | sed 's/[Mm]$$/*1048576/; s/[Kk]$$/*1024/')
+OBJS += $(BUILD)/kpad.o
+.DEFAULT_GOAL := all
+$(BUILD)/kpad.o:
+	@mkdir -p $(dir $@)
+	printf 'section .bss\nalign 4096\nkernel_test_pad: resb %s\n' '$(KPAD_BYTES)' > $(BUILD)/kpad.asm
+	$(AS) $(ASFLAGS) $(BUILD)/kpad.asm -o $@
+endif
+
 # Host unit tests: kernel modules with no hardware access, built as ordinary
 # 64-bit Linux programs (0.7: the kernel's integer and pointer sizes).
 # Non-PIE and linked at 256 MiB: the memory tests pass the addresses of their
@@ -59,10 +77,13 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/console/history.c kernel/rtc_time.c kernel/logbuf.c \
                             kernel/console/scrollback.c kernel/memory/uvm_core.c                             kernel/memory/usercopy_core.c kernel/proc/syscall_core.c                             kernel/proc/proc_core.c kernel/proc/userimg.c \
                             kernel/proc/elf_core.c kernel/proc/progmod_core.c \
-                            kernel/proc/loadplan.c kernel/proc/diagwait_core.c)
+                            kernel/proc/loadplan.c kernel/proc/diagwait_core.c \
+                            kernel/fs/path_core.c kernel/fs/vfs_core.c kernel/fs/ramfs_core.c \
+                            kernel/proc/klock_core.c kernel/proc/fdtable_core.c \
+                            kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck repro clean
+.PHONY: all iso run test test-shard unit user elfcheck repro padkernel clean
 
 all: $(KERNEL)
 
@@ -115,6 +136,11 @@ $(BUILD)/user/%.o: user/prog/%.c user/syscall.h user/ulib.h
 $(BUILD)/user/%.elf: $(BUILD)/user/crt0.o $(BUILD)/user/%.o user/link.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(BUILD)/user/crt0.o $(BUILD)/user/$*.o
 
+# 1.0 stage 7: args enters at its own stub (args_entry, user/prog/args.c),
+# which records the registers at entry and jumps to crt0's _start.
+$(BUILD)/user/args.elf: $(BUILD)/user/crt0.o $(BUILD)/user/args.o user/link.ld
+	$(LD) $(USER_LDFLAGS) -e args_entry -o $@ $(BUILD)/user/crt0.o $(BUILD)/user/args.o
+
 $(BUILD)/user/images.asm: $(USER_ELFS) scripts/user-images.sh
 	sh scripts/user-images.sh $(BUILD)/user $(USER_PROGS) > $@.tmp
 	mv $@.tmp $@
@@ -159,13 +185,16 @@ $(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 # -partition_offset 16 gives one starting at sector 64. SOURCE_DATE_EPOCH
 # (fixed, 2026-10-12 00:00 UTC) was the 0.13 attempt (D5) at a reproducible
 # ISO; the ISO still differs between builds (a watch item, docs/PROGRESS.md).
+# 1.0 (stage 0a): Madire's own LICENSE, NOTICE and THIRD_PARTY_NOTICES go to
+# the ISO root (Apache 2.0, section 4); Limine's stay in /boot/limine/.
 LIMINE_DIR ?= /usr/local/share/limine
 LIMINE ?= limine
 ISO_EPOCH := 1791763200
-$(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf)
+$(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
 	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog
+	cp LICENSE NOTICE THIRD_PARTY_NOTICES $(BUILD)/isodir/
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
 	cp $(BUILD)/limine.conf $(BUILD)/isodir/boot/limine/limine.conf
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/LICENSE \
@@ -180,7 +209,7 @@ $(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf)
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
                  kernel/bootmod.h kernel/stackpeak.h kernel/rtc_time.h kernel/logbuf.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
                  $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
-                 $(wildcard kernel/proc/*.h)
+                 $(wildcard kernel/proc/*.h kernel/fs/*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
 
@@ -223,15 +252,30 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
-test: unit user elfcheck $(ISO) $(BUILD)/limine.conf repro
+# 1.0 stage 1 (D1): the padded test kernel (2 MiB of .bss more since stage 5:
+# the kernel itself is past 2 MiB, so the pad takes it past 4 MiB) in build/pad,
+# for the [1.0] checks in tests/qemu-part-4.sh. A failed build is reported
+# and leaves no kernel there, so those checks fail without stopping the run.
+PAD_BUILD := $(BUILD)/pad
+padkernel:
+	@echo "KERNEL_PAD_REFUSAL (make -n KERNEL_PAD=1, the default BUILD; a dry run): $$($(MAKE) -n KERNEL_PAD=1 BUILD=build all 2>&1 | grep -m1 'KERNEL_PAD' || echo 'NOT REFUSED')"
+	@rm -rf $(PAD_BUILD)
+	@start=$$(date +%s); \
+	if $(MAKE) -s BUILD=$(PAD_BUILD) KERNEL_PAD=2M all > $(BUILD)/padkernel.log 2>&1; \
+	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
+	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
+
+test: unit user elfcheck $(ISO) $(BUILD)/limine.conf repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
 # the parts: bash tests/qemu-tests.sh --list-parts), for the parallel jobs
 # of .github/workflows/regression.yml. The unit tests and make repro run
-# only with SHARD=static, so a sharded run runs them once.
+# only with SHARD=static, so a sharded run runs them once; the padded test
+# kernel (1.0) is built only for part 4, which boots it.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(if $(filter static,$(SHARD)),unit repro)
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(if $(filter static,$(SHARD)),unit repro) \
+            $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)

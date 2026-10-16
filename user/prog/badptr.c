@@ -8,9 +8,8 @@ extern char __bss_end[];                              /* user/link.ld */
 static volatile char rw[64] = { 1 };                  /* data: at least one data page exists */
 #define USER_STACK (32u * 1024)                         /* VM_USER_STACK_SIZE */
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     int bad = 0;
     char buf[8] = { 'x', 'x', 'x', 'x', 'x', 'x', 'x', '\n' };
     bad += u_expect("badptr: NULL: ", sys_write(1, 0, 5), -EFAULT);

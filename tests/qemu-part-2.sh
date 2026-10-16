@@ -2,7 +2,9 @@
 # scrollback, and [0.10] up to userkmem. Sourced by tests/qemu-tests.sh
 # (a full run, or --shard 2). Apart from this header and the fixture call,
 # every line was moved unchanged from the single script; the [0.12] shell
-# session at the end was added in stage 1.
+# session at the end was added in stage 1. 1.0 stage 2 adds the [1.0]
+# storage diagnostics (test=fslimits, test=fsfill at 32M and 64M) last;
+# stage 3 the VFS lock's test=klock after them.
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 
@@ -34,11 +36,11 @@ S+="history{ret}"                                    # 21: lists 6..21
 S+="echo end-of-091-test{ret}"
 boot_text "$LOG" 120 "System ready." "$S" 0.03 $'\nend-of-091-test\n' -kernel "$KERNEL" -append "keylog"
 
-expect_in_order "$LOG" "[0.9.1] help lists the six new commands after ps, in order" \
-    "^madire> help$" "^  ps       Show threads and processes$" \
-    "^  history  Show previous commands \(Up/Down recall\)$" "^  uname    Show the system name: uname \[-a\]$" \
-    "^  hostname Show the computer's name$" "^  date     Show the date and time \(RTC\)$" \
-    "^  dmesg    Show kernel messages: dmesg \[lines\]$" "^  reboot   Restart the computer \(asks first\)$"
+# 1.0 stage 10 (D2): by section, so history (shell) and the five system
+# commands come before ps (programs); was "after ps".
+expect_in_order "$LOG" "[0.9.1] help lists the six new commands in their sections, in order" \
+    "^madire> help$" "^  help  clear  echo  history  " \
+    "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot$" "^  ps  run  kill$"
 expect_lines "$LOG" "[0.9.1] help mem: purpose and usage" \
     "^madire> help mem$" "^mem: Show memory information$" "^Usage: mem$"
 expect_lines "$LOG" "[0.9.1] help nosuch: unknown command" \
@@ -462,7 +464,7 @@ expect "$LOG" "^User-mode test: [1-9][0-9]* built-in images checked: ok; 'spin':
                                                       "[0.10] userspin: every built-in image checked; spin found"
 expect "$LOG" "^User-mode test: thread [1-9][0-9]* 'spin' loaded the image into its own address space: [1-9][0-9]* code, [0-9]+ data and 8 stack pages: OK$" \
                                                       "[0.10] userspin: spin's code, data and 32 KiB stack mapped in its own address space"
-expect "$LOG" "^User-mode test: IRETQ frame RIP=0x00000000004[0-9a-f]{5} CS=0x003b RFLAGS=0x0000000000000202 RSP=0x00007ffffffff000 SS=0x0033 \(IF=1, IOPL=0, RIP inside the code\): OK$" \
+expect "$LOG" "^User-mode test: IRETQ frame RIP=0x00000000004[0-9a-f]{5} CS=0x003b RFLAGS=0x0000000000000202 RSP=0x00007fffffffee90 SS=0x0033 \(IF=1, IOPL=0, RIP inside the code\): OK$" \
                                                       "[0.10] userspin: enter_user's IRETQ frame: CS 0x3B, SS 0x33, IF=1, IOPL=0, RIP inside the code"
 FI=$(grep -m1 -E '^User-mode test: first timer interrupt from ring 3, ' "$LOG")
 FAT=$(sed -nE 's/.*frame at 0x([0-9a-f]{16}) = RSP0 0x([0-9a-f]{16}) - 176, RSP0 = the thread.s stack top 0x([0-9a-f]{16}): OK$/\1 \2 \3/p' <<< "$FI")
@@ -686,8 +688,8 @@ LOG=$OUT/serial-shell012.log
 # it drain: with them all 848 presses and 848 releases arrived.
 X58=$(printf 'x%.0s' $(seq 1 58))
 S="x{wait:1}"
-S+="help{ret}help shell{ret}help system{ret}help programs{ret}"
-S+="help shel{ret}help nosuch{ret}"
+S+="help{ret}help shell{ret}help system{ret}help programs{ret}help files{ret}"
+S+="help shel{ret}help nosuchcommand{ret}"
 S+="hlep{ret}ru{ret}Echo x{ret}ECHO x{ret}kil 5{ret}"
 S+="prompt{ret}prompt abc>{ret}echo under-new-prompt{ret}prompt{ret}"
 S+="prompt 123456789{ret}prompt -x{ret}prompt a b{ret}prompt --reset{ret}prompt{ret}"
@@ -707,24 +709,18 @@ S+="echo end-of-012-test{ret}"
 boot_text "$LOG" 180 "System ready." "$S" 0.03 $'\nend-of-012-test\n' -kernel "$KERNEL"
 
 NEXT="^(console: |madire> )"
-expect_lines "$LOG" "[0.12] help: today's list unchanged, then prompt, alias, unalias, the stage 2 commands and the sections" \
-    "^madire> help$" "^Available commands:$" "^  help     Show this list$" \
-    "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
-    "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
-    "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$" \
-    "^  ps       Show threads and processes$" \
-    "^  history  Show previous commands \(Up/Down recall\)$" "^  uname    Show the system name: uname \[-a\]$" \
-    "^  hostname Show the computer's name$" "^  date     Show the date and time \(RTC\)$" \
-    "^  dmesg    Show kernel messages: dmesg \[lines\]$" "^  reboot   Restart the computer \(asks first\)$" \
-    "^  run      Run a program: run \[-b\] <name> \[n\]$" "^  kill     End a process: kill <pid> \(asks first\)$" \
-    "^  prompt   Show or change the prompt: prompt \[text\]$" \
-    "^  alias    Show or make short names: alias \[name \[command\]\]$" \
-    "^  unalias  Remove a short name: unalias <name>$" \
-    "^  set      Show or set variables: set \[NAME\[=value\]\]$" "^  unset    Remove a variable: unset <NAME>$" \
-    "^  export   Mark a variable as exported: export <NAME>$" "^  env      Show the exported variables$" \
-    "^  sleep    Wait: sleep <seconds> \(1-3600, Ctrl\+C stops\)$" \
-    "^  presskey Wait for a key press \(Ctrl\+C cancels\)$" "^  time     Time a command: time <command>$" \
-    "^Sections: shell system programs \(help <section>\)$" "$NEXT"
+# 1.0 stage 10 (D2): help on one screen (was the 41-line purpose list).
+expect_lines "$LOG" "[0.12] help: one screen, the commands by section, then the usage and scrollback lines" \
+    "^madire> help$" "^Available commands:$" \
+    "^shell: The shell's own commands$" \
+    "^  help  clear  echo  history  prompt  alias  unalias  set  unset  export  env$" \
+    "^  sleep  presskey  time$" \
+    "^system: Information about the system$" \
+    "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot$" \
+    "^programs: Programs and processes$" "^  ps  run  kill$" \
+    "^files: Files and folders$" "^  pwd  cd  ls  mkdir  rmdir  touch  stat  cat  rm  cp  mv  df  du$" \
+    "^Purposes and usage: help <command>; one section: help <section>\.$" \
+    "^Scroll back: Shift\+PgUp and Shift\+PgDn\.$" "$NEXT"
 expect_lines "$LOG" "[0.12] help shell: the shell's commands" \
     "^madire> help shell$" "^shell: The shell's own commands$" "^  help     " "^  clear    " "^  echo     " \
     "^  history  " "^  prompt   " "^  alias    " "^  unalias  " "^  set      " "^  unset    " "^  export   " \
@@ -736,30 +732,137 @@ expect_lines "$LOG" "[0.12] help programs: programs and processes" \
     "^madire> help programs$" "^programs: Programs and processes$" "^  ps       " "^  run      " \
     "^  kill     " "$NEXT"
 # Every command "help" lists is in exactly one section, and no section name
-# is a command (stage 2's new commands must be placed in a section).
+# is a command (stage 2's new commands must be placed in a section; 1.0
+# stage 8: the section "files" and its 8 commands, 34 in all; stage 9: rm,
+# cp, mv, df and du in "files", 39 in all; 1.0 stage 10: help lists
+# several names per line, so every word of its indented lines is read).
 if awk '
         /^madire> / { cur = $0; next }
-        cur == "madire> help" && /^  [a-z]/ { split($0, f, " "); all[f[1]] = 1; next }
-        cur ~ /^madire> help (shell|system|programs)$/ && /^  [a-z]/ { split($0, f, " "); in_sec[f[1]]++; next }
+        cur == "madire> help" && /^  [a-z]/ { for (i = 1; i <= NF; i++) all[$i] = 1; next }
+        cur ~ /^madire> help (shell|system|programs|files)$/ && /^  [a-z]/ { split($0, f, " "); in_sec[f[1]]++; next }
         END {
             na = 0; for (c in all) { na++; if (in_sec[c] != 1) bad = 1 }
             for (c in in_sec) if (!(c in all)) bad = 1
-            split("shell system programs", s, " ")
-            for (i = 1; i <= 3; i++) if (s[i] in all) bad = 1
-            exit !(na == 26 && !bad)
+            split("shell system programs files", s, " ")
+            for (i = 1; i <= 4; i++) if (s[i] in all) bad = 1
+            exit !(na == 39 && !bad)
         }' "$LOG"; then
-    pass "[0.12] help sections: each of the 26 commands in exactly one section, no section named like a command"
+    pass "[0.12] help sections: each of the 39 commands in exactly one section, no section named like a command"
 else
     fail "[0.12] help sections: a command missing from the sections, in two, or a section named like a command"
 fi
+
+# ---- 1.0 stage 10 (D2): help on one screen ----
+# out_after <typed line>: the output of the first such line in this boot,
+# up to the next prompt (the kernel's "uptime: N s" lines left out).
+out_after() {
+    TYPED="madire> $1" awk '
+        !on && $0 == ENVIRON["TYPED"] { on = 1; next }
+        on && /^(console: |madire> )/ { exit }
+        on && !/^uptime: [0-9]+ s$/ && !/^key: / { print }' "$LOG"
+}
+HELP_OUT=$(out_after "help")
+HELP_N=$(printf '%s\n' "$HELP_OUT" | grep -c '')
+echo "      help: $HELP_N lines"
+if [ -n "$HELP_OUT" ] && [ "$HELP_N" -le 23 ]; then
+    pass "[1.0] help fits one screen: at most 23 lines after the typed line (24 rows)"
+else
+    fail "[1.0] help fits one screen: $HELP_N lines after the typed line (limit 23)"
+fi
+w=$(printf '%s\n' "$HELP_OUT" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+echo "      help: longest line $w columns"
+if [ -n "$HELP_OUT" ] && [ "$w" -le 79 ]; then pass "[1.0] help: every line at most 79 columns"
+else fail "[1.0] help: a line of $w columns (limit 79)"; fi
+# Each section as "help <section>" shows it: its title, then its names in order.
+SEC_TITLES="" SEC_NAMES="" ALL_SEC=""
+for s in shell system programs files; do
+    o=$(out_after "help $s")
+    SEC_TITLES+="$(printf '%s\n' "$o" | sed -n 1p)|"
+    n=$(printf '%s\n' "$o" | awk 'NR > 1 && /^  [a-z]/ { printf "%s ", $1 }')
+    SEC_NAMES+="$n|"
+    ALL_SEC+="$n"
+done
+HELP_TITLES=$(printf '%s\n' "$HELP_OUT" | awk 'NR > 1 && !/^  / && !/^(Purposes and usage|Scroll back): / { printf "%s|", $0 }')
+HELP_SEC_NAMES=$(printf '%s\n' "$HELP_OUT" | awk '
+    NR > 1 && !/^  / && !/^(Purposes and usage|Scroll back): / { if (started) printf "|"; started = 1; next }
+    /^  [a-z]/ { for (i = 1; i <= NF; i++) printf "%s ", $i }
+    END { if (started) printf "|" }')
+if [ -n "$HELP_OUT" ] && printf '%s\n' "$HELP_OUT" | awk -v want="$ALL_SEC" '
+        /^  [a-z]/ { for (i = 1; i <= NF; i++) { seen[$i]++; total++ } }
+        END {
+            n = split(want, w, " "); if (n != 39 || total != 39) exit 1
+            for (i = 1; i <= n; i++) if (seen[w[i]] != 1) exit 1
+        }'; then
+    pass "[1.0] help: each of the 39 commands listed exactly once"
+else
+    fail "[1.0] help: a command missing, listed twice, or not 39 in all"
+fi
+if [ -n "$HELP_OUT" ] && [ "$HELP_SEC_NAMES" = "$SEC_NAMES" ]; then
+    pass "[1.0] help: each section's names in the order help <section> lists them"
+else
+    fail "[1.0] help: section names '$HELP_SEC_NAMES', help <section> '$SEC_NAMES'"
+fi
+if [ -n "$HELP_OUT" ] && [ "$HELP_TITLES" = "$SEC_TITLES" ] &&
+        [ "$SEC_TITLES" = "shell: The shell's own commands|system: Information about the system|programs: Programs and processes|files: Files and folders|" ]; then
+    pass "[1.0] help: the section titles of help <section>, in the order shell, system, programs, files"
+else
+    fail "[1.0] help: titles '$HELP_TITLES', help <section> '$SEC_TITLES'"
+fi
+# The 39 purpose rows, word for word as help listed them before stage 10,
+# now in the four sections.
+rows_after() {   # rows_after <typed line> <regex...>: the lines right after it
+    local typed=$1
+    shift
+    TYPED="madire> $typed" PATS="$(printf '%s\034' "$@")" awk '
+        BEGIN { n = split(ENVIRON["PATS"], p, "\034") - 1 }
+        on && !/^key: / && !/^uptime: [0-9]+ s$/ { i++; if ($0 !~ p[i]) exit; if (i == n) { ok = 1; exit } }
+        !on && $0 == ENVIRON["TYPED"] { on = 1 }
+        END { exit !ok }' "$LOG"
+}
+if rows_after "help shell" "^shell: The shell's own commands$" \
+        "^  help     Show this list$" "^  clear    Clear the screen$" "^  echo     Print text: echo <text>$" \
+        "^  history  Show previous commands \(Up/Down recall\)$" \
+        "^  prompt   Show or change the prompt: prompt \[text\]$" \
+        "^  alias    Show or make short names: alias \[name \[command\]\]$" \
+        "^  unalias  Remove a short name: unalias <name>$" \
+        "^  set      Show or set variables: set \[NAME\[=value\]\]$" "^  unset    Remove a variable: unset <NAME>$" \
+        "^  export   Mark a variable as exported: export <NAME>$" "^  env      Show the exported variables$" \
+        "^  sleep    Wait: sleep <seconds> \(1-3600, Ctrl\+C stops\)$" \
+        "^  presskey Wait for a key press \(Ctrl\+C cancels\)$" "^  time     Time a command: time <command>$" \
+        "$NEXT" &&
+   rows_after "help system" "^system: Information about the system$" \
+        "^  version  Show the Madire OS version$" "^  uptime   Show time since boot$" \
+        "^  mem      Show memory information$" "^  cpu      Show processor information$" \
+        "^  uname    Show the system name: uname \[-a\]$" "^  hostname Show the computer's name$" \
+        "^  date     Show the date and time \(RTC\)$" "^  dmesg    Show kernel messages: dmesg \[lines\]$" \
+        "^  reboot   Restart the computer \(asks first\)$" "$NEXT" &&
+   rows_after "help programs" "^programs: Programs and processes$" \
+        "^  ps       Show threads and processes$" "^  run      Run a program: run \[-b\] <name> \[args\]$" \
+        "^  kill     End a process: kill <pid> \(asks first\)$" "$NEXT" &&
+   rows_after "help files" "^files: Files and folders$" \
+        "^  pwd      Show the current folder$" "^  cd       Change the current folder: cd \[path\]$" \
+        "^  ls       List a folder: ls \[-l\] \[path\]$" "^  mkdir    Create a folder: mkdir <path>$" \
+        "^  rmdir    Remove an empty folder: rmdir <path>$" "^  touch    Create an empty file, or update its time$" \
+        "^  stat     Show a file's or folder's details: stat <path>$" "^  cat      Show a file's contents: cat <path>$" \
+        "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$" "^  cp       Copy a file: cp \[-y\] <from> <to>$" \
+        "^  mv       Move or rename: mv \[-y\] <from> <to>$" "^  df       Show the filesystem's nodes and pages in use$" \
+        "^  du       Show the pages under a folder: du \[path\]$" "$NEXT"; then
+    pass "[1.0] help <section>: the 39 rows with their purposes, word for word as help listed them before stage 10"
+else
+    fail "[1.0] help <section>: a row differs from the purposes help listed before stage 10"
+fi
 expect_lines "$LOG" "[0.12] help shel: unknown, then Did you mean over sections and commands" \
     "^madire> help shel$" "^No help for 'shel': unknown command\.$" "^Did you mean: shell, help, set\?$" "$NEXT"
-expect_lines "$LOG" "[0.12] help nosuch: today's line only, no suggestion" \
-    "^madire> help nosuch$" "^No help for 'nosuch': unknown command\.$" "$NEXT"
+# 1.0 stage 8: typed as "nosuchcommand" (was "nosuch", within distance 2
+# of the new "touch"); 13 characters, more than 2 longer than every command
+# and section name, so no suggestion now or with stage 9's commands.
+expect_lines "$LOG" "[0.12] help nosuchcommand: today's line only, no suggestion" \
+    "^madire> help nosuchcommand$" "^No help for 'nosuchcommand': unknown command\.$" "$NEXT"
 expect_lines "$LOG" "[0.12] hlep: Did you mean: help, sleep?" \
     "^madire> hlep$" "^Unknown command: hlep\. Type 'help' for a list of commands\.$" "^Did you mean: help, sleep\?$" "$NEXT"
-expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (run, cpu, ps)" \
-    "^madire> ru$" "^Unknown command: ru\. " "^Did you mean: run, cpu, ps\?$" "$NEXT"
+# 1.0 stage 9: rm and du are at distance 1 too (was "run, cd, cpu").
+expect_lines "$LOG" "[0.12] ru: nearest first, then alphabetically (du, rm, run)" \
+    "^madire> ru$" "^Unknown command: ru\. " "^Did you mean: du, rm, run\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] Echo: case-sensitive, distance 1 (echo)" \
     "^madire> Echo x$" "^Unknown command: Echo\. " "^Did you mean: echo\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] ECHO: four letters differ, no suggestion" \
@@ -813,8 +916,8 @@ expect_lines "$LOG" "[0.12] unalias nosuch: a clear error" \
 expect_lines "$LOG" "[0.12] unalias without a name: usage" "^madire> unalias$" "^Usage: unalias <name>$"
 expect_lines "$LOG" "[0.12] an alias's line with 8 words: runs" "^madire> e5 6 7$" "^1 2 3 4 5 6 7$"
 expect_lines "$LOG" "[0.12] an alias's line with 9 words: refused" "^madire> e5 6 7 8$" "^Too many arguments \(max 8\)\.$"
-expect_lines "$LOG" "[0.12] lll: aliases are suggested too (ll, kill)" \
-    "^madire> lll$" "^Unknown command: lll\. " "^Did you mean: ll, kill\?$" "$NEXT"
+expect_lines "$LOG" "[0.12] lll: aliases are suggested too (ll, kill, ls)" \
+    "^madire> lll$" "^Unknown command: lll\. " "^Did you mean: ll, kill, ls\?$" "$NEXT"
 expect_lines "$LOG" "[0.12] the 16th alias: added" "^madire> alias t13 echo 13$" "^Alias 't13' added\.$"
 expect_lines "$LOG" "[0.12] a 17th alias: refused (table full)" \
     "^madire> alias t14 echo 14$" "^alias: the table is full \(16 aliases\); remove one with unalias\.$"
@@ -833,3 +936,364 @@ else
 fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[0.12] no panic, dropped key or screen-rule violation"
+
+# ---- 1.0 stage 2: the storage diagnostics (B5, B7) ----
+
+READY_LINE="System ready. Press any key to open the console."
+
+# fs_closing <log> <limits|fill> <description>: the test's closing line
+# gives nodes 3 -> 3, data pages 0 -> 0, and free pages back to the start
+# minus exactly the heap's growth and its new page tables (the heap never
+# shrinks); with the PASS line, System ready and no panic.
+fs_closing() {
+    local l n0 n1 d0 d1 f0 f1 hp pt
+    l=$(grep -m1 -E "^Filesystem $2 test: (PASS|FAIL) \(" "$1")
+    read -r n0 n1 d0 d1 f0 f1 hp pt <<< "$(sed -nE 's/.*\(nodes ([0-9]+) -> ([0-9]+), data pages ([0-9]+) -> ([0-9]+), free pages ([0-9]+) -> ([0-9]+) = ([0-9]+) heap pages \+ ([0-9]+) page tables\)$/\1 \2 \3 \4 \5 \6 \7 \8/p' <<< "$l")"
+    if [ "${n0:-x}" = 3 ] && [ "${n1:-y}" = 3 ] && [ "${d0:-x}" = 0 ] && [ "${d1:-y}" = 0 ] &&
+       [ -n "${pt:-}" ] && [ "$f1" -eq $((f0 - hp - pt)) ]; then
+        pass "$3 ($f0 -> $f1 = $hp heap pages + $pt page tables)"
+    else
+        fail "$3 (${l:-no closing line})"
+    fi
+}
+
+echo "== [1.0] test=fslimits: every B5 limit hit once (-m 128M)"
+LOG=$OUT/serial-fslimits.log
+boot_until "$LOG" 240 "$READY_LINE" -m 128M -kernel "$KERNEL" -append "test=fslimits"
+grep -E "^Filesystem limits test: " "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Filesystem limits test: nodes: [0-9]+ files created up to 1024 nodes; the next file ENOSPC, the next folder ENOSPC, nothing created; all removed: OK$" \
+    "[1.0] fslimits: 1024 nodes: the next file and the next folder ENOSPC, nothing created; all removed"
+expect "$LOG" "^Filesystem limits test: file size: 2 MiB written in 512 writes of 4096 bytes and read back \(513 pages with the index\); one more byte EFBIG; a write crossing 2 MiB returned 100 of 4096 bytes; a write at 3 MiB EFBIG; truncate to 2 MiB \+ 1 EFBIG, to 2 MiB OK: OK$" \
+    "[1.0] fslimits: 2 MiB per file: a write crossing it returns the short count up to 2 MiB; at 2 MiB and past it EFBIG; truncate past it EFBIG"
+expect "$LOG" "^Filesystem limits test: hole: one byte written at 1 MiB costs 2 pages \(index \+ data\); the 1 MiB before it reads as zeros: OK$" \
+    "[1.0] fslimits: a byte written at 1 MiB costs 2 pages (index + data); the hole reads as zeros"
+expect "$LOG" "^Filesystem limits test: budget: [0-9]+ files filled to 8192 pages = the budget, the next write ENOSPC; a write running out returned 2048 of 8192 bytes, the next ENOSPC; growing a file by truncate takes no page and is never ENOSPC, a write into the grown hole ENOSPC: OK$" \
+    "[1.0] fslimits: the budget: files filled to exactly the budget, then ENOSPC; a write running out returns its short count, the next ENOSPC; growing a file by truncate takes no page and is never ENOSPC"
+expect "$LOG" "^Filesystem limits test: page allocator: all [0-9]+ free pages taken, under the budget: a new file's first write ENOSPC with no index page left behind, a new page of a file ENOSPC, an existing page still written; all pages given back: OK$" \
+    "[1.0] fslimits: the page allocator refusing a page under the budget: ENOSPC, no index page left behind"
+expect "$LOG" "^Filesystem limits test: heap: filled to its 16 MiB cap \([0-9]+ blocks\): a file ENOMEM \(no room for its record\), a folder ENOMEM \(its record fit, its name did not\); nothing half-created; the heap given back: OK$" \
+    "[1.0] fslimits: heap exhausted: create ENOMEM (no record; a record without room for its name), nothing half-created"
+fs_closing "$LOG" limits \
+    "[1.0] fslimits: everything freed: nodes 3, data pages 0, free pages back to the start minus the heap's growth and its page tables"
+if grep -qE "^Filesystem limits test: PASS \(" "$LOG" && grep -qxF "$READY_LINE" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.0] fslimits: PASS, System ready, no panic"
+else
+    fail "[1.0] fslimits: no PASS, no System ready, or a panic in $LOG"
+fi
+
+# fsfill_test <-m size>: files filled to the budget at that RAM size.
+fsfill_test() {
+    local mem=$1 log=$OUT/serial-fsfill-$1.log l b f bwant
+    echo "== [1.0] test=fsfill at -m $mem"
+    boot_until "$log" 240 "$READY_LINE" -m "$mem" -kernel "$KERNEL" -append "test=fsfill"
+    grep -E "^Filesystem (fill test|: budget): " "$log" | sed 's/^/      /'
+    l=$(grep -m1 -E '^Filesystem fill test: budget ' "$log")
+    read -r b f <<< "$(sed -nE 's/^Filesystem fill test: budget ([0-9]+) pages = min\(8192, 3\/4 of ([0-9]+) free pages at boot\); [0-9]+ free pages now$/\1 \2/p' <<< "$l")"
+    bwant=""
+    if [ -n "${f:-}" ]; then bwant=$((f * 3 / 4)); fi
+    if [ "$mem" = 32M ]; then
+        if [ -n "$bwant" ] && [ "$bwant" -lt 8192 ] && [ "$b" = "$bwant" ]; then
+            pass "[1.0] fsfill 32M: budget = 3/4 of the $f free pages at boot = $b pages (below the 8192 cap)"
+        else
+            fail "[1.0] fsfill 32M: budget not 3/4 of the free pages below the cap (${l:-no line})"
+        fi
+    else
+        if [ -n "$bwant" ] && [ "$bwant" -ge 8192 ] && [ "$b" = 8192 ]; then
+            pass "[1.0] fsfill $mem: budget = min(8192, 3/4 of the $f free pages at boot) = 8192 pages (the cap)"
+        else
+            fail "[1.0] fsfill $mem: budget not the 8192-page cap (${l:-no line})"
+        fi
+    fi
+    expect "$log" "^Filesystem fill test: [0-9]+ files filled to ${b:-X} pages \(data \+ index\) = the budget, the next write ENOSPC; a write running out returned 2048 of 8192 bytes, the next ENOSPC; growing a file by truncate took no page; every byte read back \([0-9]+ bytes\): OK$" \
+        "[1.0] fsfill $mem: filled to exactly ${b:-?} pages (data + index); the last write short, the next ENOSPC; every byte read back"
+    if grep -qE "^Filesystem fill test: PASS \(" "$log" && grep -qxF "$READY_LINE" "$log" && ! grep -q "PANIC" "$log"; then
+        fs_closing "$log" fill \
+            "[1.0] fsfill $mem: everything freed: data pages 0, free pages back to the start minus the heap's growth and its page tables; PASS, System ready, no panic"
+    else
+        fail "[1.0] fsfill $mem: no PASS, no System ready, or a panic in $log"
+    fi
+}
+
+fsfill_test 32M
+fsfill_test 64M
+
+# ---- 1.0 stage 3: the VFS lock (D10, plan B2 and C2) ----
+
+echo "== [1.0] test=klock: 6 threads and thread 0 contend for the VFS lock for 3000 ticks (-m 64M, keys typed meanwhile)"
+# Deviations (approved): C2's 4 processes are kernel threads (no filesystem
+# system call before stage 4); the longest turn is at most 6 ticks (B2,
+# policy (b)), not C2's 5; the stage 3 fix (a FIFO ticket lock) bounds
+# thread 0's wait by the tickets ahead x (longest hold + 1) + 1 ticks, not
+# B2's "one chunk per try". The helpers and regexes are in tests/qemu-lib.sh.
+# Stage 7b (an owner-approved step outside the plan): holders run with
+# preemption off and never yield; the queues come from reserved turns.
+LOG=$OUT/serial-klock.log
+klock_boot "$LOG"
+grep -E "^Filesystem lock test: (thread [0-9]+ '|longest|ticks inside|figures)" "$LOG" | sed 's/^/      /'
+expect "$LOG" "$KLOCK_RE_CONTENTION" \
+    "[1.0] klock: 6 threads and thread 0 contended for 3000 ticks; every thread took the lock, each at least once after waiting, each at least 25% of the mean takes per thread, and every worker at least once while thread 0's loop ran (FIFO fairness)"
+expect "$LOG" "$KLOCK_RE_COUNTER" "[1.0] klock: no lost update: the file's counter equals the increments made"
+expect "$LOG" "$KLOCK_RE_RECORDS" \
+    "[1.0] klock: no torn record: every 4096-byte record read (across a page boundary) was one writer's whole record"
+expect "$LOG" "$KLOCK_RE_HOLD" "[1.0] klock: longest hold at most 2 ticks"
+expect "$LOG" "$KLOCK_RE_TICKS" \
+    "[1.0] klock: a timer tick inside a hold never switches (preemption off from take to release); the switch waits for the release"
+expect "$LOG" "$KLOCK_RE_TURN" "[1.0] klock: longest turn at most 6 ticks, its owner named (policy (b))"
+if grep -qE "$KLOCK_RE_THREAD0" "$LOG" && klock_bound_ok "$LOG"; then
+    pass "[1.0] klock: thread 0's longest wait within the ticket bound (tickets ahead x (longest hold + 1) + 1 ticks); thread 0 waited only by yielding"
+else
+    fail "[1.0] klock: thread 0's line missing or not OK, or its wait past the bound recomputed from it, in $LOG"
+fi
+if grep -qE "$KLOCK_RE_SELFCHECK" "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.0] klock: the thread-0 self-check never fired; no panic"
+else
+    fail "[1.0] klock: no self-check line, or a panic, in $LOG"
+fi
+expect "$LOG" "$KLOCK_RE_PREEMPT" "[1.0] klock: preemption count exactly 1 at every release (the hold's own: every hold ran with preemption off) and 0 at the end (none left raised)"
+if grep -qE "$KLOCK_RE_RETURNED" "$LOG" && grep -qE "^Filesystem lock test: PASS \(" "$LOG"; then
+    fs_closing "$LOG" lock \
+        "[1.0] klock: 0 leaks: nodes, data pages, free pages, heap, threads and stack slots back to the start; the lock free"
+else
+    fail "[1.0] klock: no PASS, or threads, stack slots, heap or the lock not back, in $LOG"
+fi
+if klock_keys_ok "$LOG"; then
+    pass "[1.0] klock: keys typed during the test reached the console (echo ran); PASS, System ready"
+else
+    fail "[1.0] klock: the echo typed during the test is missing or not exact, a key event was dropped, or no done line, System ready or a panic, in $LOG"
+fi
+
+# ---- 1.0 stage 4: file descriptors (B1, B2, B3) ----
+# Deviations (approved): file read and write come in stage 4, not 5, on
+# files the kernel gives a program at its start (process_start_fds, no
+# system call; diagnostics now, shell redirection in stage 9); test=fdsys
+# is added to B7's diagnostics; check 24's read is 48 KiB, not 2 MiB (a
+# built-in program holds at most 64 KiB of data).
+
+echo "== [1.0] Descriptors at boot"
+expect_next "$OUT/serial-boot.log" \
+    "[1.0] boot: descriptor limits logged (16 per process, 256 open files); 0 open files at System ready" \
+    "^Descriptors: 16 per process, 256 open files system-wide; 0 open files now$" "^System ready\. "
+
+echo "== [1.0] test=fdsys: read, write, close, dup, dup2 from fdops (-m 32M; files given at start)"
+LOG=$OUT/serial-fdsys.log
+boot_text "$LOG" 120 "System ready." "x{ret}version{ret}echo end-of-fd-test{ret}" 0.05 \
+    $'\nend-of-fd-test\n' -m 32M -kernel "$KERNEL" -append "test=fdsys"
+grep -E "^Descriptor test: " "$LOG" | sed 's/^/      /'
+# fdsys_case <arg> <regex after the status> <description>: fdops <arg>
+# exited with status 0 (every result it checked was right) and the
+# kernel's own conditions after it held.
+fdsys_case() {
+    expect "$LOG" "^Descriptor test: fdops $1 \(.*\): process [0-9]+ exited, status 0 \(expected 0\)$2: OK$" "$3"
+}
+fdsys_case 0 "" \
+    "[1.0] fdsys: fds 0, 1, 2 open at start: write(1) and write(2) as before, write(0) EBADF (read-only), read(0) returns 0, read(1) EBADF (write-only)"
+fdsys_case 1 "" \
+    "[1.0] fdsys: close(2) returns 0, then write(2) and close(2) EBADF; close(16), close(-1), close(2^32+1) EBADF"
+P=$(grep -m1 -E "^Descriptor test: fdops 2 " "$LOG" | sed -nE 's/.*: process ([0-9]+) exited.*/\1/p')
+if grep -qE "^Descriptor test: fdops 2 \(.*\): process [0-9]+ exited, status 0 \(expected 0\): OK$" "$LOG" &&
+   [ -n "$P" ] && grep -qxF "[pid $P] fdops: through a dup" "$LOG"; then
+    pass "[1.0] fdsys: dup returns the lowest free fd (3 with 0-2 open, 2 after close(2)); a write through it reaches the log with the [pid N] prefix"
+else
+    fail "[1.0] fdsys: dup case not OK, or no '[pid ${P:-?}] fdops: through a dup' line, in $LOG"
+fi
+fdsys_case 3 "" \
+    "[1.0] fdsys: dup2: oldfd = newfd returns newfd; an open newfd is closed first and reused; newfd 16 or -1 EBADF; oldfd not open EBADF, newfd left open"
+fdsys_case 4 "" \
+    "[1.0] fdsys: EMFILE: 13 dups fill fds 3-15, the next dup returns EMFILE and changes nothing; after a close the next dup gets that fd"
+fdsys_case 5 "" \
+    "[1.0] fdsys: a 5000-byte write through a dup of fd 1 returns 4096 (the console's short count, unchanged)"
+fdsys_case 10 "; offset 10000" \
+    "[1.0] fdsys: a 10000-byte read through an inherited file fd returns 10000 in one call (3 chunks), bytes identical; the next read returns 0 at end of file"
+fdsys_case 11 "; the file holds 9000 bytes, each as written" \
+    "[1.0] fdsys: a 9000-byte write through an inherited O_RDWR file fd returns 9000 (the full count, 3 chunks); the kernel reads the same bytes back"
+fdsys_case 12 "; the shared offset 200" \
+    "[1.0] fdsys: dup'd descriptors share one offset: 100 bytes through fd 3, then 100 through its dup, read bytes 0-99 and 100-199"
+fdsys_case 13 "; both files unchanged \(offsets 0, 0; sizes 10000 and 9000\)" \
+    "[1.0] fdsys: files: write to a read-only fd EBADF, read from a write-only fd EBADF; nothing changed"
+fdsys_case 14 "; offset 100 \(unchanged by the 3 EFAULT reads\)" \
+    "[1.0] fdsys: read into an unmapped, read-only (text) or kernel buffer returns EFAULT; no byte written, the offset unchanged"
+expect "$LOG" "^Descriptor test: busy mark: the second read waited \([1-9][0-9]* wait steps\) until the first call \(40960 bytes, 10 chunks\) ended, then read at its end offset \(status 10, in 4096-byte units\); 3 sharers: 192 reads, final offset 786432, takes 192, after waiting [0-9]+, most tickets ahead [0-2] \(at most 2\), longest wait [0-9]+ ticks: OK$" \
+    "[1.0] fdsys: the busy mark: a second read on an open file shared by two processes waited until the first call ended and continued at its end offset"
+expect "$LOG" "^Descriptor test: VFS lock holds of the chunk loop: [1-9][0-9]* chunks, longest hold [0-2] ticks \(at most 2\): OK$" \
+    "[1.0] fdsys: the console path and the chunk loop held the VFS lock only in bounded chunks: longest hold at most 2 ticks"
+expect "$LOG" "^Descriptor test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fdsys: cleanup: open files, fd entries, node holds, data pages, heap bytes and VFS lock tickets back to the start"
+expect "$LOG" "^Descriptor test: PASS$"              "[1.0] fdsys: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] fdsys: no crash screen, no panic"
+expect_next "$LOG" "[1.0] fdsys: the console still works afterwards (version)" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+LOG=$OUT/serial-fdsys-smap.log
+boot "$LOG" 90 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=fdsys"
+expect "$LOG" "^Descriptor test: PASS$"              "[1.0] fdsys with SMEP and SMAP on: PASS (copy_to_user's stac/clac)"
+
+echo "== [1.0] test=fdkill: programs ending with descriptors open (-m 32M)"
+LOG=$OUT/serial-fdkill.log
+boot_until "$LOG" 180 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=fdkill"
+grep -E "^Descriptor kill test: " "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Descriptor kill test: killed: 8 programs holding 16 descriptors each \(an inherited file among them\) killed in ring 3; 128 descriptors closed by their teardowns: OK$" \
+    "[1.0] fdkill: 8 programs holding 16 fds each (an inherited file among them) killed in ring 3: every fd closed by the teardown"
+expect "$LOG" "^Descriptor kill test: fault: 8 programs ended by a page fault with 16 descriptors open; 128 descriptors closed by their teardowns: OK$" \
+    "[1.0] fdkill: 8 programs ended by a fault with 16 fds open: every fd closed"
+expect "$LOG" "^Descriptor kill test: exit: 8 programs exiting without closing their 16 descriptors; 128 descriptors closed by their teardowns: OK$" \
+    "[1.0] fdkill: 8 programs exiting without closing their fds: every fd closed"
+expect "$LOG" "^Descriptor kill test: kill before the first entry to ring 3: process [0-9]+ killed; 4 descriptors closed \(the 3 console fds and the inherited file\): OK$" \
+    "[1.0] fdkill: a kill requested before the first entry to ring 3: its console fds closed"
+expect "$LOG" "^Descriptor kill test: kill during a read: requested between chunk 1 and chunk 2 of 12 \(offset 4096 of 49152 at the kill\); the read completed \(offset 49152\), then process [0-9]+ killed; 4 descriptors closed: OK$" \
+    "[1.0] fdkill: a kill requested during a 48 KiB read, between its first and second chunk: the read returned its full count (12 chunks; the kill took effect at the return to ring 3), then every fd closed"
+expect "$LOG" "^Descriptor kill test: unlinked file: alive after its unlink while the killed programs held it \(nodes ([0-9]+) -> \1, nlink 0, held by 1 open file\), freed at their last close \(nodes [0-9]+, data pages [0-9]+ -> [0-9]+\): OK$" \
+    "[1.0] fdkill: an unlinked file held only by killed programs' fds freed at its last close (node and data pages back)"
+expect "$LOG" "^Descriptor kill test: open-file table: filled to 256 \(256 taken by the kernel\), the next ENFILE, still 256; all given back \(0 -> 0\): OK$" \
+    "[1.0] fdkill: the open-file table: 256 objects taken by the kernel, the 257th ENFILE with nothing changed, all given back"
+expect "$LOG" "^Descriptor kill test: leaks: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fdkill: nothing leaked: open files, fd entries, node holds, data pages, heap bytes, VFS lock tickets back to the start"
+expect "$LOG" "^Descriptor kill test: 26 address spaces torn down by their own threads, 0 wrong; free pages [0-9]+ -> [0-9]+ \(\+[0-9]+: the unlinked file's pages\), kernel page tables ([0-9]+) -> \1, stack slots ([0-9]+) -> \2, live threads ([0-9]+) -> \3, live address spaces ([0-9]+) -> \4, processes left 0: OK$" \
+    "[1.0] fdkill: address spaces, frames, page tables, stacks, threads and process table exactly restored"
+if grep -qE "^Descriptor kill test: PASS$" "$LOG" && grep -qxF "$READY_LINE" "$LOG"; then
+    pass "[1.0] fdkill: PASS"
+else
+    fail "[1.0] fdkill: no PASS or no System ready in $LOG"
+fi
+reject "$LOG" "PANIC"                                 "[1.0] fdkill: no crash screen, no panic"
+
+# ---- 1.0 stage 5: the file system calls (B1, B2, B5) ----
+# Deviations (approved): the plan's single-call 1 MiB and 2 MiB checks are
+# replaced by the largest single call a program can hold (61,440 bytes)
+# and files built in 32 KiB calls (item 2); test=fileio, test=bigio and
+# test=filecontend are added to B7's diagnostics; check 32's two O_APPEND
+# open files are opened by the kernel (stage 4's grant path) so that the
+# write mark is forced deterministically; check 40's bound includes the
+# hand-off gap (a design error found before coding: the klock wait
+# formula assumed every runnable thread uses the lock).
+
+echo "== [1.0] The filesystem's clock at boot"
+expect "$OUT/serial-boot.log" "^Filesystem: clock: the RTC read [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} at boot \(epoch [0-9]+, uptime [0-9]+ s\); file times are that plus uptime, no time zone$" \
+    "[1.0] boot: the filesystem's clock logged: the RTC date and time at boot (file times are that plus uptime, no time zone)"
+
+echo "== [1.0] test=fileio: open, stat, lseek, ftruncate, openat, newfstatat from fileio and fileerr (-m 32M)"
+LOG=$OUT/serial-fileio.log
+boot_until "$LOG" 240 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=fileio"
+grep -E "^File test: " "$LOG" | sed 's/^/      /'
+# fio_case <program> <arg> <regex after the status> <description>: the
+# program exited with status 0 (every result it checked was right) and the
+# kernel's own conditions after it held.
+fio_case() {
+    expect "$LOG" "^File test: $1 $2 \(.*\): process [0-9]+ exited, status 0 \(expected 0\)$3: OK$" "$4"
+}
+fio_case fileio 1 "" \
+    "[1.0] fileio: open with O_CREAT makes a file (mode 0644 stored) at the lowest free fd (3); write 100 bytes, close, reopen read-only, read back 100 bytes identical; read at the end returns 0"
+fio_case fileio 2 "" \
+    "[1.0] fileio: O_CREAT|O_EXCL on an existing name EEXIST, on a new name creates it; O_TRUNC empties a file (size 0, its pages freed), also with O_RDONLY (as Linux); O_CLOEXEC and unknown flag bits accepted"
+fio_case fileio 3 "" \
+    "[1.0] fileio: O_APPEND: a write after lseek(0) lands at the end of the file; the offset follows it"
+fio_case fileio 4 "" \
+    "[1.0] fileio: lseek SEEK_SET, SEEK_CUR and SEEK_END return the new offset; past the end allowed (the hole reads as zeros); a negative result, SEEK_DATA, SEEK_HOLE, other whence values and an overflow EINVAL with the offset unchanged; past 2 MiB allowed, a write there EFBIG"
+fio_case fileio 5 "; times between the boot time and now \(boot [0-9]+, mtime [0-9]+, ctime [0-9]+, now [0-9]+\)" \
+    "[1.0] fileio: stat, lstat, fstat and newfstatat agree on a file: S_IFREG|0644, size, 1 link, the same node number, blksize 4096, blocks = pages x 8, uid and gid 0; the 144-byte struct written exactly; mtime and ctime set by a write and by ftruncate, between the boot time and now"
+fio_case fileio 6 "" \
+    "[1.0] fileio: stat on folders: / (node 1) and /tmp: S_IFDIR with their modes (0755, 01777), links 2 + subfolders"
+fio_case fileio 7 "" \
+    "[1.0] fileio: ftruncate grows a file to 1 MiB taking no page (the hole reads as zeros), shrinks it freeing pages, to exactly 2 MiB OK; the offset unchanged"
+fio_case fileio 8 "" \
+    "[1.0] fileio: openat: a folder fd (O_DIRECTORY) as dirfd, AT_FDCWD (the current folder, / at a program's start) and an absolute path with a bad dirfd open the same node; newfstatat with AT_EMPTY_PATH and \"\" stats the dirfd itself; read on a folder fd EISDIR"
+fio_case fileio 9 "" \
+    "[1.0] fileio: the console descriptors: lseek ESPIPE on fds 0, 1 and 2; fstat shows a character device (S_IFCHR)"
+expect "$LOG" "^File test: fileio 10 \(EMFILE from open\): process [0-9]+ exited, status 0 \(expected 0\); open files while it held 13 files and the console: [0-9]+ \([0-9]+ before \+ 15\): the refused open took none: OK$" \
+    "[1.0] fileio: EMFILE from open: 13 opens fill fds 3-15, the next open EMFILE and takes no open file; after a close the next open gets that fd"
+fio_case fileerr 1 "" \
+    "[1.0] fileerr: open: EFAULT (NULL, unmapped and kernel paths), ENOENT (a missing file without O_CREAT, a missing folder on the way, the empty path), ENOTDIR (a file on the way, O_DIRECTORY on a file, a trailing '/' on a file), EEXIST (O_CREAT|O_EXCL on a file and on '/'), EISDIR (a folder for writing, O_TRUNC on a folder, O_CREAT on a folder, O_CREAT with a trailing '/'), ENAMETOOLONG (a 256-byte name, no NUL within 4096 bytes), EINVAL (access mode 3)"
+fio_case fileerr 2 "" \
+    "[1.0] fileerr: stat and lstat: EFAULT (a bad path; a stat buffer unmapped, read-only or in the kernel), ENOENT, ENOTDIR, ENAMETOOLONG, the empty path ENOENT"
+fio_case fileerr 3 "" \
+    "[1.0] fileerr: fstat: EBADF (closed, 16, -1, 2^32+3), EFAULT (a bad buffer)"
+fio_case fileerr 4 "" \
+    "[1.0] fileerr: openat and newfstatat with a dirfd: EBADF (not open, relative path), ENOTDIR (a file or the console as dirfd); newfstatat EINVAL for an unknown flag, \"\" without AT_EMPTY_PATH ENOENT, AT_SYMLINK_NOFOLLOW and AT_NO_AUTOMOUNT accepted"
+fio_case fileerr 5 "" \
+    "[1.0] fileerr: lseek: EBADF; ESPIPE on fds 0, 1 and 2; EINVAL for whence 3, 4, 5 and -1"
+fio_case fileerr 6 "" \
+    "[1.0] fileerr: ftruncate: EBADF; EINVAL on a read-only fd, a console fd, a folder fd and a negative length; EFBIG past 2 MiB"
+expect "$LOG" "^File test: errno matrix: nothing changed: nodes ([0-9]+) -> \1, data pages ([0-9]+) -> \2, open files ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes: OK$" \
+    "[1.0] fileerr: the errno matrix changed nothing: nodes, data pages, open files and heap bytes back to the start"
+expect "$LOG" "^File test: ENFILE: the open-file table filled to 256 \([0-9]+ taken by the kernel\); open refused twice \(also O_CREAT on a new name\), still 256, /tmp/fio-new not created; one freed, then the open succeeded at fd 3 \(fileio 11: process [0-9]+ exited, status 0, expected 0\); all given back \(([0-9]+) -> \1\): OK$" \
+    "[1.0] fileio: ENFILE: with the open-file table full (256), open returns ENFILE, also with O_CREAT on a new name, which is not created; no descriptor taken; after one open file is freed the same open succeeds at fd 3"
+expect "$LOG" "^File test: ENOSPC: 1024 nodes in use \(the limit 1024; [0-9]+ made by the kernel\); open with O_CREAT ENOSPC, /tmp/fio-x not created, nodes still 1024; no descriptor taken, an existing file opened at fd 3 \(fileio 12: process [0-9]+ exited, status 0, expected 0\): OK$" \
+    "[1.0] fileio: ENOSPC: with 1024 nodes in use, open with O_CREAT returns ENOSPC, nothing created, no descriptor or open file taken; an existing file still opens"
+expect "$LOG" "^File test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] fileio: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^File test: PASS$"                    "[1.0] fileio: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] fileio: no crash screen, no panic"
+
+echo "== [1.0] test=bigio: large reads and writes through the chunk loop (-m 32M)"
+LOG=$OUT/serial-bigio.log
+boot_until "$LOG" 300 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=bigio"
+grep -E "^Big I/O test: " "$LOG" | sed 's/^/      /'
+bio_case() {
+    expect "$LOG" "^Big I/O test: bigio $1 \(.*\): process [0-9]+ exited, status 0 \(expected 0\)$2: OK$" "$3"
+}
+bio_case 1 "" \
+    "[1.0] bigio: the largest single call a program can hold: a 61,440-byte write returns 61,440 and a 61,440-byte read returns 61,440 (15 chunks each), bytes identical"
+bio_case 2 "" \
+    "[1.0] bigio: a 1 MiB file written in 32 writes of 32 KiB (each the full count) and read back in 32 reads of 32 KiB, 1,048,576 bytes identical; the next read returns 0"
+bio_case 3 "; the file holds 2097152 bytes in 513 pages" \
+    "[1.0] bigio: the 2 MiB file-size limit reached by 64 writes of 32 KiB, each returning the full count"
+bio_case 4 "" \
+    "[1.0] bigio: at 2 MiB one more byte EFBIG, the size unchanged"
+bio_case 5 "; then truncated to 0 in 9 holds of at most 64 pages, 0 pages left" \
+    "[1.0] bigio: a 61,440-byte write starting 1000 bytes below 2 MiB returns 1000 (the short count up to the limit)"
+bio_case 6 "; 5 pages left before it, 0 after" \
+    "[1.0] bigio: the budget: with 5 pages left, a 61,440-byte write returns 16,384 (the index page and 4 data pages), the next write ENOSPC; ftruncate growth still 0 (no page taken)"
+bio_case 7 "" \
+    "[1.0] bigio: a 10,000-byte write whose buffer becomes unmapped after 6000 bytes returns 6000; with no valid byte EFAULT, nothing written"
+bio_case 8 "" \
+    "[1.0] bigio: a 10,000-byte read whose buffer becomes unmapped after 6000 bytes returns 6000 and moves the offset by 6000; with no valid byte EFAULT, the offset unchanged"
+expect "$LOG" "^Big I/O test: two writers: 2 processes appended 8 writes of 32 KiB each through separate O_APPEND open files \(statuses 0, 0\): the file holds 524288 bytes, 16 blocks of 32 KiB, each one write's \(writer 1: 8, writer 2: 8, each in order: yes\), 0 interleaved; the write mark waited on [1-9][0-9]* times \(forced\), most tickets ahead [0-9]+: OK$" \
+    "[1.0] bigio: two processes appending 256 KiB each (8 writes of 32 KiB) through separate opens with O_APPEND: the file holds 524,288 bytes, every write's 32 KiB contiguous (never interleaved chunk by chunk), each writer's writes in order; the node write mark waited on (forced)"
+expect "$LOG" "^Big I/O test: VFS lock holds of the chunk loop and the truncates: [0-9]+ holds \([1-9][0-9]* chunks, [0-9]+ truncate holds; the 2 MiB file truncated to 0 in 9 holds of at most 64 pages\), longest hold [0-2] ticks \(at most 2\): OK$" \
+    "[1.0] bigio: the chunk loop and the truncates held the VFS lock only in bounded pieces (a 2 MiB file truncated to 0 among them, at most 64 pages freed per hold): longest hold at most 2 ticks"
+expect "$LOG" "^Big I/O test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$" \
+    "[1.0] bigio: cleanup: open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^Big I/O test: PASS$"                 "[1.0] bigio: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] bigio: no crash screen, no panic"
+
+echo "== [1.0] test=filecontend: the busy mark with 4 sharers; the VFS lock under ring-3 load (-m 64M)"
+# The regexes and fc_bounds_ok are repeated in tests/qemu-part-stress.sh
+# (filecontend x 10): change both together.
+LOG=$OUT/serial-filecontend.log
+boot_until "$LOG" 300 "$READY_LINE" -m 64M -kernel "$KERNEL" -append "test=filecontend"
+grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
+FC_RE_SHARE="^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
+FC_RE_LOAD="^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
+FC_RE_HOLDS="^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, 0 spanning a switch, longest [0-2] ticks \(at most 2: preemption off while held\); truncate holds [0-9]+ \(longest [0-2] ticks\); thread 0's reserved turns [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\); longest of all holds [0-9]+ ticks \(at most 38\): OK$"
+FC_RE_WAITS="^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
+FC_RE_TURN="^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
+FC_RE_CLEAN="^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
+# fc_bounds_ok <log>: the bounds recomputed from the waits line: the
+# longest gap at most 36; thread 0's bound = ahead x (hold + 1 + 36) + 1
+# with its wait within it; each worker's wait within 4 x (hold + 37) + 1.
+fc_bounds_ok() {
+    local l g w0 b0 a h w1 w2 w3 w4 bw
+    l=$(grep -m1 -E "^File contention test: waits: " "$1")
+    g=$(sed -nE 's/.* longest gap ([0-9]+) ticks .*/\1/p' <<< "$l")
+    read -r w0 b0 a h <<< "$(sed -nE 's/.*longest waits: thread 0 ([0-9]+) ticks \(bound ([0-9]+): ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1 \+ 36\) \+ 1\).*/\1 \2 \3 \4/p' <<< "$l")"
+    read -r w1 w2 w3 w4 bw <<< "$(sed -nE 's/.*, workers ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+) ticks \(bound ([0-9]+): 4 tickets ahead\).*/\1 \2 \3 \4 \5/p' <<< "$l")"
+    [ -n "${g:-}" ] && [ -n "${h:-}" ] && [ -n "${bw:-}" ] && [ "$g" -le 36 ] &&
+        [ "$b0" -eq $((a * (h + 37) + 1)) ] && [ "$w0" -le "$b0" ] &&
+        [ "$bw" -eq $((4 * (h + 37) + 1)) ] && [ "$w1" -le "$bw" ] && [ "$w2" -le "$bw" ] &&
+        [ "$w3" -le "$bw" ] && [ "$w4" -le "$bw" ]
+}
+expect "$LOG" "$FC_RE_SHARE" \
+    "[1.0] filecontend: the busy mark with 4 sharers, 3 forced to queue behind the first (most tickets ahead 3): each took the mark in the order it asked (first reads at 0, 4096, 8192, 12288), 256 reads, final offset 1 MiB, bytes identical"
+expect "$LOG" "$FC_RE_LOAD" \
+    "[1.0] filecontend: 4 processes and thread 0 contended for the VFS lock with 2 ring-3 spinners running: every worker's 256 KiB written and read back identical; every worker and thread 0 took the lock after waiting"
+expect "$LOG" "$FC_RE_HOLDS" \
+    "[1.0] filecontend: work holds (chunk loop, truncates incl. 2 MiB under load, lseek) at most 2 ticks and none spanning a switch (preemption off while held); thread 0's reserved turns within the convoy bound (2 + 6 x 6 other threads = 38 ticks); the longest of all holds too"
+if grep -qE "$FC_RE_WAITS" "$LOG" && fc_bounds_ok "$LOG"; then
+    pass "[1.0] filecontend: every hand-off gap at most 6 ticks per other runnable thread (6 x 6 = 36); thread 0's and every worker's longest wait within the convoy ticket bound (tickets ahead x (longest hold + 1 + 6 x 6 other threads) + 1); waits only by yielding"
+else
+    fail "[1.0] filecontend: the waits line missing or not OK, or a gap or wait past the bounds recomputed from it, in $LOG"
+fi
+expect "$LOG" "$FC_RE_TURN" \
+    "[1.0] filecontend: longest turn at most 6 ticks, its owner named (policy (b)); the spinners ran in ring 3 throughout"
+expect "$LOG" "$FC_RE_CLEAN" \
+    "[1.0] filecontend: cleanup: processes, open files, nodes, data pages, heap bytes and the VFS lock back to the start"
+expect "$LOG" "^File contention test: PASS$"         "[1.0] filecontend: PASS"
+reject "$LOG" "PANIC"                                 "[1.0] filecontend: no crash screen, no panic"

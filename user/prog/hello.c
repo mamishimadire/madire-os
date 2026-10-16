@@ -14,8 +14,9 @@ static const char tricky[] =
 
 static char big[5000];
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg == 1)
         return sys_write(1, tricky, sizeof(tricky) - 1) == (long)(sizeof(tricky) - 1) ? 0 : 1;
     if (arg == 2) {

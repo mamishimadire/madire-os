@@ -20,17 +20,29 @@ static struct shell_procs procs;
 static int32_t next_pid;
 static int starts;
 static char started_name[64];
-static uint64_t started_arg;
+static char started_args[128];          /* 1.0 stage 7: argv, joined with spaces */
 static bool started_bg;
 
-static int32_t fake_start(void *c, const char *name, uint64_t arg, bool background)
+static int32_t fake_start(void *c, int argc, char **argv, uint32_t envc,
+                          const char *const *env_names, const char *const *env_values,
+                          bool background)
 {
-    (void)c;
+    (void)c; (void)envc; (void)env_names; (void)env_values;
     starts++;
-    strncpy(started_name, name, sizeof(started_name) - 1);
-    started_arg = arg;
+    strncpy(started_name, argv[0], sizeof(started_name) - 1);
+    started_args[0] = '\0';
+    for (int i = 0; i < argc; i++) {
+        if (i)
+            strncat(started_args, " ", sizeof(started_args) - strlen(started_args) - 1);
+        strncat(started_args, argv[i], sizeof(started_args) - strlen(started_args) - 1);
+    }
     started_bg = background;
-    return strcmp(name, "nosuch") == 0 ? SHELL_RUN_NO_PROGRAM : next_pid;
+    return strcmp(argv[0], "nosuch") == 0 ? SHELL_RUN_NO_PROGRAM : next_pid;
+}
+
+static int args_are(const char *joined)
+{
+    return strcmp(started_args, joined) == 0;
 }
 
 static void capture(void *c, const char *text, enum shell_text kind)
@@ -52,7 +64,7 @@ static enum shell_result run(const char *cmd)
     errors = 0;
     starts = 0;
     started_name[0] = '\0';
-    started_arg = 0xDEAD;
+    strcpy(started_args, "(not started)");
     started_bg = false;
     return shell_execute(line, &ctx, &sink);
 }
@@ -86,7 +98,7 @@ static void test_without_procs_nothing_changes(void)
     CHECK(strcmp(out, "Unknown command: run. Type 'help' for a list of commands.\n") == 0);
     CHECK_EQ(starts, 0);
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(strstr(out, "  ps       Show threads\n") != NULL);
+    CHECK(strstr(out, "  echo  ps  history  ") != NULL);    /* 1.0 stage 10: names only */
     CHECK(strstr(out, "run") == NULL);
     CHECK_EQ(run("ps"), SHELL_OK);
     CHECK(strcmp(out, "TID  STATE      TICKS    STACK PEAK    NAME\n"
@@ -98,20 +110,18 @@ static void test_help(void)
 {
     reset();
     CHECK_EQ(run("help"), SHELL_OK);
-    CHECK(strstr(out, "  echo     Print text: echo <text>\n"
-                      "  ps       Show threads and processes\n"
-                      "  history  Show previous commands (Up/Down recall)\n") != NULL);
+    /* 1.0 stage 10 (D2): the names, several per line. */
+    CHECK(strstr(out, "  echo  ps  history  ") != NULL);
     /* run follows reboot (stage 4b: then kill, the last) */
-    const char *tail = "  reboot   Restart the computer (asks first)\n"
-                       "  run      Run a program: run [-b] <name> [n]\n"
-                       "  kill     End a process: kill <pid> (asks first)\n";
+    const char *tail = "  date  dmesg  reboot  run  kill\n"
+                       "Purposes and usage: help <command>.\n";
     CHECK(strlen(out) >= strlen(tail) && strcmp(out + strlen(out) - strlen(tail), tail) == 0);
     CHECK_EQ(run("help run"), SHELL_OK);
-    CHECK(strcmp(out, "run: Run a program: run [-b] <name> [n]\n"
-                      "Usage: run [-b] <program> [number]\n") == 0);
+    CHECK(strcmp(out, "run: Run a program: run [-b] <name> [args]\n"
+                      "Usage: run [-b] <program> [argument...]\n") == 0);
     CHECK_EQ(run("run --help"), SHELL_OK);
-    CHECK(strcmp(out, "run: Run a program: run [-b] <name> [n]\n"
-                      "Usage: run [-b] <program> [number]\n") == 0);
+    CHECK(strcmp(out, "run: Run a program: run [-b] <name> [args]\n"
+                      "Usage: run [-b] <program> [argument...]\n") == 0);
     CHECK_EQ(starts, 0);
     CHECK_EQ(run("ps --help"), SHELL_OK);
     CHECK(strcmp(out, "ps: Show threads and processes\nUsage: ps\n") == 0);
@@ -123,15 +133,15 @@ static void test_run_foreground(void)
     CHECK_EQ(run("run hello"), SHELL_RUN);
     CHECK_EQ(starts, 1);
     CHECK(strcmp(started_name, "hello") == 0);
-    CHECK_EQ(started_arg, 0);
+    CHECK(args_are("hello"));                       /* 1.0 stage 7: argv, no number */
     CHECK(!started_bg);
     CHECK(strcmp(out, "") == 0);                    /* nothing until it ends */
     CHECK_EQ(run("run exitcode 3"), SHELL_RUN);
-    CHECK_EQ(started_arg, 3);
+    CHECK(args_are("exitcode 3"));
     CHECK_EQ(run("run exitcode 4294967295"), SHELL_RUN);
-    CHECK_EQ(started_arg, 4294967295ull);
+    CHECK(args_are("exitcode 4294967295"));
     CHECK_EQ(run("  run   spin   0  "), SHELL_RUN);
-    CHECK_EQ(started_arg, 0);
+    CHECK(args_are("spin 0"));
 }
 
 static void test_run_background(void)
@@ -144,7 +154,7 @@ static void test_run_background(void)
     CHECK(strcmp(out, "[process 12 'spin' started in the background]\n") == 0);
     CHECK_EQ(errors, 0);
     CHECK_EQ(run("run -b spin 2"), SHELL_OK);
-    CHECK_EQ(started_arg, 2);
+    CHECK(args_are("spin 2"));
 }
 
 static void test_run_refused(void)
@@ -156,30 +166,41 @@ static void test_run_refused(void)
     next_pid = SHELL_RUN_FAILED;
     CHECK_EQ(run("run hello"), SHELL_BAD_ARGS);
     CHECK(strcmp(out, "run: could not start 'hello' (no free process slot).\n") == 0);
+    next_pid = SHELL_RUN_TOO_BIG;                   /* 1.0 stage 7: E2BIG */
+    CHECK_EQ(run("run hello"), SHELL_BAD_ARGS);
+    CHECK(strcmp(out, "run: argument list too long for 'hello'.\n") == 0);
+    CHECK_EQ(errors, 1);
     next_pid = 7;
-    static const char *const bad_args[] = {
+    /* 1.0 stage 7: the words after the name reach the program unchanged
+     * (until 1.0 the shell refused these: not a number from 0 to
+     * 4294967295, or more than one); the program checks them (u_arg). */
+    static const char *const passed[] = {
         "run hello x", "run hello -1", "run hello 4294967296", "run hello 1x", "run hello 0x10",
         "run hello 99999999999999999999",
     };
-    for (unsigned i = 0; i < sizeof(bad_args) / sizeof(bad_args[0]); i++) {
-        CHECK_EQ(run(bad_args[i]), SHELL_BAD_ARGS);
-        CHECK_EQ(starts, 0);
-        CHECK_EQ(errors, 1);
-        CHECK(strncmp(out, "run: '", 6) == 0);
-        CHECK(strstr(out, "' is not a number from 0 to 4294967295.\n") != NULL);
+    for (unsigned i = 0; i < sizeof(passed) / sizeof(passed[0]); i++) {
+        CHECK_EQ(run(passed[i]), SHELL_RUN);
+        CHECK_EQ(starts, 1);
+        CHECK_EQ(errors, 0);
+        CHECK(strcmp(out, "") == 0);
+        CHECK(args_are(passed[i] + 4));
     }
-    static const char *const usage[] = {
-        "run", "run -b", "run -x", "run hello 1 2", "run -b hello 1 2", "run -b -b hello",
-    };
+    CHECK_EQ(run("run hello 1 2"), SHELL_RUN);
+    CHECK(args_are("hello 1 2"));
+    CHECK_EQ(run("run -b hello 1 2"), SHELL_OK);
+    CHECK(started_bg && args_are("hello 1 2"));
+    static const char *const usage[] = { "run", "run -b", "run -x", "run -b -b hello" };
     for (unsigned i = 0; i < sizeof(usage) / sizeof(usage[0]); i++) {
         CHECK_EQ(run(usage[i]), SHELL_BAD_ARGS);
         CHECK_EQ(starts, 0);
-        CHECK(strcmp(out, "Usage: run [-b] <program> [number]\n") == 0);
+        CHECK(strcmp(out, "Usage: run [-b] <program> [argument...]\n") == 0);
     }
     /* A long name is shortened in the message, so the line fits. */
     CHECK_EQ(run("run nosuch"), SHELL_BAD_ARGS);
+    next_pid = SHELL_RUN_NO_PROGRAM;
     CHECK_EQ(run("run abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz 1x"), SHELL_BAD_ARGS);
     CHECK(strlen(out) <= 80);
+    CHECK(strstr(out, "...'.\n") != NULL);
 }
 
 static void test_ps_processes(void)

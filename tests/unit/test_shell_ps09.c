@@ -44,15 +44,10 @@ static void reset(void)
     ctx.page_size = 4096;
 }
 
+/* 1.0 stage 10 (D2): "help" lists the names, several per line. */
 static const char *const help_07 =
     "Available commands:\n"
-    "  help     Show this list\n"
-    "  clear    Clear the screen\n"
-    "  version  Show the Madire OS version\n"
-    "  uptime   Show time since boot\n"
-    "  mem      Show memory information\n"
-    "  cpu      Show processor information\n"
-    "  echo     Print text: echo <text>\n";
+    "  help  clear  version  uptime  mem  cpu  echo\n";
 
 static void test_without_threads_nothing_changes(void)
 {
@@ -72,7 +67,7 @@ static void test_help_lists_ps_last(void)
     ctx.thread_count = 1;
     CHECK_EQ(run("help"), SHELL_OK);
     char want[1024];
-    snprintf(want, sizeof(want), "%s  ps       Show threads\n", help_07);
+    snprintf(want, sizeof(want), "Available commands:\n  help  clear  version  uptime  mem  cpu  echo  ps\n");
     CHECK(strcmp(out, want) == 0);
     CHECK_EQ(errors, 0);
 }

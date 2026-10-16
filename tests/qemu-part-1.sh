@@ -5,7 +5,9 @@
 # unchanged from the single script. 0.12 stage 2 adds the [0.12] stage 2
 # console session at the end (shard 1 is the shortest).
 # 0.13 adds the [0.13] checks of where Limine places the boot data (the
-# temporary stage 1 A/B section was removed again in stage 3b).
+# temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
+# adds the [1.0] filesystem checks of the normal boot at the end; stage 2
+# the data budget and the self-test's data step after them.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -318,11 +320,11 @@ if [ "$PROMPTS" -eq 32 ]; then pass "[0.5] Enter: all 32 lines submitted"
 else fail "[0.5] Enter: expected 32 submitted lines, got $PROMPTS"; fi
 expect_next "$LOG" "[0.5] empty line: new prompt, no output"   "^madire> $"      "^madire>    $"
 expect_next "$LOG" "[0.5] blank line: new prompt, no output"   "^madire>    $"   "^madire> help$"
+# 1.0 stage 10 (D2): help lists the names by section, several per line
+# (the purposes: help <section>, help <command>).
 expect_in_order "$LOG" "[0.5] help lists all seven commands" \
-    "^madire> help$" "^Available commands:$" "^  help     Show this list$" \
-    "^  clear    Clear the screen$" "^  version  Show the Madire OS version$" \
-    "^  uptime   Show time since boot$" "^  mem      Show memory information$" \
-    "^  cpu      Show processor information$" "^  echo     Print text: echo <text>$"
+    "^madire> help$" "^Available commands:$" "^shell: The shell's own commands$" \
+    "^  help  clear  echo  " "^system: Information about the system$" "^  version  uptime  mem  cpu  "
 expect_next "$LOG" "[0.5] version"                 "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
 UP=$(grep -A1 '^madire> uptime$' "$LOG" | grep -oE '^Uptime: [0-9]{2}:[0-9]{2}:[0-9]{2} \([0-9]+ ticks at 100 Hz\)$')
 hms_to_s() { grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }'; }
@@ -1065,7 +1067,7 @@ expect_in_order "$LOG" "[0.9] ps: header, thread 0 'kernel' running, count" \
     "^madire> ps$" "^TID  STATE      TICKS    STACK PEAK    NAME$" \
     "^  0  running +[0-9]+ +[0-9]+/16384   kernel$" "^1 thread$"
 expect_in_order "$LOG" "[0.9] help: ps listed after the seven commands" \
-    "^madire> help$" "^  echo     Print text: echo <text>$" "^  ps       Show threads and processes$"
+    "^madire> help$" "^  help  clear  echo  " "^  version  uptime  mem  cpu  " "^  ps  run  kill$"
 w=$(max_width "$LOG" "^madire> ps$" "^madire> help$")
 if grep -q "^madire> ps$" "$LOG" && [ "$w" -le 79 ]; then pass "[0.9] ps: every line at most 79 characters (longest $w)"
 else fail "[0.9] ps: a line of $w characters (limit 79)"; fi
@@ -1357,4 +1359,68 @@ if [ -z "$MODBAD" ]; then
     pass "[0.13] Limine boot: the 7 modules lie above the kernel image and below 4 GiB"
 else
     fail "[0.13] Limine boot: module placement: ${MODBAD//$'\n'/; }"
+fi
+
+# ---- 1.0: the live RAM filesystem and its boot self-test (the normal boot) ----
+
+echo "== [1.0] Filesystem: the live RAM filesystem and its boot self-test"
+LOG=$OUT/serial-boot.log
+grep -E "^Filesystem" "$LOG" | sed 's/^/      /'
+expect "$LOG" "^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file" \
+                                                      "[1.0] filesystem: the live RAM filesystem, 1024 nodes, 2 MiB per file"
+expect "$LOG" "^Filesystem: / holds home, tmp; 3 nodes, 0 data pages$" \
+                                                      "[1.0] filesystem: / holds home and tmp at boot (3 nodes, 0 data pages)"
+expect "$LOG" "^Filesystem self-test: create and look up: 3 folders and 5 files under /tmp/fstest, each found by its absolute and its relative path: OK$" \
+                                                      "[1.0] filesystem self-test: create, and look up by absolute and relative path"
+expect "$LOG" "^Filesystem self-test: paths: '\.', '\.\.', '\.\.' of '/', repeated '/', a trailing '/' \(folders only\), the empty path: OK$" \
+                                                      "[1.0] filesystem self-test: '.', '..', '..' of '/', repeated and trailing '/', the empty path"
+expect "$LOG" "^Filesystem self-test: limits: a 255-byte name created and found, 256 bytes ENAMETOOLONG; a 4095-byte path found, 4096 bytes ENAMETOOLONG; nothing created: OK$" \
+                                                      "[1.0] filesystem self-test: NAME_MAX 255 and PATH_MAX 4096 exactly, nothing created past them"
+expect "$LOG" "^Filesystem self-test: errors: 16 cases answered as Linux does \(EEXIST, ENOENT, ENOTDIR, EISDIR, ENOTEMPTY, EINVAL, EBUSY\): OK$" \
+                                                      "[1.0] filesystem self-test: 16 error cases answered as Linux does"
+expect "$LOG" "^Filesystem self-test: rename: in place, into another folder, over a file, a folder over an empty folder; into its own subtree EINVAL, a file onto a folder EISDIR, a folder onto a file ENOTDIR, the same node unchanged: OK$" \
+                                                      "[1.0] filesystem self-test: rename (moves, replacements, refusals, the same node)"
+expect "$LOG" "^Filesystem self-test: depth: a chain of 64 folders created, looked up by one path, removed: OK$" \
+                                                      "[1.0] filesystem self-test: a chain of 64 folders looked up by one path"
+FSC=$(grep -m1 -E '^Filesystem self-test: cleanup: ' "$LOG")
+read -r N0 N1 H0 H1 <<< "$(sed -nE 's/.*nodes ([0-9]+) -> ([0-9]+), heap in use ([0-9]+) -> ([0-9]+) bytes: OK$/\1 \2 \3 \4/p' <<< "$FSC")"
+if grep -qE '^Filesystem self-test: cleanup: everything removed \(a held file freed at its drop\); ' <<< "$FSC" &&
+   [ "${N0:-x}" = 3 ] && [ "${N1:-y}" = 3 ] && [ -n "${H0:-}" ] && [ "$H0" = "${H1:-}" ]; then
+    pass "[1.0] filesystem self-test: everything removed; nodes 3 -> 3, heap in use $H0 -> $H1 bytes (no node or byte left)"
+else
+    fail "[1.0] filesystem self-test: cleanup: ${FSC:-no line}"
+fi
+expect_in_order "$LOG" "[1.0] filesystem self-test: PASS, after the kernel heap and before System ready" \
+    "^Kernel heap: +OK" "^Filesystem self-test: PASS$" "^System ready\."
+
+# 1.0 stage 2: the data budget (B5, B6) and the self-test's data step, on
+# the normal boot (the ISO, QEMU's default 128 MiB). The first stage 1
+# check above matches the start of the B6 line, which now ends with
+# ", budget N pages"; its regex and condition are unchanged.
+echo "== [1.0] Filesystem: the data budget and the self-test's data step"
+expect "$LOG" "^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file, budget 8192 pages$" \
+                                                      "[1.0] filesystem: budget 8192 pages on the 128 MiB boot"
+FSB=$(grep -m1 -E '^Filesystem: budget: ' "$LOG")
+read -r BCAP BFREE BPAGES BKIB <<< "$(sed -nE 's/^Filesystem: budget: min\(([0-9]+) pages, 3\/4 of ([0-9]+) free pages\) = ([0-9]+) pages \(([0-9]+) KiB\), 0 taken at boot$/\1 \2 \3 \4/p' <<< "$FSB")"
+if [ -n "${BFREE:-}" ] && [ "$BCAP" = 8192 ]; then
+    BWANT=$((BFREE * 3 / 4))
+    if [ "$BWANT" -gt 8192 ]; then BWANT=8192; fi
+fi
+if [ -n "${BWANT:-}" ] && [ "$BPAGES" = "$BWANT" ] && [ "$BKIB" = $((BWANT * 4)) ]; then
+    pass "[1.0] filesystem: budget = min(8192, 3/4 of the $BFREE free pages at boot) = $BPAGES pages, recomputed from the log"
+else
+    fail "[1.0] filesystem: budget line wrong or not recomputable (${FSB:-no line}; expected ${BWANT:-?} pages)"
+fi
+FSD=$(grep -m1 -E '^Filesystem self-test: data: ' "$LOG")
+echo "      ${FSD:-no data line}"
+if grep -qE '^Filesystem self-test: data: 8192 bytes written across 3 pages and read back, a hole at 1 MiB reads as zeros and costs nothing, truncate frees pages and growth takes none; .*: OK$' <<< "$FSD"; then
+    pass "[1.0] filesystem self-test: data written across page boundaries and read back; a hole reads as zeros and costs nothing; truncate frees pages"
+else
+    fail "[1.0] filesystem self-test: data step: ${FSD:-no line}"
+fi
+read -r D0 D1 P0 P1 <<< "$(sed -nE 's/.*; data pages ([0-9]+) -> ([0-9]+), free pages ([0-9]+) -> ([0-9]+): OK$/\1 \2 \3 \4/p' <<< "$FSD")"
+if [ "${D0:-x}" = 0 ] && [ "${D1:-y}" = 0 ] && [ -n "${P0:-}" ] && [ "$P0" = "${P1:-}" ]; then
+    pass "[1.0] filesystem self-test: data pages 0 -> 0, free pages $P0 -> $P1 (every data and index page given back)"
+else
+    fail "[1.0] filesystem self-test: pages not given back (${FSD:-no line})"
 fi

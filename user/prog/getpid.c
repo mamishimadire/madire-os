@@ -2,9 +2,8 @@
  * kernel can compare both with the ID it gave the process. */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     long a = sys_getpid(), b = sys_getpid();
     if (a <= 0 || a != b)
         return 255;

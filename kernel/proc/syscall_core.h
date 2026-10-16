@@ -14,15 +14,42 @@
  * Our own table: the numbers and meanings are taken from the documented
  * Linux interface, no Linux header is used.
  *
- *   1    write(fd, buf, count)        fd 1 or 2; at most SYSCALL_WRITE_MAX
- *                                     bytes per call (a short count beyond)
+ *   0    read(fd, buf, count)         1.0 stage 4: through the descriptor table
+ *                                     (kernel/proc/fd.h): fd 0 (the console)
+ *                                     returns 0; a file the full count
+ *   1    write(fd, buf, count)        through the descriptor table (1.0 stage
+ *                                     4): the console (fds 1 and 2 at start)
+ *                                     at most SYSCALL_WRITE_MAX bytes per call
+ *                                     (a short count beyond); a file the full
+ *                                     count
+ *   2    open(path, flags, mode)      1.0 stage 5 (kernel/fs/fsys.c): openat(AT_FDCWD, ...)
+ *   3    close(fd)                    1.0 stage 4
+ *   4    stat(path, st)               1.0 stage 5
+ *   5    fstat(fd, st)                1.0 stage 5
+ *   6    lstat(path, st)              1.0 stage 5: as stat (no symbolic links)
+ *   8    lseek(fd, off, whence)       1.0 stage 5
  *   24   sched_yield()                0
  *   35   nanosleep(req, rem)          rounded up to whole timer ticks; rem is
  *                                     never written (nothing interrupts a
  *                                     sleep: there are no signals)
+ *   32   dup(oldfd)                   1.0 stage 4: the lowest free descriptor
+ *   33   dup2(oldfd, newfd)           1.0 stage 4
  *   39   getpid()                     the process ID
  *   60   exit(status)                 ends the process; status & 0xFF
+ *   77   ftruncate(fd, length)        1.0 stage 5
+ *   79   getcwd(buf, size)            1.0 stage 6 (kernel/fs/fsys.c): the length
+ *                                     with the NUL
+ *   80   chdir(path)                  1.0 stage 6
+ *   82   rename(old, new)             1.0 stage 6
+ *   83   mkdir(path, mode)            1.0 stage 6: mkdirat(AT_FDCWD, ...)
+ *   84   rmdir(path)                  1.0 stage 6: unlinkat(AT_FDCWD, ..., AT_REMOVEDIR)
+ *   87   unlink(path)                 1.0 stage 6: unlinkat(AT_FDCWD, ..., 0)
+ *   217  getdents64(fd, dirp, count)  1.0 stage 6 (kernel/proc/fd.c)
  *   231  exit_group(status)           the same (one thread per process)
+ *   257  openat(dirfd, path, flags, mode)        1.0 stage 5
+ *   258  mkdirat(dirfd, path, mode)              1.0 stage 6
+ *   262  newfstatat(dirfd, path, st, flags)      1.0 stage 5
+ *   263  unlinkat(dirfd, path, flags)            1.0 stage 6
  *
  * Every other number, compared as the full 64-bit RAX (so the x32 bit
  * 0x40000000, values of 2^32 and above, and -1 are all unknown), returns
@@ -34,12 +61,33 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define SYS_READ        0u
 #define SYS_WRITE       1u
+#define SYS_CLOSE       3u
+#define SYS_DUP         32u
+#define SYS_DUP2        33u
 #define SYS_SCHED_YIELD 24u
 #define SYS_NANOSLEEP   35u
 #define SYS_GETPID      39u
 #define SYS_EXIT        60u
 #define SYS_EXIT_GROUP  231u
+#define SYS_OPEN        2u              /* 1.0 stage 5 */
+#define SYS_STAT        4u
+#define SYS_FSTAT       5u
+#define SYS_LSTAT       6u
+#define SYS_LSEEK       8u
+#define SYS_FTRUNCATE   77u
+#define SYS_OPENAT      257u
+#define SYS_NEWFSTATAT  262u
+#define SYS_GETCWD      79u             /* 1.0 stage 6 */
+#define SYS_CHDIR       80u
+#define SYS_RENAME      82u
+#define SYS_MKDIR       83u
+#define SYS_RMDIR       84u
+#define SYS_UNLINK      87u
+#define SYS_GETDENTS64  217u
+#define SYS_MKDIRAT     258u
+#define SYS_UNLINKAT    263u
 
 #define SYS_MADIRE_FIRST 0x10000000ull
 #define SYS_MADIRE_LAST  0x1000FFFFull
@@ -61,15 +109,38 @@ enum syscall_id {
     SC_GETPID,
     SC_EXIT,
     SC_EXIT_GROUP,
+    SC_READ,                        /* 1.0 stage 4 */
+    SC_CLOSE,
+    SC_DUP,
+    SC_DUP2,
+    SC_OPEN,                        /* 1.0 stage 5 */
+    SC_STAT,
+    SC_FSTAT,
+    SC_LSTAT,
+    SC_LSEEK,
+    SC_FTRUNCATE,
+    SC_OPENAT,
+    SC_NEWFSTATAT,
+    SC_GETCWD,                      /* 1.0 stage 6 */
+    SC_CHDIR,
+    SC_RENAME,
+    SC_MKDIR,
+    SC_RMDIR,
+    SC_UNLINK,
+    SC_GETDENTS64,
+    SC_MKDIRAT,
+    SC_UNLINKAT,
+    SC_COUNT                        /* the number of ids */
 };
 
 enum syscall_id syscall_lookup(uint64_t nr);
 bool syscall_is_madire(uint64_t nr);       /* in the reserved Madire range */
 const char *syscall_name(enum syscall_id id);
 
-/* write: 0 if fd is 1 or 2 (then *accepted = the bytes that will be taken,
- * min(count, SYSCALL_WRITE_MAX)), else -EBADF. */
-int64_t syscall_write_check(uint64_t fd, uint64_t count, uint64_t *accepted);
+/* write to the console: the bytes taken, min(count, SYSCALL_WRITE_MAX).
+ * (1.0 stage 4: which descriptors are open, and for writing, is decided by
+ * the descriptor table, kernel/proc/fdtable_core.h.) */
+uint64_t syscall_console_count(uint64_t count);
 
 /* nanosleep: a struct timespec {int64 tv_sec; int64 tv_nsec} to timer ticks
  * at `hz`, rounded up (0 stays 0, which is a yield); -EINVAL if tv_sec < 0

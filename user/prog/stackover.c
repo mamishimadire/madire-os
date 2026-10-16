@@ -12,9 +12,8 @@ static uint64_t deeper(uint64_t n)
     return frame[0] + frame[63];
 }
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     deeper(0);
     u_puts("stackover: RECURSION ENDED\n");
     return 1;

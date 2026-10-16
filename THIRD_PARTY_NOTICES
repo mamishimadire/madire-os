@@ -6,6 +6,7 @@ what it ships, with each one's licence. It was created in 0.13.
 
 No third-party code is kept in this repository or built into Madire OS's
 kernel or programs.
+Madire OS's own LICENSE, NOTICE and this file are at every ISO's root (1.0).
 
 =============================================================================
 Limine v12.9.3 (the boot loader, since 0.13)

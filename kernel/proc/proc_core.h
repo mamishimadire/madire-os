@@ -18,6 +18,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "kernel/proc/fdtable_core.h"
 
 #define PROC_MAX      63            /* thread slots 1-63; thread 0 is the kernel */
 #define PROC_NAME_MAX 16            /* including the terminating 0 */
@@ -48,6 +49,8 @@ struct proc_entry {
     char name[PROC_NAME_MAX];
     bool kill_pending;
     struct proc_result result;      /* valid once ZOMBIE */
+    struct fd_table fds;            /* 1.0 stage 4: its descriptors (B3); all closed by
+                                     * its own thread before it ends (process.c) */
 };
 
 struct proc_table {

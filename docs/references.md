@@ -15,18 +15,29 @@ These projects are **references, not part of Madire OS**. They may be read to le
 
 **Verified on 2026-10-12 (0.12 stage 5).** Each link below was opened, and each licence was read from the project itself: from GitHub's licence field where it names one, otherwise from the licence file (`LICENSE`, `COPYING` or `COPYRIGHT`) or the project's own page. Where a link failed, the entry says so. A licence must be checked again before any use, since projects can change it.
 
+**Entries added in 1.0 (stage 12) were verified the same way on 2026-10-16** (marked "verified 2026-10-16"). Two sites refused the automated check that day: GitLab instances behind a bot filter (`gitlab.freedesktop.org`, `gitlab.winehq.org`) and `wiki.osdev.org` (HTTP 403); those entries say where their licence was read instead. `github.com/thomasahle/sunfish` (a chess engine) and `github.com/notaz/mesa` (a fork) are not references for Madire OS and are deliberately not listed.
+
 ## Read fully (permissive licences)
 
 | Project | Link | Licence (verified 2026-10-12) | Studied for | Roadmap |
 |---|---|---|---|---|
 | <a id="ref-xv6"></a>**xv6** (x86 version) | https://github.com/mit-pdos/xv6-public | MIT (the `LICENSE` text; GitHub names no licence). The README says the x86 version is **no longer maintained**; the current one is `xv6-riscv` (below) | A small, complete Unix-like kernel: processes, `exec`, a file system with a log, pipes, system-call dispatch on x86 | 1.0 (file system), the C-library milestone |
-| <a id="ref-serenity"></a>**SerenityOS** | https://github.com/SerenityOS/serenity | BSD-2-Clause | A from-scratch OS with a kernel, POSIX-like system calls, a C library, a GUI toolkit and a desktop | 1.0, graphics and desktop, the C-library milestone |
+| <a id="ref-serenity"></a>**SerenityOS** | https://github.com/SerenityOS/serenity | BSD-2-Clause | A from-scratch OS with a kernel, POSIX-like system calls, a C library, a GUI toolkit and a desktop. **For the mouse and GUI (ideas only, checked 2026-10-16):** the input devices in `Kernel/Devices/Input` (PS/2 mouse and keyboard; there is no `Kernel/Devices/HID`), the toolkit `Userland/Libraries/LibGUI` and the compositor `Userland/Services/WindowServer` | 1.0, graphics and desktop, the C-library milestone |
+| <a id="ref-toaruos"></a>**ToaruOS** | https://github.com/klange/toaruos | NCSA (GitHub; verified 2026-10-16). **Reclassified in 1.0** from the "Other references" list below: ideas only, nothing copied | A small from-scratch x86-64 OS: kernel, compositor, userland; thread and process structures (0.9), its window system and mouse handling (graphics) | Graphics and desktop |
+| <a id="ref-lvgl"></a>**LVGL** | https://github.com/lvgl/lvgl | MIT (GitHub; verified 2026-10-16) | A small embedded GUI library: widgets, styles, input devices on a framebuffer. Ideas; **a possible library only if the owner approves it** (AGENTS.md section 11, item 2) | Graphics |
+| <a id="ref-mesa"></a>**Mesa** | https://gitlab.freedesktop.org/mesa/mesa | Mostly MIT: "The core Mesa library is licensed according to the terms of the MIT license" (https://docs.mesa3d.org/license.html, verified 2026-10-16); the GLX client code under SGI Free Software License B, some drivers and files under their own licences (each file's SPDX identifier). **The GitLab page refused the automated check** (bot filter), so the licence was read from Mesa's own documentation | How OpenGL and Vulkan drivers are built on a kernel's graphics interface; ideas and documentation only | Graphics (far future) |
+| <a id="ref-sdl"></a>**SDL** | https://github.com/libsdl-org/SDL | Zlib (GitHub; verified 2026-10-16) | A portable layer for windows, input, audio and timers that games use; what such a layer needs from the OS. Ideas; **a possible library only if approved** | Graphics, audio, games as separate applications |
+| <a id="ref-stb"></a>**stb_truetype** (in stb) | https://github.com/nothings/stb (`stb_truetype.h`) | Dual: MIT or the Unlicense (public domain), the user's choice (`LICENSE`; GitHub names none; verified 2026-10-16) | A TrueType rasterizer; **the candidate rasterizer** (a library, with approval). **If it is ever used, only fonts shipped with Madire OS are loaded:** its own header warns "NO SECURITY GUARANTEE -- DO NOT USE THIS ON UNTRUSTED FONT FILES" | Graphics (fonts) |
+| <a id="ref-vulkan"></a>**Vulkan-Samples** | https://github.com/KhronosGroup/Vulkan-Samples | Apache-2.0 (GitHub; verified 2026-10-16) | Learning Vulkan; far future | Graphics (far future) |
+| **Vulkan-Loader** | https://github.com/KhronosGroup/Vulkan-Loader | Mostly Apache-2.0 (`LICENSE.txt`: "The majority of files in this project use the Apache 2.0 License … Any license deviations from Apache 2.0 are 'more permissive' licenses"; verified 2026-10-16) | How Vulkan drivers are found and loaded; learning, far future | Graphics (far future) |
+| <a id="ref-openxr"></a>**OpenXR SDK** | https://github.com/KhronosGroup/OpenXR-SDK | Apache-2.0 (GitHub; verified 2026-10-16) | The standard VR/AR interface; far future | VR (far future) |
+| <a id="ref-tinyusb"></a>**TinyUSB** | https://github.com/hathach/tinyusb | MIT (GitHub; verified 2026-10-16) | A small USB stack: host and device classes. Ideas, or **a possible library for the USB milestone if approved** | USB (modernisation track) |
 | <a id="ref-musl"></a>**musl** | https://musl.libc.org/ (official git: https://git.musl-libc.org/cgit/musl) | MIT (`COPYRIGHT`: "musl as a whole is licensed under the following standard MIT license"). **The proposed mirror `https://github.com/bminor/musl` returned 404 (2026-10-12)**, so it isn't listed; the official git is used instead | A C library on the Linux system-call interface; **allowed as a library** (with approval, in `third_party/musl/`) | The C-library milestone |
 | <a id="ref-lwip"></a>**lwIP** | https://github.com/lwip-tcpip/lwip (a mirror of Savannah; official: https://savannah.nongnu.org/projects/lwip/) | BSD-3-Clause (`COPYING`) | A small TCP/IP stack; the first candidate for networking, **only behind Madire's own Linux-compatible socket layer** | Networking |
 | <a id="ref-ladybird"></a>**Ladybird** | https://github.com/LadybirdBrowser/ladybird | BSD-2-Clause | An independent browser engine; what a browser needs from the OS | Madire Browser |
 | <a id="ref-chromium"></a>**Chromium** | https://chromium.googlesource.com/chromium/src | BSD-3-Clause (`LICENSE`); its `third_party/` components keep their own licences, to be checked one by one | The Chromium-based Madire Browser: what it needs from the OS (browse, never clone) | Madire Browser |
 | <a id="ref-mbedtls"></a>**Mbed TLS** | https://github.com/Mbed-TLS/mbedtls | Dual **Apache-2.0 OR GPL-2.0-or-later** (`LICENSE`); Madire would use it under Apache-2.0 | TLS; a candidate library in `third_party/mbedtls/` (with approval) | TLS |
-| <a id="ref-limine"></a>**Limine** | https://github.com/limine-bootloader/limine (redirects to `github.com/Limine-Bootloader/Limine`) | BSD-2-Clause (`COPYING`); its bundled parts are listed in its `3RDPARTY.md` (see [evaluations/limine.md](evaluations/limine.md)). **Since 0.13 also used as a tool:** the unmodified binary package of v12.9.3, fetched at build time with a pinned SHA-256 (AGENTS.md section 11, item 5); being used doesn't change its READ FULLY rule: its code is still never copied into Madire OS | The bootloader to replace GRUB; later its own boot protocol (framebuffer, all CPU cores, ACPI) | 0.13, UEFI |
+| <a id="ref-limine"></a>**Limine** | https://github.com/limine-bootloader/limine (redirects to `github.com/Limine-Bootloader/Limine`) | BSD-2-Clause (`COPYING`); its bundled parts are listed in its `3RDPARTY.md` (see [evaluations/limine.md](evaluations/limine.md)). **Since 0.13 also used as a tool:** the unmodified binary package of v12.9.3, fetched at build time with a pinned SHA-256 (AGENTS.md section 11, item 5); being used doesn't change its READ FULLY rule: its code is still never copied into Madire OS. **Boot branding (study only, added 2026-10-16):** its configuration documentation, https://github.com/Limine-Bootloader/Limine/blob/v12.x/CONFIG.md, describes `interface_branding` (and its colour) and `wallpaper` / `wallpaper_style` | The bootloader to replace GRUB; later its own boot protocol (framebuffer, all CPU cores, ACPI); the menu's branding options for the boot-branding step | 0.13, UEFI, boot branding |
 | <a id="ref-dunst"></a>**Dunst** | https://github.com/dunst-project/dunst | BSD-3-Clause (`LICENSE`; GitHub names no licence) | A notification daemon: notification queues, timeouts, urgency, grouping | Desktop (notifications) |
 
 ## Study only (README, licence and design documents; not the source)
@@ -34,7 +45,14 @@ These projects are **references, not part of Madire OS**. They may be read to le
 | Project | Link | Licence (verified 2026-10-12) | Studied for | Roadmap |
 |---|---|---|---|---|
 | <a id="ref-linux"></a>**Linux** | https://github.com/torvalds/linux; man pages: https://man7.org/linux/man-pages/ | GPL-2.0 WITH Linux-syscall-note (`COPYING`). **man7.org refused the connection from the verification host on 2026-10-12** (status unverified; the man-pages project itself is kept at kernel.org, `pub/scm/docs/man-pages/man-pages.git`) | The Linux system-call numbers and behaviour (Madire's system calls match Linux), from the man pages, `Documentation/` and the system-call table only | 1.0, the C-library milestone, Linux apps |
-| <a id="ref-wine"></a>**Wine** | https://github.com/wine-mirror/wine (a mirror; official: https://gitlab.winehq.org/wine/wine) | LGPL-2.1-or-later (`LICENSE`) | How Windows programs run on top of a POSIX/Linux layer; Wine is **installed separately by users**, never part of Madire's code | Windows apps (long term) |
+| <a id="ref-wine"></a>**Wine** | https://github.com/wine-mirror/wine (a mirror; official: https://gitlab.winehq.org/wine/wine) | LGPL-2.1-or-later (`LICENSE`) | How Windows programs run on top of a POSIX/Linux layer; Wine is **installed separately by users**, never part of Madire's code. **A separate application only: never code in this repository** (restated 1.0) | Windows apps (long term) |
+| <a id="ref-linux-drm"></a>**Linux DRM** (the GPU driver developer's guide) | https://docs.kernel.org/gpu/index.html | GPL-2.0 (part of the kernel's documentation; verified 2026-10-16) | How a kernel exposes displays and GPUs (DRM/KMS) to user space. **Documentation only, no code** | Graphics |
+| <a id="ref-bochs"></a>**Bochs** | https://bochs.sourceforge.io/ (source: https://github.com/bochs-emu/Bochs) | LGPL-2.1 (GitHub; the home page names no licence; verified 2026-10-16). No document of its own for its display interface was found; QEMU's (below) describes it | An x86 PC emulator; its VBE "dispi" display interface, which QEMU's standard VGA also offers | Graphics (first framebuffer) |
+| <a id="ref-qemu-vga"></a>**QEMU standard VGA** | https://www.qemu.org/docs/master/specs/standard-vga.html | The manual is GPL-2.0 ("QEMU and this manual are released under the GNU General Public License, version 2"; verified 2026-10-16) | The Bochs display interface: its I/O ports (`0x1CE`–`0x1D0`) and MMIO registers, for a first framebuffer in QEMU and VirtualBox. **Documentation only** (facts: ports, registers, values) | Graphics (first framebuffer) |
+| <a id="ref-nanox"></a>**Nano-X / Microwindows** | https://www.microwindows.org/ (source: https://github.com/ghaerr/microwindows) | MPL-1.1, with the option to convert to GPL-2.0 (`LICENSE`; verified 2026-10-16). MPL is not on the permitted list (AGENTS.md section 11), so **study only** | A small windowing system for embedded devices: its design, as background | Graphics and desktop |
+| <a id="ref-libusb"></a>**libusb** | https://github.com/libusb/libusb | LGPL-2.1 (GitHub; verified 2026-10-16) | A user-space USB access library: what applications expect from a USB interface | USB |
+| <a id="ref-openal"></a>**OpenAL Soft** | https://github.com/kcat/openal-soft | LGPL (`COPYING`: the GNU Library GPL version 2; GitHub names none; verified 2026-10-16) | A 3D audio library that games use: what it needs from an audio interface | Audio, games as separate applications |
+| <a id="ref-catppuccin-limine"></a>**Catppuccin for Limine** | https://github.com/catppuccin/limine | MIT (GitHub; verified 2026-10-16). Listed as **study only by the owner's decision** (a styling reference, not a source of files) | How a Limine menu theme is set: colours, branding, wallpaper; for the boot-branding step. Madire makes its own | Boot branding |
 | <a id="ref-reactos"></a>**ReactOS** | https://github.com/reactos/reactos; Windows reference: https://learn.microsoft.com/ | GPL-2.0 (GitHub). **Microsoft's public documentation is the main Windows reference; leaked Windows sources are never used** | The structure of a Windows-compatible system (documents only) | Windows apps (long term) |
 | <a id="ref-webkit"></a>**WebKit** | https://github.com/WebKit/WebKit | Mixed: LGPL-2/LGPL-2.1 and a BSD-style Apple licence (`Source/WebCore/LICENSE-LGPL-2`, `LICENSE-LGPL-2.1`, `LICENSE-APPLE`; `Source/JavaScriptCore/COPYING.LIB`); GitHub names no single licence | Browser-engine architecture, as background | Madire Browser |
 | <a id="ref-netsurf"></a>**NetSurf** | https://www.netsurf-browser.org/ | GPL-2.0 (stated on the project's page) | A small browser with its own layout engine, as background for a text-mode or small browser | Madire Browser (text mode) |
@@ -60,6 +78,44 @@ These projects are **references, not part of Madire OS**. They may be read to le
 |---|---|---|---|---|
 | <a id="ref-fluent"></a>**Fluent UI System Icons** | https://github.com/microsoft/fluentui-system-icons | MIT (GitHub) | The feel of a modern icon set only. **Madire designs its own icon set**, so that it doesn't look like Windows | Graphics (icons) |
 
+## Specifications and learning (added in 1.0)
+
+Read for facts and ideas. Nothing from them is copied into Madire OS.
+
+| Reference | Link | Licence (verified 2026-10-16) | Used for | Roadmap |
+|---|---|---|---|---|
+| <a id="ref-virtio"></a>**VIRTIO specification** | https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html (repository: https://github.com/oasis-tcs/virtio-spec) | OASIS copyright, under OASIS's Non-Assertion Mode IPR policy (the document's notices). Version 1.3 is a Committee Specification Draft (CSD01, 2023-10-06), not yet an OASIS Standard | Virtual devices (disk, network, GPU, input) in QEMU and other virtual machines. **Documentation only** | Storage, networking, graphics |
+| <a id="ref-osdev-mouse"></a>**OSDev wiki: PS/2 Mouse** | https://wiki.osdev.org/PS/2_Mouse | **Mixed:** content added since 2011 must be compatible with the public domain (CC0); older content may not be. **The site answered HTTP 403** to the automated check, so the status comes from search results quoting its licence page (https://wiki.osdev.org/OSDev_Wiki:License) and its forum. **Ideas only**; nothing quoted | The PS/2 mouse protocol (packets, initialisation) for the first mouse driver | Graphics (the mouse) |
+| <a id="ref-vkguide"></a>**Vulkan Guide** | https://vkguide.dev/ (source: https://github.com/vblanco20-1/vulkan-guide) | **Not confirmed.** The site says "Distributed by a MIT license", but that link and the repository's `LICENSE.txt` are the licence of its documentation theme (just-the-docs, by Patrick Marsceill); the licence of the guide's text and code is not stated | **Learning only** | Graphics (far future) |
+
+## Fonts (assets; AGENTS.md section 11, item 6)
+
+Fonts are assets: by default only original work, CC0, public domain, CC-BY or the SIL OFL. None is shipped yet; the graphics plan decides, and `THIRD_PARTY_ASSETS.md` is created when the first one ships.
+
+| Font | Link | Licence (verified 2026-10-16) | Status |
+|---|---|---|---|
+| <a id="ref-terminus"></a>**Terminus** (bitmap) | https://terminus-font.sourceforge.net/ | SIL OFL 1.1 (the project's page: "Terminus Font is licensed under the SIL Open Font License, Version 1.1") | **The default first bitmap font** (candidate for the graphics plan) |
+| <a id="ref-spleen"></a>**Spleen** (bitmap) | https://github.com/fcambus/spleen | BSD-2-Clause (GitHub) | **Candidate only:** BSD-2-Clause is not on the asset list of section 11, item 6; the rule decision belongs to the graphics plan |
+| <a id="ref-noto"></a>**Noto Sans, Noto Sans Mono** | https://github.com/notofonts/latin-greek-cyrillic | SIL OFL 1.1 (`OFL.txt`; GitHub) | Candidates for the desktop's text (rasterized, see stb_truetype) |
+| <a id="ref-inter"></a>**Inter** | https://github.com/rsms/inter (https://rsms.me/inter/) | SIL OFL 1.1 (GitHub) | Candidate for the desktop's text |
+| <a id="ref-dina"></a>**Dina** (bitmap) | https://www.donationcoder.com/Software/Jibz/Dina | **Licence not confirmed — do not use.** The author's page gives terms of its own, without a licence name (packagers label it MIT) | Not to be used unless a licence check confirms it |
+
+## Applications (separate applications only)
+
+These are **never code in this repository**: each could later run on Madire OS as a separate application, installed separately, once the Linux-compatible foundation exists (they need its system calls, graphics, audio and input). Their licences (mostly GPL) are read only to know what installing them would mean. **STUDY ONLY** for their sources.
+
+| Application | Link | Licence (verified 2026-10-16) | Roadmap |
+|---|---|---|---|
+| **SuperTuxKart** | https://github.com/supertuxkart/stk-code | GPL-3.0-or-later for the code (`COPYING`; GitHub names none); the data files each have their own licence | Linux apps (games) |
+| **Luanti** (formerly Minetest) | https://github.com/luanti-org/luanti | LGPL-2.1-or-later for the source code; textures and sounds CC BY-SA 3.0 (`LICENSE.txt`; GitHub names none) | Linux apps (games) |
+| **0 A.D.** | https://gitea.wildfiregames.com/0ad/0ad (official). The GitHub repository https://github.com/0ad/0ad is **archived**: "migrated to https://gitea.wildfiregames.com on August 20th 2024" | To be read at the official home before any use (the archived mirror's licence file was not readable) | Linux apps (games) |
+| **Xonotic** | https://gitlab.com/xonotic/xonotic | GPL-3.0 (the GitLab page) | Linux apps (games) |
+| **OpenTTD** | https://github.com/OpenTTD/OpenTTD | GPL-2.0, except some third-party modules (`COPYING.md`; GitHub names none) | Linux apps (games) |
+| **ioquake3** | https://github.com/ioquake/ioq3 | GPL-2.0 (GitHub) | Linux apps (games) |
+| **Chocolate Doom** | https://github.com/chocolate-doom/chocolate-doom | GPL-2.0 (GitHub) | Linux apps (games) |
+| **doomgeneric** | https://github.com/ozkl/doomgeneric | GPL-2.0 (GitHub) | A Doom port reduced to a few platform functions: a separate application for an early graphics test, never code in the repository |
+| **Wine, Proton** | see Wine above and Proton below | LGPL-2.1-or-later; Proton per component | Windows apps (long term) |
+
 ## Other references (listed before 0.12)
 
 These entries come from earlier milestones. They were **not re-verified or reclassified** in 0.12 stage 5: until the owner classifies them, they are read under the STUDY ONLY rule, and their licences are as understood when they were listed (to be verified).
@@ -69,9 +125,8 @@ These entries come from earlier milestones. They were **not re-verified or recla
 | Project | Link | Could be useful for | Licence (to be verified) |
 |---|---|---|---|
 | <a id="ref-xv6-riscv"></a>xv6-riscv (the current xv6) | https://github.com/mit-pdos/xv6-riscv | Concepts: `copyin`/`copyout` (user pointers checked page by page when used), system-call dispatch and argument fetching, `exec` (for the 0.11 program loader); cross-checked against 0.10's system calls (stage 5b): no change needed. Its code targets RISC-V and doesn't apply to x86-64 | MIT |
-| ToaruOS | https://github.com/klange/toaruos | A small from-scratch x86-64 OS: bootloader, kernel, compositor, userland; thread and process structures, scheduler, user-mode entry (0.9 study reference) | NCSA (University of Illinois/NCSA) |
 | Redox OS | https://github.com/redox-os/redox | A Rust microkernel: its design, memory isolation and security; relevant to the open decision on Rust for drivers ([roadmap.md](roadmap.md#modernisation-track-planned-not-committed-to-milestones-yet)) | MIT |
-| OSDev Wiki | https://wiki.osdev.org | User mode, system calls, paging, process management, context switching, ELF | **Check the wiki's content licence before quoting anything** |
+| OSDev Wiki | https://wiki.osdev.org | User mode, system calls, paging, process management, context switching, ELF; since 1.0 the PS/2 mouse (see *Specifications and learning*) | **Mixed** (1.0 check: content since 2011 public-domain compatible, older content not necessarily). **Ideas only; nothing quoted** |
 
 **Linux documentation used since 0.10** (study only; see Linux above): `Documentation/arch/x86/` (x86-64 entry, the IST stacks), `Documentation/security/self-protection.rst` (SMEP, SMAP, W^X), `Documentation/mm/` (address spaces), `Documentation/scheduler/`, `Documentation/filesystems/` (the VFS, for 1.0) and `Documentation/driver-api/` (drivers). **System-call behaviour:** the Linux man pages (for example `syscall(2)`, `syscalls(2)`, `write(2)`, `nanosleep(2)`, `getpid(2)`, `sched_yield(2)`, `exit(2)`) are the reference for numbers, arguments, return values and error codes; only these facts are used.
 
@@ -79,7 +134,7 @@ These entries come from earlier milestones. They were **not re-verified or recla
 
 | Project | Link | Could be useful for | Licence (to be verified) |
 |---|---|---|---|
-| Proton | https://github.com/ValveSoftware/Proton | Wine with improvements for games (graphics translation, controller and performance work) and how it is packaged and tested | Valve's code and each bundled component have their own licences, all to be verified |
+| Proton | https://github.com/ValveSoftware/Proton | Wine with improvements for games (graphics translation, controller and performance work) and how it is packaged and tested. **Study only, for the Windows-apps milestone; a separate application, never code in this repository** (1.0) | 1.0 check (2026-10-16): the top-level `LICENSE.proton` is a BSD-style licence (Valve); the bundled components (Wine and others) keep their own licences, to be read one by one |
 
 ### Shells
 

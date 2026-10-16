@@ -1,7 +1,7 @@
 /*
  * Global Descriptor Table and Task State Segment (x86-64).
  *
- * GRUB's GDT (and the boot stub's temporary one) are replaced. In long mode
+ * The boot loader's GDT (and the boot stub's temporary one) are replaced. In long mode
  * segmentation does no translation: code and data descriptors only select
  * 64-bit mode and the privilege level. Layout: gdt_desc.h (0.10: user data
  * and code segments, and a zero placeholder at 0x28).

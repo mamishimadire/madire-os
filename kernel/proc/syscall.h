@@ -9,6 +9,10 @@
  * Stage 5b: write (1) and nanosleep (35), whose user pointers are checked
  * (kernel/memory/usercopy.h) before any use: a bad one gives -EFAULT, and
  * a refused write logs nothing.
+ * 1.0 stage 4: read (0), close (3), dup (32), dup2 (33), and write
+ * through the descriptor table (kernel/proc/fd.h).
+ * 1.0 stage 5: open (2), stat (4), fstat (5), lstat (6), lseek (8),
+ * ftruncate (77), openat (257), newfstatat (262) (kernel/fs/fsys.h).
  */
 
 #include <stdbool.h>
@@ -33,7 +37,7 @@ void syscall_dispatch(struct interrupt_frame *frame);
 
 /* Calls since boot, by syscall_core's id (SC_UNKNOWN: every -ENOSYS). */
 struct syscall_counts {
-    uint64_t by_id[SC_EXIT_GROUP + 1];
+    uint64_t by_id[SC_COUNT];
     uint64_t enosys;                /* calls answered -ENOSYS */
 };
 void syscall_counts(struct syscall_counts *out);

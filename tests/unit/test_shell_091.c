@@ -64,23 +64,10 @@ static void reset(bool with_extras)
         ctx.extras = &ex;
 }
 
+/* 1.0 stage 10 (D2): "help" lists the names, several per line. */
 static const char *help_07 =
     "Available commands:\n"
-    "  help     Show this list\n"
-    "  clear    Clear the screen\n"
-    "  version  Show the Madire OS version\n"
-    "  uptime   Show time since boot\n"
-    "  mem      Show memory information\n"
-    "  cpu      Show processor information\n"
-    "  echo     Print text: echo <text>\n";
-
-static const char *help_extra =
-    "  history  Show previous commands (Up/Down recall)\n"
-    "  uname    Show the system name: uname [-a]\n"
-    "  hostname Show the computer's name\n"
-    "  date     Show the date and time (RTC)\n"
-    "  dmesg    Show kernel messages: dmesg [lines]\n"
-    "  reboot   Restart the computer (asks first)\n";
+    "  help  clear  version  uptime  mem  cpu  echo\n";
 
 static void test_without_extras_nothing_changes(void)
 {
@@ -108,14 +95,20 @@ static void test_help_lists_extra_commands(void)
     char want[2048];
     reset(true);
     CHECK_EQ(run("help"), SHELL_OK);
-    snprintf(want, sizeof(want), "%s%s", help_07, help_extra);
+    snprintf(want, sizeof(want), "Available commands:\n"
+             "  help  clear  version  uptime  mem  cpu  echo  history  uname  hostname  date\n"
+             "  dmesg  reboot\n"
+             "Purposes and usage: help <command>.\n");
     CHECK(strcmp(out, want) == 0);
     /* With threads too, "ps" comes before the 0.9.1 commands. */
     static const struct shell_thread t0 = { 0, "running", 5, 1496, 16384, "kernel" };
     ctx.threads = &t0;
     ctx.thread_count = 1;
     CHECK_EQ(run("help"), SHELL_OK);
-    snprintf(want, sizeof(want), "%s  ps       Show threads\n%s", help_07, help_extra);
+    snprintf(want, sizeof(want), "Available commands:\n"
+             "  help  clear  version  uptime  mem  cpu  echo  ps  history  uname  hostname\n"
+             "  date  dmesg  reboot\n"
+             "Purposes and usage: help <command>.\n");
     CHECK(strcmp(out, want) == 0);
 }
 

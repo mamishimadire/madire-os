@@ -16,7 +16,7 @@
 
 /* 0.3 safety decision: nothing below 1 MiB is ever allocated. It holds the
  * real-mode IVT and BIOS data area, page 0, the EBDA, VGA memory
- * (0xA0000-0xBFFFF) and the BIOS ROM, and usually GRUB's structures. */
+ * (0xA0000-0xBFFFF) and the BIOS ROM, and usually the boot loader's structures. */
 #define RESERVE_LOW_MEMORY_END  0x100000u
 
 #define RESERVE_STRING_MAX      4096u   /* longest command line / module name */

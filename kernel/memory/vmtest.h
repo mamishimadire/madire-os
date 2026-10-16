@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 /*
- * Virtual-memory diagnostics (GRUB "Diagnostics" menu, test=<name>). Each
+ * Virtual-memory diagnostics (boot menu's "Diagnostics" directory, test=<name>). Each
  * one makes a deliberate page fault, which must end on the crash screen
  * with exception 14 and the decoded "Page fault:" line; if the access does
  * not fault, the diagnostic itself panics with "... was not detected".
@@ -35,7 +35,7 @@ void vmtest_pf_nx(void);
 void vmtest_stack_overflow(void);
 
 /*
- * Kernel heap diagnostics (QEMU only, no GRUB entries). The first three
+ * Kernel heap diagnostics (QEMU only, no boot menu entries). The first three
  * must end on the crash screen with the kfree error message.
  */
 /* test=heapdouble: kfree the same block twice. */

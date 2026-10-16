@@ -6,9 +6,11 @@
 #   sh scripts/user-images.sh <dir> <program>...     (<dir>/<program>.elf)
 #
 # Each program must have only .text (at 0x400000: code + read-only data),
-# .data and .bss (from 0x500000) as loaded sections, must start at _start
-# inside .text, and must not use x87/MMX/SSE registers (except `fpu`, whose
-# purpose is to use them, and which must). Any other case fails the build.
+# .data and .bss (from 0x500000) as loaded sections, must start at its ELF
+# entry point inside .text (1.0 stage 7: e_entry, which is _start for every
+# program but args, whose own stub jumps to _start), and must not use
+# x87/MMX/SSE registers (except `fpu`, whose purpose is to use them, and
+# which must). Any other case fails the build.
 # The output depends only on the programs: sorted, no dates.
 set -eu
 LC_ALL=C
@@ -63,15 +65,17 @@ for p in "$@"; do
     objcopy -O binary -j .data "$elf" "$dir/$p.data.bin"
     tsize=$(wc -c < "$dir/$p.text.bin" | tr -d ' ')
     dsize=$(wc -c < "$dir/$p.data.bin" | tr -d ' ')
-    entry=$(sym "$elf" _start)
+    # 16 hex digits, as nm printed _start's value until 1.0 stage 7.
+    entry=$(readelf -h "$elf" | awk '$1 == "Entry" && $2 == "point" { print $4 }')
+    [ -n "$entry" ] && entry=$(printf '%016x' "$(($entry))")
     bend=$(sym "$elf" __bss_end)
-    [ -n "$entry" ] && [ -n "$bend" ] || fail "$p: _start or __bss_end missing"
+    [ -n "$entry" ] && [ -n "$bend" ] || fail "$p: entry point or __bss_end missing"
     dmem=$((0x$bend - DATA))
     [ "$dmem" -ge "$dsize" ] || fail "$p: bss ends before the data"
     [ "$tsize" -gt 0 ] && [ "$tsize" -le 65536 ] || fail "$p: code size $tsize"
     [ "$dmem" -le 65536 ] || fail "$p: data + bss size $dmem"
     [ "$((0x$entry))" -ge "$((TEXT))" ] && [ "$((0x$entry - TEXT))" -lt "$tsize" ] ||
-        fail "$p: _start 0x$entry outside the code"
+        fail "$p: entry point 0x$entry outside the code"
 
     echo "align 16"
     echo "img_${p}_name: db \"$p\", 0"

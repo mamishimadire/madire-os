@@ -4,8 +4,9 @@
  *   arg 2: sched_yield in a loop   3: 10 ms sleeps in a loop */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     volatile uint64_t n = 0;
     struct timespec t = { 0, 10000000 };
     for (;;) {

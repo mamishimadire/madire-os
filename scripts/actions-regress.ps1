@@ -9,9 +9,9 @@
 # GitHub, and passes the commit as a full SHA, so every job tests exactly it.
 # It prints the run id and returns; it does not wait. -Collect reports a run
 # that is still going and returns; once it has finished, it downloads the
-# artifact, checks it is the dispatched commit and prints the summary. The
-# per-boot logs of the last 3 collected runs are kept, older ones deleted
-# (the summaries stay).
+# artifact, checks it is the dispatched commit and prints the summary.
+# Every collected run's per-boot logs are kept (1.0 stage 9: nothing is
+# deleted here until the milestone is tagged).
 [CmdletBinding(DefaultParameterSetName = 'Dispatch')]
 param(
     [Parameter(ParameterSetName = 'Dispatch', Mandatory = $true)]
@@ -103,7 +103,7 @@ try {
     if (Test-Path -LiteralPath $summaryFile) {
         Write-Host '--- combined summary (sharded run) ---'
         Get-Content -LiteralPath $summaryFile | Where-Object {
-            $_ -match '^(SAME_|ISO_|part |COMBINE_FAIL|UNIT_SUITES|Reproducible|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|TWO_MIB|COUNTED|EXPECTED_CHECKS|REPLAY|ALL TESTS|COMBINED_RESULT|[0-9]+ TEST)' -or $_ -match '^  '
+            $_ -match '^(SAME_|ISO_|part |COMBINE_FAIL|UNIT_SUITES|Reproducible|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|KERNEL_MARGIN|TWO_MIB|COUNTED|EXPECTED_CHECKS|REPLAY|ALL TESTS|COMBINED_RESULT|[0-9]+ TEST)' -or $_ -match '^  '
         } | ForEach-Object { Write-Host $_ }
         $commit = (Get-Content -LiteralPath (Join-Path $results 'shard-static\commit.txt') | Select-Object -First 1)
     }
@@ -116,17 +116,7 @@ try {
     Write-Host "COMMIT=$commit"
     Write-Host "RESULTS=$results"
 
-    # Keep the per-boot logs of the last 3 collected runs only (0.12, Q9).
-    $runs = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'build\regression') -Directory |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'results') } | Sort-Object LastWriteTime)
-    if ($runs.Count -gt 3) {
-        foreach ($old in $runs[0..($runs.Count - 4)]) {
-            Get-ChildItem -LiteralPath (Join-Path $old.FullName 'results') -Recurse -Directory -Filter 'build' |
-                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
-            $tar = Join-Path $old.FullName 'results\boot-logs.tar.gz'
-            if (Test-Path -LiteralPath $tar) { Remove-Item -LiteralPath $tar -Force }
-        }
-    }
+    # 1.0 stage 9: no pruning; every run's per-boot logs stay until the tag.
     if ($info.conclusion -ne 'success') { throw "Run $Collect concluded '$($info.conclusion)'." }
     Write-Host 'ACTIONS_REGRESSION_RESULT=PASS'
 }

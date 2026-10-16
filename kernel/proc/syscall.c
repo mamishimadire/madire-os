@@ -4,7 +4,10 @@
 #include "kernel/arch/x86/irq.h"
 #include "kernel/kprintf.h"
 #include "kernel/console/console.h"
+#include "kernel/fs/fsys.h"
+#include "kernel/fs/fsys_core.h"
 #include "kernel/memory/usercopy.h"
+#include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
 #include "kernel/proc/syscall.h"
@@ -29,13 +32,28 @@ static void emit_line(void *ctx, const char *line, size_t len)
 }
 
 /* The whole buffer is checked before any of it is used: a bad buffer is
- * refused (-EFAULT) with nothing logged. */
+ * refused (-EFAULT) with nothing logged. 1.0 stage 4: the descriptor
+ * table decides (not open, or not for writing: -EBADF); the console keeps
+ * this path, a file goes through the chunk loop (kernel/proc/fd.c). */
+static int64_t __attribute__((noinline)) console_write(uint64_t buf, uint64_t count);
+
 static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t count)
 {
-    uint64_t n = 0;
-    int64_t e = syscall_write_check(fd, count, &n);
+    uint32_t file = 0;
+    uint8_t kind = 0;
+    int e = fd_resolve(process_current_fds(), fd, OF_WRITE, &file, &kind);
     if (e)
         return e;
+    if (kind == OFILE_FILE)
+        return fd_file_write(file, buf, count);
+    return console_write(buf, count);
+}
+
+/* Its own frame (noinline): a file write never carries this 4 KiB buffer
+ * on the thread's stack next to the chunk loop's. */
+static int64_t console_write(uint64_t buf, uint64_t count)
+{
+    uint64_t n = syscall_console_count(count);
     if (n == 0)
         return 0;                   /* nothing touched, whatever buf is */
     if (!user_readable(buf, n))
@@ -59,6 +77,23 @@ static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t count)
     syscall_write_lines(pid, write_buf, written, emit_line, 0);
     preempt_enable();
     return (int64_t)written;
+}
+
+/* ---- read (1.0 stage 4) ---- */
+
+/* fd 0 at start is the console's input: no keyboard input reaches
+ * programs yet, so it returns 0 (plan B1); a file goes through the chunk
+ * loop. */
+static int64_t sys_read(uint64_t fd, uint64_t buf, uint64_t count)
+{
+    uint32_t file = 0;
+    uint8_t kind = 0;
+    int e = fd_resolve(process_current_fds(), fd, OF_READ, &file, &kind);
+    if (e)
+        return e;
+    if (kind != OFILE_FILE)
+        return 0;
+    return fd_file_read(file, buf, count);
 }
 
 /* ---- nanosleep (stage 5b) ---- */
@@ -132,6 +167,67 @@ void syscall_dispatch(struct interrupt_frame *frame)
     case SC_WRITE:
         r = sys_write(frame->rdi, frame->rsi, frame->rdx);
         break;
+    case SC_READ:
+        r = sys_read(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_CLOSE:
+        r = fd_sys_close(process_current_fds(), frame->rdi);
+        break;
+    case SC_DUP:
+        r = fd_sys_dup(process_current_fds(), frame->rdi);
+        break;
+    case SC_DUP2:
+        r = fd_sys_dup2(process_current_fds(), frame->rdi, frame->rsi);
+        break;
+    case SC_OPEN:                       /* 1.0 stage 5 (kernel/fs/fsys.c) */
+        r = fsys_sys_openat(FS_AT_FDCWD, frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_OPENAT:
+        r = fsys_sys_openat(frame->rdi, frame->rsi, frame->rdx, frame->r10);
+        break;
+    case SC_STAT:
+    case SC_LSTAT:                      /* no symbolic links: the same */
+        r = fsys_sys_fstatat(FS_AT_FDCWD, frame->rdi, frame->rsi, 0);
+        break;
+    case SC_NEWFSTATAT:
+        r = fsys_sys_fstatat(frame->rdi, frame->rsi, frame->rdx, frame->r10);
+        break;
+    case SC_FSTAT:
+        r = fsys_sys_fstat(frame->rdi, frame->rsi);
+        break;
+    case SC_LSEEK:
+        r = fsys_sys_lseek(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_FTRUNCATE:
+        r = fsys_sys_ftruncate(frame->rdi, frame->rsi);
+        break;
+    case SC_GETCWD:                     /* 1.0 stage 6 (kernel/fs/fsys.c) */
+        r = fsys_sys_getcwd(frame->rdi, frame->rsi);
+        break;
+    case SC_CHDIR:
+        r = fsys_sys_chdir(frame->rdi);
+        break;
+    case SC_RENAME:
+        r = fsys_sys_rename(frame->rdi, frame->rsi);
+        break;
+    case SC_MKDIR:
+        r = fsys_sys_mkdirat(FS_AT_FDCWD, frame->rdi, frame->rsi);
+        break;
+    case SC_MKDIRAT:
+        r = fsys_sys_mkdirat(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_RMDIR:
+        r = fsys_sys_unlinkat(FS_AT_FDCWD, frame->rdi, FS_AT_REMOVEDIR);
+        break;
+    case SC_UNLINK:
+        r = fsys_sys_unlinkat(FS_AT_FDCWD, frame->rdi, 0);
+        break;
+    case SC_UNLINKAT:
+        r = fsys_sys_unlinkat(frame->rdi, frame->rsi, frame->rdx);
+        break;
+    case SC_GETDENTS64:
+        r = fsys_sys_getdents64(frame->rdi, frame->rsi, frame->rdx);
+        break;
     case SC_NANOSLEEP:
         r = sys_nanosleep(frame->rdi);
         break;
@@ -153,6 +249,7 @@ void syscall_dispatch(struct interrupt_frame *frame)
         r = -MADIRE_ENOSYS;
         break;
     }
+    fd_busy_check("syscall return");   /* 1.0 stage 4: no busy mark back to ring 3 */
     __asm__ volatile ("cli");
     counts.by_id[id]++;
     if (r == -MADIRE_ENOSYS)

@@ -2,7 +2,7 @@
  * Madire OS kernel entry.
  *
  * Runs in 32-bit protected mode, entered from boot/boot.asm. Brings up the
- * display, replaces GRUB's CPU tables with our own (GDT, IDT), makes the
+ * display, replaces the boot loader's CPU tables with our own (GDT, IDT), makes the
  * interrupt controller safe, proves exception handling works, sets up and
  * tests physical memory, enables the timer (IRQ0) and keyboard (IRQ1),
  * self-tests the console, then runs the idle loop, which opens the console
@@ -26,6 +26,13 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/fs/dirtest.h"
+#include "kernel/fs/fsiotest.h"
+#include "kernel/fs/fstest.h"
+#include "kernel/fs/vfs.h"
+#include "kernel/proc/fd.h"
+#include "kernel/proc/fdtest.h"
+#include "kernel/proc/klock.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
@@ -41,6 +48,7 @@
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/progmod.h"
 #include "kernel/proc/schedtest.h"
+#include "kernel/proc/starttest.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/syscall.h"
 #include "kernel/proc/usertest.h"
@@ -340,10 +348,14 @@ static void check_boot_modules(const struct multiboot_info *mbi)
     progmod_summary();
 }
 
-/* Diagnostics: GRUB's "Diagnostics" menu (or QEMU -append) passes test=<name>
+/* Diagnostics: the boot menu's "Diagnostics" directory (or QEMU -append) passes test=<name>
  * to deliberately trigger a CPU exception or run a memory test. */
 static void run_diagnostics(void)
 {
+    /* 1.0 stage 7b: reserved VFS-lock turns (test code only) are allowed
+     * while a test= diagnostic runs; never on a normal boot. */
+    if (cmdline_has("test="))
+        klock_test_allow();
     /* 0.9 thread diagnostics. The longer names come first: cmdline_has
      * matches prefixes, and "test=preempt" (stage 4) is one of these. */
     if (cmdline_has("test=gpflimit")) {           /* before test=gpf: a prefix of it */
@@ -431,6 +443,12 @@ static void run_diagnostics(void)
         bool seeded = cmdline_u32("seed=", &seed);  /* 0.12 stage 3 */
         diag_message(usertest_killrace(seeded, seed) ? "Kill race test: PASS"
                                                      : "Kill race test: FAIL (see serial log)");
+    } else if (cmdline_has("test=selfcheckcopylock")) {   /* 1.0 stage 4 */
+        diag_message("Self-check test: a user copy under the VFS lock (must panic)");
+        fdtest_selfcheck_copylock();
+    } else if (cmdline_has("test=selfcheckyieldlock")) {  /* 1.0 stage 7b */
+        diag_message("Self-check test: a yield under the VFS lock (must panic)");
+        fdtest_selfcheck_yieldlock();
     } else if (cmdline_has("test=selfcheckcr3")) {
         /* 0.12 stage 2b: each self-check test must panic, naming the state.
          * cmdline_has matches substrings: ring3cr3 before ring3. */
@@ -543,6 +561,48 @@ static void run_diagnostics(void)
         diag_message("Heap test: allocating until the heap is full...");
         diag_message(vmtest_heap_exhaust() ? "Heap exhaustion test: PASS"
                                                  : "Heap exhaustion test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fslimits")) {    /* 1.0 stage 2 */
+        diag_message("Filesystem limits test: each limit hit once...");
+        diag_message(fstest_limits() ? "Filesystem limits test: done"
+                                     : "Filesystem limits test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fsfill")) {      /* 1.0 stage 2 */
+        diag_message("Filesystem fill test: files filled to the budget...");
+        diag_message(fstest_fill() ? "Filesystem fill test: done"
+                                   : "Filesystem fill test: FAIL (see serial log)");
+    } else if (cmdline_has("test=klock")) {       /* 1.0 stage 3 */
+        diag_message("Filesystem lock test: 6 threads and thread 0 for 3000 ticks...");
+        diag_message(fstest_klock() ? "Filesystem lock test: done"
+                                    : "Filesystem lock test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fdsys")) {       /* 1.0 stage 4 */
+        diag_message("Descriptor test: read, write, close, dup, dup2 from fdops...");
+        diag_message(fdtest_sys() ? "Descriptor test: done"
+                                  : "Descriptor test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fdkill")) {      /* 1.0 stage 4 */
+        diag_message("Descriptor kill test: programs ending with descriptors open...");
+        diag_message(fdtest_kill() ? "Descriptor kill test: done"
+                                   : "Descriptor kill test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fileio")) {      /* 1.0 stage 5 */
+        diag_message("File test: open, stat, lseek, ftruncate from fileio and fileerr...");
+        diag_message(fsiotest_fileio() ? "File test: done" : "File test: FAIL (see serial log)");
+    } else if (cmdline_has("test=bigio")) {       /* 1.0 stage 5 */
+        diag_message("Big I/O test: large reads and writes from bigio...");
+        diag_message(fsiotest_bigio() ? "Big I/O test: done"
+                                      : "Big I/O test: FAIL (see serial log)");
+    } else if (cmdline_has("test=filecontend")) { /* 1.0 stage 5 */
+        diag_message("File contention test: the busy mark and the VFS lock under load...");
+        diag_message(fsiotest_contend() ? "File contention test: done"
+                                        : "File contention test: FAIL (see serial log)");
+    } else if (cmdline_has("test=dirops")) {      /* 1.0 stage 6 */
+        diag_message("Dir test: getcwd, chdir, mkdir, rmdir, unlink, rename, getdents64...");
+        diag_message(dirtest_dirops() ? "Dir test: done" : "Dir test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fsunlink")) {    /* 1.0 stage 6 */
+        diag_message("Unlink test: open files and folders unlinked, renamed over, removed...");
+        diag_message(dirtest_fsunlink() ? "Unlink test: done"
+                                        : "Unlink test: FAIL (see serial log)");
+    } else if (cmdline_has("test=startup")) {     /* 1.0 stage 7 */
+        diag_message("Startup test: argc, argv, envp and auxv from args...");
+        diag_message(starttest_startup() ? "Startup test: done"
+                                         : "Startup test: FAIL (see serial log)");
     } else if (cmdline_has("test=pfnull")) {
         diag_message("Page-fault test: read from NULL");
         vmtest_pf_null();
@@ -822,8 +882,22 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         klogf("Scheduler self-test: NOT APPLICABLE (paging is off: no thread stacks)\n");
     }
 
+    /* 1.0: the live RAM filesystem (/, /home, /tmp; node records in the
+     * heap) and its self-test, before any diagnostic that may use it. A
+     * failure is fatal, as for the other boot self-tests. */
+    if (heap_ok) {
+        if (!vfs_boot())
+            panic("Filesystem self-test failed (details on the serial log).");
+    } else {
+        klogf("Filesystem: NOT AVAILABLE (the kernel heap is off)\n");
+    }
+
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
     run_diagnostics();
+    /* 1.0 stage 4: every process so far (the boot self-test's, a
+     * diagnostic's) has closed its descriptors. */
+    klogf("Descriptors: %u per process, %u open files system-wide; %u open files now\n",
+          FD_MAX, FILE_MAX, fd_open_files());
 
     bool console_offered = console_ok && keyboard_ok;
     bootscreen_ready(console_offered ? "Press any key to open the console."

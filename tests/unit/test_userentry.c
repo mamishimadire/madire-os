@@ -19,7 +19,7 @@ static void test_build(void)
     CHECK_EQ(f.rip, VM_USER_TEXT + 16);
     CHECK_EQ(f.cs, 0x3B);
     CHECK_EQ(f.rflags, 0x202);
-    CHECK_EQ(f.rsp, 0x00007FFFFFFFF000ull);
+    CHECK_EQ(f.rsp, 0x00007FFFFFFFEE90ull);         /* 1.0: spin's start block (argc 1) */
     CHECK_EQ(f.ss, 0x33);
     CHECK(user_iret_ok(&f, &img));
     CHECK(f.rflags & USER_RFLAGS_IF);
@@ -69,9 +69,11 @@ static void test_refused(void)
     f.rip = VM_USER_TEXT + sizeof(code) - 1;        /* the last byte: fine */
     CHECK(user_iret_ok(&f, &img));
     f = good;
-    f.rsp = VM_USER_STACK_TOP - 8;                  /* not the top, not aligned */
+    f.rsp = VM_USER_STACK_TOP - 8;                  /* not the start block, not aligned */
     CHECK(!user_iret_ok(&f, &img));
     f.rsp = VM_USER_STACK_TOP + 0x1000;             /* above the stack */
+    CHECK(!user_iret_ok(&f, &img));
+    f.rsp = VM_USER_STACK_TOP;                      /* 1.0: the top (0.10's RSP) is no start block */
     CHECK(!user_iret_ok(&f, &img));
 }
 

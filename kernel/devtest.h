@@ -3,7 +3,7 @@
 
 /*
  * Device diagnostics for the timer, keyboard and IRQ layer, selected with
- * test=<name> on the boot command line (GRUB Diagnostics menu or QEMU
+ * test=<name> on the boot command line (boot menu's Diagnostics directory or QEMU
  * -append). Runs in normal context, never in interrupt context. Results go
  * to the boot screen's message line and to the serial log.
  */

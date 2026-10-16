@@ -4,7 +4,9 @@
 # --shard static). Apart from this header, every line was moved unchanged
 # from the single script. 0.13 stage 3a: the Multiboot header check uses
 # scripts/check-multiboot.py, the default-entry title comes from limine.conf,
-# and the [0.13] checks of the Limine ISO are added at the end.
+# and the [0.13] checks of the Limine ISO are added at the end. 1.0 stage 0a:
+# the [1.0] check of Madire's licence files at the ISO root. 1.0 stage 1:
+# the 0.13 report's comparison with v0.12's kernel (decided no check) removed.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -89,6 +91,35 @@ else
     fail "[0.13] ISO: notices missing or a file of the previous boot loader present ($(grep -ci grub <<< "$ISOLIST") paths)"
 fi
 
+echo "== [1.0] The ISO: Madire's licence files at its root"
+# 1.0 stage 0a (Apache 2.0, section 4): each file extracted from the ISO root
+# must have the SHA-256 of the repository's copy.
+REPO=$(dirname "$0")/..
+rm -rf "$OUT/iso-root" && mkdir -p "$OUT/iso-root"
+RBAD=""
+for f in LICENSE NOTICE THIRD_PARTY_NOTICES; do
+    xorriso -osirrox on -indev "$ISO" -extract "/$f" "$OUT/iso-root/$f" >/dev/null 2>&1
+    got=$(sha256sum < "$OUT/iso-root/$f" 2>/dev/null | cut -d' ' -f1)
+    want=$(sha256sum < "$REPO/$f" | cut -d' ' -f1)
+    echo "      /$f: ${got:-missing} (repository: $want)"
+    [ -n "$got" ] && [ "$got" = "$want" ] || RBAD="$RBAD $f"
+done
+if [ -z "$RBAD" ]; then pass "[1.0] ISO: /LICENSE, /NOTICE and /THIRD_PARTY_NOTICES present and byte-identical to the repository's"
+else fail "[1.0] ISO: missing or different from the repository's:$RBAD"; fi
+
+echo "== [1.0] docs: every .md file valid UTF-8"
+# 1.0 stage 10: two Windows-1252 bytes reached docs/commands.md in stage 8
+# (5cd7daf); every Markdown file under docs/ must decode as UTF-8 (the
+# images are not text and are left out).
+UBAD="" UN=0
+while IFS= read -r f; do
+    UN=$((UN + 1))
+    iconv -f UTF-8 -t UTF-8 "$f" >/dev/null 2>&1 || UBAD="$UBAD ${f#"$REPO"/}"
+done < <(find "$REPO/docs" -type f -name '*.md' | LC_ALL=C sort)
+echo "      $UN files"
+if [ "$UN" -gt 0 ] && [ -z "$UBAD" ]; then pass "[1.0] docs: every .md file under docs/ is valid UTF-8"
+else fail "[1.0] docs: not valid UTF-8:${UBAD:- no .md file found}"; fi
+
 echo "== [0.13] limine.conf: every program module names itself"
 # Limine passes only module_string to the kernel, so every program module of
 # the default entry needs "module_string: <its file name without .elf>".
@@ -97,27 +128,3 @@ MSBAD=$(awk '/^\// { n++ } n == 1 && /^ *module_path: / { if (p != "") print "no
              END { if (p != "") print "no string for " p; if (c == 0) print "no modules" }' "$OUT/limine.conf")
 if [ -z "$MSBAD" ]; then pass "[0.13] limine.conf: every program module's module_string is its file name ($(grep -c '^ *module_string: ' "$OUT/limine.conf") modules)"
 else fail "[0.13] limine.conf: ${MSBAD//$'\n'/; }"; fi
-
-echo "== [0.13] madire.kernel against v0.12's (printed for the 0.13 report; decides no check)"
-# Every "0.13" in the kernel image put back to "0.12" (same length): if the
-# result's SHA-256 is v0.12's (60012175..., runs 38181484366 and 38190277693),
-# the version string is the only difference.
-python3 - "$KERNEL" <<'PY'
-import hashlib, sys
-data = open(sys.argv[1], "rb").read()
-new, old = b"0.13", b"0.12"
-offsets = []
-i = data.find(new)
-while i >= 0:
-    offsets.append(i)
-    i = data.find(new, i + 1)
-back = data.replace(new, old)
-print("KERNEL_VS_V012: %d bytes, \"0.13\" at %d offset(s): %s" % (len(data), len(offsets), ", ".join("0x%x" % o for o in offsets)))
-for o in offsets:
-    a = max(0, o - 12)
-    print("KERNEL_VS_V012:   0x%x: %r" % (o, data[a:o + 8]))
-print("KERNEL_VS_V012: with \"0.12\" put back: sha256 %s" % hashlib.sha256(back).hexdigest())
-print("KERNEL_VS_V012: v0.12's madire.kernel:   sha256 60012175f86c02ed5361f58b6098a64a5497849abd63243f29b860e856d69b8f")
-print("KERNEL_VS_V012: %s" % ("ONLY THE VERSION STRING DIFFERS" if hashlib.sha256(back).hexdigest()
-      == "60012175f86c02ed5361f58b6098a64a5497849abd63243f29b860e856d69b8f" else "OTHER DIFFERENCES"))
-PY

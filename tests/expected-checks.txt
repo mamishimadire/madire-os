@@ -17,4 +17,28 @@
 # 0.13: the 11 checks of the plan (7 in part static, 2 in part 1, 2 in part 4;
 # the 7 temporary A/B checks of stages 1-3a were removed in stage 3b).
 0.13 11
-unit-suites 55
+# 1.0 stage 0a: the ISO root's licence files (part static). Stage 1: 14 more:
+# the filesystem's boot self-test (10 in part 1, 1 in part final) and the
+# padded test kernel (3 in part 4); 3 unit suites (path, vfs, ramfs).
+# Stage 2: 18 more: the data budget and the self-test's data step (4 in
+# part 1), test=fslimits (8) and test=fsfill at 32M and 64M (6) in part 2;
+# 1 unit suite (fspage). Stage 3: 10 more: test=klock, the VFS lock under
+# contention (part 2); 1 unit suite (klock). Stage 4: 32 more: file
+# descriptors: the boot line, test=fdsys (17, and 1 with SMEP and SMAP)
+# and test=fdkill (11) in part 2, test=selfcheckcopylock (2) in part 4;
+# 2 unit suites (fdtable, usercopy_out). Stage 5: 44 more: the file system
+# calls: the boot clock line, test=fileio (22), test=bigio (13) and
+# test=filecontend (8) in part 2; 1 unit suite (syscall_fs). Stage 6: 34
+# more: the folder calls: test=dirops (23) and test=fsunlink (11) in part
+# 4; 1 unit suite (syscall_dir). Stage 7: 18 more: System V start-up:
+# test=startup (16) and a console session (2) in part 4; 1 unit suite
+# (startstack). Stage 7b: 3 more: test=klock's ticks inside holds (part
+# 2), test=selfcheckyieldlock (2) in part 4. Stage 8: 38 more: the
+# console's file commands and the Live label, one console session (part
+# 4); 1 unit suite (shell_fs10). Stage 9: 41 more: output redirection,
+# rm, cp, mv, df and du, one console session (part 4); 1 unit suite
+# (shell_fs10b). Stage 10: 7 more: help on one screen (6 in part 2, in
+# the [0.12] console session's boot) and docs/*.md valid UTF-8 (part
+# static); 1 unit suite (shell_help10).
+1.0 260
+unit-suites 68

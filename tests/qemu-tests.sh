@@ -59,6 +59,7 @@ passes_010=0         # checks added in 0.10, tagged "[0.10]"
 passes_011=0         # checks added in 0.11, tagged "[0.11]"
 passes_012=0         # checks added in 0.12, tagged "[0.12]"
 passes_013=0         # checks added in 0.13, tagged "[0.13]"
+passes_10=0          # checks added in 1.0, tagged "[1.0]"
 passes_stress=0      # 0.12 stage 2b: the stress part's checks, "[stress]" (on request only)
 
 # 0.10: the version is read once, from kernel/kernel.h, and every check that
@@ -92,6 +93,7 @@ pass() {
     "[0.11]"*) passes_011=$((passes_011 + 1)) ;;
     "[0.12]"*) passes_012=$((passes_012 + 1)) ;;
     "[0.13]"*) passes_013=$((passes_013 + 1)) ;;
+    "[1.0]"*) passes_10=$((passes_10 + 1)) ;;
     "[stress]"*) passes_stress=$((passes_stress + 1)) ;;
     esac
 }
@@ -124,12 +126,22 @@ reject() {
 # boot <log> <seconds> <qemu args...>   (-no-reboot: a triple fault ends the
 # run instead of looping, and the expected text will then be missing)
 boot() {
-    local log=$1 secs=$2
+    local log=$1 secs=$2 t0
     shift 2
     rm -f "$log"
+    t0=$(date +%s%N)
     timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
         -serial file:"$log" "$@" >/dev/null 2>&1
     [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+
+# boot_seconds <log> <start, date +%s%N>: 1.0 stage 3, report only (decides
+# no check): "BOOT_SECONDS <log> <s>", the boot's wall time in seconds with
+# one decimal, printed by boot and boot_until.
+boot_seconds() {
+    local ms=$(( ($(date +%s%N) - $2) / 1000000 ))
+    echo "BOOT_SECONDS ${1##*/} $((ms / 1000)).$((ms % 1000 / 100))"
 }
 
 # boot_keys <log> <seconds> <ready text> <keys> <gap> <qemu args...>
@@ -253,7 +265,7 @@ sed 's/^/      /' "$QEMU_WATCH_DIR/stalls.txt"
 
 # 0.12: the counts of this run in one line (tests/check-counts.sh sums the
 # lines of a sharded run). A shard run ends here.
-COUNTS="SHARD_COUNTS part=$SHARD failures=$failures passes=$passes 0.3=$((passes - passes_stress - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013)) 0.4=$passes_new 0.5=$passes_05 0.6=$passes_06 0.7=$passes_07 0.8=$passes_08 0.9=$passes_09 0.9.1=$passes_091 0.9.2=$passes_092 0.10=$passes_010 0.11=$passes_011 0.12=$passes_012 0.13=$passes_013"
+COUNTS="SHARD_COUNTS part=$SHARD failures=$failures passes=$passes 0.3=$((passes - passes_stress - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10)) 0.4=$passes_new 0.5=$passes_05 0.6=$passes_06 0.7=$passes_07 0.8=$passes_08 0.9=$passes_09 0.9.1=$passes_091 0.9.2=$passes_092 0.10=$passes_010 0.11=$passes_011 0.12=$passes_012 0.13=$passes_013 1.0=$passes_10"
 echo "$COUNTS"
 # 0.12 stage 2b: a part run on request reports its own checks.
 if [ "$passes_stress" -gt 0 ]; then echo "STRESS_COUNTS passes=$passes_stress failures=$failures"; fi
@@ -266,7 +278,7 @@ fi
 
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 from 0.11 + $passes_012 from 0.12 + $passes_013 new in 0.13)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 from 0.11 + $passes_012 from 0.12 + $passes_013 from 0.13 + $passes_10 new in 1.0)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

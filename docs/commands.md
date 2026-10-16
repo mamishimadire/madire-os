@@ -1,6 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.7
+# Madire OS Command Standard (MOCS) v0.8
 
-**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned). v0.7 (Madire OS 0.12): `prompt`, `alias`, `unalias`, `set`, `export`, `env` (listing only), `sleep`, `presskey` and `time` IMPLEMENTED, the new `unset` IMPLEMENTED, `kill -y <pid>` IMPLEMENTED; "Did you mean" suggestions and help sections (`help shell`, `help system`, `help programs`) IMPLEMENTED; Ctrl+C also cancels `sleep` and `presskey`; `env` running a program with a changed environment, and `$NAME` expansion, stay PLANNED.
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned). v0.7 (Madire OS 0.12): `prompt`, `alias`, `unalias`, `set`, `export`, `env` (listing only), `sleep`, `presskey` and `time` IMPLEMENTED, the new `unset` IMPLEMENTED, `kill -y <pid>` IMPLEMENTED; "Did you mean" suggestions and help sections (`help shell`, `help system`, `help programs`) IMPLEMENTED; Ctrl+C also cancels `sleep` and `presskey`; `env` running a program with a changed environment, and `$NAME` expansion, stay PLANNED. v0.8 (Madire OS 1.0): `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat` and `cat` IMPLEMENTED, in the new help section `files`; `version` adds the Live mode line; `run [-b] <program> [args]`: the words after the name reach the program as its arguments and the exported variables as its environment, and a program starts in the shell's current folder; then `rm`, `cp`, `mv`, `df` and `du` IMPLEMENTED (also in the help section `files`), output redirection `> file` and `>> file` for built-in commands (`>` and `>>` as separate words only), and `-y` the general non-interactive form of a command that asks.
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -24,9 +24,9 @@ Madire OS provides the foundations that applications need (processes, files, dev
 | **PLANNED** | Planned; the entry names the foundation it needs first |
 | **APPLICATION** | An installable application, not part of Madire OS |
 
-**Implemented today (Madire OS 0.12):** 26 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9; processes too since 0.11), `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1), `run`, `kill` (0.11; `kill -y` 0.12), and `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `env`, `sleep`, `presskey`, `time` (0.12). Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
+**Implemented today (Madire OS 1.0):** 39 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9; processes too since 0.11), `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1), `run`, `kill` (0.11; `kill -y` 0.12), `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `env`, `sleep`, `presskey`, `time` (0.12), and `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat`, `cat`, `rm`, `cp`, `mv`, `df`, `du` (1.0). Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
 
-**In this standard (v0.7):** 183 commands: 26 IMPLEMENTED, 144 PLANNED and 13 APPLICATION (by level: 21 CORE, 149 SYSTEM, 13 APPLICATION).
+**In this standard (v0.8):** 183 commands: 39 IMPLEMENTED, 131 PLANNED and 13 APPLICATION (by level: 21 CORE, 149 SYSTEM, 13 APPLICATION).
 
 **Notes on the 0.9.1 commands:**
 
@@ -38,21 +38,35 @@ Madire OS provides the foundations that applications need (processes, files, dev
 **Notes on the 0.12 commands** (the decisions are in the decision log of [PROGRESS.md](PROGRESS.md)):
 
 - **Everything is in memory and lost at restart:** the prompt, the aliases and the variables. Every limit below is an error message, never a silent cut.
-- **Help sections:** `help` keeps its list and order (the 0.12 commands are appended) and ends with `Sections: shell system programs (help <section>)`; `help <name>` looks up a section first, then a command. The full list is 28 lines since 0.12, so its first lines scroll into the scrollback (a one-screen design is a follow-up in PROGRESS.md).
+- **Help sections:** `help <name>` looks up a section first, then a command; `help <section>` lists the section's commands with their purposes. Since 1.0 `help` fits one screen (12 lines in the console): `Available commands:`, then each section's title and its command names, several per line (at most 79 columns), then `Purposes and usage: help <command>; one section: help <section>.` and `Scroll back: Shift+PgUp and Shift+PgDn.` (In 0.12 `help` listed every command with its purpose, 28 lines, ending with `Sections: shell system programs (help <section>)`.)
 - **"Did you mean":** an unknown command keeps its line `Unknown command: X. Type 'help' for a list of commands.` and gets a second line `Did you mean: …?` with up to 3 names at edit distance at most 2 (case-sensitive; nearest first, then alphabetical), from the commands offered and the current aliases. Nothing is run. `help <unknown>` suggests over sections and commands.
 - **`prompt <text>`:** 1–8 printable ASCII characters, no spaces, not starting with `-`, filling the 8 prompt columns (so the 71-character input line still fits 79 columns); `prompt --reset` restores `madire> `.
 - **`alias <name> <command...>`:** at most 16 aliases; names `[a-z0-9_]{1,15}`, never a built-in's name; the command at most 63 characters and starting with a built-in (so no alias names another); only the first word of a line is expanded, once, and the line is split again under the 8-word limit. `alias` lists them, `alias <name>` shows one.
-- **`set NAME=value`, `set NAME`, `set`:** at most 32 variables; names `[A-Za-z_][A-Za-z0-9_]{0,15}`, case-sensitive, listed in byte order; values at most 63 characters (the value is the rest of the word and the words after it, joined with single spaces; `set A=` gives an empty value). `unset NAME` removes a variable and its export mark. `export NAME` marks a set variable (`export NAME=value` is refused); `env` lists the exported ones. **No variable reaches a program yet**, and there is no `$NAME` expansion: both are PLANNED (passing an environment needs the System V start-up layout, see the follow-ups in PROGRESS.md).
+- **`set NAME=value`, `set NAME`, `set`:** at most 32 variables; names `[A-Za-z_][A-Za-z0-9_]{0,15}`, case-sensitive, listed in byte order; values at most 63 characters (the value is the rest of the word and the words after it, joined with single spaces; `set A=` gives an empty value). `unset NAME` removes a variable and its export mark. `export NAME` marks a set variable (`export NAME=value` is refused); `env` lists the exported ones. Since 1.0 the exported variables reach a program started with `run` as its environment (the System V start-up layout); there is no `$NAME` expansion (PLANNED).
 - **`sleep <seconds>`** waits 1–3600 whole seconds without blocking the kernel; **`presskey`** prints `Press any key to continue...` and waits for a key, which is not typed (Shift, Ctrl, Alt, the lock keys and the Windows keys alone don't count). Ctrl+C cancels either (`sleep: cancelled.`, `presskey: cancelled.`); both are logged only as fixed lines, never as typed keys.
 - **`time <command...>`** runs a built-in command and then prints `time: N ticks (X.XX s)`, after a program's end line, a wait or a question's answer. It doesn't expand aliases (`time: 'll' is an alias; time runs built-in commands only.`), and `time time` is refused.
 - **`kill -y <pid>`** ends a process without asking; the refusals are the same as for `kill <pid>` (usage `kill [-y] <pid>`).
 
-**Today: where the commands run.** Since 0.11 `run` starts programs (ELF files delivered as boot modules), but all 26 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Now that programs can be loaded and managed, SYSTEM commands are expected to move out into separate user programs (once a filesystem holds them, 1.0); CORE commands stay in the shell.
+**Notes on the 1.0 commands** (the decisions are in the decision log of [PROGRESS.md](PROGRESS.md)):
+
+- **Live mode:** every file and folder lives in memory only (the RAM filesystem: `/`, `/home` and `/tmp` at boot); a restart loses all of them. The console says so when it opens (`Live mode: files are kept in memory only.` and `Nothing is saved: all files are lost when the computer restarts.`), and `version` adds `Live mode (files in memory only)`.
+- **The current folder:** the shell starts in `/home`, where `cd` with no argument goes; a program started with `run` starts in the shell's current folder. Relative paths start there; `.`, `..`, repeated `/` and a trailing `/` follow the filesystem's rules (names up to 255 bytes; bytes outside 0x20–0x7E are shown as `?`).
+- **Help:** the file commands form the help section `files` (`help files`): the eight of stage 8, then `rm`, `cp`, `mv`, `df` and `du`; `help` shows their names under the title `files: Files and folders`, on one line, as the last section (the whole `help` is one screen, 12 lines; the purposes are in `help files` and `help <command>`).
+- **`pwd`**, **`cd [path]`**, **`ls [-l] [path]`**, **`mkdir <path>`**, **`rmdir <path>`**, **`touch <path>`**, **`stat <path>`**, **`cat <path>`:** `cd`, `mkdir` (mode 0755, no `-p`), `rmdir` (empty folders only) and `touch` (a new empty file with mode 0644, or the times of an existing one set to now) print nothing when they succeed. `ls` lists a folder's entries in the order they were created (**a deviation**: Linux sorts them by name), folders marked `/`, `.` and `..` not shown; `ls -l` adds the type (`d` or `-`), the size and the modify time (`YYYY-MM-DD HH:MM`). `stat` shows the type, size, pages, node number, links, mode and the three times. `cat` shows a file with lines cut at 79 characters; it is read one 4 KiB piece at a time, so Ctrl+C stops it at once (`cat: cancelled.`) and keys typed meanwhile are not typed.
+- **Errors** read `<command>: '<path>': <reason>.` (`no such file or folder`, `not a folder`, `is a folder`, `already exists`, `the folder is not empty`, `the root folder cannot be removed`, …), the path shortened to 30 characters. A word starting with `-` (other than `ls -l`) is a usage error.
+- **`rm [-y] <path>`** removes a file (folders: `rmdir`; `rm -r` PLANNED); it asks first (`Remove file '<path>'? Type 'yes' to confirm:`, answered at `yes/no> `; only exactly "yes" removes it, anything else prints `Remove cancelled.`). A file a program has open loses its name at once and stays readable and writable through the program's descriptor until its last close. **`-y` is the general non-interactive form** of a command that asks (`kill -y`, `rm -y`, `cp -y`, `mv -y`): the same refusals, no question.
+- **`cp [-y] <from> <to>`** copies a file to the file at `<to>` (files only; a folder as `<to>` is refused: **a deviation**, copying into a folder comes later). An existing file asks first (`Replace file '<to>'? Type 'yes' to confirm:`, `Copy cancelled.`). The copy runs 4 KiB at a time, so Ctrl+C stops it (`cp: cancelled.`); a copy that stops (Ctrl+C, or `no file space left (the budget is full)`) says how much the target holds (`cp: '<to>' holds the first N of M bytes.`).
+- **`mv [-y] <from> <to>`** moves or renames a file or a folder (the `rename` system call's rules: a file over a file, an empty folder over an empty folder, across folders; a folder into itself and `/`, `.` or `..` are refused). Replacing a file asks first (`Move cancelled.`); a folder as `<to>` for a file is refused (**a deviation**, as for `cp`). Its errors name both paths: `mv: '<from>' -> '<to>': <reason>.`
+- **`df`** shows the filesystem as `live (RAM)` (Live mode), the nodes used of 1024 and the 4 KiB pages used of the file budget; **`du [path]`** counts the pages (index pages included, as `stat`), files and folders under a folder (or one file): `516 pages (2064 KiB) in 3 files and 1 folder`.
+- **Output redirection** (shell language, section 5): `<command> > file` writes a built-in command's output to the file (created with mode 0644, or emptied first), `>> file` adds it at the end. `>` and `>>` count only as separate words (**a deviation** from Unix shells until quoting exists: `echo hi>f` prints `hi>f`); one per line, anywhere on it, counting against the 8 words. Error lines and "Did you mean" lines stay on the screen. `clear`, `reboot`, `kill`, `sleep`, `presskey`, `run`, `rm`, `cp` and `mv` refuse it (`<command>: its output cannot go to a file.`; a program's output to a file comes with pipes, later). `cat a > b` writes the bytes as they are; `cat a >> a` is refused. A file that reaches its 2 MiB limit or the budget keeps what was written (`Output to '<file>': only the first N bytes were written.`).
+- **A removed current folder:** if the shell's current folder is removed, `pwd` says so (`pwd: the current folder was removed (cd / to leave it).`), and a relative path that is then not found adds `(The current folder was removed: use an absolute path, for example cd /.)`; `cd /` or any absolute path leaves it.
+
+**Today: where the commands run.** Since 0.11 `run` starts programs (ELF files delivered as boot modules), but all 39 implemented commands still run **inside the kernel console**, as part of the kernel's built-in shell, whatever their level. Now that programs can be loaded and managed, SYSTEM commands are expected to move out into separate user programs (once a filesystem holds them, 1.0); CORE commands stay in the shell.
 
 | Command | Level | Today |
 |---|---|---|
-| `help`, `echo`, `history`, `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `time` | CORE | in the kernel console; stays in the shell |
-| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `run`, `kill`, `env`, `sleep`, `presskey` | SYSTEM | in the kernel console; expected to become separate programs once a filesystem holds them |
+| `help`, `echo`, `history`, `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `time`, `pwd`, `cd` | CORE | in the kernel console; stays in the shell |
+| `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `run`, `kill`, `env`, `sleep`, `presskey`, `ls`, `mkdir`, `rmdir`, `touch`, `stat`, `cat`, `rm`, `cp`, `mv`, `df`, `du` | SYSTEM | in the kernel console; expected to become separate programs once a filesystem holds them |
 
 **Foundations** named below: processes (0.10 user processes, 0.11 programs and process management), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
 
@@ -64,7 +78,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `help` | List the commands; `help <command>` shows one command's purpose and usage; `help <section>` lists one section (`shell`, `system`, `programs`) | CORE | IMPLEMENTED (0.5; `help <command>` and `<command> --help`: 0.9.1; sections: 0.12) |
+| `help` | List the commands; `help <command>` shows one command's purpose and usage; `help <section>` lists one section (`shell`, `system`, `programs`, `files`) | CORE | IMPLEMENTED (0.5; `help <command>` and `<command> --help`: 0.9.1; sections: 0.12; `files`: 1.0) |
 | `clear` | Clear the screen | SYSTEM | IMPLEMENTED |
 | `echo` | Print text | CORE | IMPLEMENTED |
 | `history` | Show the commands entered since boot (the last 16, numbered); Up/Down recall them | CORE | IMPLEMENTED (0.9.1; kept across restarts once the filesystem exists) |
@@ -73,8 +87,8 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `which` | Show which program a command name runs | CORE | PLANNED (filesystem) |
 | `man` | Show the manual page of a command | SYSTEM | PLANNED (filesystem) |
 | `exit` | Leave the shell | CORE | PLANNED (processes: a shell running as a process) |
-| `cd` | Change the current folder | CORE | PLANNED (filesystem) |
-| `pwd` | Show the current folder | CORE | PLANNED (filesystem) |
+| `cd` | Change the current folder: `cd [path]` (no argument: `/home`) | CORE | IMPLEMENTED (1.0) |
+| `pwd` | Show the current folder | CORE | IMPLEMENTED (1.0) |
 | `sleep` | Wait for a given time: `sleep <seconds>` (1–3600; Ctrl+C cancels) | SYSTEM | IMPLEMENTED (0.12; fractions of a second: PLANNED) |
 | `jobs` | List programs running in the background | CORE | PLANNED (processes, job control) |
 | `fg` | Bring a background program to the foreground | CORE | PLANNED (processes, job control) |
@@ -112,7 +126,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | Command | Purpose | Level | Status |
 |---|---|---|---|
 | `ps` | List what is running: the kernel threads, then the processes (PID, state, TID, name) | SYSTEM | IMPLEMENTED (0.9; processes 0.11) |
-| `run` | Start a program: `run <name> [n]` in the foreground (its output on the screen; Ctrl+C ends it), `run -b <name> [n]` in the background (output to the serial log and `dmesg` only) | SYSTEM | IMPLEMENTED (0.11) |
+| `run` | Start a program: `run [-b] <program> [args]`, in the foreground (its output on the screen; Ctrl+C ends it) or with `-b` in the background (output to the serial log and `dmesg` only); the words after the name are its arguments, the exported variables its environment, and it starts in the shell's current folder | SYSTEM | IMPLEMENTED (0.11; arguments, environment and current folder: 1.0) |
 | `kill` ⚠ | End a process by its number: `kill <pid>` asks first (`yes/no>`; only exactly "yes" ends it); `kill -y <pid>` ends it without the question, for scripts | SYSTEM | IMPLEMENTED (0.11; `-y`: 0.12) |
 | `pkill` ⚠ | End processes by name | SYSTEM | PLANNED (processes) |
 | `top` | Show running processes and their resource use, updated live | SYSTEM | PLANNED (processes) |
@@ -123,17 +137,17 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `ls` | List files and folders | SYSTEM | PLANNED (filesystem) |
-| `mkdir` | Create a folder | SYSTEM | PLANNED (filesystem) |
-| `rmdir` | Remove an empty folder | SYSTEM | PLANNED (filesystem) |
-| `touch` | Create an empty file, or update a file's time | SYSTEM | PLANNED (filesystem) |
-| `rm` ⚠ | Remove files or folders | SYSTEM | PLANNED (filesystem) |
-| `cp` | Copy files or folders | SYSTEM | PLANNED (filesystem) |
-| `mv` ⚠ | Move or rename files or folders (may replace an existing file) | SYSTEM | PLANNED (filesystem) |
+| `ls` | List files and folders: `ls [-l] [path]` | SYSTEM | IMPLEMENTED (1.0; in creation order) |
+| `mkdir` | Create a folder: `mkdir <path>` | SYSTEM | IMPLEMENTED (1.0; `-p`: PLANNED) |
+| `rmdir` | Remove an empty folder: `rmdir <path>` | SYSTEM | IMPLEMENTED (1.0) |
+| `touch` | Create an empty file, or update a file's time: `touch <path>` | SYSTEM | IMPLEMENTED (1.0) |
+| `rm` ⚠ | Remove a file: `rm [-y] <path>` (asks first) | SYSTEM | IMPLEMENTED (1.0; files only, `-r`: PLANNED) |
+| `cp` | Copy a file: `cp [-y] <from> <to>` (replacing a file asks first) | SYSTEM | IMPLEMENTED (1.0; files only, into a folder: PLANNED) |
+| `mv` ⚠ | Move or rename files or folders: `mv [-y] <from> <to>` (replacing a file asks first) | SYSTEM | IMPLEMENTED (1.0; into a folder: PLANNED) |
 | `ln` | Create a link to a file | SYSTEM | PLANNED (filesystem) |
 | `tree` | Show a folder structure as a tree | SYSTEM | PLANNED (filesystem) |
 | `file` | Identify a file's type | SYSTEM | PLANNED (filesystem) |
-| `stat` | Show a file's details | SYSTEM | PLANNED (filesystem) |
+| `stat` | Show a file's details: `stat <path>` | SYSTEM | IMPLEMENTED (1.0) |
 | `find` | Search for files and folders by name or property | SYSTEM | PLANNED (filesystem) |
 | `locate` | Find files quickly through an index | SYSTEM | PLANNED (filesystem) |
 | `fileattr` | Show or change a file's attributes (read-only, hidden) | SYSTEM | PLANNED (filesystem) |
@@ -142,7 +156,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 
 | Command | Purpose | Level | Status |
 |---|---|---|---|
-| `cat` | Show a file's contents | SYSTEM | PLANNED (filesystem) |
+| `cat` | Show a file's contents: `cat <path>` (Ctrl+C stops it) | SYSTEM | IMPLEMENTED (1.0; several files and pipes: PLANNED) |
 | `less` | View text page by page, backwards and forwards, with search | SYSTEM | PLANNED (filesystem) |
 | `more` | View text page by page, forwards only (a minimal pager) | SYSTEM | PLANNED (filesystem) |
 | `head` | Show the beginning of a file | SYSTEM | PLANNED (filesystem, pipes) |
@@ -188,8 +202,8 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `lsblk` | List storage devices and partitions | SYSTEM | PLANNED (disk drivers) |
 | `mount` | Attach a filesystem | SYSTEM | PLANNED (disk drivers, filesystem) |
 | `umount` | Detach a filesystem | SYSTEM | PLANNED (disk drivers, filesystem) |
-| `df` | Show free space per filesystem | SYSTEM | PLANNED (disk drivers, filesystem) |
-| `du` | Show the space files and folders use | SYSTEM | PLANNED (filesystem) |
+| `df` | Show the filesystem's nodes and pages in use: `df` (Live mode: `live (RAM)`) | SYSTEM | IMPLEMENTED (1.0; foundation: filesystem) |
+| `du` | Show the pages under a folder: `du [path]` | SYSTEM | IMPLEMENTED (1.0) |
 | `fsck` ⚠ | Check and repair a filesystem | SYSTEM | PLANNED (disk drivers, filesystem) |
 | `format` ⚠ | Prepare a storage device for use (erases it) | SYSTEM | PLANNED (disk drivers, filesystem) |
 | `partition` ⚠ | Create or change disk partitions | SYSTEM | PLANNED (disk drivers) |
@@ -405,7 +419,7 @@ These are features of the shell, not commands:
 - `if` / `else`;
 - loops;
 - pipes (`|`), passing one command's output to the next;
-- redirection (`>`), sending output to a file;
+- redirection (`>`), sending output to a file; since 1.0 `> file` and `>> file` for built-in commands, as separate words only (see the notes on the 1.0 commands); a program's output to a file comes with pipes;
 - exit codes (0 for success, anything else for failure), usable in `if`.
 
 **Open decision for the 1.0 era:** Bash-style text pipelines, PowerShell-style object pipelines, or a mix (Bash-compatible scripting with optional structured output, such as `ps --json`). Both shells are listed in [references.md](references.md) as references only.

@@ -2,7 +2,7 @@
 #
 # mode=sharded (default): five jobs in parallel, one per part of the QEMU
 # tests (make test-shard SHARD=<part>; "static" also runs make unit, make
-# repro and the symbol, SSE/x87 and 2 MiB margin checks), then the job
+# repro and the symbol, SSE/x87 and kernel margin checks), then the job
 # "combine" (tests/combine-shards.sh): same commit, files and kernel in
 # every job, every part run once, the part "final" over every job's serial
 # logs, the counts against tests/expected-checks.txt, the helper replay.
@@ -94,7 +94,7 @@ jobs:
           echo "$rc" > make-exit.txt
           tail -n 3 regression.log
 
-      - name: Checks (source unchanged, symbols, SSE, 2 MiB margin, kernel hash)
+      - name: Checks (source unchanged, symbols, SSE, kernel margin, kernel hash)
         if: always()
         run: |
           {
@@ -110,6 +110,7 @@ jobs:
             echo "SSE_X87_REGISTER_USES=$(objdump -d build/madire.elf | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]' || true)"
             end=$(nm -n build/madire.elf | awk '$3 == "__kernel_end" {print $1; exit}')
             echo "KERNEL_END_VIRTUAL=0x$end"
+            echo "KERNEL_MARGIN_BYTES=$(( 0x400000 - (0x$end - 0xffffffff80000000) ))"
             echo "TWO_MIB_MARGIN_BYTES=$(( 0x200000 - (0x$end - 0xffffffff80000000) ))"
             sha256sum build/madire.elf build/madire.kernel build/madire-os.iso
           } 2>&1 | tee checks.txt
@@ -202,7 +203,7 @@ jobs:
           echo "$rc" > make-exit.txt
           tail -n 3 regression.log
 
-      - name: Checks (source unchanged, build hashes; part static also symbols, SSE, 2 MiB margin)
+      - name: Checks (source unchanged, build hashes; part static also symbols, SSE, kernel margin)
         if: always()
         env:
           PART: ${{ matrix.part }}
@@ -219,6 +220,7 @@ jobs:
               echo "SSE_X87_REGISTER_USES=$(objdump -d build/madire.elf | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]' || true)"
               end=$(nm -n build/madire.elf | awk '$3 == "__kernel_end" {print $1; exit}')
               echo "KERNEL_END_VIRTUAL=0x$end"
+              echo "KERNEL_MARGIN_BYTES=$(( 0x400000 - (0x$end - 0xffffffff80000000) ))"
               echo "TWO_MIB_MARGIN_BYTES=$(( 0x200000 - (0x$end - 0xffffffff80000000) ))"
             fi
           } 2>&1 | tee checks.txt

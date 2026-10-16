@@ -39,8 +39,13 @@ if [ -n "$GPID" ] && [ "$GST" = "$(( GPID & 255 ))" ] && grep -qE ': OK$' <<< "$
 else
     fail "[0.10] usersys: getpid wrong (${GP:-no line})"
 fi
-expect "$LOG" "^User syscall test: system calls made: getpid 3, sched_yield 100, exit 7, exit_group 1, write 4, -ENOSYS 1028: OK$" \
-                                                      "[0.10] usersys: exactly the calls made were counted; 1028 unknown numbers (0-1023, x32, >= 2^32, -1, Madire range) gave -ENOSYS"
+# 1.0 stage 4: 1024 unknown numbers (1028 until read, close, dup and dup2
+# were implemented; enosys skips those four). 1.0 stage 5: 1016 (open,
+# stat, fstat, lstat, lseek, ftruncate, openat and newfstatat skipped too).
+# 1.0 stage 6: 1007 (getcwd, chdir, rename, mkdir, rmdir, unlink,
+# getdents64, mkdirat and unlinkat skipped too).
+expect "$LOG" "^User syscall test: system calls made: getpid 3, sched_yield 100, exit 7, exit_group 1, write 4, -ENOSYS 1007: OK$" \
+                                                      "[0.10] usersys: exactly the calls made were counted; 1007 unknown numbers (0-1023, x32, >= 2^32, -1, Madire range) gave -ENOSYS"
 expect "$LOG" "^User syscall test: spin kept running in ring 3 meanwhile, then was killed: OK$" \
                                                       "[0.10] usersys: another process kept running in ring 3"
 TD=$(grep -m1 -E '^User syscall test: [0-9]+ address spaces torn down' "$LOG")
@@ -175,15 +180,19 @@ expect "$LOG" "System ready\."                        "[0.10] userchurn: System 
 
 echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
 # The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
-# 20 built programs (19 until stage 2b added lines) and on fixtures made from hello.elf by
-# tests/elf-fixtures.py (one broken rule each; manifest.txt holds the exact
-# reason each must be refused with). No kernel uses elf_core yet (stage 1).
+# 28 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
+# added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio,
+# 25 until stage 6 added dirops, 26 until stage 7 added args, 27 until
+# stage 8 added fsmake) and on
+# fixtures made from hello.elf by tests/elf-fixtures.py (one broken rule
+# each; manifest.txt holds the exact reason each must be refused with). No
+# kernel uses elf_core yet (stage 1).
 ELFCHECK=$OUT/elfcheck
 FIX=$OUT/elf-fixtures
 EC=$("$ELFCHECK" "$OUT"/user/*.elf 2>&1)
 nprog=$(ls "$OUT"/user/*.elf 2>/dev/null | wc -l)
 nok=$(grep -cE '^[a-z0-9_]+\.elf: OK, [1-4] segments, [0-9]+ pages, entry 0x400[0-9a-f]{3}$' <<< "$EC")
-if [ "$nprog" -eq 20 ] && [ "$nok" -eq 20 ]; then pass "[0.11] elfcheck: all 20 built programs accepted"
+if [ "$nprog" -eq 28 ] && [ "$nok" -eq 28 ]; then pass "[0.11] elfcheck: all 28 built programs accepted"
 else fail "[0.11] elfcheck: $nok of $nprog built programs accepted: $(grep -v ': OK' <<< "$EC" | head -3)"; fi
 expect_line=$(grep -E '^hello\.elf: ' <<< "$EC")
 echo "      $expect_line"
@@ -237,6 +246,11 @@ expect_in_order "$LOG" "[0.11] program modules: the lines are in dmesg" \
     "^madire> dmesg 9999$" "^Program module 1 'hello': " "^Program module 7 'yield': " "^Program modules: 7 accepted"
 reject "$LOG" "PANIC"                                "[0.11] program modules: no panic"
 expect "$LOG" "System ready\."                       "[0.11] program modules: System ready"
+# 1.0 stage 8 (report only, decides no check): the agreed size of dmesg, the
+# bytes printed between the first "madire> dmesg 9999" line and the next
+# line starting "madire>" (lines as the console printed them, each with its
+# newline).
+echo "DMESG_BYTES=$(LC_ALL=C awk '!on && $0 == "madire> dmesg 9999" { on = 1; next } on && /^madire>/ { exit } on { n += length($0) + 1 } END { print n + 0 }' "$LOG")"
 
 # The screen's message line (row 23) shows nothing about program modules.
 LOG=$OUT/serial-progmod-screen.log
@@ -549,7 +563,7 @@ S+="run nullptr{ret}{wait:1}"
 S+="run -b spin{ret}{wait:1}"
 S+="ps{ret}"
 S+="run nosuch{ret}"
-S+="run hello x{ret}"
+S+="run hello x{ret}{wait:1}"                       # 1.0 stage 7: hello runs (and refuses 'x')
 S+="echo end-of-run-test{ret}"
 boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-run-test\n' -m 32M -kernel "$KERNEL" -initrd "$PM"
 grep -E "^madire> (run|ps)|^\[process |^run: |^PID |^ *[0-9]+  (running|ended) |^[0-9]+ process|Hello from user mode|'nullptr' ended by" "$LOG" | sed 's/^/      /'
@@ -574,11 +588,14 @@ expect_in_order "$LOG" "[0.11] ps: the thread table as before, then the processe
     "^madire> run nosuch$"
 expect_next "$LOG" "[0.11] run nosuch: refused, no program of that name" \
     "^madire> run nosuch$" "^run: no program named 'nosuch'\.$"
-expect_next "$LOG" "[0.11] run hello x: a bad argument refused" \
-    "^madire> run hello x$" "^run: 'x' is not a number from 0 to 4294967295\.$"
+# 1.0 stage 7: the words after the name are the program's arguments; the
+# program refuses a bad number itself (u_arg: one line, status 2).
+expect_in_order "$LOG" "[0.11] run hello x: a bad argument refused (by the program since 1.0: one line, status 2)" \
+    "^madire> run hello x$" "^\[pid [0-9]+\] hello: 'x' is not a number from 0 to 4294967295\.$" \
+    "^\[process [0-9]+ 'hello' exited, status 2\]$"
 # (after the first "run hello": the boot self-test runs hello once too)
 n=$(sed -n '/^madire> run hello$/,$p' "$LOG" | grep -cE "^\[pid [0-9]+\] Hello from user mode$")
-if [ "$n" -eq 1 ]; then pass "[0.11] run: hello ran exactly once (the refused lines started nothing)"
+if [ "$n" -eq 1 ]; then pass "[0.11] run: hello's line exactly once (run nosuch started nothing; hello refused 'x' without it)"
 else fail "[0.11] run: hello's line $n times, expected 1"; fi
 # The console's own lines (the serial log also holds kernel log lines,
 # which never reach the screen).

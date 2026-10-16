@@ -104,9 +104,10 @@ owner_check() {
 # 2b). If the line never comes, QEMU runs to its time limit as with boot, and
 # the checks on the log fail.
 boot_until() {
-    local log=$1 secs=$2 line=$3
+    local log=$1 secs=$2 line=$3 t0
     shift 3
     rm -f "$log"
+    t0=$(date +%s%N)
     timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
         -serial file:"$log" "$@" >/dev/null 2>&1 &
     local qpid=$!
@@ -120,6 +121,7 @@ boot_until() {
     done
     wait "$qpid" 2>/dev/null
     [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"           # 1.0 stage 3: report only
 }
 
 # thread_diag <name> <seconds>: boots test=<name> into serial-<name>.log.
@@ -144,4 +146,76 @@ expect_lines() {
     else
         fail "$desc (the lines after /$start/ in $log do not match)"
     fi
+}
+
+# ---- 1.0 stage 3: test=klock (the VFS lock under contention) ----
+
+# klock_boot <log>: test=klock under QEMU -kernel -m 64M, with keys typed
+# during the test over QMP at the pace proven in stage 0d (a 50 ms gap and
+# a 20 ms hold, through qmp_keys.py's own --gap and --hold): "x", which
+# opens the console once the test has ended (that key is not typed), then
+# "echo klock-keys-ok" and Enter. All 20 keys (40 events) wait in the
+# kernel's key queue (64 events) while thread 0 runs the test. QEMU stops
+# once the echo's output is in the log, or at its time limit. Prints the
+# injector's output and BOOT_SECONDS.
+KLOCK_READY="(keys may be typed now)"
+KLOCK_KEYS="xecho klock-keys-ok{ret}"
+klock_boot() {
+    local log=$1 sock=$OUT/qmp-klock.sock t0 out qpid
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 180 qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 64M -kernel "$KERNEL" -append "test=klock" \
+        >/dev/null 2>&1 &
+    qpid=$!
+    out=$(python3 "$QMPKEYS" "$sock" "$log" "$KLOCK_READY" --text "$KLOCK_KEYS" \
+          --gap 0.05 --hold 20 --done $'\nklock-keys-ok\n' --done-timeout 150 2>&1)
+    echo "      $out"
+    sleep 1
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+
+# The result lines of test=klock (kernel/fs/fstest.c), one regex each, in
+# the order of the checks in part 2 (1-9; 10 is the keys; 1.0 stage 7b:
+# KLOCK_RE_TICKS, a tick inside a hold never switches, and KLOCK_RE_PREEMPT
+# changed from "0 at a release" to "1 at every release", the hold's own).
+KLOCK_RE_CONTENTION="^Filesystem lock test: contention: 7 of 7 threads took the lock, each at least once after waiting; takes per thread [0-9]+-[0-9]+ \(mean [0-9]+, each at least 25% of it\); every worker took it while thread 0's loop ran \(fewest [1-9][0-9]*\); [0-9]+ takes, [0-9]+ after waiting: OK$"
+KLOCK_RE_COUNTER="^Filesystem lock test: counter: ([1-9][0-9]*) increments made, the file holds \1: OK$"
+KLOCK_RE_RECORDS="^Filesystem lock test: records: [1-9][0-9]* written, [1-9][0-9]* read across a page boundary \(4096 bytes at 2048\), 0 torn: OK$"
+KLOCK_RE_HOLD="^Filesystem lock test: longest hold: [0-2] ticks \(at most 2\): OK$"
+KLOCK_RE_TURN="^Filesystem lock test: longest turn: [0-6] ticks \(at most 6\), taken by (thread [0-9]+ 'klock[0-5]' \(kernel thread\): [0-6] ticks|no thread \(no turn of 1 tick or more\)): OK$"
+KLOCK_RE_THREAD0="^Filesystem lock test: thread 0: longest wait [0-9]+ ticks, bound [0-9]+ \(at most [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1\) \+ 1\); [1-9][0-9]* wait steps, all by yielding: OK$"
+KLOCK_RE_SELFCHECK="^Filesystem lock test: thread-0 self-check: never fired; checked at each of thread 0's [1-9][0-9]* wait steps: OK$"
+KLOCK_RE_TICKS="^Filesystem lock test: ticks inside holds: [1-9][0-9]* holds kept the lock across the next tick \(longest [0-9]+ ticks of their 4-tick limit, margin [0-9]+%\), 0 switched inside a hold: OK$"
+KLOCK_RE_PREEMPT="^Filesystem lock test: preemption count: at every release 1 \(lowest 1, highest 1: the hold's own\), now 0 \(1 and 0 expected\): OK$"
+KLOCK_RE_RETURNED="^Filesystem lock test: threads ([0-9]+) -> \1, stack slots ([0-9]+) -> \2, heap in use ([0-9]+) -> \3 bytes, the lock free, 0 errors: OK$"
+
+# klock_keys_ok <log>: the keys typed during the test reached the console
+# exactly: one "madire> echo klock-keys-ok" line, the next line (key event
+# lines aside) exactly "klock-keys-ok", the test's "done" line, System
+# ready, no dropped key event, no panic.
+klock_keys_ok() {
+    local log=$1
+    grep -qxF "Filesystem lock test: done" "$log" && grep -qxF "System ready. Press any key to open the console." "$log" &&
+        [ "$(grep -c '^madire> echo' "$log")" = 1 ] && ! grep -q "events dropped" "$log" &&
+        ! grep -q "PANIC" "$log" &&
+        [ "$(awk '/^key:/ { next } on { print; exit } $0 == "madire> echo klock-keys-ok" { on = 1 }' "$log")" = "klock-keys-ok" ]
+}
+
+# klock_figures <log>: "iterations hold turn wait0 takes_min takes_max" from
+# the figures line.
+klock_figures() {
+    sed -nE 's/^Filesystem lock test: figures: iterations ([0-9]+), longest hold ([0-9]+), longest turn ([0-9]+), thread 0 longest wait ([0-9]+), takes per thread ([0-9]+)-([0-9]+)$/\1 \2 \3 \4 \5 \6/p' "$1" | head -n 1
+}
+
+# klock_bound_ok <log>: the stage 3 fix's bound, recomputed from thread 0's
+# line: the bound is (tickets ahead) x (longest hold + 1) + 1 and the
+# longest wait is at most it.
+klock_bound_ok() {
+    local w b a h
+    read -r w b a h <<< "$(sed -nE 's/^Filesystem lock test: thread 0: longest wait ([0-9]+) ticks, bound ([0-9]+) \(at most ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1\) \+ 1\);.*/\1 \2 \3 \4/p' "$1" | head -n 1)"
+    [ -n "${h:-}" ] && [ "$b" -eq $((a * (h + 1) + 1)) ] && [ "$w" -le "$b" ]
 }

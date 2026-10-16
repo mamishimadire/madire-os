@@ -4,7 +4,10 @@
  * Output lines are built in a small fixed buffer with local helpers (the
  * kernel's ksnprintf is not usable here: this module must stay pure).
  * Only 32-bit division is used; the 64-bit tick count is never divided.
+ * (1.0 stage 8: the file commands divide 64-bit sizes, node numbers and
+ * times; on x86-64 that is one instruction, with no helper.)
  */
+#include "kernel/fs/fs_errno.h"
 #include "kernel/logbuf.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/shell/parser.h"
@@ -105,8 +108,9 @@ struct command {
     int section;                            /* 0.12: SECTION_* ("help <section>") */
 };
 
-/* 0.12: the help sections; every command is in exactly one. */
-enum { SECTION_SHELL, SECTION_SYSTEM, SECTION_PROGRAMS, SECTION_COUNT };
+/* 0.12: the help sections; every command is in exactly one. 1.0 stage 8:
+ * "files", offered only when the context has files. */
+enum { SECTION_SHELL, SECTION_SYSTEM, SECTION_PROGRAMS, SECTION_FILES, SECTION_COUNT };
 
 static enum shell_result cmd_help(int, char **, const struct shell_context *, const struct shell_output *);
 
@@ -128,6 +132,8 @@ static enum shell_result cmd_version(int argc, char **argv, const struct shell_c
     l_str(&l, long_mode_active(c) ? " (64-bit x86-64, Multiboot 1)"
                                   : " (32-bit x86, Multiboot 1)");
     emit(o, &l, SHELL_TEXT);
+    if (c->files)                           /* 1.0 stage 8: the Live label (D6) */
+        say(o, SHELL_LIVE_VERSION, SHELL_TEXT);
     return SHELL_OK;
 }
 
@@ -551,7 +557,7 @@ bool shell_reboot_confirmed(const char *answer)
 
 /* ---- 0.11: run (only when the context has procs) ---- */
 
-#define RUN_USAGE      "run [-b] <program> [number]"
+#define RUN_USAGE      "run [-b] <program> [argument...]"
 #define KILL_Y_USAGE   "kill [-y] <pid>"        /* 0.12 stage 2, with a session */
 #define RUN_NAME_SHOWN 40       /* longer names are shortened, so the line fits */
 
@@ -593,9 +599,29 @@ static bool parse_arg(const char *s, uint64_t *out)
     return true;
 }
 
+/* 1.0 stage 7: the exported variables, as a program's environment (in
+ * "env" order); static, not on the console's stack. */
+static const char *run_env_names[SHELL_VAR_MAX], *run_env_values[SHELL_VAR_MAX];
+
+static uint32_t run_env(const struct shell_context *c)
+{
+    uint32_t n = 0;
+    for (uint32_t k = 0; c->session && k < c->session->var_count && n < SHELL_VAR_MAX; k++) {
+        const struct shell_var *v = &c->session->vars[k];
+        if (v->exported) {
+            run_env_names[n] = v->name;
+            run_env_values[n] = v->value;
+            n++;
+        }
+    }
+    return n;
+}
+
 /* "run hello", "run exitcode 1", "run -b spin": a program module, in the
  * foreground (the console waits; its output goes to the serial log and
- * dmesg) or in the background. */
+ * dmesg) or in the background. 1.0 stage 7: the words from the name on
+ * are its arguments (argv), the exported variables its environment; the
+ * program checks its arguments itself. */
 static enum shell_result cmd_run(int argc, char **argv, const struct shell_context *c,
                                  const struct shell_output *o)
 {
@@ -604,26 +630,23 @@ static enum shell_result cmd_run(int argc, char **argv, const struct shell_conte
     bool background = argc > 1 && str_eq(argv[1], "-b");
     if (background)
         i++;
-    if (i >= argc || argc - i > 2 || argv[i][0] == '-')
+    if (i >= argc || argv[i][0] == '-')
         return usage_error(o, RUN_USAGE);
     const char *name = argv[i];
-    uint64_t arg = 0;
-    if (argc - i == 2 && !parse_arg(argv[i + 1], &arg)) {
-        l_reset(&l);
-        l_str(&l, "run: '");
-        l_name(&l, argv[i + 1]);
-        l_str(&l, "' is not a number from 0 to 4294967295.");
-        emit(o, &l, SHELL_ERROR);
-        return SHELL_BAD_ARGS;
-    }
     const struct shell_procs *p = c->procs;
-    int32_t pid = p->start(p->ctx, name, arg, background);
-    if (pid == SHELL_RUN_NO_PROGRAM || pid == SHELL_RUN_FAILED || pid <= 0) {
+    uint32_t envc = run_env(c);
+    int32_t pid = p->start(p->ctx, argc - i, argv + i, envc, run_env_names, run_env_values,
+                           background);
+    if (pid == SHELL_RUN_NO_PROGRAM || pid == SHELL_RUN_FAILED || pid == SHELL_RUN_TOO_BIG ||
+        pid <= 0) {
         l_reset(&l);
         l_str(&l, pid == SHELL_RUN_NO_PROGRAM ? "run: no program named '"
+                  : pid == SHELL_RUN_TOO_BIG  ? "run: argument list too long for '"
                                               : "run: could not start '");
         l_name(&l, name);
-        l_str(&l, pid == SHELL_RUN_NO_PROGRAM ? "'." : "' (no free process slot).");
+        l_str(&l, pid == SHELL_RUN_NO_PROGRAM ? "'."
+                  : pid == SHELL_RUN_TOO_BIG  ? "'."
+                                              : "' (no free process slot).");
         emit(o, &l, SHELL_ERROR);
         return SHELL_BAD_ARGS;
     }
@@ -745,6 +768,910 @@ void shell_end_line(char *out, int32_t pid, const char *name, enum shell_end end
     out[k] = '\0';
 }
 
+/* ---- 1.0 stage 8: the file commands (only when the context has files) ---- */
+
+static uint32_t str_len(const char *s);
+
+#define FS_PATH_SHOWN   30      /* paths in error lines: the line fits 79 columns */
+#define FS_HINT \
+    "(The current folder was removed: use an absolute path, for example cd /.)"
+
+static void l_u64(struct line *l, uint64_t v, uint32_t width)
+{
+    char digits[20];
+    uint32_t n = 0;
+    do {
+        digits[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    for (uint32_t i = n; i < width; i++)
+        l_char(l, ' ');
+    while (n)
+        l_char(l, digits[--n]);
+}
+
+/* A byte as shown: 0x20-0x7E as itself, anything else as '?' (plan B4). */
+static char shown(char c)
+{
+    return c >= 0x20 && c <= 0x7E ? c : '?';
+}
+
+/* At most max characters of s (len bytes), shown; a longer one is cut to
+ * max - 3 and "...". */
+static void l_shown(struct line *l, const char *s, uint32_t len, uint32_t max)
+{
+    uint32_t keep = len <= max ? len : max - 3;
+    for (uint32_t i = 0; i < keep; i++)
+        l_char(l, shown(s[i]));
+    if (keep < len)
+        l_str(l, "...");
+}
+
+static const char *fs_reason(int err)
+{
+    switch (err) {
+    case -FS_ENOENT:       return "no such file or folder";
+    case -FS_ENOTDIR:      return "not a folder";
+    case -FS_EISDIR:       return "is a folder";
+    case -FS_EEXIST:       return "already exists";
+    case -FS_ENOTEMPTY:    return "the folder is not empty";
+    case -FS_EBUSY:        return "the root folder cannot be removed";
+    case -FS_EINVAL:       return "the path ends in '.'";
+    case -FS_ENOSPC:       return "no room (1024 at most)";
+    case -FS_ENOMEM:       return "out of kernel memory";
+    case -FS_ENAMETOOLONG: return "name too long";
+    default:               return 0;
+    }
+}
+
+/* "<cmd>: '<path>': <reason>." and, for a relative path that was not found
+ * while the current folder has been removed, the hint (S6-4). */
+static enum shell_result fs_error(const struct shell_output *o, const struct shell_context *c,
+                                  const char *cmd, const char *path, int err)
+{
+    struct line l;
+    const char *why = fs_reason(err);
+    l_reset(&l);
+    l_str(&l, cmd);
+    l_str(&l, ": '");
+    l_shown(&l, path, str_len(path), FS_PATH_SHOWN);
+    l_str(&l, "': ");
+    if (why) {
+        l_str(&l, why);
+    } else {
+        l_str(&l, "error ");
+        l_uint(&l, (uint32_t)-err, 0, ' ');
+    }
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
+    if (err == -FS_ENOENT && path[0] != '/' && c->files->cwd_removed(c->files->ctx))
+        say(o, FS_HINT, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
+static bool leap_year(uint32_t y)
+{
+    return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+}
+
+void shell_date(int64_t seconds, char out[20])
+{
+    static const uint8_t month_days[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    uint64_t s = seconds < 0 ? 0 : (uint64_t)seconds;
+    uint64_t days = s / 86400;
+    uint32_t rest = (uint32_t)(s % 86400);
+    uint32_t year = 1970, month = 0;
+    while (days >= (leap_year(year) ? 366u : 365u)) {
+        days -= leap_year(year) ? 366u : 365u;
+        year++;
+    }
+    for (;;) {
+        uint32_t md = month_days[month] + (month == 1 && leap_year(year) ? 1u : 0u);
+        if (days < md)
+            break;
+        days -= md;
+        month++;
+    }
+    struct line l;
+    l_reset(&l);
+    l_uint(&l, year, 4, '0');
+    l_char(&l, '-');
+    l_uint(&l, month + 1, 2, '0');
+    l_char(&l, '-');
+    l_uint(&l, (uint32_t)days + 1, 2, '0');
+    l_char(&l, ' ');
+    l_uint(&l, rest / 3600, 2, '0');
+    l_char(&l, ':');
+    l_uint(&l, rest / 60 % 60, 2, '0');
+    l_char(&l, ':');
+    l_uint(&l, rest % 60, 2, '0');
+    uint32_t k = 0;
+    for (; k < 19 && l.s[k]; k++)
+        out[k] = l.s[k];
+    out[k] = '\0';
+}
+
+/* Text of len bytes in lines of at most 79 characters, each byte shown. */
+static void say_cut(const struct shell_output *o, const char *s, uint32_t len)
+{
+    struct line l;
+    l_reset(&l);
+    for (uint32_t i = 0; i < len; i++) {
+        l_char(&l, shown(s[i]));
+        if (l.n == SHELL_CAT_WIDTH && i + 1 < len)
+            emit(o, &l, SHELL_TEXT);
+    }
+    emit(o, &l, SHELL_TEXT);
+}
+
+/* The current folder's path (static: not on the console's stack). */
+static char fs_path[SHELL_PATH_MAX];
+
+static enum shell_result cmd_pwd(int argc, char **argv, const struct shell_context *c,
+                                 const struct shell_output *o)
+{
+    (void)argc; (void)argv;
+    int64_t r = c->files->cwd_path(c->files->ctx, fs_path, sizeof(fs_path));
+    if (r == -FS_ENOENT) {
+        say(o, "pwd: the current folder was removed (cd / to leave it).", SHELL_ERROR);
+        return SHELL_BAD_ARGS;
+    }
+    if (r < 1) {
+        say(o, "pwd: the path is longer than 4095 bytes.", SHELL_ERROR);
+        return SHELL_BAD_ARGS;
+    }
+    say_cut(o, fs_path, (uint32_t)r - 1);
+    return SHELL_OK;
+}
+
+/* The path argument of a command taking one: false (usage printed) for a
+ * word starting with '-'. */
+static bool fs_path_arg(const char *path, const char *usage, const struct shell_output *o)
+{
+    if (path[0] == '-') {
+        usage_error(o, usage);
+        return false;
+    }
+    return true;
+}
+
+static enum shell_result cmd_cd(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    const char *path = argc == 2 ? argv[1] : "/home";     /* plan B7 */
+    if (!fs_path_arg(path, "cd [path]", o))
+        return SHELL_BAD_ARGS;
+    int r = c->files->chdir(c->files->ctx, path);
+    return r < 0 ? fs_error(o, c, "cd", path, r) : SHELL_OK;
+}
+
+/* mkdir, rmdir, touch: one path, nothing printed on success. */
+static enum shell_result fs_simple(int argc, char **argv, const struct shell_context *c,
+                                   const struct shell_output *o, const char *usage,
+                                   int (*call)(void *, const char *))
+{
+    if (argc != 2)
+        return usage_error(o, usage);
+    if (!fs_path_arg(argv[1], usage, o))
+        return SHELL_BAD_ARGS;
+    int r = call(c->files->ctx, argv[1]);
+    return r < 0 ? fs_error(o, c, argv[0], argv[1], r) : SHELL_OK;
+}
+
+static enum shell_result cmd_mkdir(int argc, char **argv, const struct shell_context *c,
+                                   const struct shell_output *o)
+{
+    return fs_simple(argc, argv, c, o, "mkdir <path>", c->files->mkdir);
+}
+
+static enum shell_result cmd_rmdir(int argc, char **argv, const struct shell_context *c,
+                                   const struct shell_output *o)
+{
+    return fs_simple(argc, argv, c, o, "rmdir <path>", c->files->rmdir);
+}
+
+static enum shell_result cmd_touch(int argc, char **argv, const struct shell_context *c,
+                                   const struct shell_output *o)
+{
+    return fs_simple(argc, argv, c, o, "touch <path>", c->files->touch);
+}
+
+static void stat_row(const struct shell_output *o, const char *label, const char *text)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, label);
+    l_pad_to(&l, 8);
+    l_str(&l, text);
+    emit(o, &l, SHELL_TEXT);
+}
+
+static void stat_time(const struct shell_output *o, const char *label, int64_t t)
+{
+    char d[20];
+    shell_date(t, d);
+    stat_row(o, label, d);
+}
+
+static enum shell_result cmd_stat(int argc, char **argv, const struct shell_context *c,
+                                  const struct shell_output *o)
+{
+    struct shell_finfo f;
+    struct line l;
+    if (argc != 2)
+        return usage_error(o, "stat <path>");
+    if (!fs_path_arg(argv[1], "stat <path>", o))
+        return SHELL_BAD_ARGS;
+    int r = c->files->stat(c->files->ctx, argv[1], &f);
+    if (r < 0)
+        return fs_error(o, c, "stat", argv[1], r);
+    l_reset(&l);
+    l_str(&l, "File:");
+    l_pad_to(&l, 8);
+    l_shown(&l, argv[1], str_len(argv[1]), 71);
+    emit(o, &l, SHELL_TEXT);
+    stat_row(o, "Type:", f.type == SHELL_FT_DIR ? "folder" : "file");
+    l_str(&l, "Size:");
+    l_pad_to(&l, 8);
+    l_u64(&l, f.size, 0);
+    l_str(&l, f.size == 1 ? " byte" : " bytes");
+    emit(o, &l, SHELL_TEXT);
+    l_str(&l, "Pages:");
+    l_pad_to(&l, 8);
+    l_uint(&l, f.pages, 0, ' ');
+    l_str(&l, " (4 KiB each, the index page included)");
+    emit(o, &l, SHELL_TEXT);
+    l_str(&l, "Node:");
+    l_pad_to(&l, 8);
+    l_u64(&l, f.ino, 0);
+    emit(o, &l, SHELL_TEXT);
+    l_str(&l, "Links:");
+    l_pad_to(&l, 8);
+    l_uint(&l, f.nlink, 0, ' ');
+    emit(o, &l, SHELL_TEXT);
+    l_str(&l, "Mode:");
+    l_pad_to(&l, 8);
+    for (int shift = 9; shift >= 0; shift -= 3)
+        l_char(&l, (char)('0' + ((f.mode >> shift) & 7u)));
+    emit(o, &l, SHELL_TEXT);
+    stat_time(o, "Access:", f.atime);
+    stat_time(o, "Modify:", f.mtime);
+    stat_time(o, "Change:", f.ctime);
+    return SHELL_OK;
+}
+
+/* One "ls" row: the name (folders with '/'), or with -l "d       0
+ * 2026-10-16 09:41 name"; at most 79 columns, a longer name cut. */
+static void ls_row(const struct shell_output *o, const struct shell_finfo *f, const char *name,
+                   bool longer)
+{
+    struct line l;
+    bool dir = f->type == SHELL_FT_DIR;
+    uint32_t room = SHELL_CAT_WIDTH;
+    l_reset(&l);
+    if (longer) {
+        char d[20];
+        shell_date(f->mtime, d);
+        d[16] = '\0';                       /* no seconds */
+        l_char(&l, dir ? 'd' : '-');
+        l_char(&l, ' ');
+        l_u64(&l, f->size, 7);
+        l_char(&l, ' ');
+        l_str(&l, d);
+        l_char(&l, ' ');
+        room -= l.n;
+    }
+    l_shown(&l, name, str_len(name), dir ? room - 1 : room);
+    if (dir)
+        l_char(&l, '/');
+    emit(o, &l, SHELL_TEXT);
+}
+
+static struct shell_finfo ls_rows[SHELL_LS_BATCH];  /* static: not on the console's stack */
+
+#define LS_USAGE "ls [-l] [path]"
+
+/* "ls [-l] [path]": a folder's entries in creation order (a deviation:
+ * Linux sorts them by name), "." and ".." not shown; a file's own row. */
+static enum shell_result cmd_ls(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    const struct shell_files *fs = c->files;
+    bool longer = false;
+    const char *path = 0;
+    for (int i = 1; i < argc; i++) {
+        if (str_eq(argv[i], "-l") && !longer && !path)
+            longer = true;
+        else if (argv[i][0] != '-' && !path)
+            path = argv[i];
+        else
+            return usage_error(o, LS_USAGE);
+    }
+    if (!path)
+        path = ".";
+    struct shell_finfo *f = &ls_rows[0];
+    int r = fs->stat(fs->ctx, path, f);
+    if (r < 0)
+        return fs_error(o, c, "ls", path, r);
+    if (f->type != SHELL_FT_DIR) {
+        ls_row(o, f, path, longer);
+        return SHELL_OK;
+    }
+    r = fs->list_open(fs->ctx, path);
+    if (r < 0)
+        return fs_error(o, c, "ls", path, r);
+    uint64_t cursor = 0;
+    for (;;) {
+        r = fs->list_next(fs->ctx, &cursor, ls_rows, SHELL_LS_BATCH);
+        if (r <= 0)
+            break;
+        for (int i = 0; i < r; i++)
+            ls_row(o, &ls_rows[i], ls_rows[i].name, longer);
+    }
+    fs->list_close(fs->ctx);
+    return r < 0 ? fs_error(o, c, "ls", path, r) : SHELL_OK;
+}
+
+static bool cat_into_itself(const char *path, const struct shell_context *c,
+                            const struct shell_output *o);
+
+static enum shell_result cmd_cat(int argc, char **argv, const struct shell_context *c,
+                                 const struct shell_output *o)
+{
+    if (argc != 2)
+        return usage_error(o, "cat <path>");
+    if (!fs_path_arg(argv[1], "cat <path>", o))
+        return SHELL_BAD_ARGS;
+    if (c->storage && cat_into_itself(argv[1], c, o))       /* 1.0 stage 9 */
+        return SHELL_BAD_ARGS;
+    int r = c->files->cat_open(c->files->ctx, argv[1]);
+    return r < 0 ? fs_error(o, c, "cat", argv[1], r) : SHELL_CAT;
+}
+
+void shell_cat_init(struct shell_cat *s)
+{
+    s->n = 0;
+}
+
+static void cat_emit(struct shell_cat *s, const struct shell_output *o)
+{
+    s->line[s->n] = '\n';
+    s->line[s->n + 1] = '\0';
+    o->write(o->ctx, s->line, SHELL_TEXT);
+    s->n = 0;
+}
+
+void shell_cat_put(struct shell_cat *s, const uint8_t *bytes, uint32_t len,
+                   const struct shell_output *o)
+{
+    for (uint32_t i = 0; i < len; i++) {
+        if (bytes[i] == '\n') {
+            cat_emit(s, o);
+            continue;
+        }
+        if (s->n == SHELL_CAT_WIDTH)        /* cut only when more follows */
+            cat_emit(s, o);
+        s->line[s->n++] = shown((char)bytes[i]);
+    }
+}
+
+void shell_cat_end(struct shell_cat *s, const struct shell_output *o)
+{
+    if (s->n)
+        cat_emit(s, o);
+}
+
+/* ---- 1.0 stage 9: rm, cp, mv, df, du and output redirection (with storage) ---- */
+
+#define RM_USAGE        "rm [-y] <path>"
+#define CP_USAGE        "cp [-y] <from> <to>"
+#define MV_USAGE        "mv [-y] <from> <to>"
+#define DU_USAGE        "du [path]"
+#define FS_PAIR_SHOWN   16      /* each path of a line naming two: the line fits 79 columns */
+#define OUT_PATH_SHOWN  24      /* the file of an "Output to" line */
+#define OP_SHOWN        20      /* a bad operator word */
+#define KEEP_MAX        256     /* paths kept across a question (lines are shorter) */
+#define OUT_BUF         4096    /* a redirection writes at most this much per hold */
+
+/* The line's redirection (shell_parse_line), static: not on the console's stack. */
+static struct shell_redirect line_redirect;
+
+/* A data write's reason: the budget, the size limit, else as fs_reason. */
+static const char *data_reason(int err)
+{
+    if (err == -FS_ENOSPC)
+        return "no file space left (the budget is full)";
+    if (err == -FS_EFBIG)
+        return "the file is at its size limit (2 MiB)";
+    return fs_reason(err);
+}
+
+static void l_reason(struct line *l, const char *why, int err)
+{
+    if (why) {
+        l_str(l, why);
+    } else {
+        l_str(l, "error ");
+        l_uint(l, (uint32_t)-err, 0, ' ');
+    }
+}
+
+static void l_quoted(struct line *l, const char *s, uint32_t max)
+{
+    l_char(l, '\'');
+    l_shown(l, s, str_len(s), max);
+    l_char(l, '\'');
+}
+
+static void keep(char *dst, const char *src)
+{
+    uint32_t i = 0;
+    for (; src[i] && i + 1 < KEEP_MAX; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+/* rm's, cp's and mv's question, kept until the next line answers it. */
+enum { ASK_NONE, ASK_RM, ASK_CP, ASK_MV };
+static struct {
+    int op;
+    char a[KEEP_MAX], b[KEEP_MAX];
+} pending;
+
+static enum shell_result ask(const struct shell_output *o, int op, const char *a, const char *b)
+{
+    struct line l;
+    pending.op = op;
+    keep(pending.a, a);
+    keep(pending.b, b ? b : "");
+    l_reset(&l);
+    l_str(&l, op == ASK_RM ? "Remove file " : "Replace file ");
+    l_quoted(&l, op == ASK_RM ? a : b, FS_PATH_SHOWN);
+    l_str(&l, "? Type 'yes' to confirm:");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_ASK;
+}
+
+static enum shell_result rm_folder(const struct shell_output *o, const char *path)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "rm: ");
+    l_quoted(&l, path, FS_PATH_SHOWN);
+    l_str(&l, ": is a folder (rmdir removes folders).");
+    emit(o, &l, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
+static enum shell_result do_rm(const char *path, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    int r = c->storage->unlink(c->storage->ctx, path);
+    if (r == -FS_EISDIR)
+        return rm_folder(o, path);
+    return r < 0 ? fs_error(o, c, "rm", path, r) : SHELL_OK;
+}
+
+/* "rm <path>": a file only (rm -r later); asks first, unless -y. */
+static enum shell_result cmd_rm(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    bool yes = argc > 1 && str_eq(argv[1], "-y");
+    if (yes) {
+        argv++;
+        argc--;
+    }
+    if (argc != 2 || argv[1][0] == '-')
+        return usage_error(o, RM_USAGE);
+    struct shell_finfo *f = &ls_rows[0];
+    int r = c->files->stat(c->files->ctx, argv[1], f);
+    if (r < 0)
+        return fs_error(o, c, "rm", argv[1], r);
+    if (f->type == SHELL_FT_DIR)
+        return rm_folder(o, argv[1]);
+    return yes ? do_rm(argv[1], c, o) : ask(o, ASK_RM, argv[1], 0);
+}
+
+static enum shell_result do_cp(const char *from, const char *to, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    uint64_t size = 0;
+    int r = c->storage->copy_open(c->storage->ctx, from, to, &size);
+    if (r == 0)
+        return SHELL_COPY;
+    /* The error is the source's if it can no longer be read, else the target's. */
+    bool source = c->files->stat(c->files->ctx, from, &ls_rows[0]) < 0;
+    return fs_error(o, c, "cp", source ? from : to, r);
+}
+
+/* "cp <from> <to>": a file to the file at <to> (a folder there is refused:
+ * no copying into a folder yet); an existing file asks first, unless -y. */
+static enum shell_result cmd_cp(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    struct line l;
+    bool yes = argc > 1 && str_eq(argv[1], "-y");
+    if (yes) {
+        argv++;
+        argc--;
+    }
+    if (argc != 3 || argv[1][0] == '-' || argv[2][0] == '-')
+        return usage_error(o, CP_USAGE);
+    const char *from = argv[1], *to = argv[2];
+    struct shell_finfo *f = &ls_rows[0], *t = &ls_rows[1];
+    int r = c->files->stat(c->files->ctx, from, f);
+    if (r < 0)
+        return fs_error(o, c, "cp", from, r);
+    if (f->type == SHELL_FT_DIR)
+        return fs_error(o, c, "cp", from, -FS_EISDIR);
+    r = c->files->stat(c->files->ctx, to, t);
+    if (r == 0) {
+        if (t->type == SHELL_FT_DIR)
+            return fs_error(o, c, "cp", to, -FS_EISDIR);
+        if (t->ino == f->ino) {
+            l_reset(&l);
+            l_str(&l, "cp: ");
+            l_quoted(&l, from, FS_PAIR_SHOWN);
+            l_str(&l, " and ");
+            l_quoted(&l, to, FS_PAIR_SHOWN);
+            l_str(&l, " are the same file.");
+            emit(o, &l, SHELL_ERROR);
+            return SHELL_BAD_ARGS;
+        }
+        if (!yes)
+            return ask(o, ASK_CP, from, to);
+    } else if (r != -FS_ENOENT) {
+        return fs_error(o, c, "cp", to, r);
+    }
+    return do_cp(from, to, c, o);
+}
+
+static const char *mv_reason(int err)
+{
+    if (err == -FS_EINVAL)
+        return "a folder cannot move into itself";
+    if (err == -FS_EBUSY)
+        return "'/', '.' and '..' cannot move";
+    return fs_reason(err);
+}
+
+/* "mv: '<from>' -> '<to>': <reason>." (a rename's error may be either side's). */
+static enum shell_result do_mv(const char *from, const char *to, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    struct line l;
+    int r = c->storage->rename(c->storage->ctx, from, to);
+    if (r == 0)
+        return SHELL_OK;
+    l_reset(&l);
+    l_str(&l, "mv: ");
+    l_quoted(&l, from, FS_PAIR_SHOWN);
+    l_str(&l, " -> ");
+    l_quoted(&l, to, FS_PAIR_SHOWN);
+    l_str(&l, ": ");
+    l_reason(&l, mv_reason(r), r);
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
+    if (r == -FS_ENOENT && (from[0] != '/' || to[0] != '/') && c->files->cwd_removed(c->files->ctx))
+        say(o, FS_HINT, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
+/* "mv <from> <to>": a rename (stage 6): a file over a file (asks first,
+ * unless -y), an empty folder over an empty folder, across folders. */
+static enum shell_result cmd_mv(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    bool yes = argc > 1 && str_eq(argv[1], "-y");
+    if (yes) {
+        argv++;
+        argc--;
+    }
+    if (argc != 3 || argv[1][0] == '-' || argv[2][0] == '-')
+        return usage_error(o, MV_USAGE);
+    const char *from = argv[1], *to = argv[2];
+    struct shell_finfo *f = &ls_rows[0], *t = &ls_rows[1];
+    if (!yes && c->files->stat(c->files->ctx, from, f) == 0 && f->type == SHELL_FT_FILE &&
+        c->files->stat(c->files->ctx, to, t) == 0 && t->type == SHELL_FT_FILE && t->ino != f->ino)
+        return ask(o, ASK_MV, from, to);
+    return do_mv(from, to, c, o);
+}
+
+enum shell_result shell_answer(const char *answer, const struct shell_context *c,
+                               const struct shell_output *o)
+{
+    int op = pending.op;
+    pending.op = ASK_NONE;
+    if (!shell_reboot_confirmed(answer)) {      /* the same exact "yes" rule */
+        say(o, op == ASK_RM ? "Remove cancelled." : op == ASK_CP ? "Copy cancelled."
+                                                                 : "Move cancelled.", SHELL_TEXT);
+        return SHELL_OK;
+    }
+    if (op == ASK_RM)
+        return do_rm(pending.a, c, o);
+    if (op == ASK_CP)
+        return do_cp(pending.a, pending.b, c, o);
+    if (op == ASK_MV)
+        return do_mv(pending.a, pending.b, c, o);
+    return SHELL_OK;
+}
+
+void shell_copy_end(const char *to, uint64_t done, uint64_t size, int err, bool cancelled,
+                    const struct shell_output *o)
+{
+    struct line l;
+    enum shell_text kind = cancelled ? SHELL_TEXT : SHELL_ERROR;
+    if (!cancelled && err == 0)
+        return;
+    l_reset(&l);
+    if (cancelled) {
+        l_str(&l, SHELL_CP_CANCELLED);
+    } else {
+        l_str(&l, "cp: ");
+        l_quoted(&l, to, FS_PATH_SHOWN);
+        l_str(&l, ": ");
+        l_reason(&l, data_reason(err), err);
+        l_char(&l, '.');
+    }
+    emit(o, &l, kind);
+    l_str(&l, "cp: ");
+    l_quoted(&l, to, FS_PATH_SHOWN);
+    l_str(&l, " holds the first ");
+    l_u64(&l, done, 0);
+    l_str(&l, " of ");
+    l_u64(&l, size, 0);
+    l_str(&l, " bytes.");
+    emit(o, &l, kind);
+}
+
+/* "Nodes:      7 used of 1024 (1017 free)" */
+static void df_row(const struct shell_output *o, const char *label, uint32_t used,
+                   uint32_t total, const char *unit, const char *tail)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, label);
+    l_pad_to(&l, 12);
+    l_uint(&l, used, 0, ' ');
+    l_str(&l, unit);
+    l_str(&l, " used of ");
+    l_uint(&l, total, 0, ' ');
+    l_str(&l, unit);
+    l_str(&l, " (");
+    l_uint(&l, total > used ? total - used : 0, 0, ' ');
+    l_str(&l, unit);
+    l_str(&l, " free)");
+    l_str(&l, tail);
+    emit(o, &l, SHELL_TEXT);
+}
+
+/* "df": the filesystem (the Live label, D6), its nodes and its pages. */
+static enum shell_result cmd_df(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    struct shell_dfinfo d;
+    (void)argc; (void)argv;
+    c->storage->df(c->storage->ctx, &d);
+    say(o, "Filesystem: live (RAM), mounted on / (files in memory only)", SHELL_TEXT);
+    df_row(o, "Nodes:", d.nodes, d.max_nodes, "", "");
+    df_row(o, "Pages:", d.pages, d.budget, "", ", 4 KiB each");
+    df_row(o, "Space:", d.pages * 4, d.budget * 4, " KiB", "");
+    return SHELL_OK;
+}
+
+static void l_count(struct line *l, uint64_t n, const char *one, const char *many)
+{
+    l_u64(l, n, 0);
+    l_str(l, n == 1 ? one : many);
+}
+
+/* "du [path]": "516 pages (2064 KiB) in 3 files and 1 folder" under a
+ * folder (itself not counted), or for one file. */
+static enum shell_result cmd_du(int argc, char **argv, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    const struct shell_storage *s = c->storage;
+    struct shell_du t = { 0, 0, 0 };
+    struct line l;
+    const char *path = argc == 2 ? argv[1] : ".";
+    if (!fs_path_arg(path, DU_USAGE, o))
+        return SHELL_BAD_ARGS;
+    int r = s->du_open(s->ctx, path, &t);
+    if (r < 0)
+        return fs_error(o, c, "du", path, r);
+    while ((r = s->du_next(s->ctx, &t)) > 0)
+        ;
+    s->du_close(s->ctx);
+    if (r < 0)
+        return fs_error(o, c, "du", path, r);
+    l_reset(&l);
+    l_count(&l, t.pages, " page (", " pages (");
+    l_u64(&l, t.pages * 4, 0);
+    l_str(&l, " KiB) in ");
+    l_count(&l, t.files, " file and ", " files and ");
+    l_count(&l, t.folders, " folder", " folders");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_OK;
+}
+
+/* Output redirection: the command's text lines collect here and go to the
+ * file OUT_BUF bytes at a time (one hold each); its error lines and notes
+ * stay on the screen. Writing stops at the first limit. */
+static struct {
+    bool on, stopped;
+    const struct shell_storage *st;
+    const struct shell_output *screen;
+    char path[KEEP_MAX];
+    uint8_t buf[OUT_BUF];
+    uint32_t n;
+    uint64_t written;
+    int err;
+} rd;
+
+static void out_put(const uint8_t *bytes, uint32_t len)
+{
+    uint32_t done = 0;
+    while (!rd.stopped && done < len) {
+        int64_t r = rd.st->out_write(rd.st->ctx, bytes + done, len - done);
+        if (r <= 0) {
+            rd.err = r < 0 ? (int)r : -FS_ENOSPC;
+            rd.stopped = true;
+            break;
+        }
+        done += (uint32_t)r;
+        rd.written += (uint64_t)r;
+    }
+}
+
+static void out_sink(void *ctx, const char *text, enum shell_text kind)
+{
+    (void)ctx;
+    if (kind != SHELL_TEXT) {
+        rd.screen->write(rd.screen->ctx, text, kind);
+        return;
+    }
+    for (; *text && !rd.stopped; text++) {
+        if (rd.n == OUT_BUF) {
+            out_put(rd.buf, rd.n);
+            rd.n = 0;
+        }
+        rd.buf[rd.n++] = (uint8_t)*text;
+    }
+}
+
+static const struct shell_output out_output = { out_sink, 0 };
+
+/* "Output to '<file>': <reason>." */
+static void out_error(const struct shell_output *o, const char *path, const char *why, int err)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "Output to ");
+    l_quoted(&l, path, OUT_PATH_SHOWN);
+    l_str(&l, ": ");
+    l_reason(&l, why, err);
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
+}
+
+/* Commands whose output cannot go to a file: the console drives them
+ * (the screen, a wait, a question, a program, a copy). */
+static const char *const no_redirect[] = {
+    "clear", "reboot", "kill", "sleep", "presskey", "run", "rm", "cp", "mv",
+};
+
+/* The file opened for the command: its output, or 0 (refused; said why). */
+static __attribute__((noinline)) const struct shell_output *
+redirect_begin(const char *name, const struct shell_context *c, const struct shell_output *o)
+{
+    struct line l;
+    for (uint32_t i = 0; i < sizeof(no_redirect) / sizeof(no_redirect[0]); i++) {
+        if (str_eq(name, no_redirect[i])) {
+            l_reset(&l);
+            l_str(&l, name);
+            l_str(&l, ": its output cannot go to a file.");
+            emit(o, &l, SHELL_ERROR);
+            return 0;
+        }
+    }
+    const char *path = line_redirect.target;
+    int r = c->storage->out_open(c->storage->ctx, path, line_redirect.kind == REDIRECT_APPEND);
+    if (r < 0) {
+        out_error(o, path, fs_reason(r), r);
+        if (r == -FS_ENOENT && path[0] != '/' && c->files->cwd_removed(c->files->ctx))
+            say(o, FS_HINT, SHELL_ERROR);
+        return 0;
+    }
+    rd.on = true;
+    rd.stopped = false;
+    rd.st = c->storage;
+    rd.screen = o;
+    keep(rd.path, path);
+    rd.n = 0;
+    rd.written = 0;
+    rd.err = 0;
+    return &out_output;
+}
+
+bool shell_redirect_active(void)
+{
+    return rd.on;
+}
+
+bool shell_redirect_raw(const uint8_t *bytes, uint32_t len)
+{
+    if (!rd.on)
+        return false;
+    out_put(bytes, len);
+    return !rd.stopped;
+}
+
+void shell_redirect_end(void)
+{
+    struct line l;
+    if (!rd.on)
+        return;
+    if (rd.n)
+        out_put(rd.buf, rd.n);
+    rd.n = 0;
+    rd.st->out_close(rd.st->ctx);
+    rd.on = false;
+    if (!rd.stopped)
+        return;
+    out_error(rd.screen, rd.path, data_reason(rd.err), rd.err);
+    l_reset(&l);
+    l_str(&l, "Output to ");
+    l_quoted(&l, rd.path, OUT_PATH_SHOWN);
+    l_str(&l, ": only the first ");
+    l_u64(&l, rd.written, 0);
+    l_str(&l, " bytes were written.");
+    emit(rd.screen, &l, SHELL_ERROR);
+}
+
+/* "cat a >> a" would never end: refused (">" is fine: a is emptied first). */
+static bool cat_into_itself(const char *path, const struct shell_context *c,
+                            const struct shell_output *o)
+{
+    struct line l;
+    if (!rd.on || line_redirect.kind != REDIRECT_APPEND ||
+        !c->storage->out_is(c->storage->ctx, path))
+        return false;
+    l_reset(&l);
+    l_str(&l, "cat: ");
+    l_quoted(&l, path, FS_PATH_SHOWN);
+    l_str(&l, ": is also the output file.");
+    emit(o, &l, SHELL_ERROR);
+    return true;
+}
+
+/* A redirection the parser refused. */
+static __attribute__((noinline)) enum shell_result
+redirect_syntax(enum parse_result pr, int argc, char **argv, const struct shell_output *o)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, "Redirection: ");
+    switch (pr) {
+    case PARSE_NO_TARGET:                   /* the operator is the last word */
+        l_quoted(&l, argv[argc - 1], OP_SHOWN);
+        l_str(&l, " needs a file name after it.");
+        break;
+    case PARSE_TWO_REDIRECTS:
+        l_str(&l, "only one '>' or '>>' per line.");
+        break;
+    case PARSE_BAD_OPERATOR:
+        l_quoted(&l, line_redirect.target, OP_SHOWN);
+        l_str(&l, " is not an operator (use > or >>).");
+        break;
+    default:                                /* PARSE_NO_COMMAND */
+        l_str(&l, line_redirect.kind == REDIRECT_APPEND ? "no command before '>>'."
+                                                         : "no command before '>'.");
+        break;
+    }
+    emit(o, &l, SHELL_ERROR);
+    return SHELL_BAD_ARGS;
+}
+
 static const struct command commands[] = {
     { "help",    "help",          "Show this list",             0, cmd_help, SECTION_SHELL },
     { "clear",   "clear",         "Clear the screen",           0, cmd_clear, SECTION_SHELL },
@@ -778,7 +1705,8 @@ static const struct command extra_commands[] = {
 static const struct command ps_procs_command =
     { "ps",      "ps",            "Show threads and processes", 0, cmd_ps, SECTION_PROGRAMS };
 static const struct command run_command =
-    { "run",     RUN_USAGE,       "Run a program: run [-b] <name> [n]", 3, cmd_run, SECTION_PROGRAMS };
+    { "run",     RUN_USAGE,       "Run a program: run [-b] <name> [args]", SHELL_MAX_ARGS - 1, cmd_run,
+      SECTION_PROGRAMS };
 static const struct command kill_command =
     { "kill",    "kill <pid>",    "End a process: kill <pid> (asks first)", 1, cmd_kill, SECTION_PROGRAMS };
 
@@ -826,12 +1754,45 @@ static const struct command session_commands[] = {
 #define SESSION_COUNT (sizeof(session_commands) / sizeof(session_commands[0]))
 #define TIME_COMMAND  (&session_commands[SESSION_COUNT - 1])
 
-static const char *const section_names[SECTION_COUNT] = { "shell", "system", "programs" };
+/* 1.0 stage 8: offered only when the context has files (see shell.h). */
+static const struct command file_commands[] = {
+    { "pwd",   "pwd",            "Show the current folder",                 0, cmd_pwd, SECTION_FILES },
+    { "cd",    "cd [path]",      "Change the current folder: cd [path]",    1, cmd_cd, SECTION_FILES },
+    { "ls",    LS_USAGE,         "List a folder: ls [-l] [path]",           2, cmd_ls, SECTION_FILES },
+    { "mkdir", "mkdir <path>",   "Create a folder: mkdir <path>",           1, cmd_mkdir, SECTION_FILES },
+    { "rmdir", "rmdir <path>",   "Remove an empty folder: rmdir <path>",    1, cmd_rmdir, SECTION_FILES },
+    { "touch", "touch <path>",   "Create an empty file, or update its time", 1, cmd_touch, SECTION_FILES },
+    { "stat",  "stat <path>",    "Show a file's or folder's details: stat <path>", 1, cmd_stat,
+      SECTION_FILES },
+    { "cat",   "cat <path>",     "Show a file's contents: cat <path>",      1, cmd_cat, SECTION_FILES },
+};
+
+#define FILES_COUNT (sizeof(file_commands) / sizeof(file_commands[0]))
+
+/* 1.0 stage 9: offered only when the context has storage (see shell.h). */
+static const struct command storage_commands[] = {
+    { "rm",    RM_USAGE,         "Remove a file: rm [-y] <path> (asks first)", 2, cmd_rm, SECTION_FILES },
+    { "cp",    CP_USAGE,         "Copy a file: cp [-y] <from> <to>",        3, cmd_cp, SECTION_FILES },
+    { "mv",    MV_USAGE,         "Move or rename: mv [-y] <from> <to>",     3, cmd_mv, SECTION_FILES },
+    { "df",    "df",             "Show the filesystem's nodes and pages in use", 0, cmd_df, SECTION_FILES },
+    { "du",    DU_USAGE,         "Show the pages under a folder: du [path]", 1, cmd_du, SECTION_FILES },
+};
+
+#define STORAGE_COUNT (sizeof(storage_commands) / sizeof(storage_commands[0]))
+
+static const char *const section_names[SECTION_COUNT] = { "shell", "system", "programs", "files" };
 static const char *const section_titles[SECTION_COUNT] = {
     "The shell's own commands",
     "Information about the system",
     "Programs and processes",
+    "Files and folders",
 };
+
+/* The sections the context offers: "files" only with files. */
+static uint32_t sections_offered(const struct shell_context *c)
+{
+    return c->files ? SECTION_COUNT : SECTION_FILES;
+}
 
 static const struct command *ps_of(const struct shell_context *c)
 {
@@ -844,7 +1805,8 @@ static const struct command *kill_of(const struct shell_context *c)
 }
 
 /* Every command the context offers, in "help" order. Returns the count. */
-#define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT)
+#define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT + FILES_COUNT + \
+                     STORAGE_COUNT)
 
 static uint32_t offered(const struct shell_context *c, const struct command **list)
 {
@@ -866,13 +1828,29 @@ static uint32_t offered(const struct shell_context *c, const struct command **li
     if (c->session)
         for (uint32_t i = 0; i < SESSION_COUNT; i++)
             list[n++] = &session_commands[i];
+    if (c->files)
+        for (uint32_t i = 0; i < FILES_COUNT; i++)
+            list[n++] = &file_commands[i];
+    if (c->files && c->storage)
+        for (uint32_t i = 0; i < STORAGE_COUNT; i++)
+            list[n++] = &storage_commands[i];
     return n;
 }
 
 /* 0.12: true for the name of any built-in command, whatever the context
- * offers (an alias may never take one). */
-static bool builtin_name(const char *name)
+ * offers (an alias may never take one); 1.0 stage 8: the file commands'
+ * names only when the context has files, so without them every answer
+ * stays as before. */
+static bool builtin_name(const char *name, const struct shell_context *c)
 {
+    if (c->files)
+        for (uint32_t i = 0; i < FILES_COUNT; i++)
+            if (str_eq(name, file_commands[i].name))
+                return true;
+    if (c->files && c->storage)             /* 1.0 stage 9, likewise */
+        for (uint32_t i = 0; i < STORAGE_COUNT; i++)
+            if (str_eq(name, storage_commands[i].name))
+                return true;
     if (str_eq(name, ps_command.name) || str_eq(name, run_command.name) ||
         str_eq(name, kill_command.name))
         return true;
@@ -914,6 +1892,14 @@ static const struct command *find_command(const char *name, const struct shell_c
         return &run_command;
     if (c->procs && str_eq(name, kill_command.name))
         return kill_of(c);
+    if (c->files)
+        for (uint32_t i = 0; i < FILES_COUNT; i++)
+            if (str_eq(name, file_commands[i].name))
+                return &file_commands[i];
+    if (c->files && c->storage)
+        for (uint32_t i = 0; i < STORAGE_COUNT; i++)
+            if (str_eq(name, storage_commands[i].name))
+                return &storage_commands[i];
     return 0;
 }
 
@@ -1037,7 +2023,7 @@ static void say_suggestions(const struct shell_output *o, const struct suggestio
         l_str(&l, s->name[i]);
     }
     l_char(&l, '?');
-    emit(o, &l, SHELL_TEXT);
+    emit(o, &l, SHELL_NOTE);                /* 1.0 stage 9: never sent to a file */
 }
 
 /* The candidates for an unknown name: the commands offered, and for a
@@ -1072,7 +2058,7 @@ static enum shell_result help_unknown(const struct shell_output *o, const char *
     emit(o, &l, SHELL_ERROR);
     if (c->state) {                         /* 0.12: the sections and commands */
         struct suggestions s = { { 0 }, { 0 }, 0 };
-        for (uint32_t i = 0; i < SECTION_COUNT; i++)
+        for (uint32_t i = 0; i < sections_offered(c); i++)
             suggest(&s, name, section_names[i]);
         suggest_commands(&s, name, c, false);
         say_suggestions(o, &s);
@@ -1080,7 +2066,10 @@ static enum shell_result help_unknown(const struct shell_output *o, const char *
     return SHELL_UNKNOWN;
 }
 
-static void help_row(const struct shell_output *o, const struct command *cmd)
+/* 1.0 stage 10: noinline, since "help_section" (inlined into execute) is
+ * now its only caller; inlined, its line buffer would deepen execute's
+ * frame, which is on the boot stack's deepest path. */
+static __attribute__((noinline)) void help_row(const struct shell_output *o, const struct command *cmd)
 {
     struct line l;
     l_reset(&l);
@@ -1091,6 +2080,32 @@ static void help_row(const struct shell_output *o, const struct command *cmd)
     emit(o, &l, SHELL_TEXT);
 }
 
+#define HELP_WIDTH 79           /* 1.0 stage 10: a line of names fits 79 columns */
+
+/* 1.0 stage 10 (D2): the names in `list` of one section (-1: all), two
+ * spaces apart after a two-space indent; a line fills while the next name
+ * still fits in HELP_WIDTH columns. */
+static void help_names(const struct shell_output *o, const struct command *const *list, uint32_t n,
+                       int section)
+{
+    struct line l;
+    l_reset(&l);
+    for (uint32_t i = 0; i < n; i++) {
+        if (section >= 0 && list[i]->section != section)
+            continue;
+        if (l.n && l.n + 2 + str_len(list[i]->name) > HELP_WIDTH)
+            emit(o, &l, SHELL_TEXT);
+        l_str(&l, "  ");
+        l_str(&l, list[i]->name);
+    }
+    if (l.n)
+        emit(o, &l, SHELL_TEXT);
+}
+
+/* 1.0 stage 10 (D2): "help" fits one screen. With state (the console):
+ * each section's title and its names, then how to see the purposes and
+ * the scrollback keys; without state, one block of names. The purposes
+ * are in "help <section>" and "help <command>". */
 static enum shell_result cmd_help(int argc, char **argv, const struct shell_context *c,
                                   const struct shell_output *o)
 {
@@ -1098,10 +2113,23 @@ static enum shell_result cmd_help(int argc, char **argv, const struct shell_cont
     uint32_t n = offered(c, list);
     (void)argc; (void)argv;
     say(o, "Available commands:", SHELL_TEXT);
-    for (uint32_t i = 0; i < n; i++)
-        help_row(o, list[i]);
-    if (c->state)
-        say(o, "Sections: shell system programs (help <section>)", SHELL_TEXT);
+    if (!c->state) {
+        help_names(o, list, n, -1);
+        if (c->extras)                      /* 0.9.1: help <command> */
+            say(o, "Purposes and usage: help <command>.", SHELL_TEXT);
+        return SHELL_OK;
+    }
+    for (uint32_t s = 0; s < sections_offered(c); s++) {
+        struct line l;
+        l_reset(&l);
+        l_str(&l, section_names[s]);
+        l_str(&l, ": ");
+        l_str(&l, section_titles[s]);
+        emit(o, &l, SHELL_TEXT);
+        help_names(o, list, n, (int)s);
+    }
+    say(o, "Purposes and usage: help <command>; one section: help <section>.", SHELL_TEXT);
+    say(o, "Scroll back: Shift+PgUp and Shift+PgDn.", SHELL_TEXT);
     return SHELL_OK;
 }
 
@@ -1278,7 +2306,7 @@ static enum shell_result cmd_alias(int argc, char **argv, const struct shell_con
         if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= '0' && name[i] <= '9') ||
               name[i] == '_'))
             return alias_error(o, "alias: a name uses only a-z, 0-9 and _.", 0, 0);
-    if (builtin_name(name))
+    if (builtin_name(name, c))
         return alias_error(o, "alias: ", name, " is a built-in command.");
     if (!find_command(argv[2], c))
         return alias_error(o, "alias: ", argv[2], " is not a built-in command.");
@@ -1671,8 +2699,8 @@ static bool expand_alias(const struct shell_alias *a, int *argc, char **argv, ch
     return true;
 }
 
-enum shell_result shell_execute(char *line, const struct shell_context *c,
-                                const struct shell_output *o)
+static enum shell_result execute(char *line, const struct shell_context *c,
+                                 const struct shell_output *o)
 {
     char *argv[SHELL_MAX_ARGS];
     int argc;
@@ -1681,7 +2709,12 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         c->session->sleep_seconds = 0;
         c->session->timed = false;
     }
-    switch (shell_parse(line, &argc, argv)) {
+    /* 1.0 stage 9: with storage, a redirection (shell_parse_line); without
+     * it, ">" stays an ordinary word. */
+    line_redirect.kind = REDIRECT_NONE;
+    enum parse_result pr = c->storage ? shell_parse_line(line, &argc, argv, &line_redirect)
+                                      : shell_parse(line, &argc, argv);
+    switch (pr) {
     case PARSE_EMPTY:
         return SHELL_EMPTY;
     case PARSE_TOO_MANY:
@@ -1689,6 +2722,8 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         return SHELL_TOO_MANY;
     case PARSE_OK:
         break;
+    default:
+        return redirect_syntax(pr, argc, argv, o);
     }
 
     const struct command *cmd = find_command(argv[0], c);
@@ -1708,6 +2743,13 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
             return SHELL_BAD_ARGS;
         cmd = find_command(argv[0], c);
     }
+    /* 1.0 stage 9: the file is opened once the command is known (an
+     * unknown command makes none); the output goes there from now on. */
+    if (cmd && line_redirect.kind != REDIRECT_NONE) {
+        o = redirect_begin(cmd->name, c, o);
+        if (!o)
+            return SHELL_BAD_ARGS;
+    }
     if (cmd && c->extras && argc == 2) {
         /* 0.9.1: "<command> --help" for every command, "help <command>". */
         if (str_eq(argv[1], "--help")) {
@@ -1716,7 +2758,7 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         }
         if (cmd == &commands[0]) {
             if (c->state)                   /* 0.12: a section first */
-                for (int i = 0; i < SECTION_COUNT; i++)
+                for (uint32_t i = 0; i < sections_offered(c); i++)
                     if (str_eq(argv[1], section_names[i])) {
                         help_section(o, c, i);
                         return SHELL_OK;
@@ -1752,4 +2794,13 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         say_suggestions(o, &s);
     }
     return SHELL_UNKNOWN;
+}
+
+enum shell_result shell_execute(char *line, const struct shell_context *c,
+                                const struct shell_output *o)
+{
+    enum shell_result r = execute(line, c, o);
+    if (rd.on && r != SHELL_CAT)            /* 1.0 stage 9: cat ends it later */
+        shell_redirect_end();
+    return r;
 }

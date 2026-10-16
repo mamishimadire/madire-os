@@ -6,8 +6,9 @@
 
 static volatile uint8_t code_in_data[16] = { 0xC3 };   /* ret */
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg == 1)
         ((void (*)(void))(uintptr_t)code_in_data)();
     else

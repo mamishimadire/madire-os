@@ -1,18 +1,26 @@
 /* enosys (0.10): every number not implemented returns -ENOSYS (38): all of
- * 0-1023 except the six, values with high bits set, -1, the x32 range and
- * the reserved Madire range. Exits with the number of wrong results
- * (at most 255). */
+ * 0-1023 except the twenty-seven (six until 1.0 stage 4 added read, close,
+ * dup and dup2; ten until stage 5 added open, stat, fstat, lstat, lseek,
+ * ftruncate, openat and newfstatat; eighteen until stage 6 added getcwd,
+ * chdir, rename, mkdir, rmdir, unlink, getdents64, mkdirat and unlinkat),
+ * values with high bits set, -1, the x32 range and the reserved Madire
+ * range. Exits with the number of wrong results (at most 255). */
 #include "user/ulib.h"
 
 static int implemented(uint64_t nr)
 {
     return nr == SYS_WRITE || nr == SYS_SCHED_YIELD || nr == SYS_NANOSLEEP ||
-           nr == SYS_GETPID || nr == SYS_EXIT || nr == SYS_EXIT_GROUP;
+           nr == SYS_GETPID || nr == SYS_EXIT || nr == SYS_EXIT_GROUP ||
+           nr == SYS_READ || nr == SYS_CLOSE || nr == SYS_DUP || nr == SYS_DUP2 ||
+           nr == SYS_OPEN || nr == SYS_STAT || nr == SYS_FSTAT || nr == SYS_LSTAT ||
+           nr == SYS_LSEEK || nr == SYS_FTRUNCATE || nr == SYS_OPENAT || nr == SYS_NEWFSTATAT ||
+           nr == SYS_GETCWD || nr == SYS_CHDIR || nr == SYS_RENAME || nr == SYS_MKDIR ||
+           nr == SYS_RMDIR || nr == SYS_UNLINK || nr == SYS_GETDENTS64 || nr == SYS_MKDIRAT ||
+           nr == SYS_UNLINKAT;
 }
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     int bad = 0, tried = 0;
     for (uint64_t nr = 0; nr < 1024; nr++) {
         if (implemented(nr))

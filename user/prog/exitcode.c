@@ -4,8 +4,9 @@
  *   arg 3: return 44 from main (crt0's exit) */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg == 1)
         sys_exit_group(43);
     if (arg == 2)

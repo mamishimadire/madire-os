@@ -10,9 +10,8 @@
 
 uint64_t sr_out[17];
 
-int main(long arg)
+int main(void)
 {
-    (void)arg;
     __asm__ volatile (
         "push %%rbp\n\t"
         "pushfq\n\t"

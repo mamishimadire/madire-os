@@ -190,6 +190,9 @@ bool vmtest_heap_exhaust(void)
     uint32_t free_before = pmm_free_pages();
     uint32_t arena_before = s->arena_bytes;
     uint32_t tables_before = paging_stats()->page_tables;
+    /* 1.0: the filesystem keeps its boot nodes (/, /home, /tmp) in the heap
+     * from boot, so "everything freed" means back to this baseline. */
+    uint32_t used_before = s->used_bytes, live_before = s->live_blocks;
 
     /* Big blocks first, then smaller ones, until even 16 bytes fail. The
      * blocks are chained through their first word, so nothing else needs
@@ -221,7 +224,8 @@ bool vmtest_heap_exhaust(void)
         head = next;
     }
     s = kheap_stats();
-    bool empty = s->used_bytes == 0 && s->live_blocks == 0 && s->free_bytes == s->arena_bytes;
+    bool empty = s->used_bytes == used_before && s->live_blocks == live_before &&
+                 s->free_bytes == s->arena_bytes - used_before;
     uint32_t grown = (arena_full - arena_before) / 4096;
     uint32_t tables = paging_stats()->page_tables - tables_before;
     uint32_t free_after = pmm_free_pages();
@@ -231,7 +235,8 @@ bool vmtest_heap_exhaust(void)
     bool out_of_frames = pmm_left < VM_HEAP_GROW_MIN / 4096 + 1;
     bool ok = count > 0 && (at_cap || out_of_frames) && still_null && empty && no_leak;
     klogf("Heap exhaustion test: %s (%u blocks freed; heap check %s; free pages %u -> %u = "
-          "%u heap pages + %u page tables)\n", ok ? "PASS" : "FAIL", count,
-          empty ? "OK" : "MISMATCH", free_before, free_after, grown, tables);
+          "%u heap pages + %u page tables; baseline used %u B, live %u blocks)\n",
+          ok ? "PASS" : "FAIL", count, empty ? "OK" : "MISMATCH", free_before, free_after,
+          grown, tables, used_before, live_before);
     return ok;
 }

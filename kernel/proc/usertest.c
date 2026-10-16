@@ -17,6 +17,7 @@
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
 #include "kernel/proc/diagwait.h"
+#include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
 #include "kernel/proc/progmod.h"
@@ -519,7 +520,7 @@ static int32_t us_spin_thread(void *arg)
     }
     user_iret_build(&us_frame, img);
     us_state = 1;
-    enter_user(&us_frame, 0);           /* arg 0: spin's pure loop, no system calls */
+    enter_user(&us_frame);             /* argv { "spin" }: spin's pure loop, no system calls */
 }
 
 bool usertest_userspin(void)
@@ -1039,7 +1040,7 @@ static const struct us_case us_cases[] = {
     { "exitcode", 3, "return 44 from main (crt0's exit)",           44 },
     { "getpid",   0, "getpid twice, exits with it",                 -1 },
     { "yield",    0, "100 sched_yield calls, each 0",                0 },
-    { "enosys",   0, "1028 numbers without a call: -ENOSYS each",    0 },
+    { "enosys",   0, "1007 numbers without a call: -ENOSYS each",    0 },
     { "sysregs",  0, "registers and RFLAGS across a call",           0 },
 };
 #define US_CASES (int)(sizeof(us_cases) / sizeof(us_cases[0]))
@@ -1080,7 +1081,10 @@ bool usertest_usersys(void)
      * sched_yield 100; exit 7 (exitcode 0, 2, 3 and crt0 in getpid, yield,
      * enosys, sysregs); exit_group 1; write 4 (getpid 1, yield 1,
      * enosys 2; since stage 5b, before that these were -ENOSYS too);
-     * -ENOSYS 1028 (enosys). */
+     * -ENOSYS 1024 (enosys; 1028 until 1.0 stage 4 implemented read,
+     * close, dup and dup2); 1016 since stage 5 (open, stat, fstat, lstat,
+     * lseek, ftruncate, openat, newfstatat); 1007 since stage 6 (getcwd,
+     * chdir, rename, mkdir, rmdir, unlink, getdents64, mkdirat, unlinkat). */
     syscall_counts(&c1);
     uint64_t gp = c1.by_id[SC_GETPID] - c0.by_id[SC_GETPID];
     uint64_t sy = c1.by_id[SC_SCHED_YIELD] - c0.by_id[SC_SCHED_YIELD];
@@ -1088,7 +1092,7 @@ bool usertest_usersys(void)
     uint64_t eg = c1.by_id[SC_EXIT_GROUP] - c0.by_id[SC_EXIT_GROUP];
     uint64_t wr = c1.by_id[SC_WRITE] - c0.by_id[SC_WRITE];
     uint64_t en = c1.enosys - c0.enosys;
-    line_ok = gp == 3 && sy == 100 && ex == 7 && eg == 1 && wr == 4 && en == 1028;
+    line_ok = gp == 3 && sy == 100 && ex == 7 && eg == 1 && wr == 4 && en == 1007;
     klogf("%s: system calls made: getpid %llu, sched_yield %llu, exit %llu, exit_group %llu, "
           "write %llu, -ENOSYS %llu: %s\n", t, (unsigned long long)gp, (unsigned long long)sy,
           (unsigned long long)ex, (unsigned long long)eg, (unsigned long long)wr,
@@ -1835,7 +1839,7 @@ static int32_t sc_ring3_thread(void *arg)
         (void)irq_save();
         uspace_test_forget(sc_as.pml4);
     }
-    enter_user(&sc_frame, 0);       /* arg 0: spin's pure loop, no system calls */
+    enter_user(&sc_frame);         /* argv { "spin" }: spin's pure loop, no system calls */
 }
 
 static void sc_ring3(int mode)
@@ -1874,12 +1878,21 @@ void usertest_selfcheck_ring3cr3(void)
 #define KR_CYCLES 400
 #define KR_MODES  8
 /* 0.12 stage 3, with seed=N only: after its wait, each cycle of modes 1-7
- * does 0 to KR_JITTER_MAX extra work steps (ua_work) before the kill, drawn
- * from the seed, so the kills move within a tick from one seed to the next
- * (without a seed every boot repeated the same timings). The modes and
- * their counts are unchanged; mode 0 kills with preemption off, where
- * extra work would change nothing. */
-#define KR_JITTER_MAX 500000u
+ * does 0 to `bound` extra work steps (ua_work) before the kill, drawn from
+ * the seed, so the kills move from one seed to the next (without a seed
+ * every boot repeated the same timings). The modes and their counts are
+ * unchanged; mode 0 kills with preemption off, where extra work would
+ * change nothing.
+ * 1.0 stage 0e: the bound was a fixed 500000 steps. It is now one tick of
+ * ua_work, measured at the start of the test (kr_calibrate), so the kills
+ * land across tick boundaries. A single measured tick came out short (3.5
+ * million steps against about 10 million per tick spent in the test), so a
+ * warm-up tick is discarded and the most of KR_CAL_TICKS whole ticks kept,
+ * as the boot calibration keeps the most of its whole ticks. */
+#define KR_CAL_CHUNK 10000u                 /* steps between two reads of the tick */
+#define KR_CAL_TICKS 4u                     /* measured, after the warm-up tick */
+#define KR_CAL_MIN   1000000u               /* a plausible tick under TCG */
+#define KR_CAL_MAX   1000000000u
 
 static uint32_t kr_next(uint32_t *s)
 {
@@ -1887,20 +1900,74 @@ static uint32_t kr_next(uint32_t *s)
     return *s >> 8;
 }
 
+/* The work steps until the tick count changes, in chunks of KR_CAL_CHUNK;
+ * stops past KR_CAL_MAX, so a timer that does not tick ends it too, with a
+ * figure the caller rejects. */
+static uint32_t kr_tick_steps(void)
+{
+    uint32_t steps = 0;
+    uint64_t t = timer_ticks();
+    while (timer_ticks() == t && steps <= KR_CAL_MAX) {
+        ua_work(KR_CAL_CHUNK);
+        steps += KR_CAL_CHUNK;
+    }
+    return steps;
+}
+
+/* Preemption off (timer interrupts still arrive and count): to the next
+ * tick edge, then one warm-up tick (discarded), then KR_CAL_TICKS whole
+ * ticks; returns the most steps of those. */
+static uint32_t kr_calibrate(uint32_t *warmup, uint32_t tick[KR_CAL_TICKS])
+{
+    uint32_t most = 0;
+    preempt_disable();
+    (void)kr_tick_steps();                                  /* to the next edge */
+    *warmup = kr_tick_steps();
+    for (uint32_t i = 0; i < KR_CAL_TICKS; i++) {
+        tick[i] = kr_tick_steps();
+        if (tick[i] > most)
+            most = tick[i];
+    }
+    preempt_enable();
+    return most;
+}
+
 bool usertest_killrace(bool seeded, uint32_t seed)
 {
     const char *t = "Kill race test";
     uint32_t free0 = pmm_free_pages(), stacks0 = thread_stacks_in_use(), live0 = thread_live();
-    uint32_t spaces0 = uspace_live_count;
+    uint32_t spaces0 = uspace_live_count, files0 = fd_open_files();   /* 1.0 stage 4 */
     uint32_t done[KR_MODES] = { 0 }, before[KR_MODES] = { 0 }, wrong = 0, start_bad = 0;
-    uint32_t not_ring3 = 0, rng = seed;
+    uint32_t not_ring3 = 0, rng = seed, bound = 0;
     uint64_t jitter_sum = 0;
-    if (seeded)
+    if (seeded) {
+        uint32_t warmup, tick[KR_CAL_TICKS];
+        uint32_t steps = kr_calibrate(&warmup, tick);
+        _Static_assert(KR_CAL_TICKS == 4, "the calibration line prints 4 ticks");
+        klogf("%s: calibration ticks: warm-up %u steps (discarded), then %u %u %u %u steps\n", t,
+              (unsigned)warmup, (unsigned)tick[0], (unsigned)tick[1], (unsigned)tick[2],
+              (unsigned)tick[3]);
+        if (steps < KR_CAL_MIN || steps > KR_CAL_MAX) {
+            klogf("%s: calibration: %u work steps per tick, outside %u to %u: MISMATCH\n", t,
+                  (unsigned)steps, (unsigned)KR_CAL_MIN, (unsigned)KR_CAL_MAX);
+            klogf("%s: FAIL\n", t);
+            return false;
+        }
+        bound = steps;
+        klogf("%s: calibration: %u work steps per tick (the most of %u whole ticks after a "
+              "warm-up tick); bound %u steps\n", t, (unsigned)steps, (unsigned)KR_CAL_TICKS,
+              (unsigned)bound);
         klogf("%s: seed %u: 0 to %u extra work steps before each kill of modes 1-7\n", t,
-              (unsigned)seed, (unsigned)KR_JITTER_MAX);
+              (unsigned)seed, (unsigned)bound);
+    }
     for (uint32_t i = 0; i < KR_CYCLES; i++) {
         uint32_t mode = i % KR_MODES;
-        uint32_t jitter = seeded ? kr_next(&rng) % (KR_JITTER_MAX + 1) : 0;
+        uint32_t jitter = 0;
+        if (seeded) {                       /* 48 bits from two draws: the bound can exceed 24 */
+            uint64_t r = (uint64_t)kr_next(&rng) << 24;
+            r |= kr_next(&rng);
+            jitter = (uint32_t)(r % ((uint64_t)bound + 1));
+        }
         if (mode == 0)                              /* no switch until the kill: it never ran */
             preempt_disable();
         int32_t pid = mode == 7 ? process_start("sleep", 2) : process_start("spin", (i / KR_MODES) % 4);
@@ -1977,12 +2044,14 @@ bool usertest_killrace(bool seeded, uint32_t seed)
     while (thread_reap())
         ;
     uint32_t free1 = pmm_free_pages(), stacks1 = thread_stacks_in_use(), live1 = thread_live();
+    uint32_t files1 = fd_open_files();
     line_ok = process_live() == 0 && free1 == free0 && stacks1 == stacks0 && live1 == live0 &&
-              uspace_live_count == spaces0;
+              uspace_live_count == spaces0 && files1 == files0;
     klogf("%s: cleanup: %u processes left, free pages %u -> %u, stacks %u -> %u, threads %u -> %u, "
-          "live address spaces %u -> %u: %s\n", t, (unsigned)process_live(), (unsigned)free0,
-          (unsigned)free1, (unsigned)stacks0, (unsigned)stacks1, (unsigned)live0, (unsigned)live1,
-          (unsigned)spaces0, (unsigned)uspace_live_count, line_ok ? "OK" : "MISMATCH");
+          "live address spaces %u -> %u, open files %u -> %u: %s\n", t, (unsigned)process_live(),
+          (unsigned)free0, (unsigned)free1, (unsigned)stacks0, (unsigned)stacks1, (unsigned)live0,
+          (unsigned)live1, (unsigned)spaces0, (unsigned)uspace_live_count, (unsigned)files0,
+          (unsigned)files1, line_ok ? "OK" : "MISMATCH");
     ok = ok && line_ok;
     ok = ok && waits_ok();
     klogf("%s: %s\n", t, ok ? "PASS" : "FAIL");

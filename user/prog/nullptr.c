@@ -2,8 +2,9 @@
  *   arg 0: read   1: write   2: call (execute) */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     if (arg == 1)
         *(volatile uint64_t *)0 = 1;
     else if (arg == 2)

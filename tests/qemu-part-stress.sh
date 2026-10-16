@@ -15,6 +15,12 @@
 #    processes, and free pages must match at the start and the end.
 # 3. Key pace (0.12 stage 3): the same 861-key session at 30 ms and at
 #    50 ms, presses and releases reported; one check (no dropped key).
+#    1.0 stage 0d: also at a 50 ms gap with a 20 ms hold (report only).
+# 4. The VFS lock (1.0 stage 3, plan C2): test=klock, 30 boots, one check
+#    each; KLOCK lines and a KLOCK_SPREAD summary report the figures.
+# 5. The VFS lock under ring-3 load (1.0 stage 5): test=filecontend, 10
+#    boots, one check each; FILECONTEND lines and a FILECONTEND_SPREAD
+#    summary report the holds, the hand-off gaps, the waits and the turns.
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -68,9 +74,24 @@ for b in 1 2 3; do
        continue ;;
     esac
     expect "$LOG" "^Kill race test: PASS$"                  "[stress] killrace $b: PASS"
-    expect_in_order "$LOG" "[stress] killrace $b: seed $KSEED used and logged (its delays and their sum)" \
-        "^Kill race test: seed $KSEED: 0 to 500000 extra work steps before each kill of modes 1-7$" \
-        "^Kill race test: seed $KSEED: [0-9]+ extra work steps in all$"
+    # 1.0 stage 0e: the bound is one tick of work steps, calibrated by the
+    # kernel at the start of the test (it was a fixed 500000). The same check
+    # also fails if the bound is 0, below 0.9 x the measured steps per tick,
+    # or not the bound the seed line used.
+    D="[stress] killrace $b: seed $KSEED used and logged (its delays and their sum), bound at least 0.9 tick"
+    read -r KSTEPS KBOUND <<< "$(sed -nE 's/^Kill race test: calibration: ([0-9]+) work steps per tick \(.*\); bound ([0-9]+) steps$/\1 \2/p' "$LOG" | head -n 1)"
+    KUSED=$(sed -nE "s/^Kill race test: seed $KSEED: 0 to ([0-9]+) extra work steps before each kill of modes 1-7\$/\1/p" "$LOG" | head -n 1)
+    echo "      KILLRACE_BOUND boot=$b seed=$KSEED steps_per_tick=${KSTEPS:-none} bound=${KBOUND:-none} seed_line=${KUSED:-none}"
+    if [ -z "$KSTEPS" ] || [ -z "$KBOUND" ] || [ "$KUSED" != "$KBOUND" ]; then
+        fail "$D (calibration or seed line missing, or their bounds differ: '$KBOUND' vs '$KUSED')"
+    elif [ "$KBOUND" -eq 0 ] || [ $((KBOUND * 10)) -lt $((KSTEPS * 9)) ]; then
+        fail "$D (bound $KBOUND, $KSTEPS steps per tick)"
+    else
+        expect_in_order "$LOG" "$D" \
+            "^Kill race test: calibration: $KSTEPS work steps per tick \(.*\); bound $KBOUND steps$" \
+            "^Kill race test: seed $KSEED: 0 to $KBOUND extra work steps before each kill of modes 1-7$" \
+            "^Kill race test: seed $KSEED: [0-9]+ extra work steps in all$"
+    fi
     count_lines "$LOG" "^Kill race test: progress: [0-9]+ of 400 cycles, tick [0-9]+$" 8 \
                                                             "[stress] killrace $b: 8 progress lines (every 50 cycles)"
     n=$(grep -cE "^Kill race test: mode [0-7]: 50 of 50 killed, [0-9]+ before any return to ring 3$" "$LOG")
@@ -138,7 +159,7 @@ for b in 1 2 3 4 5 6; do
     fi
 done
 
-echo "== [stress] Key pace: the same long key session at 30 ms and at 50 ms (report only)"
+echo "== [stress] Key pace: the same long key session at 30 ms, at 50 ms and at 50 ms with a 20 ms hold (report only)"
 # 0.12 stage 3: stage 1 found key releases lost from about the 360th key of
 # a long session at 30 ms (gap and hold), found in the Codespace. Both paces
 # run here, in the same job, so they compare on the same machine: 861 single
@@ -146,9 +167,17 @@ echo "== [stress] Key pace: the same long key session at 30 ms and at 50 ms (rep
 # reports the presses, releases and the first press without its release
 # (KEY_PACE lines, report only). The one check: the kernel reported no
 # dropped key event at either pace.
+#
+# 1.0 stage 0d: a third pace, a 20 ms hold at a 50 ms gap (the hold shorter
+# than the interval), to test whether the loss is a hold-time effect. It is
+# report only, like the other two: its KEY_PACE line decides nothing, and the
+# one check below still reads the 30 ms and 50 ms logs only.
 S="x{wait:1}"
 for i in $(seq -w 1 30); do S+="echo kp-$i abcdefghijklmnop{ret}"; done
-for ms in 30 50; do
+for pace in 30:30 50:50 50:20; do
+    gap=${pace%:*} hold=${pace#*:}
+    if [ "$hold" = "$gap" ]; then ms=$gap label="$gap ms"
+    else ms=${gap}h$hold label="$gap ms, hold $hold ms"; fi
     LOG=$OUT/serial-keypace-$ms.log
     SOCK=$OUT/qmp.sock
     rm -f "$LOG" "$SOCK"
@@ -156,16 +185,119 @@ for ms in 30 50; do
         -qmp unix:"$SOCK",server=on,wait=off -m 32M -kernel "$KERNEL" -append "keylog" >/dev/null 2>&1 &
     QPID=$!
     out=$(python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "${S}echo end-of-pace-$ms{ret}" \
-          --gap "0.0$ms" --hold "$ms" --done $'\nend-of-pace-'"$ms"$'\n' --done-timeout 120 2>&1)
-    echo "      $ms ms: $out"
+          --gap "0.0$gap" --hold "$hold" --done $'\nend-of-pace-'"$ms"$'\n' --done-timeout 120 2>&1)
+    echo "      $label: $out"
     sleep 2
     kill "$QPID" 2>/dev/null
     wait "$QPID" 2>/dev/null
     [ -f "$LOG" ] || : > "$LOG"
-    echo "      $(python3 "$(dirname "$0")/key_pace.py" "$LOG" "gap=${ms}ms hold=${ms}ms")"
+    echo "      $(python3 "$(dirname "$0")/key_pace.py" "$LOG" "gap=${gap}ms hold=${hold}ms")"
 done
 if grep -qE "events dropped" "$OUT/serial-keypace-30.log" "$OUT/serial-keypace-50.log"; then
     fail "[stress] key pace: the kernel reported dropped key events"
 else
     pass "[stress] key pace: the kernel reported no dropped key event at 30 ms or 50 ms"
 fi
+
+echo "== [stress] The VFS lock: test=klock, 30 boots (1.0 stage 3, plan C2)"
+# Each boot is part 2's test=klock boot (tests/qemu-lib.sh klock_boot: -m
+# 64M, keys typed during the test at a 50 ms gap and a 20 ms hold). One
+# check per boot: all ten result lines OK (the same regexes as part 2's
+# checks 1-9 and stage 7b's ticks inside holds, with check 6's ticket
+# bound recomputed), the PASS line and the exact echo of the keys (check
+# 10).
+# KLOCK lines report each boot's figures; KLOCK_SPREAD the lowest and
+# highest of each over the 30 boots (report only: the checks decide).
+spread() { sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{ printf "%s-%s", $1, $2 }'; }
+KL_ITERS="" KL_HOLD="" KL_TURN="" KL_WAIT0="" KL_SECS="" KL_TMIN="" KL_TMAX=""
+for b in $(seq -w 1 30); do
+    LOG=$OUT/serial-klockstress-$b.log
+    out=$(klock_boot "$LOG")
+    echo "$out"
+    secs=$(sed -nE 's/^BOOT_SECONDS [^ ]+ ([0-9.]+)$/\1/p' <<< "$out")
+    read -r it ho tu w0 tmin tmax <<< "$(klock_figures "$LOG")"
+    echo "      KLOCK boot=$b iterations=${it:-none} hold=${ho:-none} turn=${tu:-none} wait0=${w0:-none} takes_per_thread=${tmin:-none}-${tmax:-none} seconds=${secs:-none}"
+    KL_ITERS+="${it:-0}"$'\n' KL_HOLD+="${ho:-0}"$'\n' KL_TURN+="${tu:-0}"$'\n'
+    KL_WAIT0+="${w0:-0}"$'\n' KL_SECS+="${secs:-0}"$'\n'
+    KL_TMIN+="${tmin:-0}"$'\n' KL_TMAX+="${tmax:-0}"$'\n'
+    bad=""
+    for re in "$KLOCK_RE_CONTENTION" "$KLOCK_RE_COUNTER" "$KLOCK_RE_RECORDS" "$KLOCK_RE_HOLD" \
+              "$KLOCK_RE_TICKS" "$KLOCK_RE_TURN" "$KLOCK_RE_THREAD0" "$KLOCK_RE_SELFCHECK" "$KLOCK_RE_PREEMPT" \
+              "$KLOCK_RE_RETURNED" "^Filesystem lock test: PASS \("; do
+        grep -qE -- "$re" "$LOG" || bad+=" /$re/"
+    done
+    klock_bound_ok "$LOG" || bad+=" (thread 0's wait past the ticket bound recomputed from its line)"
+    klock_keys_ok "$LOG" || bad+=" (keys: echo not exact, a dropped key, no done line, no System ready, or a panic)"
+    if [ -z "$bad" ]; then
+        pass "[stress] klock $b: every result line OK, PASS, the keys' echo exact"
+    else
+        fail "[stress] klock $b: missing or failed in $LOG:$bad"
+        grep -E "^Filesystem lock test: " "$LOG" | sed 's/^/      /'
+    fi
+done
+echo "KLOCK_SPREAD boots=30 iterations=$(printf '%s' "$KL_ITERS" | spread) hold=$(printf '%s' "$KL_HOLD" | spread) turn=$(printf '%s' "$KL_TURN" | spread) turn_max=$(printf '%s' "$KL_TURN" | sort -n | tail -n 1) wait0=$(printf '%s' "$KL_WAIT0" | spread) takes_per_thread_min=$(printf '%s' "$KL_TMIN" | sort -n | head -n 1) takes_per_thread_max=$(printf '%s' "$KL_TMAX" | sort -n | tail -n 1) seconds=$(printf '%s' "$KL_SECS" | spread)"
+
+echo "== [stress] The VFS lock under ring-3 load: test=filecontend, 10 boots (1.0 stage 5)"
+# Each boot is part 2's test=filecontend boot (-m 64M). One check per boot:
+# the same result lines as part 2's checks 37-44 (the regexes and the
+# bounds recomputed from the waits line are repeated here from
+# tests/qemu-part-2.sh: change both together). FILECONTEND lines report
+# each boot's figures; FILECONTEND_SPREAD the lowest and highest of each
+# over the 10 boots (report only: the checks decide).
+FC_READY="System ready. Press any key to open the console."
+FCS_RE=(
+"^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
+"^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
+"^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, 0 spanning a switch, longest [0-2] ticks \(at most 2: preemption off while held\); truncate holds [0-9]+ \(longest [0-2] ticks\); thread 0's reserved turns [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\); longest of all holds [0-9]+ ticks \(at most 38\): OK$"
+"^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
+"^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
+"^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
+"^File contention test: PASS$"
+)
+fcs_bounds_ok() {
+    local l g w0 b0 a h w1 w2 w3 w4 bw
+    l=$(grep -m1 -E "^File contention test: waits: " "$1")
+    g=$(sed -nE 's/.* longest gap ([0-9]+) ticks .*/\1/p' <<< "$l")
+    read -r w0 b0 a h <<< "$(sed -nE 's/.*longest waits: thread 0 ([0-9]+) ticks \(bound ([0-9]+): ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1 \+ 36\) \+ 1\).*/\1 \2 \3 \4/p' <<< "$l")"
+    read -r w1 w2 w3 w4 bw <<< "$(sed -nE 's/.*, workers ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+) ticks \(bound ([0-9]+): 4 tickets ahead\).*/\1 \2 \3 \4 \5/p' <<< "$l")"
+    [ -n "${g:-}" ] && [ -n "${h:-}" ] && [ -n "${bw:-}" ] && [ "$g" -le 36 ] &&
+        [ "$b0" -eq $((a * (h + 37) + 1)) ] && [ "$w0" -le "$b0" ] &&
+        [ "$bw" -eq $((4 * (h + 37) + 1)) ] && [ "$w1" -le "$bw" ] && [ "$w2" -le "$bw" ] &&
+        [ "$w3" -le "$bw" ] && [ "$w4" -le "$bw" ]
+}
+# fc_fig <log> <name>: one named figure of the boot's figures line.
+fc_fig() {
+    sed -nE "s/^File contention test: figures: (.*, )?$2 ([0-9]+)(, .*)?$/\\2/p" "$1" | head -n 1
+}
+FC_NAMES=(duration finished margin holds ticked switched "work hold" "reserved turn" "all holds"
+          "longest truncate hold" "gaps ticked" "longest gap" "thread 0 wait" "worker wait" turn)
+declare -A FC_ALL=()
+for b in $(seq -w 1 10); do
+    LOG=$OUT/serial-filecontend-$b.log
+    boot_until "$LOG" 300 "$FC_READY" -m 64M -kernel "$KERNEL" -append "test=filecontend"
+    row="      FILECONTEND boot=$b"
+    for n in "${FC_NAMES[@]}"; do
+        val=$(fc_fig "$LOG" "$n")
+        row+=" ${n// /_}=${val:-none}"
+        FC_ALL[$n]+="${val:-0}"$'\n'
+    done
+    echo "$row"
+    grep -E "^File contention test: timing: " "$LOG" | sed 's/^/      /'
+    bad=""
+    for re in "${FCS_RE[@]}"; do
+        grep -qE -- "$re" "$LOG" || bad+=" /$re/"
+    done
+    fcs_bounds_ok "$LOG" || bad+=" (a gap or wait past the bounds recomputed from the waits line)"
+    grep -q "PANIC" "$LOG" && bad+=" (a panic)"
+    if [ -z "$bad" ]; then
+        pass "[stress] filecontend $b: every result line OK, the bounds recomputed, PASS, no panic"
+    else
+        fail "[stress] filecontend $b: missing or failed in $LOG:$bad"
+        grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
+    fi
+done
+row="FILECONTEND_SPREAD boots=10"
+for n in "${FC_NAMES[@]}"; do
+    row+=" ${n// /_}=$(printf '%s' "${FC_ALL[$n]}" | spread)"
+done
+echo "$row"

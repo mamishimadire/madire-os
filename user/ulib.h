@@ -50,6 +50,54 @@ static inline long u_put_num(const char *text, int64_t v)
     return sys_write(1, buf, n);
 }
 
+/* 1.0 stage 7: a program's one number, from its arguments (argv[1]): none
+ * gives 0. Anything but one decimal number from 0 to 4294967295 (the range
+ * "run" checked until 1.0) is refused with one line, and the program ends
+ * with status 2. */
+static inline __attribute__((noreturn)) void u_refuse(const char *name, const char *word)
+{
+    char buf[160];
+    uint64_t n = 0;
+    for (uint64_t i = 0; name[i] && i < 40; i++)
+        buf[n++] = name[i];
+    const char *mid = word ? ": '" : ": at most one number.\n";
+    while (*mid)
+        buf[n++] = *mid++;
+    if (word) {
+        uint64_t len = u_strlen(word);
+        for (uint64_t i = 0; i < len && i < 40; i++)
+            buf[n++] = word[i];
+        if (len > 40)
+            for (int i = 0; i < 3; i++)
+                buf[n++] = '.';
+        const char *end = "' is not a number from 0 to 4294967295.\n";
+        while (*end)
+            buf[n++] = *end++;
+    }
+    sys_write(1, buf, n);
+    sys_exit(2);
+}
+
+static inline long u_arg(int argc, char **argv)
+{
+    if (argc < 2)
+        return 0;
+    if (argc > 2)
+        u_refuse(argv[0], 0);
+    const char *s = argv[1];
+    uint64_t v = 0;
+    if (!*s)
+        u_refuse(argv[0], s);
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9')
+            u_refuse(argv[0], argv[1]);
+        v = v * 10 + (uint64_t)(*s - '0');
+        if (v > 0xFFFFFFFFull)
+            u_refuse(argv[0], argv[1]);
+    }
+    return (long)v;
+}
+
 /* Records one expectation: prints it if it failed. Returns 1 on failure. */
 static inline int u_expect(const char *what, long got, long want)
 {

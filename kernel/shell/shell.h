@@ -9,7 +9,10 @@
  * the processes in "ps", when it has procs, 0.11; prompt, alias, unalias,
  * help sections and "Did you mean" suggestions when it has state, 0.12;
  * set, unset, export, env, sleep, presskey, time and "kill -y" when it also
- * has a session, 0.12 stage 2).
+ * has a session, 0.12 stage 2; pwd, cd, ls, mkdir, rmdir, touch, stat and
+ * cat, the help section "files" and the Live line of "version" when it has
+ * files, 1.0 stage 8; rm, cp, mv, df, du and "> file" / ">> file" when it
+ * also has storage, 1.0 stage 9).
  *
  * Pure module: every value it prints comes from a read-only shell_context
  * filled in by the caller, and all output goes through a shell_output
@@ -57,15 +60,20 @@ struct shell_process {
 /* 0.11: what "start" returns when it did not start a process. */
 #define SHELL_RUN_NO_PROGRAM (-1)           /* no program module of that name */
 #define SHELL_RUN_FAILED     (-2)           /* no free process slot or thread */
+#define SHELL_RUN_TOO_BIG    (-3)           /* 1.0 stage 7: the start block would not fit (E2BIG) */
 
 /* 0.11: user programs (see shell_context.procs). */
 struct shell_procs {
     const struct shell_process *rows;       /* for "ps", after the threads */
     uint32_t count;
-    /* Starts program module `name` with `arg` (its RDI); returns the
-     * process ID (> 0) or one of SHELL_RUN_*. For a foreground run the
-     * caller waits for the process after shell_execute returns SHELL_RUN. */
-    int32_t (*start)(void *ctx, const char *name, uint64_t arg, bool background);
+    /* Starts program module argv[0] with its arguments argv[0..argc-1]
+     * and (1.0 stage 7) the environment env_names[i] '=' env_values[i];
+     * returns the process ID (> 0) or one of SHELL_RUN_*. For a foreground
+     * run the caller waits for the process after shell_execute returns
+     * SHELL_RUN. */
+    int32_t (*start)(void *ctx, int argc, char **argv, uint32_t envc,
+                     const char *const *env_names, const char *const *env_values,
+                     bool background);
     /* 0.11 stage 4b: "kill <pid>" asks first. The shell hands over the
      * process to end; the caller ends it only if the answer is "yes". */
     void (*ask_kill)(void *ctx, int32_t pid);
@@ -130,6 +138,137 @@ void shell_time_line(char *out, uint64_t ticks, uint32_t hz);
 #define SHELL_SLEEP_CANCELLED       "sleep: cancelled."
 #define SHELL_PRESSKEY_CANCELLED    "presskey: cancelled."
 
+/*
+ * 1.0 stage 8: the file commands (see shell_context.files): pwd, cd, ls,
+ * mkdir, rmdir, touch, stat and cat, in the help section "files". The
+ * console reaches the filesystem through these calls, each one bounded
+ * piece of work under the VFS lock (kernel/console/console.c); the shell
+ * only words the results. Each returns 0 (or a count) or -FS_E...
+ * (kernel/fs/fs_errno.h). Paths are the typed words: relative ones start
+ * at the shell's own current folder.
+ */
+#define SHELL_FT_FILE   1
+#define SHELL_FT_DIR    2
+#define SHELL_NAME_MAX  255                 /* a name's bytes (NAME_MAX) */
+#define SHELL_LS_BATCH  16                  /* entries per list_next call */
+#define SHELL_PATH_MAX  4096                /* PATH_MAX, the NUL included */
+
+struct shell_finfo {
+    uint32_t type;                          /* SHELL_FT_* */
+    uint32_t pages;                         /* files: the index page included */
+    uint32_t nlink;                         /* 1 for a file, 2 + subfolders for a folder; 0 once removed */
+    uint32_t mode;                          /* the permission bits stored */
+    uint64_t size, ino;
+    int64_t atime, mtime, ctime;            /* seconds since 1970 (no time zone) */
+    char name[SHELL_NAME_MAX + 1];          /* list_next only: the entry's name */
+};
+
+struct shell_files {
+    /* The current folder's path with its NUL into buf: its length with the
+     * NUL, -FS_ENOENT (removed) or -FS_ENAMETOOLONG. */
+    int64_t (*cwd_path)(void *ctx, char *buf, uint32_t size);
+    bool (*cwd_removed)(void *ctx);         /* the current folder has no name left */
+    int (*chdir)(void *ctx, const char *path);
+    int (*stat)(void *ctx, const char *path, struct shell_finfo *out);
+    int (*mkdir)(void *ctx, const char *path);
+    int (*rmdir)(void *ctx, const char *path);
+    int (*touch)(void *ctx, const char *path);  /* creates an empty file or sets its times */
+    /* ls: list_open holds the folder at path (-FS_ENOTDIR for a file);
+     * list_next copies up to max entries from *cursor on (creation order)
+     * and moves *cursor past them: the count (0 at the end) or -FS_ENOENT
+     * (the folder was removed); list_close gives the folder back. */
+    int (*list_open)(void *ctx, const char *path);
+    int (*list_next)(void *ctx, uint64_t *cursor, struct shell_finfo *rows, uint32_t max);
+    void (*list_close)(void *ctx);
+    /* cat: holds the file at path for the console's chunk loop (-FS_EISDIR
+     * for a folder); the console reads and prints it after SHELL_CAT. */
+    int (*cat_open)(void *ctx, const char *path);
+    void *ctx;
+};
+
+/* "cat"'s text, one chunk at a time: bytes outside 0x20-0x7E but '\n' are
+ * shown as '?', and lines are cut at 79 characters. shell_cat_end prints a
+ * last line that had no newline. */
+#define SHELL_CAT_WIDTH 79
+struct shell_output;
+struct shell_cat {
+    char line[SHELL_CAT_WIDTH + 2];
+    uint32_t n;
+};
+void shell_cat_init(struct shell_cat *s);
+void shell_cat_put(struct shell_cat *s, const uint8_t *bytes, uint32_t len,
+                   const struct shell_output *o);
+void shell_cat_end(struct shell_cat *s, const struct shell_output *o);
+
+#define SHELL_CAT_CANCELLED     "cat: cancelled."
+
+/* "YYYY-MM-DD HH:MM:SS" (19 characters and a NUL) for seconds since 1970
+ * (no time zone; a negative time is shown as 1970-01-01 00:00:00). */
+void shell_date(int64_t seconds, char out[20]);
+
+/* The Live label (D6): the console's lines, and version's second line. */
+#define SHELL_LIVE_LINE1    "Live mode: files are kept in memory only."
+#define SHELL_LIVE_LINE2    "Nothing is saved: all files are lost when the computer restarts."
+#define SHELL_LIVE_VERSION  "Live mode (files in memory only)"
+
+/*
+ * 1.0 stage 9: rm, cp, mv, df, du and output redirection (see
+ * shell_context.storage, which needs files too). As in stage 8, every call
+ * is bounded work under the VFS lock in the console (kernel/console/
+ * console.c); the shell only words the results. Each returns 0 (or a
+ * count) or -FS_E... (kernel/fs/fs_errno.h).
+ */
+struct shell_dfinfo {
+    uint32_t nodes, max_nodes;              /* nodes in use (the root included), the limit */
+    uint32_t pages, budget;                 /* file pages in use (index pages included), the budget */
+};
+
+struct shell_du {
+    uint64_t pages, files, folders;         /* under the path (a folder itself not counted) */
+};
+
+struct shell_storage {
+    int (*unlink)(void *ctx, const char *path);         /* a file's name removed */
+    int (*rename)(void *ctx, const char *from, const char *to);
+    /* cp: holds the file at from, creates the file at to (mode 0644) or
+     * empties it, and holds its write mark; *size: from's size. The
+     * console copies it, a chunk at a time, after SHELL_COPY. */
+    int (*copy_open)(void *ctx, const char *from, const char *to, uint64_t *size);
+    void (*df)(void *ctx, struct shell_dfinfo *out);    /* one hold */
+    /* du: du_open counts a file at once, or holds a folder; du_next counts
+     * at most 16 more entries: 1 while some are left, 0 at the end, or
+     * -FS_ENOENT (a folder was removed meanwhile); du_close gives it back. */
+    int (*du_open)(void *ctx, const char *path, struct shell_du *t);
+    int (*du_next)(void *ctx, struct shell_du *t);
+    void (*du_close)(void *ctx);
+    /* Output redirection: out_open creates the file at path (mode 0644),
+     * or empties it (append false) or keeps it (append true), and holds
+     * its write mark; out_write writes at most 4096 bytes in one hold, at
+     * the end of what it wrote before (the file's end for append): the
+     * count (a short one at a limit) or the error with nothing written;
+     * out_close gives the file back; out_is: path names the open file. */
+    int (*out_open)(void *ctx, const char *path, bool append);
+    int64_t (*out_write)(void *ctx, const uint8_t *buf, uint32_t len);
+    void (*out_close)(void *ctx);
+    bool (*out_is)(void *ctx, const char *path);
+    void *ctx;
+};
+
+/* How a copy ended: nothing when it was whole; else the reason (err, or
+ * cancelled: "cp: cancelled.") and what the target holds. */
+void shell_copy_end(const char *to, uint64_t done, uint64_t size, int err, bool cancelled,
+                    const struct shell_output *o);
+
+/* "cat" with its output in a file: after SHELL_CAT the console writes the
+ * file's bytes as they are (shell_redirect_raw: false once writing has
+ * stopped at a limit) and ends it with shell_redirect_end (the file given
+ * back, any limit reported). */
+bool shell_redirect_active(void);
+bool shell_redirect_raw(const uint8_t *bytes, uint32_t len);
+void shell_redirect_end(void);
+
+#define SHELL_CP_CANCELLED  "cp: cancelled."
+
 struct shell_context {
     const char *version;                    /* e.g. "0.5" */
     bool timer_ok;                          /* timer verified at boot */
@@ -182,11 +321,24 @@ struct shell_context {
      * "kill" also takes -y (no question; its usage becomes "kill [-y]
      * <pid>"). NULL leaves every output exactly as before. */
     struct shell_session *session;
+    /* 1.0 stage 8, optional (the filesystem booted): when set, "pwd",
+     * "cd", "ls", "mkdir", "rmdir", "touch", "stat" and "cat" exist ("help"
+     * lists them after "time", in the section "files") and "version" adds
+     * the Live mode line. NULL leaves every output exactly as before. */
+    const struct shell_files *files;
+    /* 1.0 stage 9, optional (with files): when set, "rm", "cp", "mv", "df"
+     * and "du" exist ("help" lists them after "cat", in the section
+     * "files"), and a line may send a command's output to a file with ">"
+     * or ">>" as separate words. NULL leaves every output exactly as before
+     * (">" is then an ordinary word). */
+    const struct shell_storage *storage;
 };
 
 enum shell_text {
     SHELL_TEXT,
     SHELL_ERROR,
+    SHELL_NOTE,         /* 1.0 stage 9: "Did you mean": shown as text, but never
+                         * sent to a file */
 };
 
 struct shell_output {
@@ -215,10 +367,25 @@ enum shell_result {
                          * (Ctrl+C cancels); no prompt until then */
     SHELL_PRESSKEY,     /* 0.12: "presskey": the text was printed; the console
                          * waits for one key press (Ctrl+C cancels) */
+    SHELL_CAT,          /* 1.0 stage 8: "cat": the file is held (cat_open); the
+                         * console prints it a chunk at a time (Ctrl+C
+                         * cancels); no prompt until then */
+    SHELL_ASK,          /* 1.0 stage 9: rm, cp or mv asked; the next line
+                         * answers (shell_answer) */
+    SHELL_COPY,         /* 1.0 stage 9: "cp" opened both files (copy_open); the
+                         * console copies a chunk at a time (Ctrl+C cancels);
+                         * no prompt until then */
 };
 
 /* 0.11: what the console prints after the kill question. */
 #define SHELL_KILL_CANCELLED    "Kill cancelled."
+
+/* 1.0 stage 9: the answer to rm's, cp's or mv's question (SHELL_ASK), the
+ * line after it: exactly "yes" (as for reboot) does it (SHELL_COPY for cp:
+ * the copy starts); anything else prints "Remove cancelled." ("Copy
+ * cancelled.", "Move cancelled."). */
+enum shell_result shell_answer(const char *answer, const struct shell_context *c,
+                               const struct shell_output *o);
 
 /* 0.11: how a program run from the console ended (proc_core.h's
  * enum proc_end, as an int so this header stays independent of it). */

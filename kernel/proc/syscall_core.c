@@ -6,12 +6,33 @@
 enum syscall_id syscall_lookup(uint64_t nr)
 {
     switch (nr) {
+    case SYS_READ:        return SC_READ;
     case SYS_WRITE:       return SC_WRITE;
+    case SYS_CLOSE:       return SC_CLOSE;
+    case SYS_DUP:         return SC_DUP;
+    case SYS_DUP2:        return SC_DUP2;
     case SYS_SCHED_YIELD: return SC_SCHED_YIELD;
     case SYS_NANOSLEEP:   return SC_NANOSLEEP;
     case SYS_GETPID:      return SC_GETPID;
     case SYS_EXIT:        return SC_EXIT;
     case SYS_EXIT_GROUP:  return SC_EXIT_GROUP;
+    case SYS_OPEN:        return SC_OPEN;
+    case SYS_STAT:        return SC_STAT;
+    case SYS_FSTAT:       return SC_FSTAT;
+    case SYS_LSTAT:       return SC_LSTAT;
+    case SYS_LSEEK:       return SC_LSEEK;
+    case SYS_FTRUNCATE:   return SC_FTRUNCATE;
+    case SYS_OPENAT:      return SC_OPENAT;
+    case SYS_NEWFSTATAT:  return SC_NEWFSTATAT;
+    case SYS_GETCWD:      return SC_GETCWD;
+    case SYS_CHDIR:       return SC_CHDIR;
+    case SYS_RENAME:      return SC_RENAME;
+    case SYS_MKDIR:       return SC_MKDIR;
+    case SYS_RMDIR:       return SC_RMDIR;
+    case SYS_UNLINK:      return SC_UNLINK;
+    case SYS_GETDENTS64:  return SC_GETDENTS64;
+    case SYS_MKDIRAT:     return SC_MKDIRAT;
+    case SYS_UNLINKAT:    return SC_UNLINKAT;
     default:              return SC_UNKNOWN;
     }
 }
@@ -31,16 +52,35 @@ const char *syscall_name(enum syscall_id id)
     case SC_GETPID:      return "getpid";
     case SC_EXIT:        return "exit";
     case SC_EXIT_GROUP:  return "exit_group";
+    case SC_READ:        return "read";
+    case SC_CLOSE:       return "close";
+    case SC_DUP:         return "dup";
+    case SC_DUP2:        return "dup2";
+    case SC_OPEN:        return "open";
+    case SC_STAT:        return "stat";
+    case SC_FSTAT:       return "fstat";
+    case SC_LSTAT:       return "lstat";
+    case SC_LSEEK:       return "lseek";
+    case SC_FTRUNCATE:   return "ftruncate";
+    case SC_OPENAT:      return "openat";
+    case SC_NEWFSTATAT:  return "newfstatat";
+    case SC_GETCWD:      return "getcwd";
+    case SC_CHDIR:       return "chdir";
+    case SC_RENAME:      return "rename";
+    case SC_MKDIR:       return "mkdir";
+    case SC_RMDIR:       return "rmdir";
+    case SC_UNLINK:      return "unlink";
+    case SC_GETDENTS64:  return "getdents64";
+    case SC_MKDIRAT:     return "mkdirat";
+    case SC_UNLINKAT:    return "unlinkat";
+    case SC_COUNT:       break;
     }
     return "unknown";
 }
 
-int64_t syscall_write_check(uint64_t fd, uint64_t count, uint64_t *accepted)
+uint64_t syscall_console_count(uint64_t count)
 {
-    if (fd != 1 && fd != 2)
-        return -MADIRE_EBADF;
-    *accepted = count < SYSCALL_WRITE_MAX ? count : SYSCALL_WRITE_MAX;
-    return 0;
+    return count < SYSCALL_WRITE_MAX ? count : SYSCALL_WRITE_MAX;
 }
 
 int64_t syscall_timespec_ticks(int64_t sec, int64_t nsec, uint32_t hz, uint32_t *ticks)

@@ -9,7 +9,8 @@
 #   - checks every part ran exactly once, in its own job, to its end;
 #   - runs the part "final" over every job's serial logs;
 #   - checks the unit suites and make repro ran once (static job) and the
-#     static checks (symbols, libgcc/libc, SSE/x87, 2 MiB margin);
+#     static checks (symbols, libgcc/libc, SSE/x87, the kernel margin:
+#     1.0 stage 1, below 4 MiB, computed here from KERNEL_END_VIRTUAL);
 #   - sums the counts and compares them with tests/expected-checks.txt;
 #   - replays every pattern-helper call under mawk and gawk
 #     (tests/helper-replay.sh; evidence only, decides no check);
@@ -103,18 +104,37 @@ main() {
         echo "$k=${v:-missing}"
         [ "$v" = 0 ] || bad "$k is ${v:-missing}, expected 0"
     done
-    m=$(sed -n 's/^TWO_MIB_MARGIN_BYTES=//p' "$chk" 2>/dev/null)
+    # 1.0 stage 1 (D1): the gate is the margin below 4 MiB (0x400000 - the
+    # kernel's physical end, at least 32768 bytes); the 2 MiB figure is a
+    # report only. Both are computed here from KERNEL_END_VIRTUAL, which the
+    # workflow prints in every version: the workflow runs from main, so its
+    # own KERNEL_MARGIN_BYTES line exists only once 1.0 is there; when it
+    # is printed, it must equal the value computed here.
+    end=$(sed -n 's/^KERNEL_END_VIRTUAL=0x\([0-9a-f]\{16\}\)$/\1/p' "$chk" 2>/dev/null | head -n 1)
     grep -E '^KERNEL_END_VIRTUAL=' "$chk" 2>/dev/null
-    echo "TWO_MIB_MARGIN_BYTES=${m:-missing}"
-    [ -n "$m" ] && [ "$m" -ge 32768 ] || bad "2 MiB margin ${m:-missing} below 32768 bytes"
+    km=""; tm=""
+    if [ -n "$end" ]; then
+        km=$(( 0x400000 - (0x$end - 0xffffffff80000000) ))
+        tm=$(( 0x200000 - (0x$end - 0xffffffff80000000) ))
+    fi
+    echo "KERNEL_MARGIN_BYTES=${km:-missing} (below 4 MiB; the gate: at least 32768)"
+    echo "TWO_MIB_MARGIN_BYTES=${tm:-missing} (below 2 MiB; report only)"
+    wm=$(sed -n 's/^KERNEL_MARGIN_BYTES=//p' "$chk" 2>/dev/null | head -n 1)
+    if [ -n "$wm" ]; then
+        echo "KERNEL_MARGIN_BYTES printed by the workflow: $wm"
+        [ "$wm" = "$km" ] || bad "the workflow's KERNEL_MARGIN_BYTES $wm differs from the computed ${km:-missing}"
+    else
+        echo "KERNEL_MARGIN_BYTES not printed (workflow runs from main)"
+    fi
+    [ -n "$km" ] && [ "$km" -ge 32768 ] || bad "kernel margin below 4 MiB ${km:-missing} below 32768 bytes"
 
     echo "== Counts"
     counts=$( { cat "$dir"/shard-*/regression.log; cat "$dir/combined/final.log"; } | grep '^SHARD_COUNTS ')
     echo "$counts"
     echo "$counts" | bash "$here/check-counts.sh" "$here/expected-checks.txt" || bad "the counts differ from tests/expected-checks.txt"
     summed=$(echo "$counts" | awk '{ for (i = 3; i <= NF; i++) { split($i, kv, "="); s[kv[1]] += kv[2] } }
-        END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", s["passes"], s["failures"], s["0.3"], s["0.4"], s["0.5"], s["0.6"], s["0.7"], s["0.8"], s["0.9"], s["0.9.1"], s["0.9.2"], s["0.10"], s["0.11"], s["0.12"], s["0.13"] }')
-    read -r passes failures c03 c04 c05 c06 c07 c08 c09 c091 c092 c010 c011 c012 c013 <<< "$summed"
+        END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", s["passes"], s["failures"], s["0.3"], s["0.4"], s["0.5"], s["0.6"], s["0.7"], s["0.8"], s["0.9"], s["0.9.1"], s["0.9.2"], s["0.10"], s["0.11"], s["0.12"], s["0.13"], s["1.0"] }')
+    read -r passes failures c03 c04 c05 c06 c07 c08 c09 c091 c092 c010 c011 c012 c013 c10 <<< "$summed"
 
     echo "== Helper replay (evidence only; decides no check)"
     calls=0; declare -A diffs errs
@@ -132,7 +152,7 @@ main() {
 
     echo
     if [ "$ok" -eq 1 ]; then
-        echo "ALL TESTS PASSED ($passes checks: $c03 0.3 regression + $c04 from 0.4 + $c05 from 0.5 + $c06 from 0.6 + $c07 from 0.7 + $c08 from 0.8 + $c09 from 0.9 + $c091 from 0.9.1 + $c092 from 0.9.2 + $c010 from 0.10 + $c011 from 0.11 + $c012 from 0.12 + $c013 new in 0.13)"
+        echo "ALL TESTS PASSED ($passes checks: $c03 0.3 regression + $c04 from 0.4 + $c05 from 0.5 + $c06 from 0.6 + $c07 from 0.7 + $c08 from 0.8 + $c09 from 0.9 + $c091 from 0.9.1 + $c092 from 0.9.2 + $c010 from 0.10 + $c011 from 0.11 + $c012 from 0.12 + $c013 from 0.13 + $c10 new in 1.0)"
         echo "COMBINED_RESULT=PASS"
     else
         echo "$failures TEST(S) FAILED; COMBINED_RESULT=FAIL"

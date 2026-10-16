@@ -11,6 +11,7 @@ void proc_init(struct proc_table *t)
         t->e[i].kill_pending = false;
         t->e[i].result.end = PROC_END_EXIT;
         t->e[i].result.code = 0;
+        fd_table_init(&t->e[i].fds);
     }
     t->next_pid = 1;
     t->live = 0;
@@ -36,6 +37,7 @@ enum proc_status proc_alloc(struct proc_table *t, const char *name, int *slot, i
         p->kill_pending = false;
         p->result.end = PROC_END_EXIT;
         p->result.code = 0;
+        fd_table_init(&p->fds);
         t->next_pid = t->next_pid == INT32_MAX ? 0 : t->next_pid + 1;
         t->live++;
         *slot = i;

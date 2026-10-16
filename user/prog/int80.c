@@ -4,8 +4,9 @@
  *   0 int 0x80   1 int3   2 int 0x20 (the timer's vector)   3 int 0x0e */
 #include "user/ulib.h"
 
-int main(long arg)
+int main(int argc, char **argv)
 {
+    long arg = u_arg(argc, argv);
     switch (arg) {
     case 0: __asm__ volatile ("int $0x80"); break;
     case 1: __asm__ volatile ("int3"); break;
