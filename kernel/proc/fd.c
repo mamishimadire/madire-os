@@ -4,8 +4,10 @@
 #include "kernel/fs/fsys_core.h"
 #include "kernel/fs/ramfs_core.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/kprintf.h"
 #include "kernel/memory/usercopy.h"
 #include "kernel/panic.h"
+#include "kernel/proc/diagwait.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/klock.h"
 #include "kernel/proc/preempt.h"
@@ -26,11 +28,10 @@ static struct fd_handoff handoff;
 
 /* ---- the VFS lock with its figures (1.0 stage 5) ---- */
 
-uint32_t fd_vfs_acquire(void)
+/* A take (or, stage 7b, a reserved turn) after `steps` waits, asked at
+ * tick `asked`. */
+static void note_take(int32_t me, uint64_t asked, uint32_t steps)
 {
-    int32_t me = thread_current();
-    uint64_t asked = timer_ticks();
-    uint32_t steps = klock_acquire(vfs_lock());
     uint64_t now = timer_ticks();
     preempt_disable();
     if (steps) {
@@ -48,7 +49,72 @@ uint32_t fd_vfs_acquire(void)
     if (now - asked > lock_wait_longest[me])
         lock_wait_longest[me] = now - asked;
     preempt_enable();
+}
+
+uint32_t fd_vfs_acquire(void)
+{
+    int32_t me = thread_current();
+    uint64_t asked = timer_ticks();
+    uint32_t steps = klock_acquire(vfs_lock());
+    note_take(me, asked, steps);
     return steps;
+}
+
+uint32_t fd_vfs_test_reserve(void)
+{
+    int32_t me = thread_current();
+    uint64_t asked = timer_ticks();
+    uint32_t steps = klock_test_reserve(vfs_lock());
+    note_take(me, asked, steps);
+    return steps;
+}
+
+void fd_vfs_test_take(void)
+{
+    klock_test_take(vfs_lock());
+}
+
+/* ---- 1.0 stage 7b: hold work in TSC cycles ---- */
+
+uint64_t fd_tsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+uint64_t fd_tsc_per_tick(uint64_t *spent)
+{
+    struct diag_site s;
+    uint64_t t = timer_ticks();
+    diag_wait_begin(&s, FD_TSC_LIMIT);              /* a tick's edge */
+    while (timer_ticks() == t && diag_wait_poll_strict(&s))
+        ;
+    uint64_t t0 = timer_ticks(), c0 = fd_tsc();
+    diag_wait_begin(&s, FD_TSC_LIMIT);              /* 5 whole ticks */
+    while (timer_ticks() < t0 + 5 && diag_wait_poll_strict(&s))
+        ;
+    uint64_t c1 = fd_tsc(), t1 = timer_ticks();
+    *spent = t1 - t0;
+    return t1 > t0 ? (c1 - c0) / (t1 - t0) : 0;
+}
+
+uint64_t fd_cycles_us(uint64_t cycles, uint64_t per_tick)
+{
+    return per_tick ? cycles * (1000000u / TIMER_HZ) / per_tick : 0;
+}
+
+void fd_work_line(const char *tag)
+{
+    uint64_t spent = 0, per = fd_tsc_per_tick(&spent);
+    preempt_disable();
+    uint64_t c = figs.cyc_chunk, t = figs.cyc_trunc, d = figs.cyc_dir;
+    preempt_enable();
+    klogf("%s: hold work (report only): longest chunk hold %llu us, longest truncate step %llu "
+          "us, longest getdents64 hold %llu us; TSC %llu cycles per tick (calibrated over %llu "
+          "ticks, limit %u)\n", tag, (unsigned long long)fd_cycles_us(c, per),
+          (unsigned long long)fd_cycles_us(t, per), (unsigned long long)fd_cycles_us(d, per),
+          (unsigned long long)per, (unsigned long long)spent, FD_TSC_LIMIT);
 }
 
 void fd_vfs_release(void)
@@ -404,10 +470,10 @@ void fd_busy_check(const char *where)
 
 /* ---- the VFS lock around one piece of work, with its figures ---- */
 
-enum hold_kind { HOLD_DATA, HOLD_TRUNC, HOLD_OTHER };
+enum hold_kind { HOLD_DATA, HOLD_TRUNC, HOLD_OTHER, HOLD_DIR };
 
 struct hold {
-    uint64_t t0, switches0;
+    uint64_t t0, switches0, c0;
 };
 
 static void hold_begin(struct hold *h)
@@ -415,19 +481,32 @@ static void hold_begin(struct hold *h)
     fd_vfs_acquire();
     h->t0 = timer_ticks();
     h->switches0 = thread_switches();
+    h->c0 = fd_tsc();
 }
 
 static void hold_end(const struct hold *h, enum hold_kind kind)
 {
+    uint64_t cycles = fd_tsc() - h->c0;
     uint64_t held = timer_ticks() - h->t0;
     bool switched = thread_switches() != h->switches0;
     preempt_disable();
-    if (kind == HOLD_DATA)
+    if (kind == HOLD_DATA) {
         figs.chunks++;
+        if (cycles > figs.cyc_chunk)
+            figs.cyc_chunk = cycles;
+    }
     if (kind == HOLD_TRUNC) {
         figs.trunc_holds++;
         if (held > figs.trunc_hold_longest)
             figs.trunc_hold_longest = held;
+        if (cycles > figs.cyc_trunc)
+            figs.cyc_trunc = cycles;
+    }
+    if (kind == HOLD_DIR) {
+        if (held > figs.dir_hold_longest)
+            figs.dir_hold_longest = held;
+        if (cycles > figs.cyc_dir)
+            figs.cyc_dir = cycles;
     }
     figs.holds++;
     if (held >= 1)
@@ -643,7 +722,7 @@ int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count)
         uint64_t cur = files.f[file].offset, next = cur;
         bool more = false, gone = n->nlink == 0;
         uint32_t used = gone ? 0 : fsys_dir_fill(n, cur, kbuf, room, &next, &more);
-        hold_end(&h, HOLD_OTHER);
+        hold_end(&h, HOLD_DIR);
         if (gone) {
             if (done == 0)
                 err = -FS_ENOENT;                   /* a removed folder (Linux) */
@@ -739,6 +818,10 @@ void fd_figures(struct fd_figures *out)
     out->wmark_contended = figs.wmark_contended;
     out->wmark_ahead_max = figs.wmark_ahead_max;
     out->cwd_dropped = figs.cwd_dropped;
+    out->cyc_chunk = figs.cyc_chunk;
+    out->cyc_trunc = figs.cyc_trunc;
+    out->cyc_dir = figs.cyc_dir;
+    out->dir_hold_longest = figs.dir_hold_longest;
     preempt_enable();
 }
 
@@ -750,6 +833,7 @@ void fd_figures_reset(void)
     figs.trunc_holds = figs.trunc_hold_longest = figs.wmark_wait_longest = 0;
     figs.wmark_takes = figs.wmark_contended = 0;
     figs.wmark_ahead_max = 0;
+    figs.cyc_chunk = figs.cyc_trunc = figs.cyc_dir = figs.dir_hold_longest = 0;
     for (uint32_t i = 0; i < SCHED_MAX_THREADS; i++)
         lock_waited[i] = lock_wait_longest[i] = 0;
     handoff.count = handoff.ticked = handoff.longest = 0;

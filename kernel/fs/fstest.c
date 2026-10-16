@@ -498,11 +498,18 @@ bool fstest_fill(void)
  * ticks (plan C2; the plan's 4 processes are kernel threads here, as no
  * filesystem system call exists before stage 4: an approved deviation).
  * Under the lock each one increments a counter kept in a file (read,
- * every fourth time a yield while holding, write back: without the lock
- * the yield would lose updates) and writes or reads a 4096-byte record
- * that straddles a page boundary (a reader seeing two writers' halves
- * would be a torn record). The keyboard is live: keys typed meanwhile
- * reach the console after the test.
+ * every 64th time the lock held across the next timer tick, write back:
+ * a switch inside the hold would lose updates) and writes or reads a
+ * 4096-byte record that straddles a page boundary (a reader seeing two
+ * writers' halves would be a torn record). The keyboard is live: keys
+ * typed meanwhile reach the console after the test.
+ *
+ * Stage 7b: holders run with preemption off and never yield, so on one
+ * CPU nobody would ever find the lock taken; every fourth turn is a
+ * reserved turn (klock_test_reserve, a yield, klock_test_take: until stage
+ * 7b a yield while holding), so the others queue behind it and the waits,
+ * the ticket bound and the thread-0 self-check are still exercised. A
+ * reserved turn counts as a hold from its reservation.
  *
  * Fairness (the stage 3 fix, a FIFO ticket lock): thread 0 asks again as
  * soon as it releases, which starved the other threads under the first,
@@ -519,11 +526,14 @@ bool fstest_fill(void)
 #define KL_REC     RAMFS_PAGE
 #define KL_REC_OFF 2048u                /* pages 0 and 1 */
 
+#define KL_SPIN_LIMIT 4u                /* ticks: a hold kept across the next tick */
+
 struct kl_worker {
     uint32_t id;                        /* 1 = thread 0, 2.. = the threads */
     int32_t tid;
-    uint64_t iters, incs, waited, steps, held_yields, writes, reads, torn, errors;
+    uint64_t iters, incs, waited, steps, reserved, writes, reads, torn, errors;
     uint64_t during;                    /* takes while thread 0's loop ran */
+    uint64_t spins, spin_switched, spin_longest;    /* stage 7b: holds across a tick */
     uint8_t *rec;
 };
 
@@ -561,11 +571,23 @@ static bool kl_whole(const uint8_t *r)
     return true;
 }
 
-/* One turn under the lock. */
+/* One turn under the lock. Stage 7b: a holder never yields (preemption
+ * is off from the take to the release). Every 4th turn is a reserved turn
+ * with a yield before its take (it was a yield while holding): the others
+ * queue behind it. Every 64th hold keeps the lock across the next tick:
+ * the tick's switch must wait for the release. */
 static void kl_step(struct kl_worker *w)
 {
     struct klock *lk = vfs_lock();
-    uint32_t steps = klock_acquire(lk);
+    uint32_t steps;
+    if ((w->iters & 3) == 3) {
+        steps = klock_test_reserve(lk);
+        thread_yield();                 /* not holding: the others queue behind */
+        klock_test_take(lk);
+        w->reserved++;
+    } else {
+        steps = klock_acquire(lk);
+    }
     if (steps) {
         w->waited++;
         w->steps += steps;
@@ -575,9 +597,18 @@ static void kl_step(struct kl_worker *w)
     uint64_t c = 0;
     if (ramfs_read(fs, kl_counter, 0, &c, sizeof(c)) != (int64_t)sizeof(c))
         w->errors++;
-    if ((w->iters & 3) == 3) {
-        thread_yield();                 /* holding: the others find it taken */
-        w->held_yields++;
+    if ((w->iters & 63) == 1) {         /* holding across the next tick */
+        uint64_t sw0 = thread_switches(), t = timer_ticks();
+        struct diag_site s;
+        diag_wait_begin(&s, KL_SPIN_LIMIT);
+        while (timer_ticks() == t && diag_wait_poll_strict(&s))
+            ;
+        uint64_t spun = timer_ticks() - t;
+        w->spins++;
+        if (thread_switches() != sw0)
+            w->spin_switched++;
+        if (spun > w->spin_longest)
+            w->spin_longest = spun;
     }
     c++;
     if (ramfs_write(fs, kl_counter, 0, &c, sizeof(c)) == (int64_t)sizeof(c))
@@ -677,16 +708,22 @@ bool fstest_klock(void)
 
     uint64_t takes = 0, after_wait = 0, incs = 0, writes = 0, reads = 0, torn = 0, errors = 0;
     uint64_t tmin = UINT64_MAX, tmax = 0, dmin = UINT64_MAX;
+    uint64_t spins = 0, spin_switched = 0, spin_longest = 0;
     bool all_waited = made;
     for (uint32_t i = 0; i <= KL_THREADS; i++) {
         struct kl_worker *w = &kw[i];
         klogf("Filesystem lock test: thread %d '%s': %llu takes (%llu while thread 0's loop ran), "
-              "%llu after waiting (%llu wait steps), %llu yields while holding, %llu records "
-              "written, %llu read\n", (int)w->tid, w->tid >= 0 ? thread_name(w->tid) : "?",
+              "%llu after waiting (%llu wait steps), %llu reserved turns, %llu holds across a "
+              "tick, %llu records written, %llu read\n", (int)w->tid,
+              w->tid >= 0 ? thread_name(w->tid) : "?",
               (unsigned long long)w->iters, (unsigned long long)w->during,
               (unsigned long long)w->waited, (unsigned long long)w->steps,
-              (unsigned long long)w->held_yields, (unsigned long long)w->writes,
-              (unsigned long long)w->reads);
+              (unsigned long long)w->reserved, (unsigned long long)w->spins,
+              (unsigned long long)w->writes, (unsigned long long)w->reads);
+        spins += w->spins;
+        spin_switched += w->spin_switched;
+        if (w->spin_longest > spin_longest)
+            spin_longest = w->spin_longest;
         all_waited = all_waited && w->iters > 0 && w->waited > 0;
         tmin = w->iters < tmin ? w->iters : tmin;
         tmax = w->iters > tmax ? w->iters : tmax;
@@ -709,7 +746,7 @@ bool fstest_klock(void)
         errors++;
     uint64_t hold = lk->hold_longest, wait0 = lk->wait_longest0, yields0 = lk->yields0;
     uint32_t ahead0 = lk->ahead_max0;
-    uint32_t pcmax = lk->release_pc_max;
+    uint32_t pcmax = lk->release_pc_max, pcmin = lk->release_pc_min;
     uint64_t lock_takes = lk->takes;    /* the setup's take, the workers', this one */
     want(vfs_unlink(v, v->root, KL_DIR "/counter"), 0, "unlink the counter");
     want(vfs_unlink(v, v->root, KL_DIR "/record"), 0, "unlink the record");
@@ -745,6 +782,16 @@ bool fstest_klock(void)
     ksnprintf(line, sizeof(line), "longest hold: %llu ticks (at most 2)", (unsigned long long)hold);
     want_true(hold <= 2, "longest hold");
     steps_ok = step_end(line, &since) && steps_ok;
+    /* Stage 7b: a tick inside a hold leaves its switch pending until the
+     * release (preemption off from the take to the release). */
+    uint64_t spin_margin = spin_longest < KL_SPIN_LIMIT
+                           ? (KL_SPIN_LIMIT - spin_longest) * 100 / KL_SPIN_LIMIT : 0;
+    ksnprintf(line, sizeof(line), "ticks inside holds: %llu holds kept the lock across the next "
+              "tick (longest %llu ticks of their %u-tick limit, margin %llu%%), %llu switched "
+              "inside a hold", (unsigned long long)spins, (unsigned long long)spin_longest,
+              KL_SPIN_LIMIT, (unsigned long long)spin_margin, (unsigned long long)spin_switched);
+    want_true(spins > 0 && spin_switched == 0, "no switch inside a hold");
+    steps_ok = step_end(line, &since) && steps_ok;
     uint64_t turn = thread_turn_max();
     thread_turn_owner(who, sizeof(who));
     ksnprintf(line, sizeof(line), "longest turn: %llu ticks (at most 6), taken by %s",
@@ -764,9 +811,13 @@ bool fstest_klock(void)
               "0's %llu wait steps", (unsigned long long)checks);
     want_true(checks == yields0, "the self-check at every wait step of thread 0");
     steps_ok = step_end(line, &since) && steps_ok;
-    ksnprintf(line, sizeof(line), "preemption count: highest at a release %u, now %u (0 "
-              "expected)", pcmax, preempt_count());
-    want_true(pcmax == 0 && preempt_count() == 0, "no preemption count left raised");
+    /* Stage 7b: 1 at every release, the hold's own (it was 0 expected:
+     * holders ran with preemption on). */
+    bool pc_one = pcmin == 1 && pcmax == 1;
+    ksnprintf(line, sizeof(line), "preemption count: at every release %s (lowest %u, highest %u: "
+              "the hold's own), now %u (1 and 0 expected)", pc_one ? "1" : "NOT 1", pcmin, pcmax,
+              preempt_count());
+    want_true(pc_one && preempt_count() == 0, "no preemption count left raised");
     steps_ok = step_end(line, &since) && steps_ok;
     uint32_t live1 = thread_live(), stacks1 = thread_stacks_in_use();
     uint32_t heap1 = kheap_stats()->used_bytes;

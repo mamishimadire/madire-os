@@ -170,6 +170,22 @@ else
     fail "[1.0] self-check: no halt, a reset, a returned copy or System ready in $LOG"
 fi
 
+echo "== [1.0] self-check (stage 7b): a yield while holding the VFS lock (test=selfcheckyieldlock)"
+# kernel/proc/klock.h: a holder runs with preemption off and never yields,
+# sleeps, joins or exits. Thread 0 takes the lock and calls thread_yield;
+# "(WRONG)" means it returned.
+LOG=$OUT/serial-selfcheckyieldlock.log
+boot_until "$LOG" 10 " System halted. Power off the machine." -m 32M -kernel "$KERNEL" \
+    -append "test=selfcheckyieldlock"
+expect_lines "$LOG" "[1.0] self-check: a yield while holding the VFS lock panics, naming the thread" \
+    "thread_yield: thread 0 'kernel' holds the VFS lock:$" "^ a holder never yields, sleeps, joins or exits\.$"
+if grep -q "System halted\. Power off the machine\." "$LOG" && [ "$(grep -c '^boot32: start$' "$LOG")" = 1 ] &&
+   ! grep -qE "\(WRONG\)|System ready" "$LOG"; then
+    pass "[1.0] self-check: the yield's panic screen shown and the kernel halted"
+else
+    fail "[1.0] self-check: no halt, a reset, a returned yield or System ready in $LOG"
+fi
+
 echo "== [0.12] Bounded diagnostic waits: the timer stopped on purpose (test=waitstall)"
 # 0.12 stage 3: with interrupts off on thread 0 the tick count cannot move;
 # a bounded wait and thread 0's bounded sleep must each end as a stall

@@ -202,9 +202,10 @@ fi
 echo "== [stress] The VFS lock: test=klock, 30 boots (1.0 stage 3, plan C2)"
 # Each boot is part 2's test=klock boot (tests/qemu-lib.sh klock_boot: -m
 # 64M, keys typed during the test at a 50 ms gap and a 20 ms hold). One
-# check per boot: all nine result lines OK (the same regexes as part 2's
-# checks 1-9, with check 6's ticket bound recomputed), the PASS line and
-# the exact echo of the keys (check 10).
+# check per boot: all ten result lines OK (the same regexes as part 2's
+# checks 1-9 and stage 7b's ticks inside holds, with check 6's ticket
+# bound recomputed), the PASS line and the exact echo of the keys (check
+# 10).
 # KLOCK lines report each boot's figures; KLOCK_SPREAD the lowest and
 # highest of each over the 30 boots (report only: the checks decide).
 spread() { sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{ printf "%s-%s", $1, $2 }'; }
@@ -221,7 +222,7 @@ for b in $(seq -w 1 30); do
     KL_TMIN+="${tmin:-0}"$'\n' KL_TMAX+="${tmax:-0}"$'\n'
     bad=""
     for re in "$KLOCK_RE_CONTENTION" "$KLOCK_RE_COUNTER" "$KLOCK_RE_RECORDS" "$KLOCK_RE_HOLD" \
-              "$KLOCK_RE_TURN" "$KLOCK_RE_THREAD0" "$KLOCK_RE_SELFCHECK" "$KLOCK_RE_PREEMPT" \
+              "$KLOCK_RE_TICKS" "$KLOCK_RE_TURN" "$KLOCK_RE_THREAD0" "$KLOCK_RE_SELFCHECK" "$KLOCK_RE_PREEMPT" \
               "$KLOCK_RE_RETURNED" "^Filesystem lock test: PASS \("; do
         grep -qE -- "$re" "$LOG" || bad+=" /$re/"
     done
@@ -247,7 +248,7 @@ FC_READY="System ready. Press any key to open the console."
 FCS_RE=(
 "^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
 "^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
-"^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, longest [0-9]+ ticks; truncate holds [0-9]+ \(longest [0-9]+ ticks\); thread 0's yield-while-holding holds [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks; longest of all holds [0-9]+ ticks; each at most 38 \(2 \+ 6 x 6 other threads\): OK$"
+"^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, 0 spanning a switch, longest [0-2] ticks \(at most 2: preemption off while held\); truncate holds [0-9]+ \(longest [0-2] ticks\); thread 0's reserved turns [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\); longest of all holds [0-9]+ ticks \(at most 38\): OK$"
 "^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
 "^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
 "^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
@@ -268,7 +269,7 @@ fcs_bounds_ok() {
 fc_fig() {
     sed -nE "s/^File contention test: figures: (.*, )?$2 ([0-9]+)(, .*)?$/\\2/p" "$1" | head -n 1
 }
-FC_NAMES=(duration finished margin holds ticked switched "work hold" "yield hold" "all holds"
+FC_NAMES=(duration finished margin holds ticked switched "work hold" "reserved turn" "all holds"
           "longest truncate hold" "gaps ticked" "longest gap" "thread 0 wait" "worker wait" turn)
 declare -A FC_ALL=()
 for b in $(seq -w 1 10); do

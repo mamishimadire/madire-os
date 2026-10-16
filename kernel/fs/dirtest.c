@@ -4,6 +4,7 @@
 #include "kernel/fs/dirtest.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/fsys_core.h"
+#include "kernel/fs/path_core.h"
 #include "kernel/fs/ramfs_core.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/kprintf.h"
@@ -367,6 +368,61 @@ static void dirops_big_and_holds(void)
          fg.hold_longest <= 2, text);
 }
 
+/* 1.0 stage 7b (report only): the hold work of the whole test in
+ * microseconds, and one adversarial path lookup under the VFS lock (now
+ * held with preemption off): a 4092-byte path of 512 steps into the last
+ * entry of a folder of 1001 entries, 511 of them followed by '..', so
+ * each step scans the whole folder. Madire has no symbolic links, so a
+ * lexical '..' simplification before the lookup would remove this case
+ * (recorded for the owner's decision; not in stage 7b). */
+static char advpath[PATH_MAX_BYTES];
+
+static void dirops_lookup_cost(void)
+{
+    fd_work_line(tag);
+    bool ok = make_dir("/tmp/do-adv");
+    uint32_t made = 0;
+    while (ok && made < 1000) {
+        fd_vfs_acquire();
+        int r = vfs_create(v, v->root, entry_name("/tmp/do-adv", made), VNODE_FILE, 0644, 0);
+        fd_vfs_release();
+        if (r < 0)
+            break;
+        made++;
+    }
+    ok = ok && made == 1000 && make_dir("/tmp/do-adv/e99z");
+    static const char step[] = "e99z/../";
+    size_t p = 0;
+    for (unsigned i = 0; i < 511; i++)
+        for (size_t j = 0; j < sizeof(step) - 1; j++)
+            advpath[p++] = step[j];
+    for (size_t j = 0; j < 4; j++)
+        advpath[p++] = step[j];
+    advpath[p] = '\0';
+    struct vnode *dir = find("/tmp/do-adv"), *n = 0;
+    uint64_t spent = 0, per = fd_tsc_per_tick(&spent);
+    int r = -1;
+    uint64_t cycles = 0, ticks = 0;
+    if (ok && dir) {
+        fd_vfs_acquire();
+        uint64_t t0 = timer_ticks(), c0 = fd_tsc();
+        r = vfs_lookup(v, dir, advpath, &n);
+        cycles = fd_tsc() - c0;
+        ticks = timer_ticks() - t0;
+        fd_vfs_release();
+    }
+    klogf("%s: adversarial lookup (report only): a %u-byte path of 512 'e99z' steps (511 "
+          "followed by '..') in a folder of %u entries, the folder last: %s in %llu us (%llu "
+          "ticks, under the VFS lock); TSC %llu cycles per tick (calibrated over %llu ticks, "
+          "limit %u)\n", (unsigned)p, made + 1, r == 0 && n ? "found" : "NOT found",
+          (unsigned long long)fd_cycles_us(cycles, per), (unsigned long long)ticks,
+          (unsigned long long)per, (unsigned long long)spent, FD_TSC_LIMIT);
+    remove_dir("/tmp/do-adv/e99z");
+    for (uint32_t i = 0; i < made; i++)
+        remove_file(entry_name("/tmp/do-adv", i));
+    remove_dir("/tmp/do-adv");
+}
+
 static const char *const dirops_what[] = {
     "", "getcwd and chdir moving", "getcwd errors", "chdir errors",
     "relative paths and AT_FDCWD", "mkdir", "mkdirat", "rmdir", "unlink", "unlinkat", "rename",
@@ -398,6 +454,7 @@ bool dirtest_dirops(void)
     dirops_enospc();
     dirops_cwds();
     dirops_big_and_holds();
+    dirops_lookup_cost();                           /* stage 7b, report only */
     waits_line();
     cleanup_line(&s0);
     return finish();

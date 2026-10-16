@@ -3,7 +3,9 @@
  * releasing, FIFO order, ticket wrap-around, the errors the kernel side
  * turns into panics, the owner and abandoned-ticket rule, the wait method
  * (every thread waits by yielding, thread 0 above all) and the figures
- * test=klock checks. */
+ * test=klock checks. Stage 7b: the requeue's preemption count (exactly 1),
+ * the reserved turn (test code only) and its guard, the lowest count at a
+ * release. */
 #include <stdint.h>
 #include "kernel/proc/klock_core.h"
 #include "tests/unit/unit.h"
@@ -249,7 +251,7 @@ static void test_requeue(void)
     uint32_t t = 0xDEADu;
     CHECK_EQ(take(0, 10), KLOCK_TAKEN);                         /* ticket 0 */
     uint32_t t5 = ticket(5), t6 = ticket(6);                    /* tickets 1, 2 */
-    CHECK_EQ(klock_core_requeue(&l, 0, 12, 0, &t), KLOCK_QUEUED);
+    CHECK_EQ(klock_core_requeue(&l, 0, 12, 1, &t), KLOCK_QUEUED);
     CHECK_EQ(t, 3);                                             /* behind every ticket out */
     CHECK(l.owner == KLOCK_FREE);
     CHECK_EQ(l.serving, 1);                                     /* its old ticket served */
@@ -266,11 +268,11 @@ static void test_requeue(void)
     states[6] = SCHED_READY;
     CHECK_EQ(klock_core_try(&l, 5, t5, 13, 12, 1), KLOCK_TAKEN);
     uint32_t keep = 0xBEEFu;                                    /* not the holder: refused */
-    CHECK_EQ(klock_core_requeue(&l, 0, 13, 0, &keep), KLOCK_ERR_NOT_OWNER);
+    CHECK_EQ(klock_core_requeue(&l, 0, 13, 1, &keep), KLOCK_ERR_NOT_OWNER);
     CHECK_EQ(keep, 0xBEEFu);
     CHECK_EQ(l.next, 4);
     CHECK_EQ(l.owner, 5);
-    CHECK_EQ(klock_core_requeue(&l, 5, 14, 0, &t5), KLOCK_QUEUED);  /* 5 behind 6 and 0 */
+    CHECK_EQ(klock_core_requeue(&l, 5, 14, 1, &t5), KLOCK_QUEUED);  /* 5 behind 6 and 0 */
     CHECK_EQ(t5, 4);
     CHECK_EQ(klock_core_try(&l, 5, t5, 14, 14, 0), KLOCK_BUSY);
     CHECK_EQ(klock_core_try(&l, 0, t, 14, 12, 1), KLOCK_BUSY);
@@ -285,10 +287,86 @@ static void test_requeue(void)
     CHECK_EQ(l.next, 5);                                        /* 5 tickets, each served once */
     CHECK_EQ(l.serving, 5);
     CHECK_EQ(take(2, 20), KLOCK_TAKEN);                         /* nobody waiting: */
-    CHECK_EQ(klock_core_requeue(&l, 2, 21, 0, &t), KLOCK_QUEUED);
+    CHECK_EQ(klock_core_requeue(&l, 2, 21, 1, &t), KLOCK_QUEUED);
     CHECK_EQ(klock_core_ahead(&l, t), 0);                       /* its new ticket is next */
     CHECK_EQ(klock_core_try(&l, 2, t, 21, 21, 0), KLOCK_TAKEN);
-    CHECK_EQ(klock_core_requeue(&l, -1, 22, 0, &t), KLOCK_ERR_BAD_TID);
+    CHECK_EQ(klock_core_requeue(&l, -1, 22, 1, &t), KLOCK_ERR_BAD_TID);
+}
+
+/* 1.0 stage 7b: a requeue is accepted only with the preemption count
+ * exactly 1 (the hold's own); 0 or 2 is refused with nothing changed. */
+static void test_requeue_count(void)
+{
+    klock_core_init(&l);
+    uint32_t t = 0xDEADu;
+    CHECK_EQ(take(3, 10), KLOCK_TAKEN);                         /* ticket 0 */
+    CHECK_EQ(klock_core_requeue(&l, 3, 11, 0, &t), KLOCK_ERR_COUNT);
+    CHECK_EQ(klock_core_requeue(&l, 3, 11, 2, &t), KLOCK_ERR_COUNT);
+    CHECK_EQ(t, 0xDEADu);                                       /* no ticket handed out */
+    CHECK_EQ(l.owner, 3);                                       /* still held */
+    CHECK_EQ(l.serving, 0);
+    CHECK_EQ(l.next, 1);
+    CHECK_EQ(l.release_pc_min, UINT32_MAX);                     /* no release recorded */
+    CHECK_EQ(klock_core_requeue(&l, 3, 12, 1, &t), KLOCK_QUEUED);
+    CHECK_EQ(t, 1);
+    CHECK(l.owner == KLOCK_FREE);
+    CHECK_EQ(l.release_pc_min, 1);
+    CHECK_EQ(l.release_pc_max, 1);
+}
+
+/* 1.0 stage 7b: a reserved turn (test code only). Served in ticket order;
+ * while reserved the lock has no owner but every ticket behind is busy;
+ * the reserving thread cannot ask again; the take keeps the hold's start
+ * (the reservation); a take without a reservation, or by another thread,
+ * is refused. */
+static void test_reserve(void)
+{
+    klock_core_init(&l);
+    CHECK_EQ(take(2, 10), KLOCK_TAKEN);
+    uint32_t t0 = ticket(0), t4 = ticket(4);
+    CHECK_EQ(klock_core_reserve_try(&l, 0, t0, 11, 10, 0, true), KLOCK_BUSY);
+    klock_core_waited(&l, 0);
+    CHECK_EQ(klock_core_release(&l, 2, 12, 1), KLOCK_RELEASED);
+    CHECK_EQ(klock_core_reserve_try(&l, 0, t0, 13, 10, 1, true), KLOCK_RESERVED);
+    CHECK_EQ(l.reserved, 0);
+    CHECK(l.owner == KLOCK_FREE);
+    CHECK(!klock_core_held_by(&l, 0));                          /* reserved, not held */
+    CHECK_EQ(l.reserves, 1);
+    CHECK_EQ(l.contended, 1);
+    CHECK_EQ(l.wait_longest0, 3);
+    CHECK_EQ(l.takes, 1);                                       /* not a take yet */
+    CHECK_EQ(klock_core_try(&l, 4, t4, 14, 11, 0), KLOCK_BUSY); /* behind it: waits */
+    uint32_t x = 0;
+    CHECK_EQ(klock_core_ticket(&l, 0, &x), KLOCK_ERR_RECURSIVE);
+    CHECK_EQ(klock_core_take_reserved(&l, 4, true), KLOCK_ERR_NOT_RESERVED);
+    CHECK_EQ(klock_core_release(&l, 0, 14, 1), KLOCK_ERR_NOT_OWNER);
+    CHECK_EQ(klock_core_take_reserved(&l, 0, true), KLOCK_TAKEN);
+    CHECK_EQ(l.owner, 0);
+    CHECK_EQ(l.reserved, KLOCK_FREE);
+    CHECK_EQ(l.takes, 2);
+    CHECK_EQ(klock_core_take_reserved(&l, 0, true), KLOCK_ERR_NOT_RESERVED);
+    CHECK_EQ(klock_core_release(&l, 0, 16, 1), KLOCK_RELEASED);
+    CHECK_EQ(l.hold_longest, 3);                                /* from the reservation, 13 */
+    CHECK_EQ(klock_core_try(&l, 4, t4, 16, 11, 1), KLOCK_TAKEN);
+}
+
+/* 1.0 stage 7b: the guard. Outside a test= diagnostic a reservation and a
+ * take are refused with nothing changed. */
+static void test_reserve_guard(void)
+{
+    klock_core_init(&l);
+    uint32_t t1 = ticket(1);
+    CHECK_EQ(klock_core_reserve_try(&l, 1, t1, 5, 5, 0, false), KLOCK_ERR_NOT_DIAG);
+    CHECK_EQ(l.reserved, KLOCK_FREE);
+    CHECK_EQ(l.reserves, 0);
+    CHECK_EQ(l.serving, 0);
+    CHECK_EQ(klock_core_reserve_try(&l, 1, t1, 5, 5, 0, true), KLOCK_RESERVED);
+    CHECK_EQ(klock_core_take_reserved(&l, 1, false), KLOCK_ERR_NOT_DIAG);
+    CHECK_EQ(l.reserved, 1);
+    CHECK(l.owner == KLOCK_FREE);
+    CHECK_EQ(klock_core_take_reserved(&l, 1, true), KLOCK_TAKEN);
+    CHECK(klock_result_str(KLOCK_ERR_NOT_DIAG)[0] == 'a');
+    CHECK(klock_result_str(KLOCK_ERR_COUNT)[0] == 'p');
 }
 
 /* Holds: the longest in ticks, and the highest preemption count at a
@@ -296,13 +374,16 @@ static void test_requeue(void)
 static void test_hold_figures(void)
 {
     klock_core_init(&l);
+    CHECK_EQ(l.release_pc_min, UINT32_MAX);     /* stage 7b: no release yet */
     take(1, 100);
     klock_core_release(&l, 1, 101, 0);
     CHECK_EQ(l.hold_longest, 1);
+    CHECK_EQ(l.release_pc_min, 0);
     take(1, 200);
     klock_core_release(&l, 1, 203, 2);
     CHECK_EQ(l.hold_longest, 3);
     CHECK_EQ(l.release_pc_max, 2);
+    CHECK_EQ(l.release_pc_min, 0);
     take(1, 300);
     klock_core_release(&l, 1, 300, 0);
     CHECK_EQ(l.hold_longest, 3);
@@ -405,6 +486,9 @@ int main(void)
     RUN(test_owner_rule);
     RUN(test_abandoned_ticket);
     RUN(test_requeue);
+    RUN(test_requeue_count);
+    RUN(test_reserve);
+    RUN(test_reserve_guard);
     RUN(test_hold_figures);
     RUN(test_wait_figures);
     RUN(test_mutual_exclusion_model);

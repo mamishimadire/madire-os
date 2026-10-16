@@ -924,15 +924,19 @@ echo "== [1.0] test=klock: 6 threads and thread 0 contend for the VFS lock for 3
 # policy (b)), not C2's 5; the stage 3 fix (a FIFO ticket lock) bounds
 # thread 0's wait by the tickets ahead x (longest hold + 1) + 1 ticks, not
 # B2's "one chunk per try". The helpers and regexes are in tests/qemu-lib.sh.
+# Stage 7b (an owner-approved step outside the plan): holders run with
+# preemption off and never yield; the queues come from reserved turns.
 LOG=$OUT/serial-klock.log
 klock_boot "$LOG"
-grep -E "^Filesystem lock test: (thread [0-9]+ '|longest|figures)" "$LOG" | sed 's/^/      /'
+grep -E "^Filesystem lock test: (thread [0-9]+ '|longest|ticks inside|figures)" "$LOG" | sed 's/^/      /'
 expect "$LOG" "$KLOCK_RE_CONTENTION" \
     "[1.0] klock: 6 threads and thread 0 contended for 3000 ticks; every thread took the lock, each at least once after waiting, each at least 25% of the mean takes per thread, and every worker at least once while thread 0's loop ran (FIFO fairness)"
 expect "$LOG" "$KLOCK_RE_COUNTER" "[1.0] klock: no lost update: the file's counter equals the increments made"
 expect "$LOG" "$KLOCK_RE_RECORDS" \
     "[1.0] klock: no torn record: every 4096-byte record read (across a page boundary) was one writer's whole record"
 expect "$LOG" "$KLOCK_RE_HOLD" "[1.0] klock: longest hold at most 2 ticks"
+expect "$LOG" "$KLOCK_RE_TICKS" \
+    "[1.0] klock: a timer tick inside a hold never switches (preemption off from take to release); the switch waits for the release"
 expect "$LOG" "$KLOCK_RE_TURN" "[1.0] klock: longest turn at most 6 ticks, its owner named (policy (b))"
 if grep -qE "$KLOCK_RE_THREAD0" "$LOG" && klock_bound_ok "$LOG"; then
     pass "[1.0] klock: thread 0's longest wait within the ticket bound (tickets ahead x (longest hold + 1) + 1 ticks); thread 0 waited only by yielding"
@@ -944,7 +948,7 @@ if grep -qE "$KLOCK_RE_SELFCHECK" "$LOG" && ! grep -q "PANIC" "$LOG"; then
 else
     fail "[1.0] klock: no self-check line, or a panic, in $LOG"
 fi
-expect "$LOG" "$KLOCK_RE_PREEMPT" "[1.0] klock: preemption count 0 at every release and at the end (none left raised)"
+expect "$LOG" "$KLOCK_RE_PREEMPT" "[1.0] klock: preemption count exactly 1 at every release (the hold's own: every hold ran with preemption off) and 0 at the end (none left raised)"
 if grep -qE "$KLOCK_RE_RETURNED" "$LOG" && grep -qE "^Filesystem lock test: PASS \(" "$LOG"; then
     fs_closing "$LOG" lock \
         "[1.0] klock: 0 leaks: nodes, data pages, free pages, heap, threads and stack slots back to the start; the lock free"
@@ -1157,7 +1161,7 @@ boot_until "$LOG" 300 "$READY_LINE" -m 64M -kernel "$KERNEL" -append "test=filec
 grep -E "^File contention test: " "$LOG" | sed 's/^/      /'
 FC_RE_SHARE="^File contention test: busy mark: 4 sharers, 3 forced to queue behind the first \(most tickets ahead 3\); first reads at 0, 1, 2, 3 \(x 4096, in start order\); 256 takes, final offset 1048576, after waiting [0-9]+, longest wait [0-9]+ ticks: OK$"
 FC_RE_LOAD="^File contention test: contention: 4 workers and thread 0 contended for the VFS lock for [0-9]+ ticks with 2 ring-3 spinners running: statuses 0 0 0 0 \(0: every worker's 256 KiB written and read back identical; the last also truncated 2 MiB to 0 twice\); takes after waiting per worker [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* [1-9][0-9]*, thread 0 [1-9][0-9]*: OK$"
-FC_RE_HOLDS="^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, [0-9]+ spanning a switch, longest [0-9]+ ticks; truncate holds [0-9]+ \(longest [0-9]+ ticks\); thread 0's yield-while-holding holds [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks; longest of all holds [0-9]+ ticks; each at most 38 \(2 \+ 6 x 6 other threads\): OK$"
+FC_RE_HOLDS="^File contention test: holds under load: work holds \(chunk loop, truncates, lseek\) [0-9]+, [0-9]+ of 1 tick or more, 0 spanning a switch, longest [0-2] ticks \(at most 2: preemption off while held\); truncate holds [0-9]+ \(longest [0-2] ticks\); thread 0's reserved turns [1-9][0-9]*, [0-9]+ of 1 tick or more, longest [0-9]+ ticks \(at most 38: 2 \+ 6 x 6 other threads\); longest of all holds [0-9]+ ticks \(at most 38\): OK$"
 FC_RE_WAITS="^File contention test: waits: [1-9][0-9]* hand-offs, [0-9]+ gaps of 1 tick or more, longest gap [0-9]+ ticks \(thread -?[0-9]+ '[^']*'\), at most 36 \(6 x 6 other threads\); longest waits: thread 0 [0-9]+ ticks \(bound [0-9]+: [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1 \+ 36\) \+ 1\), workers [0-9]+ [0-9]+ [0-9]+ [0-9]+ ticks \(bound [0-9]+: 4 tickets ahead\); [1-9][0-9]* wait steps of thread 0, all by yielding, its self-check at each: OK$"
 FC_RE_TURN="^File contention test: longest turn: [0-6] ticks \(at most 6\), taken by .*; the spinners ran [1-9][0-9]* and [1-9][0-9]* ticks, killed at the end: OK$"
 FC_RE_CLEAN="^File contention test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> \2, data pages ([0-9]+) -> \3, heap in use ([0-9]+) -> \4 bytes, processes left 0, the VFS lock free with no ticket out: OK$"
@@ -1180,7 +1184,7 @@ expect "$LOG" "$FC_RE_SHARE" \
 expect "$LOG" "$FC_RE_LOAD" \
     "[1.0] filecontend: 4 processes and thread 0 contended for the VFS lock with 2 ring-3 spinners running: every worker's 256 KiB written and read back identical; every worker and thread 0 took the lock after waiting"
 expect "$LOG" "$FC_RE_HOLDS" \
-    "[1.0] filecontend: work holds (chunk loop, truncates incl. 2 MiB under load, lseek) and thread 0's yield-while-holding holds each within the convoy bound (2 + 6 x 6 other threads = 38 ticks); the longest of all holds too; distributions and holds spanning a switch reported"
+    "[1.0] filecontend: work holds (chunk loop, truncates incl. 2 MiB under load, lseek) at most 2 ticks and none spanning a switch (preemption off while held); thread 0's reserved turns within the convoy bound (2 + 6 x 6 other threads = 38 ticks); the longest of all holds too"
 if grep -qE "$FC_RE_WAITS" "$LOG" && fc_bounds_ok "$LOG"; then
     pass "[1.0] filecontend: every hand-off gap at most 6 ticks per other runnable thread (6 x 6 = 36); thread 0's and every worker's longest wait within the convoy ticket bound (tickets ahead x (longest hold + 1 + 6 x 6 other threads) + 1); waits only by yielding"
 else

@@ -153,6 +153,11 @@ struct fd_figures {
     uint64_t wmark_takes, wmark_contended;
     uint32_t wmark_ahead_max;           /* most tickets ahead of a caller's (holder included) */
     uint64_t cwd_dropped;               /* 1.0 stage 6: current folders dropped by teardowns */
+    /* 1.0 stage 7b (report only): the longest hold's work in TSC cycles,
+     * of a chunk, a truncate's free step and a getdents64 hold; and the
+     * longest getdents64 hold in ticks. */
+    uint64_t cyc_chunk, cyc_trunc, cyc_dir;
+    uint64_t dir_hold_longest;
 };
 void fd_figures(struct fd_figures *out);
 
@@ -173,6 +178,23 @@ void fd_thread_lock(int32_t tid, uint64_t *waited, uint64_t *longest);
  * only while every user of the lock goes through these two. */
 uint32_t fd_vfs_acquire(void);
 void fd_vfs_release(void);
+
+/* 1.0 stage 7b, test code only: a reserved turn of the VFS lock
+ * (klock_test_reserve, counted as fd_vfs_acquire counts a take) and its
+ * take (klock_test_take); fd_vfs_release ends it. */
+uint32_t fd_vfs_test_reserve(void);
+void fd_vfs_test_take(void);
+
+/* 1.0 stage 7b (report only): the TSC cycles per timer tick, measured by
+ * polling over 5 whole ticks (*spent: the ticks it took; each of its two
+ * bounded waits has FD_TSC_LIMIT ticks), and cycles in microseconds. */
+#define FD_TSC_LIMIT 12u
+uint64_t fd_tsc(void);
+uint64_t fd_tsc_per_tick(uint64_t *spent);
+uint64_t fd_cycles_us(uint64_t cycles, uint64_t per_tick);
+/* One report-only line "<tag>: hold work (report only): ..." with the
+ * longest chunk, truncate-step and getdents64 holds in microseconds. */
+void fd_work_line(const char *tag);
 struct fd_handoff {
     uint64_t count;                     /* takes that waited */
     uint64_t ticked;                    /* of them, gaps of 1 tick or more */

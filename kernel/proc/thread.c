@@ -9,6 +9,7 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/uspace.h"
 #include "kernel/panic.h"
+#include "kernel/proc/klock.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/sched_core.h"
 #include "kernel/proc/thread.h"
@@ -401,6 +402,7 @@ static void poll_step(void)
 
 void thread_yield(void)
 {
+    klock_check_none("thread_yield");       /* 1.0 stage 7b: before the count's check */
     require_preemption("thread_yield");
     uint32_t f = irq_save();
     int32_t prev = sched.current, next = prev;
@@ -411,6 +413,7 @@ void thread_yield(void)
 
 int32_t thread_join(int32_t tid)
 {
+    klock_check_none("thread_join");
     require_preemption("thread_join");
     for (;;) {
         uint32_t f = irq_save();
@@ -443,6 +446,7 @@ int32_t thread_join(int32_t tid)
 
 void thread_exit(int32_t code)
 {
+    klock_check_none("thread_exit");
     require_preemption("thread_exit");
     int32_t me = sched.current;
     /* The final high-water mark, measured on the stack it is still using. */
@@ -482,6 +486,7 @@ bool thread_reap(void)
 
 void thread_sleep(uint32_t ticks)
 {
+    klock_check_none("thread_sleep");
     require_preemption("thread_sleep");
     if (ticks == 0) {
         thread_yield();

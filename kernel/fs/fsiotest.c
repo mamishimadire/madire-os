@@ -131,7 +131,8 @@ static bool exited(int32_t pid, enum proc_status st, struct proc_result r, int32
 }
 
 /* Thread 0 yields until cond(arg) holds, at most FT_WAIT ticks (it may
- * hold the VFS lock meanwhile: a holder may yield). */
+ * hold a reserved turn of the VFS lock meanwhile, never the lock itself:
+ * a holder never yields, stage 7b). */
 static bool yield_until(bool (*cond)(uint64_t), uint64_t arg)
 {
     uint64_t t0 = timer_ticks();
@@ -488,7 +489,7 @@ static void bigio_writers(void)
     bool q1 = false, q2 = false;
     int32_t p1 = -1, p2 = -1;
     if (app && f1 != NO_FILE && f2 != NO_FILE) {
-        fd_vfs_acquire();                           /* thread 0 holds it while they queue */
+        fd_vfs_test_reserve();                      /* thread 0's turn while they queue */
         p1 = start("bigio", 9, f1);
         w1_tid = p1 > 0 ? process_tid(p1) : -1;
         q1 = p1 > 0 && yield_until(w1_queued, 0);
@@ -496,6 +497,7 @@ static void bigio_writers(void)
             p2 = start("bigio", 10, f2);
             q2 = p2 > 0 && yield_until(w2_queued, 0);
         }
+        fd_vfs_test_take();
         fd_vfs_release();
     }
     enum proc_status s1, s2;
@@ -605,6 +607,7 @@ bool fsiotest_bigio(void)
               (unsigned long long)fg.trunc_holds, (unsigned long long)trunc_case,
               FSYS_TRUNC_STEP, (unsigned long long)fg.hold_longest);
     line(fg.chunks > 0 && trunc_case == 9 && fg.hold_longest <= 2, text);
+    fd_work_line(tag);                              /* stage 7b, report only */
 
     static const char *const files[] = {
         "/tmp/bio-1", "/tmp/bio-m", "/tmp/bio-e", "/tmp/bio-app",
@@ -653,7 +656,7 @@ static void contend_sharers(void)
     int32_t ps[SHARERS];
     bool queued = share_file != NO_FILE;
     fd_figures_reset();
-    fd_vfs_acquire();                               /* the first holds the mark, the rest queue */
+    fd_vfs_test_reserve();                          /* the first holds the mark, the rest queue */
     for (int k = 0; k < SHARERS; k++) {
         ps[k] = queued ? start("bigio", 11, share_file) : -1;
         if (k == 0) {
@@ -663,6 +666,7 @@ static void contend_sharers(void)
             queued = queued && ps[k] > 0 && yield_until(sk_queued, (uint64_t)k + 1);
         }
     }
+    fd_vfs_test_take();
     fd_vfs_release();
     int32_t code[SHARERS];
     bool fifo = queued;
@@ -695,8 +699,9 @@ static int32_t wk[WORKERS];
 /* The three plain workers (the last, the truncating one, is not waited
  * for here): thread 0's loop contends while they run, then stops, so the
  * truncating worker's 2 MiB rounds finish without thread 0's
- * yield-while-holding holds (stage 5's second filecontend fix: those
- * holds, not the workers' own, set the test's length). */
+ * yield-while-holding holds (reserved turns since stage 7b; stage 5's
+ * second filecontend fix: those holds, not the workers' own, set the
+ * test's length). */
 static bool plain_workers_ended(void)
 {
     for (int i = 0; i < WORKERS - 1; i++)
@@ -725,19 +730,28 @@ static void contend_load(void)
         wtid[i] = wk[i] > 0 ? process_tid(wk[i]) : -1;
     }
     uint64_t t_begin = timer_ticks(), iters = 0;
-    uint64_t y_holds = 0, y_ticked = 0, y_longest = 0;  /* thread 0's yield-while-holding holds */
+    uint64_t y_holds = 0, y_ticked = 0, y_longest = 0;  /* thread 0's reserved turns */
     struct diag_site s;
     diag_wait_begin(&s, FC_LIMIT);
     while (probe && !plain_workers_ended() && diag_wait_poll(&s)) {
-        fd_vfs_acquire();
-        uint64_t h0 = timer_ticks();
+        /* Stage 7b: every 4th time a reserved turn (it was a yield while
+         * holding): the workers queue behind it while thread 0 yields,
+         * then it takes the lock; a holder never yields. */
+        bool reserved = (iters & 3) == 0;
+        uint64_t h0;
+        if (reserved) {
+            fd_vfs_test_reserve();
+            h0 = timer_ticks();
+            thread_yield();                         /* not holding: the workers queue behind */
+            fd_vfs_test_take();
+        } else {
+            fd_vfs_acquire();
+            h0 = timer_ticks();
+        }
         ramfs_read(rfs, probe, 0, kbuf, FD_CHUNK);
-        bool yielded = (iters & 3) == 0;
-        if (yielded)
-            thread_yield();                         /* holding: the workers queue behind */
         uint64_t held = timer_ticks() - h0;
         fd_vfs_release();
-        if (yielded) {
+        if (reserved) {
             y_holds++;
             if (held >= 1)
                 y_ticked++;
@@ -810,19 +824,24 @@ static void contend_load(void)
               (unsigned long long)waited[3], (unsigned long long)waited0);
     line(workers_ok && all_waited && waited0 >= 1, text);
 
+    /* Stage 7b: work holds run with preemption off: at most 2 ticks, none
+     * spanning a switch; thread 0's reserved turns (a yield inside) keep
+     * the convoy bound. */
     uint64_t hold_bound = 2 + (uint64_t)TURN_MAX * OTHERS;
     ksnprintf(text, sizeof(text), "holds under load: work holds (chunk loop, truncates, lseek) "
-              "%llu, %llu of 1 tick or more, %llu spanning a switch, longest %llu ticks; truncate "
-              "holds %llu (longest %llu ticks); thread 0's yield-while-holding holds %llu, %llu "
-              "of 1 tick or more, longest %llu ticks; longest of all holds %llu ticks; each at "
-              "most %llu (2 + 6 x %d other threads)", (unsigned long long)fg.holds,
-              (unsigned long long)fg.holds_ticked, (unsigned long long)fg.holds_switched,
-              (unsigned long long)fg.hold_longest, (unsigned long long)fg.trunc_holds,
-              (unsigned long long)fg.trunc_hold_longest, (unsigned long long)y_holds,
-              (unsigned long long)y_ticked, (unsigned long long)y_longest,
-              (unsigned long long)hold, (unsigned long long)hold_bound, OTHERS);
-    line(fg.hold_longest <= hold_bound && y_longest <= hold_bound && hold <= hold_bound &&
-         y_holds > 0 && fg.trunc_holds >= 18, text);
+              "%llu, %llu of 1 tick or more, %llu spanning a switch, longest %llu ticks (at most "
+              "2: preemption off while held); truncate holds %llu (longest %llu ticks); thread "
+              "0's reserved turns %llu, %llu of 1 tick or more, longest %llu ticks (at most %llu: "
+              "2 + 6 x %d other threads); longest of all holds %llu ticks (at most %llu)",
+              (unsigned long long)fg.holds, (unsigned long long)fg.holds_ticked,
+              (unsigned long long)fg.holds_switched, (unsigned long long)fg.hold_longest,
+              (unsigned long long)fg.trunc_holds, (unsigned long long)fg.trunc_hold_longest,
+              (unsigned long long)y_holds, (unsigned long long)y_ticked,
+              (unsigned long long)y_longest, (unsigned long long)hold_bound, OTHERS,
+              (unsigned long long)hold, (unsigned long long)hold_bound);
+    line(fg.hold_longest <= 2 && fg.trunc_hold_longest <= 2 && fg.holds_switched == 0 &&
+         y_longest <= hold_bound && hold <= hold_bound && y_holds > 0 && fg.trunc_holds >= 18,
+         text);
 
     uint64_t gap_bound = (uint64_t)TURN_MAX * OTHERS;
     uint64_t bound0 = (uint64_t)ahead0 * (hold + 1 + gap_bound) + 1;
@@ -850,7 +869,7 @@ static void contend_load(void)
     line(turn <= TURN_MAX && spin_ticks[0] >= 1 && spin_ticks[1] >= 1 && spinners_killed, text);
 
     klogf("%s: figures: duration %llu, finished %llu, margin %llu, holds %llu, ticked %llu, "
-          "switched %llu, work hold %llu, yield hold %llu, all holds %llu, truncate holds %llu, "
+          "switched %llu, work hold %llu, reserved turn %llu, all holds %llu, truncate holds %llu, "
           "longest truncate hold %llu, hand-offs %llu, gaps ticked %llu, longest gap %llu, "
           "thread 0 wait %llu, worker wait %llu, turn %llu, thread 0 loop %llu\n", tag,
           (unsigned long long)duration, (unsigned long long)finished,
@@ -862,6 +881,7 @@ static void contend_load(void)
           (unsigned long long)ho.ticked, (unsigned long long)ho.longest,
           (unsigned long long)wlong0, (unsigned long long)wmax, (unsigned long long)turn,
           (unsigned long long)iters);
+    fd_work_line(tag);                              /* stage 7b, report only */
 
     for (int i = 0; i < WORKERS; i++) {
         if (wk[i] > 0) {

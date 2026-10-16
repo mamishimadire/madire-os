@@ -139,7 +139,8 @@ static struct proc_result wait_for(int32_t pid, enum proc_status *st)
 }
 
 /* Thread 0 yields until cond(arg) holds, at most FT_WAIT ticks (it may
- * hold the VFS lock meanwhile: a holder may yield). */
+ * hold a reserved turn of the VFS lock meanwhile, never the lock itself:
+ * a holder never yields, stage 7b). */
 static bool yield_until(bool (*cond)(uint64_t), uint64_t arg)
 {
     uint64_t t0 = timer_ticks();
@@ -244,13 +245,14 @@ static bool b_queued(uint64_t unused)
 
 static bool sys_busy(struct vnode *fb, struct vnode *fs)
 {
-    /* Two readers of one open file: thread 0 holds the VFS lock until A
-     * holds the busy mark and waits for the lock, and B waits for the
-     * mark; then A's call (10 chunks) ends before B's begins. */
+    /* Two readers of one open file: thread 0 holds a reserved turn of the
+     * VFS lock (stage 7b; it held the lock itself before) until A holds
+     * the busy mark and waits for the lock, and B waits for the mark;
+     * then A's call (10 chunks) ends before B's begins. */
     busy_file = kopen(fb, OF_READ);
     bool queued_a = false, queued_b = false;
     int32_t pa = -1, pb = -1;
-    klock_acquire(vfs_lock());
+    klock_test_reserve(vfs_lock());
     if (busy_file != NO_FILE) {
         pa = start("fdops", 15, busy_file, NO_FILE);
         busy_tid = pa > 0 ? process_tid(pa) : -1;
@@ -260,6 +262,7 @@ static bool sys_busy(struct vnode *fb, struct vnode *fs)
             queued_b = pb > 0 && yield_until(b_queued, 0);
         }
     }
+    klock_test_take(vfs_lock());
     klock_release(vfs_lock());
     enum proc_status sa, sb;
     struct proc_result ra = wait_for(pa, &sa), rb = wait_for(pb, &sb);
@@ -537,16 +540,18 @@ bool fdtest_kill(void)
                  closed == 4, text);
 
     /* A kill requested between the first and the second chunk of a 48 KiB
-     * read: thread 0 holds the VFS lock until the program holds the busy
-     * mark and waits for the lock, then gives it the lock and queues right
-     * behind it (klock_requeue), so it has the lock again after exactly
-     * one chunk. */
+     * read: thread 0 holds a reserved turn of the VFS lock (stage 7b; it
+     * held the lock itself before) until the program holds the busy mark
+     * and waits for the lock, then takes the lock, gives it to the program
+     * and queues right behind it (klock_requeue), so it has the lock again
+     * after exactly one chunk. */
     c0 = closed_by_teardowns();
-    klock_acquire(vfs_lock());
+    klock_test_reserve(vfs_lock());
     pid = read_file != NO_FILE ? start("fdhold", 3, read_file, NO_FILE) : -1;
     read_tid = pid > 0 ? process_tid(pid) : -1;
     bool queued = pid > 0 && yield_until(reader_queued, 0);
     uint64_t at_kill = ~0ull;
+    klock_test_take(vfs_lock());
     if (queued) {
         klock_requeue(vfs_lock());
         at_kill = offset_of(read_file);
@@ -637,4 +642,14 @@ void fdtest_selfcheck_copylock(void)
     copy_to_user(VM_USER_DATA, &b, 1);
     klogf("Self-check test: a user copy under the VFS lock returned (WRONG)\n");
     panic("selfcheckcopylock: the self-check did not fire.");
+}
+
+/* ---- test=selfcheckyieldlock (1.0 stage 7b) ---- */
+
+void fdtest_selfcheck_yieldlock(void)
+{
+    klock_acquire(vfs_lock());
+    thread_yield();
+    klogf("Self-check test: a yield under the VFS lock returned (WRONG)\n");
+    panic("selfcheckyieldlock: the self-check did not fire.");
 }

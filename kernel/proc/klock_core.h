@@ -30,8 +30,16 @@
  * klock_core_ahead_bad).
  *
  * The figures (takes, waits, the longest hold and wait in ticks, the most
- * tickets ahead of thread 0, the highest preemption count seen at a
- * release) are what test=klock checks.
+ * tickets ahead of thread 0, the lowest and highest preemption count seen
+ * at a release) are what test=klock checks.
+ *
+ * 1.0 stage 7b: a holder keeps preemption disabled from its take to its
+ * release (kernel/proc/klock.h), so the count at a release is the hold's
+ * own, 1; klock_core_requeue refuses any other count. A reserved turn
+ * (test code only, while a test= diagnostic runs): the caller's ticket is
+ * served but it does not hold the lock yet; every ticket behind waits; it
+ * takes the lock later (klock_core_take_reserved). A hold that began as a
+ * reserved turn is timed from the reservation.
  */
 
 #include <stdbool.h>
@@ -43,6 +51,7 @@
 
 struct klock {
     int32_t owner;              /* the holder's thread id, or KLOCK_FREE */
+    int32_t reserved;           /* stage 7b: the thread whose turn is reserved, or KLOCK_FREE */
     uint32_t next;              /* the next ticket to hand out */
     uint32_t serving;           /* the ticket allowed to hold the lock */
     int32_t ticket_tid[KLOCK_TICKETS];
@@ -56,6 +65,8 @@ struct klock {
     uint64_t wait_longest0;     /* the same, thread 0 only */
     uint32_t ahead_max0;        /* most tickets ahead of thread 0's ticket (holder included) */
     uint32_t release_pc_max;    /* highest preemption count at a release */
+    uint32_t release_pc_min;    /* stage 7b: lowest (UINT32_MAX before the first release) */
+    uint64_t reserves;          /* stage 7b: reserved turns */
 };
 
 enum klock_result {
@@ -68,6 +79,10 @@ enum klock_result {
     KLOCK_ERR_BAD_TID,          /* not a thread id */
     KLOCK_ERR_FULL,             /* more tickets out than threads exist */
     KLOCK_ERR_NOT_TICKET,       /* a try with a ticket that is not the caller's */
+    KLOCK_RESERVED,             /* stage 7b: the caller's turn is reserved */
+    KLOCK_ERR_COUNT,            /* stage 7b: a requeue with a preemption count other than 1 */
+    KLOCK_ERR_NOT_DIAG,         /* stage 7b: a reserved turn outside a test= diagnostic */
+    KLOCK_ERR_NOT_RESERVED,     /* stage 7b: a take without a reserved turn */
 };
 
 /* How a waiter waits. 1.0 has no sleep queue: every thread, thread 0
@@ -92,8 +107,8 @@ enum klock_result klock_core_try(struct klock *l, int32_t tid, uint32_t ticket, 
                                  uint64_t first_try, uint32_t yields);
 
 /* Release by thread `tid` at tick `now`; serves the next ticket. `pc` is
- * the preemption count the caller had when it asked (recorded, 0
- * expected). */
+ * the preemption count the caller had when it asked (recorded: the
+ * lowest and the highest; 1 expected since stage 7b, the hold's own). */
 enum klock_result klock_core_release(struct klock *l, int32_t tid, uint64_t now, uint32_t pc);
 
 /* 1.0 stage 4: the holder `tid` releases at tick `now` (as
@@ -101,9 +116,23 @@ enum klock_result klock_core_release(struct klock *l, int32_t tid, uint64_t now,
  * ticket (*ticket, as klock_core_ticket) in one step: no other ticket can
  * come between, so it goes behind every ticket already out and holds the
  * lock again only after each of them. KLOCK_QUEUED, or the release's
- * error with nothing changed (kernel/proc/klock.c, klock_requeue). */
+ * error with nothing changed (kernel/proc/klock.c, klock_requeue). Stage
+ * 7b: `pc` must be exactly 1 (the hold's own count), else KLOCK_ERR_COUNT
+ * with nothing changed. */
 enum klock_result klock_core_requeue(struct klock *l, int32_t tid, uint64_t now, uint32_t pc,
                                      uint32_t *ticket);
+
+/* Stage 7b, test code only. klock_core_reserve_try: as klock_core_try,
+ * but when the ticket is served the caller's turn is reserved
+ * (KLOCK_RESERVED: the lock stays without an owner, every ticket behind is
+ * busy, the hold's time starts now). klock_core_take_reserved: the
+ * reserving thread takes the lock (KLOCK_TAKEN), or KLOCK_ERR_NOT_RESERVED.
+ * Both return KLOCK_ERR_NOT_DIAG with nothing changed unless `diag` (a
+ * test= diagnostic is running). */
+enum klock_result klock_core_reserve_try(struct klock *l, int32_t tid, uint32_t ticket,
+                                         uint64_t now, uint64_t first_try, uint32_t yields,
+                                         bool diag);
+enum klock_result klock_core_take_reserved(struct klock *l, int32_t tid, bool diag);
 
 /* One wait step of thread `tid`, counted before it yields. */
 void klock_core_waited(struct klock *l, int32_t tid);

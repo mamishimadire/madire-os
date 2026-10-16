@@ -32,6 +32,7 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/fdtest.h"
+#include "kernel/proc/klock.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
@@ -351,6 +352,10 @@ static void check_boot_modules(const struct multiboot_info *mbi)
  * to deliberately trigger a CPU exception or run a memory test. */
 static void run_diagnostics(void)
 {
+    /* 1.0 stage 7b: reserved VFS-lock turns (test code only) are allowed
+     * while a test= diagnostic runs; never on a normal boot. */
+    if (cmdline_has("test="))
+        klock_test_allow();
     /* 0.9 thread diagnostics. The longer names come first: cmdline_has
      * matches prefixes, and "test=preempt" (stage 4) is one of these. */
     if (cmdline_has("test=gpflimit")) {           /* before test=gpf: a prefix of it */
@@ -441,6 +446,9 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=selfcheckcopylock")) {   /* 1.0 stage 4 */
         diag_message("Self-check test: a user copy under the VFS lock (must panic)");
         fdtest_selfcheck_copylock();
+    } else if (cmdline_has("test=selfcheckyieldlock")) {  /* 1.0 stage 7b */
+        diag_message("Self-check test: a yield under the VFS lock (must panic)");
+        fdtest_selfcheck_yieldlock();
     } else if (cmdline_has("test=selfcheckcr3")) {
         /* 0.12 stage 2b: each self-check test must panic, naming the state.
          * cmdline_has matches substrings: ring3cr3 before ring3. */

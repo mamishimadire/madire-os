@@ -32,6 +32,7 @@
 # more: the folder calls: test=dirops (23) and test=fsunlink (11) in part
 # 4; 1 unit suite (syscall_dir). Stage 7: 18 more: System V start-up:
 # test=startup (16) and a console session (2) in part 4; 1 unit suite
-# (startstack).
-1.0 171
+# (startstack). Stage 7b: 3 more: test=klock's ticks inside holds (part
+# 2), test=selfcheckyieldlock (2) in part 4.
+1.0 174
 unit-suites 65

@@ -23,6 +23,9 @@
  *
  * test=selfcheckcopylock: a user copy while thread 0 holds the VFS lock;
  * must panic (kernel/memory/usercopy.h).
+ *
+ * test=selfcheckyieldlock (1.0 stage 7b): a yield while thread 0 holds the
+ * VFS lock; must panic (kernel/proc/klock.h, klock_check_none).
  */
 
 #include <stdbool.h>
@@ -30,5 +33,6 @@
 bool fdtest_sys(void);
 bool fdtest_kill(void);
 void fdtest_selfcheck_copylock(void) __attribute__((noreturn));
+void fdtest_selfcheck_yieldlock(void) __attribute__((noreturn));
 
 #endif

@@ -179,7 +179,9 @@ klock_boot() {
 }
 
 # The result lines of test=klock (kernel/fs/fstest.c), one regex each, in
-# the order of the checks in part 2 (1-9; 10 is the keys).
+# the order of the checks in part 2 (1-9; 10 is the keys; 1.0 stage 7b:
+# KLOCK_RE_TICKS, a tick inside a hold never switches, and KLOCK_RE_PREEMPT
+# changed from "0 at a release" to "1 at every release", the hold's own).
 KLOCK_RE_CONTENTION="^Filesystem lock test: contention: 7 of 7 threads took the lock, each at least once after waiting; takes per thread [0-9]+-[0-9]+ \(mean [0-9]+, each at least 25% of it\); every worker took it while thread 0's loop ran \(fewest [1-9][0-9]*\); [0-9]+ takes, [0-9]+ after waiting: OK$"
 KLOCK_RE_COUNTER="^Filesystem lock test: counter: ([1-9][0-9]*) increments made, the file holds \1: OK$"
 KLOCK_RE_RECORDS="^Filesystem lock test: records: [1-9][0-9]* written, [1-9][0-9]* read across a page boundary \(4096 bytes at 2048\), 0 torn: OK$"
@@ -187,7 +189,8 @@ KLOCK_RE_HOLD="^Filesystem lock test: longest hold: [0-2] ticks \(at most 2\): O
 KLOCK_RE_TURN="^Filesystem lock test: longest turn: [0-6] ticks \(at most 6\), taken by (thread [0-9]+ 'klock[0-5]' \(kernel thread\): [0-6] ticks|no thread \(no turn of 1 tick or more\)): OK$"
 KLOCK_RE_THREAD0="^Filesystem lock test: thread 0: longest wait [0-9]+ ticks, bound [0-9]+ \(at most [0-9]+ tickets ahead x \(longest hold [0-9]+ \+ 1\) \+ 1\); [1-9][0-9]* wait steps, all by yielding: OK$"
 KLOCK_RE_SELFCHECK="^Filesystem lock test: thread-0 self-check: never fired; checked at each of thread 0's [1-9][0-9]* wait steps: OK$"
-KLOCK_RE_PREEMPT="^Filesystem lock test: preemption count: highest at a release 0, now 0 \(0 expected\): OK$"
+KLOCK_RE_TICKS="^Filesystem lock test: ticks inside holds: [1-9][0-9]* holds kept the lock across the next tick \(longest [0-9]+ ticks of their 4-tick limit, margin [0-9]+%\), 0 switched inside a hold: OK$"
+KLOCK_RE_PREEMPT="^Filesystem lock test: preemption count: at every release 1 \(lowest 1, highest 1: the hold's own\), now 0 \(1 and 0 expected\): OK$"
 KLOCK_RE_RETURNED="^Filesystem lock test: threads ([0-9]+) -> \1, stack slots ([0-9]+) -> \2, heap in use ([0-9]+) -> \3 bytes, the lock free, 0 errors: OK$"
 
 # klock_keys_ok <log>: the keys typed during the test reached the console
