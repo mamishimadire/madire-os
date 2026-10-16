@@ -395,9 +395,31 @@ for e in "$OUT"/user/*.elf; do
 done
 echo "      e_entry == _start for $same of $total programs"
 
+# 1.0 stage 7 fix (F1): st_join <log> <out>. The kernel cuts a program's
+# output into log lines of at most SYSCALL_LINE_MAX (100) characters of text
+# after "[pid N] " (kernel/proc/syscall_core.c), with no continuation
+# marker. This joins a [pid N] line whose text is exactly 100 characters
+# with the next line of the same pid (again while that part is 100). Used
+# only by the stage 7 startup checks below. Limitation: a genuine
+# 100-character line followed by another line of the same pid is joined too.
+st_join() {
+    awk '
+        {
+            if (match($0, /^\[pid [0-9]+\] /)) {
+                p = substr($0, 1, RLENGTH); t = substr($0, RLENGTH + 1)
+                if (p in held) { line = held[p] t; delete held[p] } else line = $0
+                if (length(t) == 100) { held[p] = line; next }
+                print line
+            } else print
+        }
+        END { for (p in held) print held[p] }' "$1" > "$2"
+}
+
 echo "== [1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
 LOG=$OUT/serial-startup.log
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -initrd "$OUT/user/args.elf" -append "test=startup"
+st_join "$LOG" "$OUT/serial-startup-joined.log"
+LOG=$OUT/serial-startup-joined.log
 grep -E "^Startup test: |^\[pid [0-9]+\] args: (auxv|AT_|layout|registers|[0-9]+ wrong)" "$LOG" | sed 's/^/      /'
 # st_pid <case>: the process of "Startup test: case <case> (...)".
 st_pid() { grep -m1 -E "^Startup test: case $1 \(" "$LOG" | sed -nE 's/.*: process ([0-9]+) exited.*/\1/p'; }

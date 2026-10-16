@@ -10,7 +10,11 @@ int main(int argc, char **argv)
 {
     long arg = u_arg(argc, argv);
     uint64_t a = targets[(uint64_t)arg < 4 ? arg : 0];
-    volatile uint64_t v = *(volatile const uint64_t *)a;
+    /* 1.0 stage 7: the load in assembly, so the bytes at the fault are fixed
+     * (48 8b 00, mov (%rax),%rax; test=userkmem checks them) whatever the
+     * compiler does around it. */
+    uint64_t v = a;
+    __asm__ volatile ("mov (%%rax), %%rax" : "+a"(v) : : "memory");
     (void)v;
     u_puts("kread: KERNEL MEMORY WAS READABLE\n");
     return 1;
