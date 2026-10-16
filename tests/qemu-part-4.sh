@@ -418,8 +418,8 @@ st_join() {
 echo "== [1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
 LOG=$OUT/serial-startup.log
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -initrd "$OUT/user/args.elf" -append "test=startup"
-st_join "$LOG" "$OUT/serial-startup-joined.log"
-LOG=$OUT/serial-startup-joined.log
+st_join "$LOG" "$OUT/startup-joined.txt"
+LOG=$OUT/startup-joined.txt
 grep -E "^Startup test: |^\[pid [0-9]+\] args: (auxv|AT_|layout|registers|[0-9]+ wrong)" "$LOG" | sed 's/^/      /'
 # st_pid <case>: the process of "Startup test: case <case> (...)".
 st_pid() { grep -m1 -E "^Startup test: case $1 \(" "$LOG" | sed -nE 's/.*: process ([0-9]+) exited.*/\1/p'; }
