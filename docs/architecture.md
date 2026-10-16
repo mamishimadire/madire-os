@@ -88,6 +88,11 @@ VirtualBox power-on
                                    programs hello, exitcode and nullptr run as
                                    processes 1-3; each result and the cleanup
                                    are checked (fails → crash screen)
+      12a''. vfs_boot (1.0)        the live RAM filesystem (/, /home, /tmp)
+                                   and its self-test: create, write, read
+                                   back, rename, remove; nothing left
+                                   (fails → crash screen; heap off → NOT
+                                   AVAILABLE)
       12b. key logging (0.9.2)     "Key events: …" on serial: logged only with the
                                    boot option keylog or a keyboard diagnostic
       13. diagnostics if requested (test=… on the boot command line)
@@ -128,7 +133,7 @@ VirtualBox power-on
 | Memory layout | `linker/linker.ld` | 64-bit ELF, loaded at 1 MiB; since 0.8 linked and run at `0xFFFFFFFF80000000` + physical (`.boot` alone is linked at its load address); `.text`, `.rodata`, `.data`, `.bss` 4 KiB-aligned; `.bss` ends with the boot tables and the stacks; exports `__kernel_start/end` and per-section start/end symbols (virtual), plus the `*_phys` symbols the loader and the stub need |
 | Start-up sequence | `kernel/kernel.c` | Calls each subsystem in order and reports each result on the boot screen |
 
-**Why GRUB/Multiboot:** GRUB already handles BIOS disk access, reading the ISO filesystem and switching the CPU into protected mode. That lets the project start with kernel code instead of a hand-written boot sector. A custom bootloader could replace it later without changing the kernel's entry contract. **Since 0.13 the boot loader is Limine** (BSD-2-Clause, a separate tool fetched at build time; AGENTS.md section 11, item 5), still with Multiboot 1 and the same kernel entry: only the version string of `madire.kernel` changed. See [evaluations/limine.md](evaluations/limine.md).
+**Why Multiboot and a separate boot loader:** a boot loader handles BIOS disk access, reading the ISO filesystem and switching the CPU into protected mode, so the project could start with kernel code instead of a hand-written boot sector. From 0.1 to 0.12 that loader was GRUB 2; **since 0.13 it is Limine** (BSD-2-Clause, a separate tool fetched at build time; AGENTS.md section 11, item 5), still with Multiboot 1 and the same kernel entry: only the version string of `madire.kernel` changed. A custom bootloader could replace it later without changing the kernel's entry contract. See [evaluations/limine.md](evaluations/limine.md).
 
 **Why a 32-bit stub:** Multiboot (version 1) hands over in 32-bit protected mode, so the first instructions must be 32-bit. The stub does only what long mode needs: check the CPU, build temporary tables, switch. Everything else is 64-bit C. Up to 0.6 the whole kernel was 32-bit; 0.7 made it 64-bit and dropped the 32-bit build.
 
@@ -156,7 +161,10 @@ kernel/               architecture-independent kernel code
                       switch, preemption-disable count, self-test (0.9);
                       user processes: process table, ring-3 entry, system
                       calls, fault containment, user-mode tests (0.10);
-                      the ELF checks, program modules and load plans (0.11)
+                      the ELF checks, program modules and load plans (0.11);
+                      descriptors, the VFS lock, the start-up block (1.0)
+  fs/                 (1.0) paths, the VFS, the RAM filesystem, file pages,
+                      the file and folder system calls, storage diagnostics
 drivers/              hardware drivers
   vga/  serial/  pit/  keyboard/
 user/                 (0.10) the user programs: crt0, system-call stubs, a
@@ -797,7 +805,7 @@ Each logs its details on serial and its result on the boot screen's message line
 
 ### Entering ring 3
 
-`process_start(name, arg)` takes a process-table slot and creates the process's thread. That thread creates the address space, enters it, loads the image (`process_load`: code, data + bss, stack) and calls `enter_user`, which builds an `IRETQ` frame (SS `0x33`, RSP = the stack top, RFLAGS with IF set and IOPL 0, CS `0x3B`, RIP = the image's entry point; checked by `userentry.h`) and executes `IRETQ` with RDI = `arg`. The program's `crt0` calls `main(arg)` and passes its return value to `exit`.
+`process_start(name, arg)` takes a process-table slot and creates the process's thread. That thread creates the address space, enters it, loads the image (`process_load`: code, data + bss, stack) and calls `enter_user`, which builds an `IRETQ` frame (SS `0x33`, RSP = the stack top, RFLAGS with IF set and IOPL 0, CS `0x3B`, RIP = the image's entry point; checked by `userentry.h`) and executes `IRETQ` with RDI = `arg`. The program's `crt0` calls `main(arg)` and passes its return value to `exit`. **Since 1.0** a program starts with the System V layout instead (see *Program start-up* under *Filesystem*): RDI is 0, and `crt0` calls `main(argc, argv, envp)` from the initial stack.
 
 ### System calls
 
@@ -816,6 +824,8 @@ Each logs its details on serial and its result on the boot screen's message line
 | anything else | – | `-ENOSYS` (38). The number is compared as the full 64-bit RAX: the x32 bit `0x40000000`, values of 2^32 and above, and −1 are all unknown. `0x10000000`–`0x1000FFFF` is reserved for Madire's own calls; none exists yet |
 
 errno values: `EBADF` 9, `EFAULT` 14, `EINVAL` 22, `ENOSYS` 38.
+
+**Since 1.0** there are 27 system calls: the six above and 21 new file calls, with `write` changed (`read` 0, `open` 2, `close` 3, `stat` 4, `fstat` 5, `lstat` 6, `lseek` 8, `dup` 32, `dup2` 33, `ftruncate` 77, `getcwd` 79, `chdir` 80, `rename` 82, `mkdir` 83, `rmdir` 84, `unlink` 87, `getdents64` 217, `openat` 257, `mkdirat` 258, `newfstatat` 262, `unlinkat` 263), listed with their errno cases in [plans/1.0.md](plans/1.0.md) (B1; its heading says 24, its table has 22 rows: the 21 new calls and `write`) and described under *Filesystem* below. `write` now goes through the descriptor table: fds 1 and 2 keep the console path above (at most 4096 bytes per call, a short count), regular files take the full count. Every other number still returns `-ENOSYS`.
 
 ### User memory (`copy_from_user`)
 
@@ -982,13 +992,87 @@ This will be the only layer that touches port I/O, MMIO and CPU-specific instruc
 
 Users, permissions, application permissions, and a secure boot/update chain: the planned Madire Security Platform (listed in [PROGRESS.md](PROGRESS.md)). These build on process isolation, which exists since 0.10. The kernel already protects itself in small ways: page 0 unmapped, code read-only, data no-execute (0.7), stack guard pages (0.7), an empty lower half and no writable alias of kernel code in the physical view (0.8), and an unmapped 16 KiB guard below every kernel thread's stack (0.9). Since 0.10: programs run in ring 3 in separate address spaces, never see a kernel page (no user bit in the upper half), can't run privileged instructions or call interrupt gates, get W^X user pages (with NX), reach the kernel only through six checked system calls, and end alone when they fault; the kernel can't execute user pages (SMEP) or touch them outside `copy_from_user` (SMAP) when the CPU supports it, and the kernel half of every address space is frozen at boot.
 
-## Filesystem [planned]
+## Filesystem [built: 1.0]
 
-A virtual filesystem (VFS) layer first, then an initial RAM disk loaded by the boot loader as a Multiboot module, then disk filesystems.
+1.0 adds a **virtual filesystem (VFS) layer** with one filesystem behind it, a **RAM filesystem**, mounted at `/`, and the **Live mode**: booted from the ISO, every file lives in memory and nothing is saved. Programs reach it through Linux x86-64 system calls; the console reaches it through the file commands (`pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat`, `cat`, `rm`, `cp`, `mv`, `df`, `du` and the redirections `>` and `>>`; see [commands.md](commands.md)). The design and its decisions are in [plans/1.0.md](plans/1.0.md); the changes made during the milestone are in [PROGRESS.md](PROGRESS.md).
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/fs/path_core.c/.h` | yes | Splitting paths, `.` and `..`, the limits (NAME_MAX 255, PATH_MAX 4096) (`test_path`) |
+| `kernel/fs/vfs_core.c/.h` | yes | Nodes (`struct vnode`), lookup from a start folder, the operations and their errno decisions, behind an ops table per filesystem (`test_vfs`) |
+| `kernel/fs/ramfs_core.c/.h` | yes | The RAM filesystem's nodes, folder entries and the page index of each file (`test_ramfs`) |
+| `kernel/fs/fspage.c/.h` | no | File data in 4 KiB page-allocator frames, reached through the physical-access window; the data budget (`test_fspage` for its pure part) |
+| `kernel/fs/vfs.c/.h` | no | The kernel glue, the clock for times, the Live log line and the boot self-test |
+| `kernel/fs/fsys_core.c/.h`, `fsys.c/.h` | core pure | The file and folder system calls: argument rules, `struct stat` and `linux_dirent64` layouts, the `*at` forms (`test_syscall_fs`, `test_syscall_dir`) |
+| `kernel/proc/fdtable_core.c/.h`, `fd.c/.h` | core pure | Descriptor tables, the open-file table, the busy marks, the chunk loop's arithmetic (`test_fdtable`) |
+| `kernel/proc/klock_core.c/.h`, `klock.c/.h` | core pure | The VFS lock: a FIFO ticket lock and its self-checks (`test_klock`) |
+| `kernel/memory/usercopy_core.c`, `usercopy.c/.h` | core pure | 1.0 adds `copy_to_user` and `user_writable` next to `copy_from_user` (`test_usercopy_out`) |
+| `kernel/fs/fstest.c`, `fsiotest.c`, `dirtest.c`, `kernel/proc/fdtest.c`, `starttest.c` | no | The storage diagnostics (`test=fslimits`, `fsfill`, `klock`, `fdkill`, `fsunlink`, `dirops`, …), QEMU boot options only |
+
+### Nodes, descriptors and paths
+
+- **Nodes:** a file or a folder, with its node number, size, times, mode, link count, an open count and its parent. A node is freed when it has no name left **and** no open file refers to it (Linux's unlink-while-open): an unlinked file stays readable through its open descriptors until the last close.
+- **Descriptors:** 16 per process (`EMFILE`), 256 open files system-wide (`ENFILE`). An open file (offset, flags, node, reference count) is shared by `dup` and `dup2`. Every process starts with fd 0 (console, read-only; reads return 0), 1 and 2 (console, write-only: today's `write` path). `open` and `dup` return the lowest free number. Teardown closes every descriptor, also after a fault or a kill.
+- **Paths:** absolute from `/`, relative from the start folder (the process's current folder, or the `*at` call's `dirfd`). Repeated `/` count as one; a trailing `/` requires a folder; `..` of `/` is `/`. Names 1–255 bytes (any byte but `/` and NUL); paths at most 4096 bytes with the NUL (`ENAMETOOLONG`). Lookup is iterative, so depth has no fixed limit. The shell prints bytes outside `0x20`–`0x7E` as `?`.
+- **Current folder:** one per process (a node reference); a program starts in the shell's current folder; the shell starts in `/home`. A removed current folder answers `ENOENT` (`getcwd`, lookups through `..`); the shell goes back to `/` after removing its own.
+
+### The RAM filesystem and its limits
+
+| Limit | Value | When it is hit |
+|---|---|---|
+| Nodes (files and folders, `/` included) | 1024 | creating anything → `ENOSPC`; nothing half-created |
+| File size | 2 MiB (one 4 KiB index page of 512 frame numbers) | a `write` crossing it writes up to the limit (short count); at the limit `EFBIG`; `ftruncate` beyond it `EFBIG` |
+| Data budget | min(32 MiB, 75 % of the free pages at boot), index pages included | a `write` that runs out writes what fits (short count), with nothing written `ENOSPC` |
+| Names and node records | kernel heap, exact size | heap exhaustion → `ENOMEM`, nothing half-created |
+
+File data is **never in the heap**: each page is a page-allocator frame, taken when it is first written and returned to the allocator when it is freed; never-written pages read as zeros and cost nothing. At boot the filesystem holds `/`, `/home` and `/tmp` (3 node records, no data page); the budget is a ceiling, logged as `Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file, budget N pages`. 32 MiB of RAM is enough to boot (about 22 MiB of budget, 5,703 pages); 64 MiB gives the full 32 MiB budget (8192 pages). Freeing a large file, truncating it and removing a rename's victim are done in steps of at most 64 pages per hold of the lock (2 MiB = 9 holds).
+
+### The VFS lock
+
+One lock, `klock`, protects the whole VFS:
+
+- **A FIFO ticket lock** (the stage 3 fix: plain try-and-yield let thread 0 starve the other threads). A waiter takes a ticket and **yields** until its ticket is served; no waiter ever blocks, so thread 0 (the console) never leaves the run queue.
+- **Holders run with preemption disabled** from the take to the release (stage 7b, superseding the plan's "holders may be preempted"); a switch that falls due during a hold is taken at the release (policy (b)). Holders never yield, sleep, join or exit (an always-on self-check panics). On one CPU the kernel's own code therefore never finds the lock held; queues form only where a test diagnostic builds them on purpose, with a reserved turn that panics outside a `test=` diagnostic.
+- **Bounded holds:** one chunk of at most 4096 bytes of file data, one path lookup, one folder read (at most 4096 bytes of `getdents64` records; 16 entries for the shell's `ls` and `du`), or one 64-page free step. Measured on Actions: a 4096-byte chunk at most 1.3 ms, a free step 0.13 ms, a folder read 0.3 ms; a deliberately adversarial lookup (a 4095-byte path of `..` steps through a 1000-entry folder) 18.6 ms, about 2 ticks.
+- **Large `read`/`write`:** a call on a regular file loops inside the kernel, one chunk per hold, and returns the full count, as Linux does (a short count only at the end of the file, or after partial progress followed by `EFBIG`, `ENOSPC` or `EFAULT`; at most `0x7FFFF000` bytes per call).
+- **Busy marks:** an open file is marked busy for the whole of a `read`, `write` or `lseek`, so two calls on the same open file (after `dup`) never interleave their offsets; a writer also marks the node, so two writes to one file are never interleaved chunk by chunk (`O_APPEND` claims the end at the start). Marks are waited on by yielding. They are still held with preemption on across a call, the remaining source of lag between processes (accepted for 1.0).
+- **Lock order:** a `klock` is taken outermost, with the preemption count 0 and interrupts on; the heap, page-allocator, window and `klogf` guards nest inside a hold. Never from an interrupt handler.
+
+### Program start-up (System V)
+
+Since 1.0 (stage 7) a program starts with the System V x86-64 layout: on its initial stack `argc`, the `argv` pointers, a NULL, the `envp` pointers, a NULL, then the auxiliary vector (18 entries, `AT_NULL` included: `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_PAGESZ`, `AT_BASE`, `AT_FLAGS`, `AT_ENTRY`, `AT_UID`, `AT_EUID`, `AT_GID`, `AT_EGID`, `AT_PLATFORM`, `AT_HWCAP`, `AT_CLKTCK`, `AT_SECURE`, `AT_HWCAP2`, `AT_EXECFN`; no `AT_RANDOM` yet), with the strings and the platform string `x86_64` at the top. The whole block must fit in the top page (4096 bytes), or the start is refused with `E2BIG`. `argv` comes from `run <name> [args…]`, `envp` from the shell's exported variables. `crt0` calls `main(argc, argv, envp)`.
+
+### Live mode
+
+Booting the ISO gives the Live mode: the console's first lines say `Live mode: files are kept in memory only.` and `Nothing is saved: all files are lost when the computer restarts.`; `version` adds `Live mode (files in memory only)`; `df` shows the filesystem as `live (RAM)`. There is no disk driver in 1.0, so nothing on any disk is read or written. The program modules stay boot modules; `run <name>` is unchanged.
+
+### Deviations from Linux (a closed list)
+
+Each answer is one Linux could give, never an invented errno:
+
+- No permissions are enforced (one user; `st_uid`/`st_gid` 0; `mode` stored and shown, never checked: no `EACCES`).
+- No symbolic or hard links (`st_nlink` 1 for files, 2 + subfolders for folders).
+- `lseek` with `SEEK_DATA`/`SEEK_HOLE` → `EINVAL`.
+- `write` to the console (fds 1 and 2) takes at most 4096 bytes per call (a legal short count; files return the full count).
+- Times come from the RTC at boot plus the uptime, with no time zone.
+- fd 0 reads return 0 (no keyboard input for programs yet).
+- `ftruncate` that grows a file never answers `ENOSPC`: running out of budget is reported when the data is written (holes cost nothing).
+- During a truncate's free steps another file's writer may briefly see `ENOSPC`.
+- `getcwd` with size 0 answers `ERANGE` (the raw system call's answer).
+- Descriptor and count arguments are read as 64-bit values: a descriptor of 2^32 or more answers `EBADF`, and `getdents64`'s count is taken as a 32-bit value (Linux reads `unsigned int`).
+- `getdents64` on a removed folder answers `ENOENT`.
+- The shell's `>` and `>>` are operators only as separate words (no quoting yet; D11); `run` refuses a redirection.
+- The start-up block holds at most 4096 bytes (`E2BIG`), and has no `AT_RANDOM`.
+
+### Deferred to the Linux-compatibility (musl) milestone
+
+These keep returning `-ENOSYS` in 1.0 (why each is needed is in [plans/1.0.md](plans/1.0.md), B1): `readv`/`writev`, `ioctl`, `fcntl`, `renameat`/`renameat2`, `pread64`/`pwrite64`, `preadv`/`pwritev`, `fsync`/`fdatasync`, `truncate`, `fchdir`, `access`/`faccessat`/`faccessat2`, `readlink`/`readlinkat`, `statx`, `dup3`, `pipe`/`pipe2`, `openat2`, `close_range`, `utimensat`, `chmod`/`fchmod`/`fchmodat`, `umask`, `link`/`symlink`/`linkat`/`symlinkat`, `mmap`/`munmap`/`brk`, `fadvise64`, `sendfile`, `copy_file_range`, `poll`/`select`/`ppoll`/`pselect6`, `flock`. With them: `AT_RANDOM` and a larger start-up block, a correct `AT_PHDR` for files whose headers are in a loaded segment, quoting in the shell, `run > file` and pipes.
+
+**Next:** a disk driver and a writable disk filesystem behind the same ops table (the storage milestone); the RAM filesystem stays for Live mode.
 
 ## System services [planned]
 
-User-mode services (init, logging, device manager). User mode and system calls exist since 0.10; loading programs that aren't built in (ELF from boot modules) comes in 0.11, and a filesystem in 1.0.
+User-mode services (init, logging, device manager). User mode and system calls exist since 0.10, ELF programs from boot modules since 0.11, and a filesystem (in memory) since 1.0.
 
 ## User interface [planned]
 
