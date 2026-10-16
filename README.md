@@ -109,7 +109,7 @@ It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written 
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
-**Tested at v1.0:** 1493 QEMU checks and 68 unit-test suites pass in the official regression on GitHub Actions (the final full run, 38966032674), together with the reproducible-build check (the stress part's 125 checks last ran in stage 8, before the shell's final changes); the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 604 of its rows on that run's ISO, booting all 27 Diagnostics entries through Limine's menu and running a whole session of file commands.
+**Tested at v1.0:** 1493 QEMU checks and 68 unit-test suites pass in the official regression on GitHub Actions (the final full run, 38966032674), together with the reproducible-build check; from `main`, the milestone commit passed a sharded run (38976628573, with the 4 MiB kernel gate) and the stress part's 125 checks (38976644379) on the same kernel; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 604 of its rows on that run's ISO, booting all 27 Diagnostics entries through Limine's menu and running a whole session of file commands.
 
 ## Roadmap
 
