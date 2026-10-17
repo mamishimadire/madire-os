@@ -52,6 +52,7 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 - **Never change the VM's settings without approval.** Report a difference instead. The only change a test makes is attaching the ISO under test.
 - Use `scripts/vbox-acceptance.ps1`; keep its screenshots and serial logs as evidence, and compare the serial logs with QEMU's.
 - **Virtual disks only (binding, since 0.12):** the installer and any code that writes to a disk may only ever run against virtual disks (VirtualBox or QEMU disk images), never against the real disks of the development (work) laptop.
+- **Host memory for VMs (Kali, `MadireOS-Test`, scratch VMs; since 1.1):** if steady available memory is below the stage's threshold, the builder may close **only** these apps without asking: Google Chrome (incl. background processes), Microsoft Edge (incl. WebView/background), Grammarly, OneDrive, VoyceMobile. Edge's WebView2 processes (`msedgewebview2.exe`) only when started by `msedge.exe`; never those owned by another app (e.g. Teams, Outlook, Widgets). Close gracefully first (normal close, so Chrome/Edge can restore tabs); force-close only if a process is still running after 30 s. **Never** close Word, Excel, PowerPoint, Outlook, Teams, VS Code, or any other app: report those and ask the owner. After closing, wait for memory to settle, re-measure (three samples), and list in the report exactly what was closed and the memory before/after. Never reopen apps, change startup settings, or uninstall anything.
 
 ## 7. Backups, commits and tags
 
