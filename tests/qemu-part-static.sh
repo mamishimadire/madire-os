@@ -7,6 +7,9 @@
 # and the [0.13] checks of the Limine ISO are added at the end. 1.0 stage 0a:
 # the [1.0] check of Madire's licence files at the ISO root. 1.0 stage 1:
 # the 0.13 report's comparison with v0.12's kernel (decided no check) removed.
+# 1.1 stage 1: the default entry's title is "Boot Madire OS" (C1), and the
+# [1.1] checks of the boot menu's global options and its wallpaper (S1-S3)
+# are added at the end.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -39,12 +42,13 @@ echo "== [0.10] Version read once by the test harness"
 if [ -n "$VERSION" ]; then pass "[0.10] version read from kernel/kernel.h: $VERSION (every version check uses it)"
 else fail "[0.10] no version read from kernel/kernel.h"; fi
 # 0.13: the boot menu is limine.conf; its first entry (the first line starting
-# with a single "/") is the default one.
+# with a single "/") is the default one. 1.1: the title no longer carries the
+# version; the wallpaper does (checked by S2a).
 TITLE=$(grep -m1 -E '^/[^/]' "$OUT/limine.conf")
-if [ "$TITLE" = "/Madire OS v$VERSION" ]; then
-    pass "[0.10] boot menu: the default entry is titled 'Madire OS v$VERSION'"
+if [ "$TITLE" = "/Boot Madire OS" ]; then
+    pass "[0.10] boot menu: the default entry is titled 'Boot Madire OS'"
 else
-    fail "[0.10] default boot entry: '$TITLE', expected '/Madire OS v$VERSION'"
+    fail "[0.10] default boot entry: '$TITLE', expected '/Boot Madire OS'"
 fi
 
 # ---- 0.13: the Limine ISO (checks that boot nothing) ----
@@ -128,3 +132,94 @@ MSBAD=$(awk '/^\// { n++ } n == 1 && /^ *module_path: / { if (p != "") print "no
              END { if (p != "") print "no string for " p; if (c == 0) print "no modules" }' "$OUT/limine.conf")
 if [ -z "$MSBAD" ]; then pass "[0.13] limine.conf: every program module's module_string is its file name ($(grep -c '^ *module_string: ' "$OUT/limine.conf") modules)"
 else fail "[0.13] limine.conf: ${MSBAD//$'\n'/; }"; fi
+
+# ---- 1.1: the boot menu hidden behind a key, on Madire's wallpaper ----
+
+echo "== [1.1] limine.conf: the global options (docs/plans/1.1.md, section E)"
+# S1: the lines before the first entry, without comments and blank lines,
+# must be exactly this list, and no default_entry line may exist (the first
+# entry is the default one).
+GWANT="timeout: 2
+quiet: yes
+mouse: no
+interface_resolution: 1024x768
+interface_branding:
+interface_help_hidden: yes
+editor_enabled: no
+terse: yes
+wallpaper: boot():/boot/limine/wallpaper.png
+wallpaper_style: centered
+backdrop: 0B1220
+term_foreground: E6EDF3
+term_background: FF000000
+term_margin: 240
+term_margin_gradient: 0"
+GGOT=$(awk '/^\// { exit } /^#/ || /^[ \t]*$/ { next } { print }' "$OUT/limine.conf")
+GDEF=$(grep -c '^[ \t]*default_entry:' "$OUT/limine.conf")
+echo "      $(printf '%s\n' "$GGOT" | grep -c .) global lines, $GDEF default_entry line(s)"
+if [ "$GGOT" = "$GWANT" ] && [ "$GDEF" -eq 0 ]; then
+    pass "[1.1] boot menu: hidden behind a key (quiet, 2 s, no default_entry, mouse and editor off, terse, no branding or help, 1024x768, term_margin 240)"
+else
+    diff <(printf '%s\n' "$GWANT") <(printf '%s\n' "$GGOT") | sed 's/^/      /'
+    fail "[1.1] boot menu: the global options differ from the plan's list, or $GDEF default_entry line(s)"
+fi
+
+echo "== [1.1] The ISO: the boot menu's wallpaper"
+# S2a: the ISO's file (extracted with /boot/limine above) must be the bytes
+# that scripts/make-wallpaper.py makes again here with the harness's version
+# (read once from kernel/kernel.h): the proof that the version shown is the
+# current one. Both are made by the same Python and zlib (one job).
+WPGEN=$(dirname "$0")/../scripts/make-wallpaper.py
+WPISO=$OUT/iso-extract/wallpaper.png
+WPNEW=$OUT/wallpaper-regenerated.png
+rm -f "$WPNEW"
+python3 "$WPGEN" "$WPNEW" --version "$VERSION" 2>&1 | sed 's/^/      /'
+echo "      ISO: $(sha256sum < "$WPISO" 2>/dev/null | cut -d' ' -f1) (regenerated: $(sha256sum < "$WPNEW" 2>/dev/null | cut -d' ' -f1))"
+if [ -s "$WPISO" ] && [ -s "$WPNEW" ] && cmp -s "$WPISO" "$WPNEW"; then
+    pass "[1.1] ISO: /boot/limine/wallpaper.png is byte-identical to make-wallpaper.py run again with v$VERSION"
+else
+    fail "[1.1] ISO: /boot/limine/wallpaper.png missing or different from make-wallpaper.py run again with v$VERSION"
+fi
+# S2b: the size gate and the readable version field (tEXt "Madire-Version");
+# not the proof (S2a is). Prints "PNG <width>x<height> <bytes> <version>".
+WPINFO=$(python3 - "$WPISO" <<'EOF' 2>&1
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+if d[:8] != b"\x89PNG\r\n\x1a\n":
+    sys.exit("not a PNG")
+i, kinds, w, h, ver = 8, [], 0, 0, "none"
+while i + 8 <= len(d):
+    n, kind = struct.unpack(">I", d[i:i + 4])[0], d[i + 4:i + 8]
+    body = d[i + 8:i + 8 + n]
+    kinds.append(kind)
+    if kind == b"IHDR":
+        w, h = struct.unpack(">II", body[:8])
+    elif kind == b"tEXt" and body.startswith(b"Madire-Version\x00"):
+        ver = body[15:].decode("ascii", "replace")
+    i += 12 + n
+if not kinds or kinds[0] != b"IHDR" or kinds[-1] != b"IEND" or i != len(d):
+    sys.exit("malformed chunks")
+print(f"PNG {w}x{h} {len(d)} {ver}")
+EOF
+)
+echo "      $WPINFO"
+read -r WPKIND WPDIM WPBYTES WPVER <<< "$WPINFO"
+if [ "$WPKIND" = PNG ] && [ "$WPDIM" = 1024x768 ] && [ "$WPBYTES" -le 262144 ] 2>/dev/null && [ "$WPVER" = "$VERSION" ]; then
+    pass "[1.1] ISO: wallpaper.png is a 1024x768 PNG of at most 256 KiB, its Madire-Version text is $VERSION"
+else
+    fail "[1.1] ISO: wallpaper.png: $WPINFO (expected a 1024x768 PNG of at most 262144 bytes, Madire-Version $VERSION)"
+fi
+
+echo "== [1.1] make-wallpaper.py: the M of kernel/logo.c"
+# S3: the stroke table of kernel/logo.c (x1, y1, x2, y2 per stroke, in its
+# order) must equal the one the wallpaper draws (--print-strokes).
+SLOGO=$(awk '/strokes\[\] = \{/ { on = 1; next } on && /^\};/ { exit }
+             on { sub(/\/\*.*/, ""); gsub(/[{},]/, " "); $1 = $1; if (NF == 4) print }' "$(dirname "$0")/../kernel/logo.c")
+SWP=$(python3 "$WPGEN" --print-strokes 2>&1)
+echo "      kernel/logo.c: ${SLOGO//$'\n'/; }"
+echo "      make-wallpaper.py: ${SWP//$'\n'/; }"
+if [ "$(printf '%s\n' "$SLOGO" | grep -c .)" -eq 4 ] && [ "$SLOGO" = "$SWP" ]; then
+    pass "[1.1] make-wallpaper.py: the M's four strokes equal kernel/logo.c's"
+else
+    fail "[1.1] make-wallpaper.py: the M's strokes differ from kernel/logo.c's"
+fi

@@ -27,7 +27,7 @@ DIAGS=$(awk '/^\/Diagnostics$/ { in_sub = 1; next }
 diag_iso() {
     D="$OUT/isodiag-$1"
     limine_tree "$D"
-    T="$2" awk '/^timeout: 3$/ { print "timeout: 0"; print "default_entry: Diagnostics/" ENVIRON["T"]; next } { print }' \
+    T="$2" awk '/^timeout: 2$/ { print "timeout: 0"; print "default_entry: Diagnostics/" ENVIRON["T"]; next } { print }' \
         "$CFG" > "$D/boot/limine/limine.conf"
     limine_iso "$D" "$OUT/madire-os-diag-$1.iso"
 }

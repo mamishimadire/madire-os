@@ -21,11 +21,13 @@ limine_iso() {
 
 # limine_tree <dir> (0.13): a fresh test-ISO tree holding the kernel under test
 # and Limine's BIOS files (from the real ISO's tree); the caller writes
-# <dir>/boot/limine/limine.conf.
+# <dir>/boot/limine/limine.conf. 1.1: also the boot menu's wallpaper, so
+# every test ISO looks like the real one.
 limine_tree() {
     rm -rf "$1" && mkdir -p "$1/boot/limine"
     cp "$KERNEL" "$1/boot/madire.kernel"
-    cp "$OUT/isodir/boot/limine/limine-bios.sys" "$OUT/isodir/boot/limine/limine-bios-cd.bin" "$1/boot/limine/"
+    cp "$OUT/isodir/boot/limine/limine-bios.sys" "$OUT/isodir/boot/limine/limine-bios-cd.bin" \
+       "$OUT/isodir/boot/limine/wallpaper.png" "$1/boot/limine/"
 }
 
 # fixture_normal_boot: the normal boot of the real ISO (serial-boot.log; since

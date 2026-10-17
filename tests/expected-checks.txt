@@ -41,4 +41,7 @@
 # the [0.12] console session's boot) and docs/*.md valid UTF-8 (part
 # static); 1 unit suite (shell_help10).
 1.0 260
+# 1.1 stage 1: the boot menu's global options (S1), its wallpaper (S2a, S2b,
+# S3), all in part static.
+1.1 4
 unit-suites 68
