@@ -10,7 +10,8 @@
 # 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink);
 # stage 7 the System V start-up's (test=startup and a console session);
 # stage 8 the console's file commands; stage 9 redirection, rm, cp, mv, df
-# and du (one console session).
+# and du (one console session). 1.1 stage 2 adds the hidden boot menu's
+# [1.1] checks at the end (tests/qmp_menu.py).
 
 echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
@@ -1076,3 +1077,111 @@ grep -q "^end-of-fs9-test$" "$LOG" && [ "$w" -le 79 ]
 ck $? "[1.0] stage 9 file session: every console line at most 79 characters"
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[1.0] stage 9 file session: no panic, dropped key, screen-rule violation or self-check"
+
+echo "== [1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"
+# 1.1 stage 2 (docs/plans/1.1.md, D1 Q1-Q6): the real ISO's boot menu
+# (limine.conf: quiet, timeout 2, term_margin 240), driven by
+# tests/qmp_menu.py, never together with qmp_keys.py. QEMU starts paused,
+# so power-on is time 0. Each state's screen is compared pixel by pixel with
+# the ISO tree's wallpaper.png; the panel, header, hint and version boxes
+# come from scripts/make-wallpaper.py --layout-json (one source). The marker
+# rows: the up markers in y 288-303, the down markers in y 464-479 (plan,
+# section E). The logs are in $OUT/menu/, not serial-*.log, so part final
+# counts the same boots as before (as the padded test kernel's).
+MENU_T0=$(date +%s)
+QMPMENU=$(dirname "$0")/qmp_menu.py
+MENUDIR=$OUT/menu
+rm -rf "$MENUDIR" && mkdir -p "$MENUDIR"
+MENU_WP=$OUT/isodir/boot/limine/wallpaper.png
+MENU_LAYOUT=$MENUDIR/layout.json
+python3 "$(dirname "$0")/../scripts/make-wallpaper.py" "$MENUDIR/wallpaper-layout.png" --version "$VERSION" \
+    --layout-json "$MENU_LAYOUT" | sed 's/^/      /'
+echo "      layout: $(tr -d ' \n' < "$MENU_LAYOUT" 2>/dev/null)"
+# menu_boot <log> <seconds> <qmp_menu.py mode> <its arguments after the
+# socket and the log...>: boots the real ISO paused with a QMP socket, runs
+# qmp_menu.py, then stops QEMU. MENU_OUT holds qmp_menu.py's output (also
+# printed and kept in <log>.menu.txt).
+menu_boot() {
+    local log=$1 secs=$2 mode=$3 sock=$MENUDIR/qmp.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout "$secs" qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -cdrom "$ISO" >/dev/null 2>&1 &
+    qpid=$!
+    MENU_OUT=$(python3 "$QMPMENU" "$mode" "$sock" "$log" "$@" 2>&1)
+    sed 's/^/      /' <<< "$MENU_OUT"
+    echo "$MENU_OUT" > "${log%.log}.menu.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# menu_state <name>: qmp_menu.py's STATE line of that shot, if 1024x768.
+menu_state() { grep -E "^STATE $1 size=1024x768 " <<< "$MENU_OUT"; }
+
+# Q1-Q4: one boot. Home every 300 ms until the menu shows, 5 s held, then
+# the four states: collapsed; Down, Enter (Diagnostics open, the top of
+# the list); Down x27 (position 26, the end of the list); Up x28 (back at
+# the top).
+LOG=$MENUDIR/reveal.log
+menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:5 shot:collapsed down ret shot:open \
+    'down*27' shot:position-26 'up*28' shot:back-top --band up=288-303 --band down=464-479 --shots "$MENUDIR"
+if grep -qE '^REVEAL [0-9]+\.[0-9] s, [0-9]+ presses, 1024x768$' <<< "$MENU_OUT" &&
+   grep -qxF 'HOLD 5 s: serial 0 bytes, screen 1024x768' <<< "$MENU_OUT"; then
+    pass "[1.1] boot menu: a key during the 2 s shows the menu (1024x768), and nothing boots for 5 s"
+else
+    fail "[1.1] boot menu: no 1024x768 menu within 30 s of keys, or the serial log not empty 5 s later (see ${LOG%.log}.menu.txt)"
+fi
+ok=1
+for s in collapsed open position-26 back-top; do
+    menu_state "$s" | grep -qE ' drawn=[1-9][0-9]* inside_panel=yes ' || ok=0
+done
+if [ "$ok" = 1 ]; then
+    pass "[1.1] boot menu: in every state Limine draws only inside the panel (collapsed, Diagnostics open, scrolled to position 26, back at the top)"
+else
+    fail "[1.1] boot menu: a state drew outside the panel, nothing, or was not 1024x768 (see ${LOG%.log}.menu.txt)"
+fi
+ok=1
+for s in collapsed open position-26 back-top; do
+    menu_state "$s" | grep -qE ' header=0 hint=0 version=0 ' || ok=0
+done
+if [ "$ok" = 1 ]; then
+    pass "[1.1] boot menu: no Limine name or help text (the header, hint and version areas are the wallpaper's own pixels)"
+else
+    fail "[1.1] boot menu: Limine drew in the header, hint or version area, or a state was not 1024x768 (see ${LOG%.log}.menu.txt)"
+fi
+if menu_state collapsed | grep -qE ' band_up=0 band_down=0$' &&
+   menu_state open | grep -qE ' band_down=[1-9][0-9]*$' &&
+   menu_state position-26 | grep -qE ' band_up=[1-9][0-9]* '; then
+    pass "[1.1] boot menu: scroll markers only when the list overflows (down markers at the top of the list, up markers at position 26)"
+else
+    fail "[1.1] boot menu: scroll markers wrong (collapsed: none in y 288-303 and 464-479; open: some in 464-479; position 26: some in 288-303; see ${LOG%.log}.menu.txt)"
+fi
+
+# Q5: a second boot, the keys of the VirtualBox automation: Down, Enter,
+# Down x27, Enter (1 s after the menu shows; Home only selects the first
+# entry, so a Home still queued changes nothing). "No PANIC" relies on
+# QEMU's default CPU lacking SMAP: position 26 then reports NOT APPLICABLE.
+# With a SMAP-capable -cpu the crash test would panic by design, and this
+# check would need changing.
+LOG=$MENUDIR/position-26.log
+menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:1 down ret 'down*27' ret 'until:SMAP test:'
+if grep -qE '^REVEAL ' <<< "$MENU_OUT" && grep -qxF 'HOLD 1 s: serial 0 bytes, screen 1024x768' <<< "$MENU_OUT" &&
+   grep -q '^SMAP test: ' "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.1] boot menu: Down, Enter, Down x27 boots Diagnostics position 26 to 'SMAP test:'"
+else
+    fail "[1.1] boot menu: Down, Enter, Down x27, Enter did not boot position 26 to 'SMAP test:' (or booted early, or a panic; see $LOG)"
+fi
+
+# Q6: no key: a screendump every 250 ms until System ready.
+LOG=$MENUDIR/no-key.log
+menu_boot "$LOG" 150 nokey "System ready."
+if grep -qE '^SIZES( (640x480|720x400):[0-9]+)+$' <<< "$MENU_OUT" &&
+   grep -qE "^UNTIL 'System ready\.': seen after " <<< "$MENU_OUT"; then
+    pass "[1.1] no key: the real ISO boots to System ready without Limine's graphics screen (never 1024 wide)"
+else
+    fail "[1.1] no key: no System ready, or a screen size other than 640x480 and 720x400 on the way (see ${LOG%.log}.menu.txt)"
+fi
+echo "      [1.1] boot menu checks: $(( $(date +%s) - MENU_T0 )) s (report only)"
