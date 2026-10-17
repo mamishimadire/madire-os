@@ -16,8 +16,13 @@ Special keys are written in braces:
     {ret} {tab} {bs} {del} {left} {right} {home} {end} {up} {down} {caps}
     {ctrl+c}      any '+' combination of qcodes
     {wait:2}      pause 2 seconds
+    {kp_8}        any other name is sent as that single QEMU key, for example
+                  {kp_8} {num_lock} {scroll_lock} {less} {esc} (1.1); QEMU
+                  rejects an unknown name (send-key failed)
 Either way every key goes through QEMU's PS/2 keyboard, so the guest sees
-real make/break codes on IRQ1.
+real make/break codes on IRQ1. Each combination is held 20 ms by default
+(--hold; 30 ms before 1.1): QEMU loses key releases when the hold is as long
+as the gap (1.0 stage 0d).
 
 QEMU queues send-key requests and delivers them at its own pace, so the
 last key may reach the guest well after this script has sent it. With
@@ -62,7 +67,7 @@ def text_to_actions(text):
             elif "+" in token:
                 actions.append(("keys", token.split("+")))
             else:
-                raise ValueError(f"unknown key token {{{token}}}")
+                actions.append(("keys", [token]))
             continue
         i += 1
         if c.islower() or c.isdigit():
@@ -100,8 +105,15 @@ class Qmp:
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock.connect(path)
         self.file = self.sock.makefile("rw")
-        greeting = json.loads(self.file.readline())
-        if "QMP" not in greeting:
+        # 1.1: an event (for example RESUME) can come before the greeting;
+        # skip at most 50 of them (command() skips events too).
+        for _ in range(51):
+            greeting = json.loads(self.file.readline())
+            if "QMP" in greeting:
+                break
+            if "event" not in greeting:
+                raise RuntimeError(f"unexpected QMP greeting: {greeting}")
+        else:
             raise RuntimeError(f"unexpected QMP greeting: {greeting}")
         self.command("qmp_capabilities")
 
@@ -128,7 +140,7 @@ def main():
     ap.add_argument("keys", nargs="?", default="")
     ap.add_argument("--text", help="type this text instead of KEYS (see above)")
     ap.add_argument("--gap", type=float, default=0.15, help="seconds between combinations")
-    ap.add_argument("--hold", type=int, default=30, help="ms each combination is held")
+    ap.add_argument("--hold", type=int, default=20, help="ms each combination is held")
     ap.add_argument("--done", help="after sending, wait until this text is in the log")
     ap.add_argument("--done-timeout", type=float, default=90)
     args = ap.parse_args()

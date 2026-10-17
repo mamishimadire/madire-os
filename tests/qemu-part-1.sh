@@ -7,7 +7,8 @@
 # 0.13 adds the [0.13] checks of where Limine places the boot data (the
 # temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
 # adds the [1.0] filesystem checks of the normal boot at the end; stage 2
-# the data budget and the self-test's data step after them.
+# the data budget and the self-test's data step after them. 1.1 stage 5
+# adds a report-only trace probe at the end.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1424,3 +1425,17 @@ if [ "${D0:-x}" = 0 ] && [ "${D1:-y}" = 0 ] && [ -n "${P0:-}" ] && [ "$P0" = "${
 else
     fail "[1.0] filesystem self-test: pages not given back (${FSD:-no line})"
 fi
+
+# 1.1 stage 5 (report only, no check): does this QEMU write the PS/2 trace
+# events the stage 7 light checks need? Today's kernel writes ECHO (0xEE)
+# twice, so ps2_write_keyboard should appear at least twice; ps2_set_ledstate
+# shows what the firmware sets. Stage 7 replaces this probe with its checks.
+# The files are not serial-*.log, so no boot count changes.
+echo "== [1.1] Trace probe: PS/2 keyboard trace events (report only, no check)"
+rm -f "$OUT/probe-trace-serial.txt" "$OUT/probe-trace.txt"
+timeout 8 qemu-system-x86_64 -display none -no-reboot -serial file:"$OUT/probe-trace-serial.txt" -m 32M -kernel "$KERNEL" \
+    -D "$OUT/probe-trace.txt" -trace ps2_write_keyboard -trace ps2_set_ledstate >/dev/null 2>&1
+TPW=$(grep -c 'ps2_write_keyboard' "$OUT/probe-trace.txt" 2>/dev/null || true)
+TPL=$(grep -c 'ps2_set_ledstate' "$OUT/probe-trace.txt" 2>/dev/null || true)
+echo "TRACE_PROBE ps2_write_keyboard=${TPW:-0} ps2_set_ledstate=${TPL:-0} (report only)"
+head -n 5 "$OUT/probe-trace.txt" 2>/dev/null | sed 's/^/      /'
