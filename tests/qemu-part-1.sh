@@ -1439,3 +1439,36 @@ TPW=$(grep -c 'ps2_write_keyboard' "$OUT/probe-trace.txt" 2>/dev/null || true)
 TPL=$(grep -c 'ps2_set_ledstate' "$OUT/probe-trace.txt" 2>/dev/null || true)
 echo "TRACE_PROBE ps2_write_keyboard=${TPW:-0} ps2_set_ledstate=${TPL:-0} (report only)"
 head -n 5 "$OUT/probe-trace.txt" 2>/dev/null | sed 's/^/      /'
+
+# 1.1 stage 6: Num Lock (on at boot), the keypad with Num Lock off and the
+# ISO key 0x56, typed over QMP into a keylog boot (K1-K8).
+echo "== [1.1] Keys: Num Lock, the keypad and the ISO key (keylog)"
+LOG=$OUT/serial-keys11.log
+S="x{wait:1}"                                         # opens the console
+S+="echo {kp_1}{kp_2}{ret}"                           # K1 Num Lock on (boot)
+S+="{num_lock}{shift+kp_9}"                           # K8 Num Lock off, Shift + keypad 9
+S+="echo ab{kp_4}{kp_4}X{ret}"                        # K2 keypad 4 = Left
+S+="{kp_8}{ret}"                                      # K3, K4 keypad 8 = Up (history)
+S+="{num_lock}echo {kp_8}{ret}"                       # K5 Num Lock on again
+S+="echo {less}{shift+less}{ret}"                     # K6 the ISO key
+S+="echo end-of-keys11-test{ret}"
+boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-keys11-test\n' -m 32M -kernel "$KERNEL" -append "keylog"
+expect_next "$LOG" "[1.1] keypad with Num Lock on (the boot state) types digits: echo 12" \
+    '^madire> echo 12$' '^12$'
+expect_next "$LOG" "[1.1] keypad with Num Lock off: 4 moves left (twice), the line runs as echo Xab" \
+    '^madire> echo Xab$' '^Xab$'
+expect_in_order "$LOG" "[1.1] keypad with Num Lock off: 8 recalls the last line (Up)" \
+    '^madire> echo Xab$' '^Xab$' '^madire> echo Xab$' '^Xab$'
+expect "$LOG" 'key: press sc=0x48 key=UP ascii=none flags=0x01' \
+    "[1.1] keypad 8 with Num Lock off decodes as UP without the extended flag"
+expect_next "$LOG" "[1.1] Num Lock on again: keypad 8 types 8" \
+    '^madire> echo 8$' '^8$'
+expect_in_order "$LOG" "[1.1] the ISO key 0x56 types a backslash, and with Shift a vertical bar" \
+    'key: press sc=0x56 key=CHAR ascii=.\\. flags=0x01' \
+    'key: press sc=0x56 key=CHAR ascii=.\|. flags=0x03' \
+    '^madire> echo \\\|$' \
+    '^\\\|$'
+reject "$LOG" 'events dropped|key=UNKNOWN|PANIC' \
+    "[1.1] keys11 boot: nothing dropped or unknown, no panic"
+expect_in_order "$LOG" "[1.1] Shift + keypad 9 with Num Lock off pages the scrollback like Shift+PgUp" \
+    'key: press sc=0x49 key=PGUP ascii=none flags=0x03' '^console: scrollback is empty$'

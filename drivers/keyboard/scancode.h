@@ -14,6 +14,13 @@
  *   E0 2A / E0 AA,
  *   E0 36 / E0 B6     "fake shifts" around Print Screen etc.: ignored
  *   E1 1D 45 E1 9D C5 Pause: one KEY_PAUSE press, no release
+ *
+ * Caps Lock, Num Lock and Scroll Lock toggle once per press (auto-repeat
+ * ignored); Num Lock is on after scancode_init (1.1). The numeric keypad
+ * follows Num Lock: on, it types digits and '.'; off, it gives the
+ * navigation keys (Home, Up, PgUp, Left, Right, End, Down, PgDn, Insert,
+ * Delete) without KEY_EXTENDED, and keypad 5 gives KEY_UNKNOWN. 0x56 is the
+ * ISO key (between left Shift and Z): '\' and, with Shift, '|'.
  */
 
 #include <stdbool.h>
@@ -64,9 +71,18 @@ struct scancode_state {
     uint8_t mods;           /* internal left/right modifier bits */
     bool caps_on;
     bool caps_held;         /* Caps Lock currently down (ignore auto-repeat) */
+    bool num_on;            /* Num Lock on (the keypad types digits) */
+    bool num_held;
+    bool scroll_on;
+    bool scroll_held;
 };
 
+/* Clears the state; Num Lock starts on. */
 void scancode_init(struct scancode_state *s);
+
+/* The lock states as the PS/2 light byte: bit 0 Scroll Lock, bit 1 Num Lock,
+ * bit 2 Caps Lock. */
+uint8_t scancode_lights(const struct scancode_state *s);
 
 /* Feeds one byte. Returns true and fills *out when the byte completes a key
  * event; false for prefixes, ignored bytes and swallowed Pause bytes. */
