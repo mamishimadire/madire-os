@@ -69,7 +69,7 @@ endif
 UNIT_CC      := gcc -m64 -no-pie -Wl,-Ttext-segment=0x10000000
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -fno-pie -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
-                            drivers/keyboard/scancode.c kernel/input/keyqueue.c \
+                            drivers/keyboard/scancode.c drivers/keyboard/ps2leds.c kernel/input/keyqueue.c \
                             kernel/console/textbuf.c kernel/console/lineedit.c kernel/console/outq.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \

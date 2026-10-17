@@ -1,5 +1,7 @@
 /* PS/2 keyboard driver (see ps2kbd.h). */
+#include <stddef.h>
 #include "drivers/keyboard/ps2kbd.h"
+#include "drivers/keyboard/ps2leds.h"
 #include "kernel/arch/x86/io.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/input/keyqueue.h"
@@ -27,12 +29,19 @@
 #define SPIN_LIMIT          1000000u   /* per controller wait */
 #define FLUSH_LIMIT         64u
 #define ECHO_WAIT_TICKS     20u        /* 200 ms at 100 Hz */
+#define LIGHTS_WAIT_TICKS   3u         /* per reply at run time: 30 ms at 100 Hz */
 
 static struct keyqueue queue;
 static struct scancode_state decoder;
 static volatile uint32_t bytes_read;
 static volatile uint32_t responses;
 static volatile uint8_t last_response;
+
+static struct kbd_lights boot_lights;
+static bool lights_tried;       /* keyboard_init reached the boot exchange */
+static bool lights_off;         /* a failure: no more exchanges until restart */
+static bool kbd_ready;          /* keyboard_init returned KBD_OK (IRQ1 handler live) */
+static uint8_t lights_set;      /* the state last acknowledged */
 
 /* ---- IRQ1 context: read one byte, decode, queue. Nothing else. ---- */
 
@@ -103,6 +112,99 @@ static void flush_output(void)
         (void)inb(KBD_DATA);
 }
 
+/* ---- The keyboard lights (1.1, see ps2leds.h) ---- */
+
+static void lights_result(struct kbd_lights *out, const struct leds_exchange *x)
+{
+    out->state = x->state;
+    out->ok = x->outcome == LEDS_DONE;
+    out->failed_byte = x->failed_byte;
+    out->reply = x->reply;
+    out->timed_out = x->timed_out;
+}
+
+/* Polled (IRQ1 masked): the next reply byte; a byte that is not a reply is
+ * discarded, as flush_output discards bytes before IRQ1 is unmasked. */
+static int read_reply_polled(void)
+{
+    uint8_t byte;
+    for (uint32_t i = 0; i < FLUSH_LIMIT; i++) {
+        if (!read_data(&byte))
+            return LEDS_TIMEOUT;
+        if (scancode_is_response(byte))
+            return byte;
+    }
+    return LEDS_TIMEOUT;
+}
+
+static void lights_boot(void)
+{
+    struct leds_exchange x;
+    uint8_t byte = leds_begin(&x, scancode_lights(&decoder));
+    enum leds_step step;
+    do {
+        int reply = send_data(byte) ? read_reply_polled() : LEDS_TIMEOUT;
+        step = leds_reply(&x, reply, &byte);
+    } while (step == LEDS_SEND);
+    lights_result(&boot_lights, &x);
+    lights_tried = true;
+    lights_off = !boot_lights.ok;
+    lights_set = x.state;
+}
+
+/* Run time (IRQ1 live): the reply arrives through keyboard_irq, which moves
+ * <responses>. cli / check / "sti; hlt": sti takes effect after hlt starts,
+ * so a reply that arrives after the check still wakes the hlt. */
+static int wait_reply_irq(uint32_t before)
+{
+    uint64_t deadline = timer_ticks() + LIGHTS_WAIT_TICKS;
+    for (;;) {
+        __asm__ volatile ("cli" : : : "memory");
+        if (responses != before) {
+            uint8_t reply = last_response;
+            __asm__ volatile ("sti" : : : "memory");
+            return reply;
+        }
+        if (timer_ticks() >= deadline) {
+            __asm__ volatile ("sti" : : : "memory");
+            return LEDS_TIMEOUT;
+        }
+        __asm__ volatile ("sti; hlt" : : : "memory");
+    }
+}
+
+const struct kbd_lights *keyboard_lights(void)
+{
+    return lights_tried ? &boot_lights : NULL;
+}
+
+enum kbd_sync keyboard_lights_sync(struct kbd_lights *out)
+{
+    if (!kbd_ready || lights_off || !timer_verified() || !irq_enabled())
+        return KBD_SYNC_NONE;
+    uint32_t flags = irq_save();
+    uint8_t state = scancode_lights(&decoder);
+    irq_restore(flags);
+    if (state == lights_set)
+        return KBD_SYNC_NONE;
+
+    struct leds_exchange x;
+    uint8_t byte = leds_begin(&x, state);
+    enum leds_step step;
+    do {
+        uint32_t before = responses;
+        int reply = send_data(byte) ? wait_reply_irq(before) : LEDS_TIMEOUT;
+        step = leds_reply(&x, reply, &byte);
+    } while (step == LEDS_SEND);
+    lights_result(out, &x);
+    if (step != LEDS_DONE) {
+        lights_off = true;
+        return KBD_SYNC_FAILED;
+    }
+    lights_set = x.state;
+    return KBD_SYNC_DONE;
+}
+
 enum kbd_status keyboard_init(void)
 {
     if (inb(KBD_STATUS) == 0xFF)
@@ -134,12 +236,17 @@ enum kbd_status keyboard_init(void)
     if (!send_data(DEV_ECHO) || !read_data(&reply) || reply != DEV_ECHO)
         return KBD_NO_KEYBOARD;
 
+    /* 1.1: the lights, polled (IRQ1 still masked); a failure only turns
+     * them off, the keyboard's status does not depend on them. */
+    lights_boot();
+
     /* register -> device ready -> clear pending -> unmask (verified) */
     if (irq_register(IRQ_KEYBOARD, keyboard_irq) != IRQ_OK)
         return KBD_IRQ;
     flush_output();
     if (irq_enable_line(IRQ_KEYBOARD) != IRQ_OK)
         return KBD_IRQ;
+    kbd_ready = true;
     return KBD_OK;
 }
 

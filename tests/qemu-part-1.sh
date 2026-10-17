@@ -1426,20 +1426,6 @@ else
     fail "[1.0] filesystem self-test: pages not given back (${FSD:-no line})"
 fi
 
-# 1.1 stage 5 (report only, no check): does this QEMU write the PS/2 trace
-# events the stage 7 light checks need? Today's kernel writes ECHO (0xEE)
-# twice, so ps2_write_keyboard should appear at least twice; ps2_set_ledstate
-# shows what the firmware sets. Stage 7 replaces this probe with its checks.
-# The files are not serial-*.log, so no boot count changes.
-echo "== [1.1] Trace probe: PS/2 keyboard trace events (report only, no check)"
-rm -f "$OUT/probe-trace-serial.txt" "$OUT/probe-trace.txt"
-timeout 8 qemu-system-x86_64 -display none -no-reboot -serial file:"$OUT/probe-trace-serial.txt" -m 32M -kernel "$KERNEL" \
-    -D "$OUT/probe-trace.txt" -trace ps2_write_keyboard -trace ps2_set_ledstate >/dev/null 2>&1
-TPW=$(grep -c 'ps2_write_keyboard' "$OUT/probe-trace.txt" 2>/dev/null || true)
-TPL=$(grep -c 'ps2_set_ledstate' "$OUT/probe-trace.txt" 2>/dev/null || true)
-echo "TRACE_PROBE ps2_write_keyboard=${TPW:-0} ps2_set_ledstate=${TPL:-0} (report only)"
-head -n 5 "$OUT/probe-trace.txt" 2>/dev/null | sed 's/^/      /'
-
 # 1.1 stage 6: Num Lock (on at boot), the keypad with Num Lock off and the
 # ISO key 0x56, typed over QMP into a keylog boot (K1-K8).
 echo "== [1.1] Keys: Num Lock, the keypad and the ISO key (keylog)"
@@ -1472,3 +1458,70 @@ reject "$LOG" 'events dropped|key=UNKNOWN|PANIC' \
     "[1.1] keys11 boot: nothing dropped or unknown, no panic"
 expect_in_order "$LOG" "[1.1] Shift + keypad 9 with Num Lock off pages the scrollback like Shift+PgUp" \
     'key: press sc=0x49 key=PGUP ascii=none flags=0x03' '^console: scrollback is empty$'
+
+# 1.1 stage 7: the keyboard lights. L1 on the real ISO's normal boot; L2-L5
+# and L7 in a keylog boot whose PS/2 device side is traced by QEMU
+# (ps2_write_keyboard: every byte the guest writes to the keyboard;
+# ps2_set_ledstate: the state QEMU stores). The trace file is not
+# serial-*.log, so it adds no boot count.
+echo "== [1.1] Keyboard lights"
+expect "$OUT/serial-boot.log" '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$' \
+    "[1.1] keyboard lights: set at boot (Num Lock on, Caps Lock off, Scroll Lock off), acknowledged"
+LOG=$OUT/serial-lights.log
+LTRACE=$OUT/lights-trace.txt
+rm -f "$LTRACE"
+S="x{wait:1}"
+S+="{caps}{wait:0.5}{num_lock}{wait:0.5}{scroll_lock}{wait:0.5}"
+S+="{caps}{wait:0.5}{num_lock}{wait:0.5}{scroll_lock}{wait:0.5}"   # 6, 4, 5, 1, 3, 2
+S+="echo a{caps}b{caps}c{ret}"                                      # L5
+S+="echo end-of-lights-test{ret}"
+boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-lights-test\n' -m 32M -kernel "$KERNEL" \
+    -append "keylog" -D "$LTRACE" -trace ps2_write_keyboard -trace ps2_set_ledstate
+# Report only (decides no check): the start of the trace, the firmware's
+# writes before the kernel's.
+echo "      lights-trace.txt, first 20 lines:"
+head -n 20 "$LTRACE" 2>/dev/null | sed 's/^/      /'
+# The trace as tokens in file order: w<byte written> and s<state stored>.
+LSEQ=" $(sed -nE 's/.*ps2_write_keyboard 0x[0-9a-f]+ val ([0-9]+).*/w\1/p
+                 s/.*ps2_set_ledstate 0x[0-9a-f]+ ledstate ([0-9]+).*/s\1/p' "$LTRACE" 2>/dev/null | tr '\n' ' ')"
+# L2: keyboard_init's ECHO (238), the boot exchange (237, 2; QEMU stores 2),
+# then the self-test's ECHO (238), one after another.
+LBOOT=" w238 w237 w2 s2 w238 "
+if [[ $LSEQ == *"$LBOOT"* ]]; then
+    pass "[1.1] keyboard lights: between the kernel's two ECHO bytes QEMU's keyboard got 0xED and the state 2, and stored it"
+else
+    fail "[1.1] keyboard lights: no '${LBOOT# }' in the trace (trace:${LSEQ})"
+fi
+# L3: after the second ECHO, every stored state comes right after the
+# writes 237 and that state; the states begin 6, 4, 5, 1, 3, 2 and the last
+# is 2 (L5's two Caps Lock presses may be synced once, twice or not at all).
+LTAIL=${LSEQ#*"$LBOOT"}
+[[ $LSEQ == *"$LBOOT"* ]] || LTAIL=""
+read -r -a LTOK <<< "$LTAIL"
+lok=1 lstates=""
+for ((li = 0; li < ${#LTOK[@]}; li++)); do
+    lt=${LTOK[li]}
+    case "$lt" in
+    s*) if [ "$li" -lt 2 ] || [ "${LTOK[li-2]}" != w237 ] || [ "${LTOK[li-1]}" != "w${lt#s}" ]; then lok=0; fi
+        lstates+="${lt#s} " ;;
+    esac
+done
+case "$lstates" in "6 4 5 1 3 2 "*) ;; *) lok=0 ;; esac
+case "$lstates" in *" 2 ") ;; *) lok=0 ;; esac
+if [ "$lok" = 1 ]; then
+    pass "[1.1] keyboard lights: six lock presses set QEMU's state to 6, 4, 5, 1, 3, 2 in order (each after 0xED), the last state is 2"
+else
+    fail "[1.1] keyboard lights: states after the second ECHO: ${lstates:-none} (trace after it:${LTAIL:- none})"
+fi
+expect_in_order "$LOG" "[1.1] keyboard lights: with keylog each change is logged as its state, acknowledged (6, 4, 5, 1, 3, 2)" \
+    '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock on, Caps Lock on, Scroll Lock off \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock off, Caps Lock on, Scroll Lock off \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock off, Caps Lock on, Scroll Lock on \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock off, Caps Lock off, Scroll Lock on \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock on \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$'
+expect_next "$LOG" "[1.1] keyboard lights: typed text exact across two light changes (echo aBc)" \
+    '^madire> echo aBc$' '^aBc$'
+reject "$LOG" 'Keyboard lights: not acknowledged|events dropped|key=UNKNOWN|PANIC' \
+    "[1.1] lights boot: no light failure, nothing dropped or unknown, no panic"

@@ -44,6 +44,8 @@
 # 1.1 stage 1: the boot menu's global options (S1), its wallpaper (S2a, S2b,
 # S3), all in part static. Stage 2: 6 more: the hidden menu revealed and
 # driven over QMP (Q1-Q6), in part 4. Stage 6: 8 more: Num Lock, the
-# keypad and the ISO key, one keylog boot (K1-K8, part 1).
-1.1 18
-unit-suites 68
+# keypad and the ISO key, one keylog boot (K1-K8, part 1). Stage 7: 6 more:
+# the keyboard lights, at boot (L1) and in one traced keylog boot (L2-L5,
+# L7), part 1; 1 unit suite (ps2leds).
+1.1 24
+unit-suites 69
