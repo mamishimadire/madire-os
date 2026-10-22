@@ -69,7 +69,7 @@ endif
 UNIT_CC      := gcc -m64 -no-pie -Wl,-Ttext-segment=0x10000000
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -fno-pie -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
-                            drivers/keyboard/scancode.c kernel/input/keyqueue.c \
+                            drivers/keyboard/scancode.c drivers/keyboard/ps2leds.c kernel/input/keyqueue.c \
                             kernel/console/textbuf.c kernel/console/lineedit.c kernel/console/outq.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
@@ -168,15 +168,24 @@ $(BUILD)/test-user/flood.elf: $(BUILD)/user/crt0.o $(BUILD)/test-user/flood.o us
 # the ELF files named in limine.conf's "module_path: boot():/boot/prog/<name>.elf"
 # lines (one list only).
 ISO_PROGS := $(sort $(patsubst boot():/boot/prog/%.elf,%,$(shell if test -f iso/boot/limine/limine.conf; then grep -o 'boot():/boot/prog/[a-z0-9_]*\.elf' iso/boot/limine/limine.conf; fi)))
-# 0.12: one version source. The default entry is titled
-# "Madire OS v@MADIRE_OS_VERSION@"; the build fills in MADIRE_OS_VERSION from
-# kernel/kernel.h, and the ISO and the tests use the generated file.
+# 0.12: one version source. The build fills in @MADIRE_OS_VERSION@ in
+# limine.conf from kernel/kernel.h, and the ISO and the tests use the
+# generated file. 1.1: the default entry's title no longer carries the
+# version; the boot menu's wallpaper shows it (scripts/make-wallpaper.py,
+# given the same version).
 MADIRE_VERSION := $(shell sed -n 's/^#define MADIRE_OS_VERSION "\([0-9.]*\)"$$/\1/p' kernel/kernel.h)
 $(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 	@mkdir -p $(BUILD)
 	@test -n "$(MADIRE_VERSION)" || { echo "cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1; }
 	sed 's/@MADIRE_OS_VERSION@/$(MADIRE_VERSION)/g' iso/boot/limine/limine.conf > $@
 	@! grep -q '@MADIRE_OS_VERSION@' $@
+
+# 1.1: the boot menu's wallpaper (1024x768 PNG, Python standard library
+# only), with the M of kernel/logo.c and the version from kernel/kernel.h.
+$(BUILD)/wallpaper.png: scripts/make-wallpaper.py kernel/kernel.h kernel/logo.c
+	@mkdir -p $(BUILD)
+	@test -n "$(MADIRE_VERSION)" || { echo "cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1; }
+	python3 scripts/make-wallpaper.py $@ --version $(MADIRE_VERSION)
 
 # 0.13: LIMINE_DIR holds the pinned package's BIOS files and notices, LIMINE
 # is its host tool (scripts/install-deps.sh installs both). "limine
@@ -187,16 +196,18 @@ $(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 # ISO; the ISO still differs between builds (a watch item, docs/PROGRESS.md).
 # 1.0 (stage 0a): Madire's own LICENSE, NOTICE and THIRD_PARTY_NOTICES go to
 # the ISO root (Apache 2.0, section 4); Limine's stay in /boot/limine/.
+# 1.1: the boot menu's wallpaper goes to /boot/limine/wallpaper.png.
 LIMINE_DIR ?= /usr/local/share/limine
 LIMINE ?= limine
 ISO_EPOCH := 1791763200
-$(ISO): $(KERNEL) $(BUILD)/limine.conf $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES
+$(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
 	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog
 	cp LICENSE NOTICE THIRD_PARTY_NOTICES $(BUILD)/isodir/
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
 	cp $(BUILD)/limine.conf $(BUILD)/isodir/boot/limine/limine.conf
+	cp $(BUILD)/wallpaper.png $(BUILD)/isodir/boot/limine/wallpaper.png
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/LICENSE \
 	    $(LIMINE_DIR)/3RDPARTY.md $(BUILD)/isodir/boot/limine/
 	for p in $(ISO_PROGS); do cp $(BUILD)/user/$$p.elf $(BUILD)/isodir/boot/prog/$$p.elf || exit 1; done
@@ -265,7 +276,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck $(ISO) $(BUILD)/limine.conf repro padkernel
+test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -274,7 +285,7 @@ test: unit user elfcheck $(ISO) $(BUILD)/limine.conf repro padkernel
 # only with SHARD=static, so a sharded run runs them once; the padded test
 # kernel (1.0) is built only for part 4, which boots it.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(if $(filter static,$(SHARD)),unit repro) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro) \
             $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 

@@ -4,7 +4,10 @@
 # stage that adds or changes checks updates this file in the same diff.
 0.3 150
 0.4 30
-0.5 32
+# 1.1 stage 8: "[0.5] tabs separate arguments" retired (32 -> 31): Tab now
+# completes command names, so the keyboard can no longer type a tab; the
+# parser's splitting at tabs stays proven by tests/unit/test_parser.c:43.
+0.5 31
 0.6 49
 0.7 96
 0.8 32
@@ -41,4 +44,14 @@
 # the [0.12] console session's boot) and docs/*.md valid UTF-8 (part
 # static); 1 unit suite (shell_help10).
 1.0 260
-unit-suites 68
+# 1.1 stage 1: the boot menu's global options (S1), its wallpaper (S2a, S2b,
+# S3), all in part static. Stage 2: 6 more: the hidden menu revealed and
+# driven over QMP (Q1-Q6), in part 4. Stage 6: 8 more: Num Lock, the
+# keypad and the ISO key, one keylog boot (K1-K8, part 1). Stage 7: 6 more:
+# the keyboard lights, at boot (L1) and in one traced keylog boot (L2-L5,
+# L7), part 1; 1 unit suite (ps2leds). Stage 8: 12 more: Tab completion
+# in the 0.5 console session in place of the retired [0.5] tab check (T1),
+# and Ctrl+C, Esc and Tab at the prompt, one normal boot (C1-C10, L6),
+# part 1; 1 unit suite (complete11).
+1.1 36
+unit-suites 70

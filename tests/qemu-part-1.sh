@@ -7,7 +7,8 @@
 # 0.13 adds the [0.13] checks of where Limine places the boot data (the
 # temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
 # adds the [1.0] filesystem checks of the normal boot at the end; stage 2
-# the data budget and the self-test's data step after them.
+# the data budget and the self-test's data step after them. 1.1 stage 5
+# adds a report-only trace probe at the end.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -292,13 +293,13 @@ S+="uptime{ret}{wait:2}uptime{ret}"                  # 5, 6
 S+="mem{ret}"                                        # 7
 S+="cpu{ret}"                                        # 8
 S+="echo   Hello   World!{ret}"                      # 9  Shift + multiple spaces
-S+="echo{tab}a{tab}{tab}b{ret}"                      # 10 tabs
+S+="ech{tab}a {tab}b{ret}"                          # 10 Tab completes the command name (1.1)
 S+="{caps}echo abc{caps}{ret}"                       # 11 Caps Lock
 S+="echo hellx{bs}o{ret}"                            # 12 Backspace
 S+="echo abXc{left}{left}{del}{ret}"                 # 13 Left + Delete
 S+="cho world{home}e{end}!{ret}"                     # 14 Home / End / insert
 S+="echo hllo{home}{right}{right}{right}{right}{right}{right}e{end}{ret}"   # 15 Right
-S+="{ctrl+c}{alt+x}echo ok{ret}"                     # 16 Ctrl / Alt ignored
+S+="{ctrl+x}{alt+x}echo ok{ret}"                     # 16 Ctrl / Alt ignored
 S+="foo{ret}"                                        # 17 unknown command
 S+="version x{ret}"                                  # 18 argument error
 S+="echo 1 2 3 4 5 6 7 8{ret}"                       # 19 too many words
@@ -310,7 +311,6 @@ S+="clear{ret}"                                      # 30
 S+="version{ret}"                                    # 31
 S+="echo end-of-console-test{ret}"                   # 32 marks the end of the session
 boot_text "$LOG" 180 "System ready." "$S" 0.03 $'\nend-of-console-test\n' -kernel "$KERNEL"
-TAB=$'\t'
 A66=$(printf 'a%.0s' $(seq 1 66))
 
 expect_in_order "$LOG" "[0.5] console opens on the first key, which is not typed" \
@@ -345,7 +345,7 @@ expect_in_order "$LOG" "[0.5] cpu reports CPUID information" \
     "^Family/model: [0-9]+ / [0-9]+, stepping [0-9]+$" "^Features: +[a-z]" \
     "^Mode: +64-bit long mode, paging on, 1 CPU in use$"
 expect_next "$LOG" "[0.5] Shift and multiple spaces"   "^madire> echo   Hello   World!$" "^Hello World!$"
-expect_next "$LOG" "[0.5] tabs separate arguments"     "^madire> echo${TAB}a${TAB}${TAB}b$" "^a b$"
+expect_next "$LOG" "[1.1] Tab completes the command name (ech: echo), no tab character typed" "^madire> echo a b$" "^a b$"
 expect_next "$LOG" "[0.5] Caps Lock (and names are case-sensitive)" \
     "^madire> ECHO ABC$" "^Unknown command: ECHO\. Type 'help' for a list of commands\.$"
 # Only the final, edited line is logged: "hellx" + Backspace + "o" -> "hello".
@@ -1424,3 +1424,146 @@ if [ "${D0:-x}" = 0 ] && [ "${D1:-y}" = 0 ] && [ -n "${P0:-}" ] && [ "$P0" = "${
 else
     fail "[1.0] filesystem self-test: pages not given back (${FSD:-no line})"
 fi
+
+# 1.1 stage 6: Num Lock (on at boot), the keypad with Num Lock off and the
+# ISO key 0x56, typed over QMP into a keylog boot (K1-K8).
+echo "== [1.1] Keys: Num Lock, the keypad and the ISO key (keylog)"
+LOG=$OUT/serial-keys11.log
+S="x{wait:1}"                                         # opens the console
+S+="echo {kp_1}{kp_2}{ret}"                           # K1 Num Lock on (boot)
+S+="{num_lock}{shift+kp_9}"                           # K8 Num Lock off, Shift + keypad 9
+S+="echo ab{kp_4}{kp_4}X{ret}"                        # K2 keypad 4 = Left
+S+="{kp_8}{ret}"                                      # K3, K4 keypad 8 = Up (history)
+S+="{num_lock}echo {kp_8}{ret}"                       # K5 Num Lock on again
+S+="echo {less}{shift+less}{ret}"                     # K6 the ISO key
+S+="echo end-of-keys11-test{ret}"
+boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-keys11-test\n' -m 32M -kernel "$KERNEL" -append "keylog"
+expect_next "$LOG" "[1.1] keypad with Num Lock on (the boot state) types digits: echo 12" \
+    '^madire> echo 12$' '^12$'
+expect_next "$LOG" "[1.1] keypad with Num Lock off: 4 moves left (twice), the line runs as echo Xab" \
+    '^madire> echo Xab$' '^Xab$'
+expect_in_order "$LOG" "[1.1] keypad with Num Lock off: 8 recalls the last line (Up)" \
+    '^madire> echo Xab$' '^Xab$' '^madire> echo Xab$' '^Xab$'
+expect "$LOG" 'key: press sc=0x48 key=UP ascii=none flags=0x01' \
+    "[1.1] keypad 8 with Num Lock off decodes as UP without the extended flag"
+expect_next "$LOG" "[1.1] Num Lock on again: keypad 8 types 8" \
+    '^madire> echo 8$' '^8$'
+expect_in_order "$LOG" "[1.1] the ISO key 0x56 types a backslash, and with Shift a vertical bar" \
+    'key: press sc=0x56 key=CHAR ascii=.\\. flags=0x01' \
+    'key: press sc=0x56 key=CHAR ascii=.\|. flags=0x03' \
+    '^madire> echo \\\|$' \
+    '^\\\|$'
+reject "$LOG" 'events dropped|key=UNKNOWN|PANIC' \
+    "[1.1] keys11 boot: nothing dropped or unknown, no panic"
+expect_in_order "$LOG" "[1.1] Shift + keypad 9 with Num Lock off pages the scrollback like Shift+PgUp" \
+    'key: press sc=0x49 key=PGUP ascii=none flags=0x03' '^console: scrollback is empty$'
+
+# 1.1 stage 7: the keyboard lights. L1 on the real ISO's normal boot; L2-L5
+# and L7 in a keylog boot whose PS/2 device side is traced by QEMU
+# (ps2_write_keyboard: every byte the guest writes to the keyboard;
+# ps2_set_ledstate: the state QEMU stores). The trace file is not
+# serial-*.log, so it adds no boot count.
+echo "== [1.1] Keyboard lights"
+expect "$OUT/serial-boot.log" '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$' \
+    "[1.1] keyboard lights: set at boot (Num Lock on, Caps Lock off, Scroll Lock off), acknowledged"
+LOG=$OUT/serial-lights.log
+LTRACE=$OUT/lights-trace.txt
+rm -f "$LTRACE"
+S="x{wait:1}"
+S+="{caps}{wait:0.5}{num_lock}{wait:0.5}{scroll_lock}{wait:0.5}"
+S+="{caps}{wait:0.5}{num_lock}{wait:0.5}{scroll_lock}{wait:0.5}"   # 6, 4, 5, 1, 3, 2
+S+="echo a{caps}b{caps}c{ret}"                                      # L5
+S+="echo end-of-lights-test{ret}"
+boot_text "$LOG" 90 "System ready." "$S" 0.05 $'\nend-of-lights-test\n' -m 32M -kernel "$KERNEL" \
+    -append "keylog" -D "$LTRACE" -trace ps2_write_keyboard -trace ps2_set_ledstate
+# Report only (decides no check): the start of the trace, the firmware's
+# writes before the kernel's.
+echo "      lights-trace.txt, first 20 lines:"
+head -n 20 "$LTRACE" 2>/dev/null | sed 's/^/      /'
+# The trace as tokens in file order: w<byte written> and s<state stored>.
+LSEQ=" $(sed -nE 's/.*ps2_write_keyboard 0x[0-9a-f]+ val ([0-9]+).*/w\1/p
+                 s/.*ps2_set_ledstate 0x[0-9a-f]+ ledstate ([0-9]+).*/s\1/p' "$LTRACE" 2>/dev/null | tr '\n' ' ')"
+# L2: keyboard_init's ECHO (238), the boot exchange (237, 2; QEMU stores 2),
+# then the self-test's ECHO (238), one after another.
+LBOOT=" w238 w237 w2 s2 w238 "
+if [[ $LSEQ == *"$LBOOT"* ]]; then
+    pass "[1.1] keyboard lights: between the kernel's two ECHO bytes QEMU's keyboard got 0xED and the state 2, and stored it"
+else
+    fail "[1.1] keyboard lights: no '${LBOOT# }' in the trace (trace:${LSEQ})"
+fi
+# L3: after the second ECHO, every stored state comes right after the
+# writes 237 and that state; the states begin 6, 4, 5, 1, 3, 2 and the last
+# is 2 (L5's two Caps Lock presses may be synced once, twice or not at all).
+LTAIL=${LSEQ#*"$LBOOT"}
+[[ $LSEQ == *"$LBOOT"* ]] || LTAIL=""
+read -r -a LTOK <<< "$LTAIL"
+lok=1 lstates=""
+for ((li = 0; li < ${#LTOK[@]}; li++)); do
+    lt=${LTOK[li]}
+    case "$lt" in
+    s*) if [ "$li" -lt 2 ] || [ "${LTOK[li-2]}" != w237 ] || [ "${LTOK[li-1]}" != "w${lt#s}" ]; then lok=0; fi
+        lstates+="${lt#s} " ;;
+    esac
+done
+case "$lstates" in "6 4 5 1 3 2 "*) ;; *) lok=0 ;; esac
+case "$lstates" in *" 2 ") ;; *) lok=0 ;; esac
+if [ "$lok" = 1 ]; then
+    pass "[1.1] keyboard lights: six lock presses set QEMU's state to 6, 4, 5, 1, 3, 2 in order (each after 0xED), the last state is 2"
+else
+    fail "[1.1] keyboard lights: states after the second ECHO: ${lstates:-none} (trace after it:${LTAIL:- none})"
+fi
+expect_in_order "$LOG" "[1.1] keyboard lights: with keylog each change is logged as its state, acknowledged (6, 4, 5, 1, 3, 2)" \
+    '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock on, Caps Lock on, Scroll Lock off \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock off, Caps Lock on, Scroll Lock off \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock off, Caps Lock on, Scroll Lock on \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock off, Caps Lock off, Scroll Lock on \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock on \(acknowledged\)$' \
+    '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$'
+expect_next "$LOG" "[1.1] keyboard lights: typed text exact across two light changes (echo aBc)" \
+    '^madire> echo aBc$' '^aBc$'
+reject "$LOG" 'Keyboard lights: not acknowledged|events dropped|key=UNKNOWN|PANIC' \
+    "[1.1] lights boot: no light failure, nothing dropped or unknown, no panic"
+
+# 1.1 stage 8: Ctrl+C, Esc and Tab at the prompt, in a normal boot (no
+# keylog): C1-C10 and L6. The cleared lines' text must never reach the
+# serial log (C3: the history and dmesg output is on it too).
+echo "== [1.1] Console keys: Ctrl+C, Esc and Tab (no keylog)"
+LOG=$OUT/serial-conskeys11.log
+S="x{wait:1}"
+S+="echo secretmarker11{ctrl+c}"                      # C1 Ctrl+C with text
+S+="{ctrl+c}"                                         # C1 Ctrl+C on an empty line
+S+="echo escmarker11{esc}"                            # C2 Esc
+S+="echo after-clear{ret}"
+S+="history{ret}"                                     # C3 (the markers must not be listed)
+S+="reboot{ret}{wait:1}ye{ctrl+c}{wait:1}"            # C4 Ctrl+C at the question
+S+="his{tab}{ret}"                                    # C5 unique: "history "
+S+="un{tab}{tab}{ctrl+c}"                             # C6 ambiguous: the list
+S+="echo a{tab}b{ret}"                                # C7 a later word: nothing
+S+="zz{tab}{bs}{bs}echo nomatch-ok{ret}"              # C7 no match: nothing
+S+="echo {caps}q{caps}r{ret}"                         # C8, L6 Caps Lock without keylog
+S+="dmesg 9999{ret}"                                  # C3 dmesg's text on the serial log
+S+="echo end-of-conskeys-test{ret}"
+boot_text "$LOG" 120 "System ready." "$S" 0.05 $'\nend-of-conskeys-test\n' -m 32M -kernel "$KERNEL"
+expect_in_order "$LOG" "[1.1] Ctrl+C at the prompt clears the line, with text and on an empty line (logged only as a fixed line)" \
+    '^console: Ctrl\+C: line cleared$' '^console: Ctrl\+C: line cleared$' '^madire> echo after-clear$'
+expect_next "$LOG" "[1.1] Esc clears the line: the next line runs exactly as echo after-clear" \
+    '^madire> echo after-clear$' '^after-clear$'
+reject "$LOG" 'secretmarker11|escmarker11' \
+    "[1.1] cleared lines reach neither the serial log, the history nor dmesg (secretmarker11, escmarker11)"
+expect_in_order "$LOG" "[1.1] Ctrl+C at a yes/no question answers no: Restart cancelled., no restart" \
+    '^madire> reboot$' '^console: Ctrl\+C: answered no$' '^Restart cancelled\.$' '^madire> history $'
+expect "$LOG" '^madire> history $' \
+    "[1.1] Tab completes a unique command name and adds a space (his: history)"
+expect_in_order "$LOG" "[1.1] Tab on an ambiguous name: the second Tab lists the matches (un: unalias  uname  unset)" \
+    '^unalias  uname  unset$' '^console: Ctrl\+C: line cleared$'
+expect_in_order "$LOG" "[1.1] Tab in a later word, or with no match, types nothing (echo ab, echo nomatch-ok)" \
+    '^madire> echo ab$' '^ab$' '^madire> echo nomatch-ok$' '^nomatch-ok$'
+expect_next "$LOG" "[1.1] Caps Lock in a normal boot types exactly (echo Qr)" \
+    '^madire> echo Qr$' '^Qr$'
+reject "$LOG" '^Keyboard lights: Num Lock on, Caps Lock on|^key: ' \
+    "[1.1] keyboard lights: Caps Lock changes not logged without keylog (no light or key lines)"
+expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
+    '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
+reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
+    "[1.1] console keys boot: no panic, nothing dropped, no light failure"

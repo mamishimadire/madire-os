@@ -22,7 +22,7 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat
+    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
     [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
@@ -220,15 +220,18 @@ function Get-ScreenWidth {
     return ([int]$b[16] -shl 24) -bor ([int]$b[17] -shl 16) -bor ([int]$b[18] -shl 8) -bor [int]$b[19]
 }
 
-# 0.13: powers on and stops the boot menu's 3 s countdown. No key is sent
-# before the menu is on the screen (keys during the BIOS's power-on self-test
-# stop it with "FATAL: Keyboard error"): the screen is polled every 300 ms,
-# for at most $MenuHoldMs + 30 s, until it is 1024 pixels wide (Limine's menu).
-# Then Home is pressed: Limine (common/menu.c) ends the countdown at the first
-# key and then handles it, and Home only selects the first entry. After 4 s,
-# longer than the countdown, the menu must still be on the screen and the
-# serial log still empty (no kernel started). Returns $true if both hold,
-# otherwise notes the failure and returns $false.
+# 0.13: powers on and stops at the boot menu. 1.1: the menu is hidden (quiet):
+# Limine shows nothing and boots the first entry after 2 s unless a key
+# arrives; the first key shows the menu and is discarded (common/menu.c), and
+# the menu then waits with no countdown. So Home is pressed every 300 ms, for
+# at most $MenuHoldMs + 30 s, until the screen is 1024 pixels wide (Limine's
+# menu); Home only selects the first entry, so a press still queued changes
+# nothing. (In 0.13 keys during the BIOS's power-on self-test stopped it with
+# "FATAL: Keyboard error" on this VM; the 1.1 probe on a scratch VM saw no
+# error, and the keywindow group repeats it here.) After 4 s, longer than the
+# 2 s timeout, the menu must still be on the screen and the serial log still
+# empty (no kernel started). Returns $true if both hold, otherwise notes the
+# failure and returns $false.
 # 1.0 (stage 11): first the screen must exist: a screenshot is retried for
 # at most 10 s after startvm (the time is reported); if there is still none,
 # the menu counts as not shown (MISSING) and the run carries on.
@@ -247,9 +250,13 @@ function Start-Menu([string]$name) {
     $until = (Get-Date).AddMilliseconds($MenuHoldMs + 30000)
     $shown = $false
     while (-not $shown -and (Get-Date) -lt $until) {
-        if ((Get-ScreenWidth) -eq 1024) { $shown = $true } else { Start-Sleep -Milliseconds 300 }
+        $next = (Get-Date).AddMilliseconds(300)
+        HomeKey
+        if ((Get-ScreenWidth) -eq 1024) { $shown = $true; break }
+        if ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) { break }   # booted without the menu
+        while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
     }
-    if ($shown) { HomeKey; Start-Sleep -Seconds 4 }
+    if ($shown) { Start-Sleep -Seconds 4 }
     $quiet = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
     $held = $shown -and $quiet -and ((Get-ScreenWidth) -eq 1024)
     if (-not $held) {
@@ -273,6 +280,16 @@ function Start-Diag([string]$test) {
     $script:DiagBooted[$test] = $Diag[$test]
 }
 
+# 1.1 (stage 9): VBoxManage debugvm <vm> info ps2k (read only), and the light
+# byte of its "LED state XX" line ("none" if there is no such line).
+function Get-Ps2k {
+    try { return @(VBox debugvm $VM info ps2k) } catch { return @("debugvm failed: $_") }
+}
+function Get-Ps2kLeds([string[]]$lines) {
+    $m = [regex]::Match(($lines -join "`n"), 'LED state ([0-9A-Fa-f]{2})')
+    if ($m.Success) { return $m.Groups[1].Value.ToUpper() } else { return "none" }
+}
+
 function Want([string]$group) { return ($Only.Count -eq 0) -or ($Only -contains $group) }
 
 $halted = "System halted\. Power off the machine\."
@@ -294,6 +311,7 @@ if (Want "menu") {
         for ($i = 0; $i -lt 11; $i++) { Down }
         Start-Sleep -Milliseconds 300
         Shot "boot-menu-diagnostics-user"           # 0.10: position 26 (smap) selected
+        Shot "boot-menu-diagnostics-scrolled"       # 1.1: the same state: the list scrolled to its end, the up markers
         $still = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
         Note ("{0,-16} {1,-8} /no boot while navigating the menu/" -f "menu", $(if ($still) { "OK" } else { "MISSING" }))
         Enter                                       # boots the selected entry: it must be smap
@@ -303,11 +321,46 @@ if (Want "menu") {
     Stop-Run "menu" @("^SMAP test: ")
 }
 if (Want "boot") {
-    Start-Run
-    Wait-Serial "System ready\." 40 | Out-Null
+    # 1.1: no key before System ready, so the hidden boot menu must never show:
+    # from startvm on the screen's width is read every 250 ms (720x400 or
+    # 640x480 throughout; Limine's menu would make it 1024).
+    if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
+    VBox startvm $VM --type headless | Out-Null
+    $until = (Get-Date).AddMilliseconds($KeyDelayMs + 40000)
+    $wide = $false
+    $ready = $false
+    while (-not $ready -and (Get-Date) -lt $until) {
+        if ((Get-ScreenWidth) -eq 1024) { $wide = $true }
+        $ready = (Test-Path $serial) -and (Select-String -Path $serial -Pattern "System ready\." -Quiet)
+        if (-not $ready) { Start-Sleep -Milliseconds 250 }
+    }
+    Note ("{0,-16} {1,-8} /normal boot without the boot menu (screen never 1024 wide before System ready)/" -f "boot",
+          $(if ($ready -and -not $wide) { "OK" } else { "MISSING" }))
     Start-Sleep -Seconds 1
     Shot "boot"
+    # 1.1 (stage 9): VirtualBox's own view of its PS/2 keyboard (debugvm info
+    # only reads the device's state), printed as a report-only line. The
+    # light rows read its "LED state XX" line (the PS/2 light byte: bit 0
+    # Scroll Lock, bit 1 Num Lock, bit 2 Caps Lock), so they depend on that
+    # output format of VirtualBox.
+    $ps2k = Get-Ps2k
+    Note ("ps2k (report only): {0}" -f (($ps2k | Where-Object { "$_".Trim() }) -join " | "))
+    Note ("{0,-16} {1,-8} /VirtualBox keyboard lights after boot: Num Lock on, Caps Lock and Scroll Lock off/" -f "lights",
+          $(if ((Get-Ps2kLeds $ps2k) -eq "02") { "OK" } else { "MISSING" }))
     Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    # Caps Lock: the kernel sends the lights from its idle loop after the
+    # key, so the state is read every 200 ms for at most 2 s until it is 06.
+    Key 3a ba
+    $until = (Get-Date).AddSeconds(2)
+    do {
+        Start-Sleep -Milliseconds 200
+        $ps2k = Get-Ps2k
+        $leds = Get-Ps2kLeds $ps2k
+    } while ($leds -ne "06" -and (Get-Date) -lt $until)
+    Note ("ps2k after Caps Lock (report only): {0}" -f (($ps2k | Where-Object { "$_".Trim() }) -join " | "))
+    Note ("{0,-16} {1,-8} /VirtualBox keyboard lights after Caps Lock: Num Lock on, Caps Lock on, Scroll Lock off/" -f "lights",
+          $(if ($leds -eq "06") { "OK" } else { "MISSING" }))
+    Key 3a ba; Start-Sleep -Milliseconds 500      # Caps Lock off again before anything is typed
     TypeText "ps"; Enter
     TypeText "version"; Enter
     Start-Sleep -Seconds 1
@@ -319,7 +372,8 @@ if (Want "boot") {
     Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
         "^  0  running .* kernel$", "^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$",
         "^Kernel stack: +[0-9]+ bytes at peak, of 16384$",
-        "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$")
+        "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$",
+        "^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$")
     # 0.9.2: keys were typed (the console was opened and used), but key
     # events are not logged on a normal boot.
     $log = Join-Path $OutDir "$Prefix-boot-console.serial.log"
@@ -484,7 +538,7 @@ if (Want "reboot") {
     TypeText "yes"; Enter
     Start-Sleep -Seconds 3
     Shot "reboot-after-reset"
-    Start-Sleep -Seconds 25                 # the BIOS, the boot menu's 3 s, then the second boot (25 s since 0.13: Limine is slower to show)
+    Start-Sleep -Seconds 25                 # the BIOS, the hidden boot menu's 2 s (3 s before 1.1), then the second boot (25 s since 0.13: Limine is slower to show)
     Shot "reboot-second-boot"
     $state = (Get-VMInfo)["VMState"]
     Stop-Run "reboot" @("^yes/no> yes$", "^Restarting\.\.\.$", "^console: restart confirmed$",
@@ -546,9 +600,11 @@ if (Want "diag") {
     Start-Diag "keyboard"
     Wait-Serial "^Keyboard test: ready" 40 | Out-Null
     TypeText "ab"; Key 2a 1e 9e aa; Key e0 48 e0 c8      # a, b, Shift+A, Up
+    Key 56 d6; Key 45 c5; Key 48 c8                      # 1.1: the ISO key, Num Lock off, keypad 8
     Start-Sleep -Seconds 1
     Shot "keyboard"
-    Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP")
+    Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP",
+        "^key: press sc=0x56 key=CHAR ascii='\\'", "^key: press sc=0x48 key=UP ascii=none flags=0x01")
 }
 # 0.13: the four Diagnostics entries no other group boots (positions 1, 2, 10
 # and 11), so that every one of the 27 positions is booted through the boot
@@ -908,6 +964,20 @@ if (Want "shell") {
     Start-Sleep -Seconds 15
     Cmd "dmesg 5"
     Start-Sleep -Seconds 1; Shot "shell-dmesg-idle"
+
+    # 1.1 (stage 9): the console keys. Ctrl+C and Esc clear the line (the
+    # cleared text is never logged), Tab completes a command name, Caps Lock
+    # types exactly, and Ctrl+C at a yes/no question answers no.
+    TypeScan "echo secretvbox"; & $ctrlC
+    Expect @("^console: Ctrl\+C: line cleared$")
+    TypeScan "echo escvbox"; Key 01 81                   # Esc
+    Cmd "echo after-clear" @("^after-clear$")
+    TypeScan "his"; Key 0f 8f; Enter                     # Tab
+    Expect @("^madire> history $")
+    TypeScan "echo "; Key 3a ba; TypeScan "q"; Key 3a ba; TypeScan "r"; Enter   # Caps Lock around q
+    Expect @("^madire> echo Qr$", "^Qr$")
+    Cmd "reboot"; TypeScan "ye"; & $ctrlC
+    Expect @("^console: Ctrl\+C: answered no$", "^Restart cancelled\.$")
     Cmd "echo end-of-shell-test" @("^end-of-shell-test$")
     Wait-Serial "^end-of-shell-test$" 30 | Out-Null
     Stop-Run "shell" @("^System ready\.")
@@ -941,6 +1011,7 @@ if (Want "shell") {
     }
     Absent "shell" "^key: "
     Absent "shell" "PANIC|Screen output from thread|events dropped|Unexpected IRQ"
+    Absent "shell" "secretvbox|escvbox"
 }
 # 1.0 (stage 11): the file commands, typed as in the shell group, with the
 # same expected lines as the QEMU [1.0] file sessions: the Live label, pwd,
@@ -1137,6 +1208,59 @@ if ($Repeat -gt 0 -and ((Want "repeat") -or $Only.Count -eq 0)) {
               $(if ($pre) { $pre.Matches[0].Groups[1].Value } else { "?" }),
               $(if ($pp) { $pp.Matches[0].Groups[1].Value } else { "?" }))
     }
+}
+
+# 1.1: the key window: the 0.13 keyboard error repeated on this VM. Twelve
+# boots; in each, Home is pressed every 300 ms from 0, 0.5, 1, ... 5 or 6 s
+# after startvm until the screen is 1024 wide (the hidden menu shown). A
+# BIOS stopped by keys ("FATAL: Keyboard error") shows no menu and starts no
+# kernel: the row is MISSING, with a screenshot, if the screen stays below
+# 1024 wide and the serial log empty for 30 s (or the kernel starts first).
+# A shown menu is held 4 s, then Enter boots the first entry to System ready
+# (report only, with the earliest reveal).
+if (Want "keywindow") {
+    $reveals = New-Object System.Collections.Generic.List[int]
+    $kwHeld = 0
+    $kwReady = 0
+    foreach ($start in @(0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000)) {
+        $name = "keywindow-{0:D4}" -f $start
+        if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
+        VBox startvm $VM --type headless | Out-Null
+        $t0 = Get-Date
+        while (((Get-Date) - $t0).TotalMilliseconds -lt $start) { Start-Sleep -Milliseconds 20 }
+        $until = (Get-Date).AddSeconds(30)
+        $shown = $false
+        $booted = $false
+        while (-not $shown -and -not $booted -and (Get-Date) -lt $until) {
+            $next = (Get-Date).AddMilliseconds(300)
+            try { HomeKey } catch {}            # the VM may not take keys yet right after startvm
+            if ((Get-ScreenWidth) -eq 1024) { $shown = $true; break }
+            $booted = (Test-Path $serial) -and (Get-Item $serial).Length -gt 0
+            while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
+        }
+        $at = [int]((Get-Date) - $t0).TotalMilliseconds
+        if ($shown) {
+            $reveals.Add($at)
+            Start-Sleep -Seconds 4
+            if (-not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Get-ScreenWidth) -eq 1024) { $kwHeld++ }
+            Enter
+            if (Wait-Serial "System ready\." 40) { $kwReady++ }
+        } else {
+            Shot $name
+        }
+        # A shown menu also proves "no BIOS keyboard error": that error halts
+        # the BIOS during its power-on self-test, before it loads Limine, so
+        # Limine's menu (the 1024-wide screen) can't appear after it.
+        Note ("{0,-16} {1,-8} /menu shown with keys from {2} ms; no BIOS keyboard error/" -f "keywindow",
+              $(if ($shown) { "OK" } else { "MISSING" }), $start)
+        Write-Host ("{0}: keys from {1} ms, {2} after {3} ms" -f $name, $start, $(if ($shown) { "menu shown" } elseif ($booted) { "kernel started without the menu" } else { "no menu, no kernel output" }), $at)
+        VBox controlvm $VM poweroff | Out-Null
+        Start-Sleep -Seconds 2
+        if (Test-Path $serial) { Copy-Item $serial (Join-Path $OutDir "$Prefix-$name.serial.log") -Force }
+    }
+    $rv = $reveals | Measure-Object -Minimum -Maximum
+    Note ("keywindow (report only): menu shown in {0} of 12 boots; earliest reveal {1} ms after startvm, latest {2} ms; held 4 s with no kernel output in {3}; System ready after Enter in {4}" -f
+          $reveals.Count, $(if ($reveals.Count) { $rv.Minimum } else { "none" }), $(if ($reveals.Count) { $rv.Maximum } else { "none" }), $kwHeld, $kwReady)
 }
 
 # 0.13: which Diagnostics positions this run booted through the boot menu

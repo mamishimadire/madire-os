@@ -644,6 +644,28 @@ static void run_diagnostics(void)
 }
 
 /*
+ * 1.1: one line per light setting, on the serial port and in dmesg (never
+ * on the screen): the state as acknowledged, or the failure, after which
+ * the driver leaves the lights off until restart.
+ */
+static void log_lights(const struct kbd_lights *l)
+{
+    if (l->ok) {
+        klogf("Keyboard lights: Num Lock %s, Caps Lock %s, Scroll Lock %s (acknowledged)\n",
+              (l->state & 0x02) ? "on" : "off", (l->state & 0x04) ? "on" : "off",
+              (l->state & 0x01) ? "on" : "off");
+        return;
+    }
+    char why[24];
+    if (l->timed_out)
+        ksnprintf(why, sizeof(why), "no reply");
+    else
+        ksnprintf(why, sizeof(why), "reply 0x%02x", l->reply);
+    klogf("Keyboard lights: not acknowledged (%s: %s); lights off until restart\n",
+          l->failed_byte == 0xED ? "0xED" : "state byte", why);
+}
+
+/*
  * Enables IRQ0 (timer) and IRQ1 (keyboard). For each line the driver does:
  * register handler -> set up device -> clear pending data -> unmask ->
  * verify mask. A self-test then proves the interrupt is really delivered.
@@ -680,6 +702,9 @@ static bool start_devices(void)
                   : !ks.decoder_ok ? "scancode decoder self-test failed"
                   : "key queue self-test failed");
     klogf("Keyboard self-test: %s (%s)\n", kbd_ok ? "PASS" : "FAIL", note);
+    const struct kbd_lights *lights = keyboard_lights();
+    if (lights)                                 /* 1.1: always logged (K8) */
+        log_lights(lights);
     bootscreen_status("Keyboard (PS/2):", kbd_ok ? BOOT_OK : BOOT_FAILED, note);
 
     /* Exactly the lines that were enabled, and never anything beyond IRQ0/1. */
@@ -722,6 +747,13 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                     console_start(mem);
             }
         }
+
+        /* 1.1: the lights follow the lock keys; a change is logged only
+         * with keylog (K8), a failure always. */
+        struct kbd_lights lights;
+        enum kbd_sync sync = keyboard_lights_sync(&lights);
+        if (sync == KBD_SYNC_FAILED || (sync == KBD_SYNC_DONE && key_logging))
+            log_lights(&lights);
 
         console_poll();                     /* 0.11: programs that have ended */
 

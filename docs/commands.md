@@ -1,6 +1,6 @@
-# Madire OS Command Standard (MOCS) v0.8
+# Madire OS Command Standard (MOCS) v0.9
 
-**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned). v0.7 (Madire OS 0.12): `prompt`, `alias`, `unalias`, `set`, `export`, `env` (listing only), `sleep`, `presskey` and `time` IMPLEMENTED, the new `unset` IMPLEMENTED, `kill -y <pid>` IMPLEMENTED; "Did you mean" suggestions and help sections (`help shell`, `help system`, `help programs`) IMPLEMENTED; Ctrl+C also cancels `sleep` and `presskey`; `env` running a program with a changed environment, and `$NAME` expansion, stay PLANNED. v0.8 (Madire OS 1.0): `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat` and `cat` IMPLEMENTED, in the new help section `files`; `version` adds the Live mode line; `run [-b] <program> [args]`: the words after the name reach the program as its arguments and the exported variables as its environment, and a program starts in the shell's current folder; then `rm`, `cp`, `mv`, `df` and `du` IMPLEMENTED (also in the help section `files`), output redirection `> file` and `>> file` for built-in commands (`>` and `>>` as separate words only), and `-y` the general non-interactive form of a command that asks.
+**Versions:** v0.1 (after Madire OS 0.9): the standard. v0.2 (Madire OS 0.9.1): `history`, `uname`, `hostname`, `date`, `dmesg` and `reboot` IMPLEMENTED, and `help <command>` and `<command> --help` for every implemented command. v0.3 (Madire OS 0.9.2): the "Console keys" section (scrollback); `dmesg` no longer shows key events by default. v0.4 (Madire OS 0.10): `run`, `kill` and the process list in `ps` move to 0.11 (0.10 brings user processes, 0.11 the programs and process management); new PLANNED commands `pushd`, `popd`, `prompt`, `pause`, `color`, `title`, `label`, `vol`, `attrib`, `defaults` and `bootcfg`; the "Windows equivalents" table; "Did you mean" suggestions and help sections (planned). v0.5 (Madire OS 0.10): naming rule (Madire's own or open Unix/POSIX names, no Microsoft/DOS-specific names); `pause` → `presskey`, `color` → `colors`, `title` → `wintitle`, `attrib` → `fileattr`; `label` and `vol` become the subcommands `disk label` and `disk info`; `bootcfg` (itself a Windows command name) → `bootconf`. v0.6 (Madire OS 0.11): `run` (with `run -b`) and `kill` IMPLEMENTED, `ps` lists processes too ("Show threads and processes"); Ctrl+C in the "Console keys" section; a non-interactive `kill -y <pid>` noted for scripts (planned). v0.7 (Madire OS 0.12): `prompt`, `alias`, `unalias`, `set`, `export`, `env` (listing only), `sleep`, `presskey` and `time` IMPLEMENTED, the new `unset` IMPLEMENTED, `kill -y <pid>` IMPLEMENTED; "Did you mean" suggestions and help sections (`help shell`, `help system`, `help programs`) IMPLEMENTED; Ctrl+C also cancels `sleep` and `presskey`; `env` running a program with a changed environment, and `$NAME` expansion, stay PLANNED. v0.8 (Madire OS 1.0): `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat` and `cat` IMPLEMENTED, in the new help section `files`; `version` adds the Live mode line; `run [-b] <program> [args]`: the words after the name reach the program as its arguments and the exported variables as its environment, and a program starts in the shell's current folder; then `rm`, `cp`, `mv`, `df` and `du` IMPLEMENTED (also in the help section `files`), output redirection `> file` and `>> file` for built-in commands (`>` and `>>` as separate words only), and `-y` the general non-interactive form of a command that asks. v0.9 (Madire OS 1.1): Console keys: Ctrl+C at the prompt clears the line (at a yes/no question it answers no), Esc clears the line, Tab completes command names; the numeric keypad follows Num Lock (on at start), and the keyboard lights show Caps Lock, Num Lock and Scroll Lock. Also in v0.9 (1.1 stage 9b, docs only): new PLANNED commands `tac`, `tr`, `watch`, `lsof`, `strace`, `stats`, `umask`, `acl`, `groupmod`, `dd`, `xz` and `unxz`; `nano`, `vim`, `emacs`, `rsync` and `docker` as application examples; the "Linux equivalents" table (section 9); PLANNED console keys Ctrl+L, Ctrl+A/E/K/U/W and Ctrl+D; the filesystem layout in [filesystem.md](filesystem.md).
 
 This standard lists the commands Madire OS has and plans to have: one name, one meaning and one level for each, so that a new user can understand the system without already knowing Linux or Windows. Everything not marked IMPLEMENTED is a plan, not a commitment: each command still needs its milestone plan and approval before it is built.
 
@@ -26,7 +26,7 @@ Madire OS provides the foundations that applications need (processes, files, dev
 
 **Implemented today (Madire OS 1.0):** 39 commands: `help`, `clear`, `echo`, `version`, `uptime`, `mem`, `cpu` (0.5), `ps` (0.9; processes too since 0.11), `history`, `uname`, `hostname`, `date`, `dmesg`, `reboot` (0.9.1), `run`, `kill` (0.11; `kill -y` 0.12), `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `env`, `sleep`, `presskey`, `time` (0.12), and `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat`, `cat`, `rm`, `cp`, `mv`, `df`, `du` (1.0). Since 0.9.1 every implemented command also answers `help <command>` and `<command> --help`.
 
-**In this standard (v0.8):** 183 commands: 39 IMPLEMENTED, 131 PLANNED and 13 APPLICATION (by level: 21 CORE, 149 SYSTEM, 13 APPLICATION).
+**In this standard (v0.9):** 200 commands: 39 IMPLEMENTED, 143 PLANNED and 18 APPLICATION (by level: 22 CORE, 160 SYSTEM, 18 APPLICATION).
 
 **Notes on the 0.9.1 commands:**
 
@@ -68,7 +68,7 @@ Madire OS provides the foundations that applications need (processes, files, dev
 | `help`, `echo`, `history`, `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `time`, `pwd`, `cd` | CORE | in the kernel console; stays in the shell |
 | `clear`, `version`, `uptime`, `mem`, `cpu`, `ps`, `uname`, `hostname`, `date`, `dmesg`, `reboot`, `run`, `kill`, `env`, `sleep`, `presskey`, `ls`, `mkdir`, `rmdir`, `touch`, `stat`, `cat`, `rm`, `cp`, `mv`, `df`, `du` | SYSTEM | in the kernel console; expected to become separate programs once a filesystem holds them |
 
-**Foundations** named below: processes (0.10 user processes, 0.11 programs and process management), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI.
+**Foundations** named below: processes (0.10 user processes, 0.11 programs and process management), filesystem (1.0), pipes and the shell language, disk drivers, hardware drivers (PCI, USB and devices), network stack, users, power management (ACPI), graphics, settings storage, service manager, package manager, Madire AI; for applications such as `docker`, containers (a future kernel foundation).
 
 ## 3. Commands
 
@@ -117,6 +117,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `devices` | Show connected hardware | SYSTEM | PLANNED (hardware drivers) |
 | `free` | Show memory use in one compact table (used, free, total) | SYSTEM | PLANNED (no new foundation) |
 | `lscpu` | Show the processor's cores, caches and topology in detail | SYSTEM | PLANNED (multi-core support, ACPI tables) |
+| `stats` | Show resource statistics sampled over time, through subcommands: `stats memory`, `stats cpu`, `stats io` (disk reads and writes), `stats process` (per process) | SYSTEM | PLANNED (processes; `stats io` also disk drivers) |
 | `lspci` | List PCI devices | SYSTEM | PLANNED (hardware drivers: PCI) |
 | `lsusb` | List USB devices | SYSTEM | PLANNED (hardware drivers: USB) |
 | `drivers` | List loaded drivers and their devices | SYSTEM | PLANNED (hardware drivers) |
@@ -132,6 +133,8 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `top` | Show running processes and their resource use, updated live | SYSTEM | PLANNED (processes) |
 | `nice` | Start a program with a given priority | SYSTEM | PLANNED (processes, scheduler priorities) |
 | `renice` | Change a running program's priority | SYSTEM | PLANNED (processes, scheduler priorities) |
+| `watch` | Run a command again every few seconds and show its latest output full-screen | SYSTEM | PLANNED (processes) |
+| `lsof` | List the files and network connections each process has open | SYSTEM | PLANNED (processes, filesystem) |
 
 ### Files and folders (needs the filesystem, 1.0)
 
@@ -161,6 +164,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `more` | View text page by page, forwards only (a minimal pager) | SYSTEM | PLANNED (filesystem) |
 | `head` | Show the beginning of a file | SYSTEM | PLANNED (filesystem, pipes) |
 | `tail` | Show the end of a file | SYSTEM | PLANNED (filesystem, pipes) |
+| `tac` | Show a file's lines in reverse order, last line first | SYSTEM | PLANNED (filesystem, pipes) |
 | `grep` | Search for text | SYSTEM | PLANNED (filesystem, pipes) |
 | `sort` | Sort lines | SYSTEM | PLANNED (filesystem, pipes) |
 | `uniq` | Remove repeated lines | SYSTEM | PLANNED (filesystem, pipes) |
@@ -169,6 +173,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `cmp` | Compare two files byte by byte | SYSTEM | PLANNED (filesystem) |
 | `cut` | Extract columns or parts of lines | SYSTEM | PLANNED (filesystem, pipes) |
 | `paste` | Join lines of files side by side | SYSTEM | PLANNED (filesystem, pipes) |
+| `tr` | Replace or delete characters in a stream | SYSTEM | PLANNED (pipes) |
 | `tee` | Show output and save it to a file at the same time | SYSTEM | PLANNED (filesystem, pipes) |
 | `sed` | Edit text in a stream (find and replace) | SYSTEM | PLANNED (filesystem, pipes) |
 | `awk` | Process text by fields and patterns | SYSTEM | PLANNED (filesystem, pipes) |
@@ -207,6 +212,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `fsck` ⚠ | Check and repair a filesystem | SYSTEM | PLANNED (disk drivers, filesystem) |
 | `format` ⚠ | Prepare a storage device for use (erases it) | SYSTEM | PLANNED (disk drivers, filesystem) |
 | `partition` ⚠ | Create or change disk partitions | SYSTEM | PLANNED (disk drivers) |
+| `dd` ⚠ | Copy raw data block by block between files and devices (can overwrite a whole disk) | SYSTEM | PLANNED (disk drivers, filesystem) |
 
 ### Archives
 
@@ -217,6 +223,8 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `unzip` | Extract ZIP archives | SYSTEM | PLANNED (filesystem) |
 | `gzip` | Compress files | SYSTEM | PLANNED (filesystem) |
 | `gunzip` | Decompress files | SYSTEM | PLANNED (filesystem) |
+| `xz` | Compress files in the XZ format | SYSTEM | PLANNED (filesystem) |
+| `unxz` | Decompress XZ files | SYSTEM | PLANNED (filesystem) |
 
 ### Users
 
@@ -231,6 +239,7 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `userdel` ⚠ | Delete a user | SYSTEM | PLANNED (users, filesystem) |
 | `passwd` | Change a password | SYSTEM | PLANNED (users, filesystem) |
 | `groupadd` | Create a group | SYSTEM | PLANNED (users, filesystem) |
+| `groupmod` | Change a group: its name and its members | SYSTEM | PLANNED (users, filesystem) |
 | `groupdel` ⚠ | Delete a group | SYSTEM | PLANNED (users, filesystem) |
 
 ### Permissions
@@ -240,6 +249,8 @@ Each entry: name, purpose, level, status (and, for PLANNED, the foundation it ne
 | `chmod` | Change who may read, write or run a file | SYSTEM | PLANNED (users, filesystem) |
 | `chown` | Change a file's owner | SYSTEM | PLANNED (users, filesystem) |
 | `chgrp` | Change a file's group | SYSTEM | PLANNED (users, filesystem) |
+| `umask` | Show or set the permissions that new files and folders get by default (the shell's own setting, inherited by the programs it starts) | CORE | PLANNED (users, filesystem) |
+| `acl` | Show or set a file's access control list (permissions for individual users and groups): `acl show`, `acl set` | SYSTEM | PLANNED (users, filesystem) |
 | `sudo` | Run one command with administrator rights, after confirmation | SYSTEM | PLANNED (users, processes) |
 | `permissions` | Show or manage what apps may use (camera, microphone, location, files) | SYSTEM | PLANNED (users, the app permission model) |
 
@@ -309,6 +320,7 @@ These are subcommands of `pkg`, not separate commands. `pkg remove` is the one n
 | `health` | Check the overall health of the system (disks, memory, temperatures, updates) | SYSTEM | PLANNED (system utilities) |
 | `repair` ⚠ | Try to fix a problem found by `diagnose` or `health`, after confirmation | SYSTEM | PLANNED (system utilities) |
 | `debug` | Show low-level state for developers | SYSTEM | PLANNED (system utilities) |
+| `strace` | Show the system calls a program makes, with their arguments and results | SYSTEM | PLANNED (processes: system-call tracing) |
 | `report` | Collect a diagnostic report into a file to share | SYSTEM | PLANNED (filesystem, system utilities) |
 
 `dmesg`, `logs` and `service logs` differ: kernel messages only, the whole system log, one service's log.
@@ -369,12 +381,19 @@ These are subcommands of `pkg`, not separate commands. `pkg remove` is the one n
 | `tshark` | Analyse network traffic in the terminal | APPLICATION | APPLICATION |
 | `netcat` | Open network connections and test services | APPLICATION | APPLICATION |
 | `openssl` | Work with encryption and certificates | APPLICATION | APPLICATION |
+| `nano` | A simple terminal text editor | APPLICATION | APPLICATION |
+| `vim` | A modal terminal text editor | APPLICATION | APPLICATION |
+| `emacs` | An extensible text editor | APPLICATION | APPLICATION |
+| `rsync` | Synchronise files between folders or computers | APPLICATION | APPLICATION |
+| `docker` | Build and run software in containers | APPLICATION | APPLICATION |
 
-Each needs at least processes, the filesystem and a C library; the network tools also need the network stack, and `wireshark` graphics. Security tools are only ever run against systems the user owns or may test.
+Each needs at least processes, the filesystem and a C library; the network tools (and `rsync` between computers) also need the network stack, and `wireshark` graphics. `docker` also needs containers, a future kernel foundation (isolated process groups with their own view of files, processes and the network, and resource limits). Security tools are only ever run against systems the user owns or may test.
+
+**MOCS lists applications only as examples; the package catalog is the full list.**
 
 ### Console keys (not commands)
 
-Keys the console handles itself. They aren't commands, so they have no level or `--help`; they are listed here so the standard describes everything the user can do at the prompt.
+Keys the console handles itself. They aren't commands, so they have no level or `--help`; they are listed here so the standard describes everything the user can do at the prompt. Rows marked PLANNED are not handled yet; they name what they need first.
 
 | Keys | What they do | Since |
 |---|---|---|
@@ -383,10 +402,18 @@ Keys the console handles itself. They aren't commands, so they have no level or 
 | Shift+PgUp / Shift+PgDn | page back and forward through the scrollback (the last 1000 lines that left the screen), 24 lines at a time; a reverse-colour indicator on the bottom row shows the position; paging back stops at line 1 | 0.9.2 |
 | Any other key, **while scrolled back** | returns to the live screen and is then handled as usual (typed, or Enter runs the line); key releases and modifier keys on their own (Shift, Ctrl, Alt, the locks) don't return | 0.9.2 |
 | PgUp / PgDn without Shift, **when not scrolled back** | do nothing | 0.9.2 |
-| Ctrl+C, **while a program runs in the foreground** | ends the program (and wakes it if it sleeps); logged only as `console: Ctrl+C: kill requested for process N`, never as a key; at the prompt it does nothing | 0.11 |
+| Ctrl+C, **while a program runs in the foreground** | ends the program (and wakes it if it sleeps); logged only as `console: Ctrl+C: kill requested for process N`, never as a key | 0.11 |
 | Ctrl+C, **during `sleep` or `presskey`** | cancels the wait (`sleep: cancelled.`, `presskey: cancelled.`); logged only as a fixed line | 0.12 |
+| Ctrl+C, **at the prompt** | clears the line: `^C` and a new prompt; the line isn't run or kept in the history; logged only as `console: Ctrl+C: line cleared` | 1.1 |
+| Ctrl+C, **at a yes/no question** | answers no | 1.1 |
+| Esc | clears the line | 1.1 |
+| Tab | completes a command name at the end of the first word; a second Tab lists several matches; never types a tab | 1.1 |
+| Num Lock | the keypad types digits when on, the default, and acts as the arrow, Home/End, PgUp/PgDn, Insert and Delete keys when off | 1.1 |
+| Ctrl+L | clears the screen, as `clear`, keeping the input line | PLANNED (no new foundation) |
+| Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W | line editing: go to the start (Ctrl+A) or the end (Ctrl+E) of the line; delete to the end (Ctrl+K) or to the start (Ctrl+U), or the word before the cursor (Ctrl+W) | PLANNED (a change to the protected line editor, `lineedit.c`) |
+| Ctrl+D, **on an empty line** | leaves the shell, as `exit` | PLANNED (the shell running as a process) |
 
-Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, because Num Lock is assumed on. `clear` keeps the screen's lines in the scrollback. The scrollback and the history are lost at restart.
+Shift+PgUp/PgDn also work with the keypad's 9 and 3 when Num Lock is off. `clear` keeps the screen's lines in the scrollback. The scrollback and the history are lost at restart.
 
 ## 4. One meaning per name
 
@@ -410,6 +437,10 @@ Only the grey PgUp/PgDn keys page: the numeric keypad's keys type `9` and `3`, b
 | `disk info` / `volume` | `disk info` is about storage volumes; `volume` is the sound volume |
 | `chmod` / `fileattr` | `chmod` sets who may read, write or run a file (permissions); `fileattr` sets a file's own attributes (read-only, hidden) |
 | `open` / `defaults` | `open` opens one file with its default app; `defaults` chooses which app is the default |
+| `stat` / `stats` | `stat` shows one file's details; `stats` shows resource statistics over time |
+| `mem`, `cpu`, `top` / `stats` | `mem` and `cpu` are reports of the moment, `top` a live process list; `stats` samples memory, CPU, disk and per-process figures at intervals, for comparison over time |
+| `chmod` / `acl` | `chmod` sets the owner, group and everyone permissions; `acl` adds permissions for individual users and groups |
+| `cp` / `dd` | `cp` copies files; `dd` copies raw blocks, also to and from whole devices |
 
 ## 5. Shell language
 
@@ -479,3 +510,33 @@ For people who know the Windows command prompt: the Madire names for common Wind
 | `VOL` | `disk info` |
 | `BCDEDIT` | `bootconf` |
 | `ASSOC`, `FTYPE` | `defaults` |
+
+## 9. Linux equivalents
+
+For people who know Linux: the Madire names for Linux commands that Madire names differently. Madire keeps one name per action (section 4), so the names on the left are not Madire commands; Linux commands not listed here keep their Linux names in section 3. Most are PLANNED; the status of each Madire command is in section 3.
+
+| Linux | Madire OS |
+|---|---|
+| `ifconfig` | `ip` |
+| `nslookup`, `dig` | `dns` |
+| `journalctl` | `logs` |
+| `systemctl` | `service` (one service), `services` (the list) |
+| `apt`, `apt-get`, `apt-cache`, `dnf`, `yum`, `rpm`, `dpkg`, `pacman` | `pkg` |
+| `fdisk`, `parted` | `partition` |
+| `mkfs` | `format` |
+| `blkid` | `disk info` (a volume's name and serial number), `lsblk` (the devices and partitions) |
+| `killall` | `pkill` |
+| `htop` | `top` |
+| `lshw` | `devices` |
+| `cron`, `crontab`, `at`, `batch` | `schedule` |
+| `iptables`, `ufw`, `firewalld` | `firewall` |
+| `halt`, `init 0` | `poweroff` |
+| `init 6` | `reboot` |
+| `w` | `who` |
+| `chage` | `usermod` |
+| `gpasswd` | `groupmod` |
+| `setfacl`, `getfacl` | `acl` |
+| `vmstat`, `iostat`, `mpstat`, `pidstat` | `stats` |
+| `cpio` | `tar` |
+
+`fstab` (the filesystems mounted at start) and `sudoers` (who may use `sudo`) are configuration files, not commands: they are files under `/etc` (see [filesystem.md](filesystem.md)).

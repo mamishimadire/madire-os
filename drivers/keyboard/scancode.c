@@ -23,7 +23,8 @@ struct key_def {
 #define CH(n, s) { KEY_CHAR, n, s }
 
 /* Set 1 make codes without prefix. Keypad keys report their digit/symbol
- * (Num Lock is assumed on; Num Lock state is not tracked in 0.4). */
+ * here, as with Num Lock on; with Num Lock off, keypad_nav below replaces
+ * 0x47-0x53. */
 static const struct key_def base_keys[0x80] = {
     [0x01] = { KEY_ESC, 0, 0 },
     [0x02] = CH('1', '!'), [0x03] = CH('2', '@'), [0x04] = CH('3', '#'),
@@ -65,6 +66,7 @@ static const struct key_def base_keys[0x80] = {
     [0x4E] = CH('+', '+'),
     [0x4F] = CH('1', '1'), [0x50] = CH('2', '2'), [0x51] = CH('3', '3'),
     [0x52] = CH('0', '0'), [0x53] = CH('.', '.'),
+    [0x56] = CH('\\', '|'),                     /* the ISO key */
     [0x57] = { KEY_F11, 0, 0 },
     [0x58] = { KEY_F12, 0, 0 },
 };
@@ -91,9 +93,44 @@ static const struct key_def extended_keys[0x80] = {
     [0x5D] = { KEY_MENU, 0, 0 },
 };
 
+/* The keypad with Num Lock off (base codes, no E0): the navigation keys,
+ * without KEY_EXTENDED. Keypad 5 has no meaning; keypad - and + keep their
+ * characters. */
+#define KEYPAD_FIRST 0x47u
+#define KEYPAD_LAST  0x53u
+static const struct key_def keypad_nav[KEYPAD_LAST - KEYPAD_FIRST + 1] = {
+    [0x47 - KEYPAD_FIRST] = { KEY_HOME, 0, 0 },
+    [0x48 - KEYPAD_FIRST] = { KEY_UP, 0, 0 },
+    [0x49 - KEYPAD_FIRST] = { KEY_PGUP, 0, 0 },
+    [0x4A - KEYPAD_FIRST] = CH('-', '-'),
+    [0x4B - KEYPAD_FIRST] = { KEY_LEFT, 0, 0 },
+    [0x4C - KEYPAD_FIRST] = { KEY_UNKNOWN, 0, 0 },
+    [0x4D - KEYPAD_FIRST] = { KEY_RIGHT, 0, 0 },
+    [0x4E - KEYPAD_FIRST] = CH('+', '+'),
+    [0x4F - KEYPAD_FIRST] = { KEY_END, 0, 0 },
+    [0x50 - KEYPAD_FIRST] = { KEY_DOWN, 0, 0 },
+    [0x51 - KEYPAD_FIRST] = { KEY_PGDN, 0, 0 },
+    [0x52 - KEYPAD_FIRST] = { KEY_INSERT, 0, 0 },
+    [0x53 - KEYPAD_FIRST] = { KEY_DELETE, 0, 0 },
+};
+
 void scancode_init(struct scancode_state *s)
 {
-    *s = (struct scancode_state){ 0 };
+    *s = (struct scancode_state){ .num_on = true };
+}
+
+uint8_t scancode_lights(const struct scancode_state *s)
+{
+    return (uint8_t)((s->scroll_on ? 0x01u : 0) | (s->num_on ? 0x02u : 0)
+                     | (s->caps_on ? 0x04u : 0));
+}
+
+/* A lock key toggles once per press; auto-repeat (make while held) is ignored. */
+static void lock_key(bool *on, bool *held, bool pressed)
+{
+    if (pressed && !*held)
+        *on = !*on;
+    *held = pressed;
 }
 
 bool scancode_is_response(uint8_t byte)
@@ -158,7 +195,13 @@ bool scancode_decode(struct scancode_state *s, uint8_t byte, struct key_event *o
     if (extended && (code == 0x2A || code == 0x36))
         return false;                               /* fake shift */
 
-    const struct key_def *def = extended ? &extended_keys[code] : &base_keys[code];
+    const struct key_def *def;
+    if (extended)
+        def = &extended_keys[code];
+    else if (!s->num_on && code >= KEYPAD_FIRST && code <= KEYPAD_LAST)
+        def = &keypad_nav[code - KEYPAD_FIRST];
+    else
+        def = &base_keys[code];
     uint8_t key = def->key ? def->key : KEY_UNKNOWN;
 
     uint8_t bit = modifier_bit(key);
@@ -168,11 +211,12 @@ bool scancode_decode(struct scancode_state *s, uint8_t byte, struct key_event *o
         else
             s->mods &= (uint8_t)~bit;
     }
-    if (key == KEY_CAPSLOCK) {
-        if (pressed && !s->caps_held)               /* ignore auto-repeat */
-            s->caps_on = !s->caps_on;
-        s->caps_held = pressed;
-    }
+    if (key == KEY_CAPSLOCK)
+        lock_key(&s->caps_on, &s->caps_held, pressed);
+    else if (key == KEY_NUMLOCK)
+        lock_key(&s->num_on, &s->num_held, pressed);
+    else if (key == KEY_SCROLLLOCK)
+        lock_key(&s->scroll_on, &s->scroll_held, pressed);
 
     char ascii = def->normal;
     if (key == KEY_CHAR) {

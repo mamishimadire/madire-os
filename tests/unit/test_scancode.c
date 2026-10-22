@@ -247,6 +247,152 @@ static void test_every_byte_is_safe(void)
     }
 }
 
+/* 1.1: Num Lock, Scroll Lock, the keypad and the ISO key. */
+static void test_num_lock_on_after_init(void)
+{
+    reset();
+    CHECK(st.num_on);
+    CHECK(!st.caps_on);
+    CHECK(!st.scroll_on);
+    CHECK_EQ(scancode_lights(&st), 0x02);
+    CHECK_EQ(FEED(0x48, 0xC8), 2);                  /* keypad 8 */
+    CHECK_EQ(ev[0].keycode, KEY_CHAR);
+    CHECK_EQ(ev[0].ascii, '8');
+    CHECK_EQ(ev[0].flags, KEY_PRESSED);
+}
+
+static void test_num_and_scroll_lock_toggle_once_while_held(void)
+{
+    reset();
+    /* Num Lock: press, two auto-repeats, release */
+    CHECK_EQ(FEED(0x45, 0x45, 0x45, 0xC5), 4);
+    CHECK_EQ(ev[0].keycode, KEY_NUMLOCK);
+    CHECK(!st.num_on);                              /* off once, not three times */
+    CHECK_EQ(scancode_lights(&st), 0x00);
+    CHECK_EQ(FEED(0x45, 0xC5), 2);                  /* second press: on */
+    CHECK(st.num_on);
+    CHECK_EQ(scancode_lights(&st), 0x02);
+
+    /* Scroll Lock: the same */
+    CHECK_EQ(FEED(0x46, 0x46, 0x46, 0xC6), 4);
+    CHECK_EQ(ev[0].keycode, KEY_SCROLLLOCK);
+    CHECK(st.scroll_on);
+    CHECK_EQ(scancode_lights(&st), 0x03);
+    CHECK_EQ(FEED(0x46, 0xC6), 2);
+    CHECK(!st.scroll_on);
+    CHECK_EQ(scancode_lights(&st), 0x02);
+    CHECK(st.num_on);                               /* the locks are separate */
+    CHECK(!st.caps_on);
+}
+
+static void test_keypad_follows_num_lock(void)
+{
+    static const struct { uint8_t code; uint8_t key; char digit; } kp[] = {
+        { 0x47, KEY_HOME, '7' },   { 0x48, KEY_UP, '8' },    { 0x49, KEY_PGUP, '9' },
+        { 0x4B, KEY_LEFT, '4' },   { 0x4D, KEY_RIGHT, '6' }, { 0x4F, KEY_END, '1' },
+        { 0x50, KEY_DOWN, '2' },   { 0x51, KEY_PGDN, '3' },  { 0x52, KEY_INSERT, '0' },
+        { 0x53, KEY_DELETE, '.' },
+    };
+    reset();
+    CHECK_EQ(FEED(0x45, 0xC5), 2);                  /* Num Lock off */
+    for (unsigned i = 0; i < sizeof(kp) / sizeof(kp[0]); i++) {
+        CHECK_EQ(FEED(kp[i].code, (uint8_t)(kp[i].code | 0x80)), 2);
+        CHECK_EQ(ev[0].keycode, kp[i].key);
+        CHECK_EQ(ev[0].ascii, 0);
+        CHECK_EQ(ev[0].flags, KEY_PRESSED);         /* no KEY_EXTENDED */
+        CHECK_EQ(ev[0].scancode, kp[i].code);
+        CHECK_EQ(ev[1].keycode, kp[i].key);
+        CHECK_EQ(ev[1].flags, 0);
+    }
+    CHECK_EQ(FEED(0x37, 0x4A, 0x4E, 0xE0, 0x35, 0xE0, 0x1C), 5); /* * - + / Enter */
+    CHECK_EQ(ev[0].ascii, '*');
+    CHECK_EQ(ev[1].ascii, '-');
+    CHECK_EQ(ev[2].ascii, '+');
+    CHECK_EQ(ev[3].ascii, '/');
+    CHECK_EQ(ev[4].keycode, KEY_KP_ENTER);
+    CHECK_EQ(FEED(0xE0, 0x48), 1);                  /* the grey Up: unchanged */
+    CHECK_EQ(ev[0].keycode, KEY_UP);
+    CHECK_EQ(ev[0].flags, KEY_PRESSED | KEY_EXTENDED);
+
+    CHECK_EQ(FEED(0x45, 0xC5), 2);                  /* Num Lock on again */
+    for (unsigned i = 0; i < sizeof(kp) / sizeof(kp[0]); i++) {
+        CHECK_EQ(FEED(kp[i].code), 1);
+        CHECK_EQ(ev[0].keycode, KEY_CHAR);
+        CHECK_EQ(ev[0].ascii, kp[i].digit);
+        CHECK_EQ(ev[0].flags, KEY_PRESSED);
+    }
+    CHECK_EQ(FEED(0x4C), 1);
+    CHECK_EQ(ev[0].ascii, '5');
+}
+
+static void test_keypad_5_with_num_lock_off(void)
+{
+    reset();
+    CHECK_EQ(FEED(0x45, 0xC5, 0x4C, 0xCC), 4);
+    CHECK_EQ(ev[2].keycode, KEY_UNKNOWN);
+    CHECK_EQ(ev[2].ascii, 0);
+    CHECK_EQ(ev[2].flags, KEY_PRESSED);
+    CHECK_EQ(ev[3].keycode, KEY_UNKNOWN);
+}
+
+static void test_shift_keypad_9_with_num_lock_off(void)
+{
+    reset();
+    CHECK_EQ(FEED(0x45, 0xC5, 0x2A, 0x49, 0xC9, 0xAA), 6);
+    CHECK_EQ(ev[3].keycode, KEY_PGUP);
+    CHECK_EQ(ev[3].ascii, 0);
+    CHECK_EQ(ev[3].flags, KEY_PRESSED | KEY_SHIFT);
+    CHECK_EQ(ev[3].scancode, 0x49);
+}
+
+static void test_pause_leaves_num_lock_on(void)
+{
+    reset();
+    CHECK_EQ(FEED(0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5), 1);
+    CHECK_EQ(ev[0].keycode, KEY_PAUSE);
+    CHECK(st.num_on);                               /* the inner 45 never toggles */
+    CHECK(!st.num_held);
+    CHECK_EQ(scancode_lights(&st), 0x02);
+    CHECK_EQ(FEED(0x48), 1);
+    CHECK_EQ(ev[0].ascii, '8');
+}
+
+static void test_iso_key(void)
+{
+    reset();
+    CHECK_EQ(FEED(0x56, 0xD6, 0x2A, 0x56, 0xD6, 0xAA), 6);
+    CHECK_EQ(ev[0].keycode, KEY_CHAR);
+    CHECK_EQ(ev[0].ascii, '\\');
+    CHECK_EQ(ev[0].flags, KEY_PRESSED);
+    CHECK_EQ(ev[0].scancode, 0x56);
+    CHECK_EQ(ev[3].keycode, KEY_CHAR);
+    CHECK_EQ(ev[3].ascii, '|');
+    CHECK_EQ(ev[3].flags, KEY_PRESSED | KEY_SHIFT);
+    reset();
+    CHECK_EQ(FEED(0x3A, 0xBA, 0x56), 3);           /* Caps Lock does not shift it */
+    CHECK_EQ(ev[2].ascii, '\\');
+}
+
+static void test_lights_after_each_lock_change(void)
+{
+    reset();
+    CHECK_EQ(scancode_lights(&st), 0x02);
+    FEED(0x3A, 0xBA);                               /* Caps on */
+    CHECK_EQ(scancode_lights(&st), 0x06);
+    FEED(0x45, 0xC5);                               /* Num off */
+    CHECK_EQ(scancode_lights(&st), 0x04);
+    FEED(0x46, 0xC6);                               /* Scroll on */
+    CHECK_EQ(scancode_lights(&st), 0x05);
+    FEED(0x3A, 0xBA);                               /* Caps off */
+    CHECK_EQ(scancode_lights(&st), 0x01);
+    FEED(0x45, 0xC5);                               /* Num on */
+    CHECK_EQ(scancode_lights(&st), 0x03);
+    FEED(0x46, 0xC6);                               /* Scroll off */
+    CHECK_EQ(scancode_lights(&st), 0x02);
+    FEED(0x1E, 0x9E, 0xE0, 0x46, 0xE0, 0xC6);      /* a key, Ctrl+Break: no change */
+    CHECK_EQ(scancode_lights(&st), 0x02);
+}
+
 static void test_key_names(void)
 {
     CHECK(scancode_key_name(KEY_CHAR)[0] == 'C');
@@ -275,6 +421,14 @@ int main(void)
     RUN(test_prefix_then_break);
     RUN(test_responses_are_not_keys);
     RUN(test_every_byte_is_safe);
+    RUN(test_num_lock_on_after_init);
+    RUN(test_num_and_scroll_lock_toggle_once_while_held);
+    RUN(test_keypad_follows_num_lock);
+    RUN(test_keypad_5_with_num_lock_off);
+    RUN(test_shift_keypad_9_with_num_lock_off);
+    RUN(test_pause_leaves_num_lock_on);
+    RUN(test_iso_key);
+    RUN(test_lights_after_each_lock_change);
     RUN(test_key_names);
     return unit_report("scancode");
 }
