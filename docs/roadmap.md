@@ -158,3 +158,14 @@ These legacy pieces were chosen **deliberately, as the simplest starting point**
 ### 5. Madire OS's own licence (decided)
 
 **Licence decided 12 Oct 2026: Apache 2.0 + trademark note, DCO** (see [LICENSE](../LICENSE)). The candidates were MIT, Apache-2.0, GPL-3.0 or a proprietary licence; it had to be decided before any outside code is included, because the choice decides which open-source code can be combined with the kernel and how.
+
+### 6. Compatibility strategy (the order; added in 1.1 stage 9b)
+
+Each step builds on the one before it:
+
+1. **Native apps:** Madire's own programs on Madire's own interfaces (the shell commands as programs, then the desktop's apps).
+2. **Linux apps:** first statically linked programs built with [musl](references.md#ref-musl), in the Linux-compatible foundation milestone (Planned milestones, item 7); then dynamically linked programs (a dynamic loader, shared libraries, files mapped into memory). Both need the standard Linux file layout, [filesystem.md](filesystem.md).
+3. **Windows apps:** [Wine](references.md#ref-wine) running on the Linux layer. Wine is LGPL-2.1-or-later, which is not on the permitted licence list (AGENTS.md section 11): how Madire may offer it (installed separately by users, as section 1 says, or through the package catalog) **needs a rule decision by the owner** before that milestone.
+4. **Games (long term):** GPU drivers, then Vulkan, then Proton (Wine with the improvements for games), on top of steps 2 and 3.
+
+**A decision to come in the storage milestone (likely v1.3, after graphics in v1.2): Madire's own disk filesystem, or ext2.** ext2 would let Linux's own tools (`e2fsck`, `debugfs`) check the disk images Madire writes in its tests, an independent check of the on-disk format. If ext2 is chosen, it is implemented from the specification only (the format's documentation), never from GPL code (AGENTS.md section 11). The references are listed in [references.md](references.md#ref-filesystems).
