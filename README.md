@@ -4,7 +4,7 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 
 **Current version:** 1.1 (Milestone 1.1 "Polish": the branded boot menu and keyboard polish; tag `v1.1`)
 
-*(Screenshot placeholder, TO BE FILLED from the v1.1 VirtualBox acceptance run: the boot screen, `docs/images/v1.1-boot.png`.)*
+![Madire OS v1.1 boot screen](docs/images/v1.1-boot.png)
 
 1.1 polishes what is already there, before graphics in 1.2:
 
@@ -15,7 +15,9 @@ Madire OS is an operating system written from scratch: its own kernel and archit
 - **The ISO key** (the extra key next to the left Shift on many non-US keyboards) types `\` and, with Shift, `|`.
 - **Tests:** 36 new QEMU checks (`[1.1]`: the boot menu read back pixel by pixel, the keypad, the lights as QEMU's keyboard sees them, the console keys), 2 new unit-test suites, and new VirtualBox rows (the boot menu's key window, the lights read from VirtualBox's keyboard, the console keys).
 
-*(Screenshot placeholder, TO BE FILLED from the v1.1 VirtualBox acceptance run: the boot menu on the Madire wallpaper, `docs/images/v1.1-boot-menu.png`.)*
+The boot menu, shown with a key during the 2 s window, on the Madire wallpaper:
+
+![The boot menu on the Madire wallpaper (1.1)](docs/images/v1.1-boot-menu.png)
 
 1.0 gave Madire OS **files and folders**:
 
@@ -120,7 +122,7 @@ It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written 
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
-**Tested at v1.1:** 1528 QEMU checks and 70 unit-test suites pass in the official regression on GitHub Actions (the final full run, TO BE FILLED: run id), together with the reproducible-build check; from `main`, the milestone commit passed a sharded run (TO BE FILLED: run id, with the 4 MiB kernel gate) and the stress part's 125 checks (TO BE FILLED: run id) on the same kernel; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 632 of its rows (TO BE FILLED: the result) on that run's ISO, opening the hidden boot menu, booting all 27 Diagnostics entries through it, reading the keyboard lights from VirtualBox's keyboard and running a whole session of console and file commands.
+**Tested at v1.1:** 1528 QEMU checks and 70 unit-test suites pass in the official regression on GitHub Actions (the final full run, 39836152722), together with the reproducible-build check; from `main`, the milestone commit passed a sharded run (39850371964, with the 4 MiB kernel gate) and the stress part's 125 checks (39850394001) on the same kernel; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 632 of its rows on that run's ISO, opening the hidden boot menu, booting all 27 Diagnostics entries through it, reading the keyboard lights from VirtualBox's keyboard and running a whole session of console and file commands.
 
 ## Roadmap
 
@@ -135,11 +137,15 @@ A summary of [docs/roadmap.md](docs/roadmap.md); each step needs its own plan an
 
 ## v1.1 in pictures
 
-Screenshots from the 1.1 VirtualBox acceptance run (`MadireOS-Test`, the ISO of the final full regression run, TO BE FILLED: run id).
+Screenshots from the 1.1 VirtualBox acceptance run (`MadireOS-Test`, the ISO of the final full regression run, 39836152722).
 
-*(Screenshot placeholder, TO BE FILLED: the boot menu with the **Diagnostics** directory open, `docs/images/v1.1-boot-menu-diagnostics.png`.)*
+The boot menu with the **Diagnostics** directory open (10 entries at a time; the arrows show there are more):
 
-*(Screenshot placeholder, TO BE FILLED: the keyboard diagnostic with the ISO key and keypad 8 with Num Lock off, `docs/images/v1.1-keyboard.png`.)*
+![The boot menu, Diagnostics open (1.1)](docs/images/v1.1-boot-menu-diagnostics.png)
+
+The keyboard diagnostic: the ISO key types `\`, Num Lock goes off, and keypad 8 is then the Up arrow:
+
+![The keyboard diagnostic: the ISO key and keypad 8 with Num Lock off (1.1)](docs/images/v1.1-keyboard.png)
 
 ## v1.0 in pictures
 
