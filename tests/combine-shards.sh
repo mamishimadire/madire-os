@@ -128,6 +128,15 @@ main() {
     fi
     [ -n "$km" ] && [ "$km" -ge 32768 ] || bad "kernel margin below 4 MiB ${km:-missing} below 32768 bytes"
 
+    # 1.2 stage 2 (decision 13): the size report of part static, repeated
+    # here, and the margin computed above against the 524,288-byte trigger
+    # for a size-gate stage. Report only: decides nothing.
+    echo "== Size report (job shard-static; report only)"
+    grep -E '^(SIZE|KERNEL_MARGIN_TRIGGER) ' "$dir/shard-static/regression.log" 2>/dev/null ||
+        echo "no size report in shard-static's log"
+    if [ -n "$km" ] && [ "$km" -ge 524288 ]; then echo "KERNEL_MARGIN_TRIGGER (combined) $km, trigger 524288: at or above the trigger: no gate stage"
+    else echo "KERNEL_MARGIN_TRIGGER (combined) ${km:-missing}, trigger 524288: BELOW the trigger or missing: STOP for a gate stage"; fi
+
     echo "== Counts"
     counts=$( { cat "$dir"/shard-*/regression.log; cat "$dir/combined/final.log"; } | grep '^SHARD_COUNTS ')
     echo "$counts"
