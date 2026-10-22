@@ -293,13 +293,13 @@ S+="uptime{ret}{wait:2}uptime{ret}"                  # 5, 6
 S+="mem{ret}"                                        # 7
 S+="cpu{ret}"                                        # 8
 S+="echo   Hello   World!{ret}"                      # 9  Shift + multiple spaces
-S+="echo{tab}a{tab}{tab}b{ret}"                      # 10 tabs
+S+="ech{tab}a {tab}b{ret}"                          # 10 Tab completes the command name (1.1)
 S+="{caps}echo abc{caps}{ret}"                       # 11 Caps Lock
 S+="echo hellx{bs}o{ret}"                            # 12 Backspace
 S+="echo abXc{left}{left}{del}{ret}"                 # 13 Left + Delete
 S+="cho world{home}e{end}!{ret}"                     # 14 Home / End / insert
 S+="echo hllo{home}{right}{right}{right}{right}{right}{right}e{end}{ret}"   # 15 Right
-S+="{ctrl+c}{alt+x}echo ok{ret}"                     # 16 Ctrl / Alt ignored
+S+="{ctrl+x}{alt+x}echo ok{ret}"                     # 16 Ctrl / Alt ignored
 S+="foo{ret}"                                        # 17 unknown command
 S+="version x{ret}"                                  # 18 argument error
 S+="echo 1 2 3 4 5 6 7 8{ret}"                       # 19 too many words
@@ -311,7 +311,6 @@ S+="clear{ret}"                                      # 30
 S+="version{ret}"                                    # 31
 S+="echo end-of-console-test{ret}"                   # 32 marks the end of the session
 boot_text "$LOG" 180 "System ready." "$S" 0.03 $'\nend-of-console-test\n' -kernel "$KERNEL"
-TAB=$'\t'
 A66=$(printf 'a%.0s' $(seq 1 66))
 
 expect_in_order "$LOG" "[0.5] console opens on the first key, which is not typed" \
@@ -346,7 +345,7 @@ expect_in_order "$LOG" "[0.5] cpu reports CPUID information" \
     "^Family/model: [0-9]+ / [0-9]+, stepping [0-9]+$" "^Features: +[a-z]" \
     "^Mode: +64-bit long mode, paging on, 1 CPU in use$"
 expect_next "$LOG" "[0.5] Shift and multiple spaces"   "^madire> echo   Hello   World!$" "^Hello World!$"
-expect_next "$LOG" "[0.5] tabs separate arguments"     "^madire> echo${TAB}a${TAB}${TAB}b$" "^a b$"
+expect_next "$LOG" "[1.1] Tab completes the command name (ech: echo), no tab character typed" "^madire> echo a b$" "^a b$"
 expect_next "$LOG" "[0.5] Caps Lock (and names are case-sensitive)" \
     "^madire> ECHO ABC$" "^Unknown command: ECHO\. Type 'help' for a list of commands\.$"
 # Only the final, edited line is logged: "hellx" + Backspace + "o" -> "hello".
@@ -1525,3 +1524,46 @@ expect_next "$LOG" "[1.1] keyboard lights: typed text exact across two light cha
     '^madire> echo aBc$' '^aBc$'
 reject "$LOG" 'Keyboard lights: not acknowledged|events dropped|key=UNKNOWN|PANIC' \
     "[1.1] lights boot: no light failure, nothing dropped or unknown, no panic"
+
+# 1.1 stage 8: Ctrl+C, Esc and Tab at the prompt, in a normal boot (no
+# keylog): C1-C10 and L6. The cleared lines' text must never reach the
+# serial log (C3: the history and dmesg output is on it too).
+echo "== [1.1] Console keys: Ctrl+C, Esc and Tab (no keylog)"
+LOG=$OUT/serial-conskeys11.log
+S="x{wait:1}"
+S+="echo secretmarker11{ctrl+c}"                      # C1 Ctrl+C with text
+S+="{ctrl+c}"                                         # C1 Ctrl+C on an empty line
+S+="echo escmarker11{esc}"                            # C2 Esc
+S+="echo after-clear{ret}"
+S+="history{ret}"                                     # C3 (the markers must not be listed)
+S+="reboot{ret}{wait:1}ye{ctrl+c}{wait:1}"            # C4 Ctrl+C at the question
+S+="his{tab}{ret}"                                    # C5 unique: "history "
+S+="un{tab}{tab}{ctrl+c}"                             # C6 ambiguous: the list
+S+="echo a{tab}b{ret}"                                # C7 a later word: nothing
+S+="zz{tab}{bs}{bs}echo nomatch-ok{ret}"              # C7 no match: nothing
+S+="echo {caps}q{caps}r{ret}"                         # C8, L6 Caps Lock without keylog
+S+="dmesg 9999{ret}"                                  # C3 dmesg's text on the serial log
+S+="echo end-of-conskeys-test{ret}"
+boot_text "$LOG" 120 "System ready." "$S" 0.05 $'\nend-of-conskeys-test\n' -m 32M -kernel "$KERNEL"
+expect_in_order "$LOG" "[1.1] Ctrl+C at the prompt clears the line, with text and on an empty line (logged only as a fixed line)" \
+    '^console: Ctrl\+C: line cleared$' '^console: Ctrl\+C: line cleared$' '^madire> echo after-clear$'
+expect_next "$LOG" "[1.1] Esc clears the line: the next line runs exactly as echo after-clear" \
+    '^madire> echo after-clear$' '^after-clear$'
+reject "$LOG" 'secretmarker11|escmarker11' \
+    "[1.1] cleared lines reach neither the serial log, the history nor dmesg (secretmarker11, escmarker11)"
+expect_in_order "$LOG" "[1.1] Ctrl+C at a yes/no question answers no: Restart cancelled., no restart" \
+    '^madire> reboot$' '^console: Ctrl\+C: answered no$' '^Restart cancelled\.$' '^madire> history $'
+expect "$LOG" '^madire> history $' \
+    "[1.1] Tab completes a unique command name and adds a space (his: history)"
+expect_in_order "$LOG" "[1.1] Tab on an ambiguous name: the second Tab lists the matches (un: unalias  uname  unset)" \
+    '^unalias  uname  unset$' '^console: Ctrl\+C: line cleared$'
+expect_in_order "$LOG" "[1.1] Tab in a later word, or with no match, types nothing (echo ab, echo nomatch-ok)" \
+    '^madire> echo ab$' '^ab$' '^madire> echo nomatch-ok$' '^nomatch-ok$'
+expect_next "$LOG" "[1.1] Caps Lock in a normal boot types exactly (echo Qr)" \
+    '^madire> echo Qr$' '^Qr$'
+reject "$LOG" '^Keyboard lights: Num Lock on, Caps Lock on|^key: ' \
+    "[1.1] keyboard lights: Caps Lock changes not logged without keylog (no light or key lines)"
+expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
+    '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
+reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
+    "[1.1] console keys boot: no panic, nothing dropped, no light failure"

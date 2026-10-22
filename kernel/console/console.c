@@ -1087,6 +1087,8 @@ static void copy_begin(void)
     cp_start = timer_ticks();
 }
 
+static void run_line(char *line, uint32_t scrolls_before);
+
 static void submit(void)
 {
     uint32_t scrolls_before = screen.scrolls;
@@ -1097,7 +1099,13 @@ static void submit(void)
     klogf("%s%s\n", prompt, input.buf);
     textbuf_set_cursor(&screen, prompt_row, (uint8_t)(PROMPT_LEN + input.len));
     grid_putc('\n');
+    run_line(line, scrolls_before);
+}
 
+/* The submitted line: the answer to a question, or a command to run (1.1:
+ * also the empty answer of Ctrl+C at a question). */
+static void run_line(char *line, uint32_t scrolls_before)
+{
     enum shell_result r = SHELL_OK;
     if (confirming) {
         confirming = false;                 /* not a command: not in the history */
@@ -1173,6 +1181,82 @@ static void recall(const char *text)
         lineedit_key(&input, &e);
     }
     draw_input();
+}
+
+/* ---- 1.1: Ctrl+C, Esc and Tab at the prompt ---- */
+
+static bool tab_armed;                  /* the last key pressed was a Tab that found several
+                                         * names and nothing to add */
+
+/* Ctrl+C at the prompt clears the line: "^C" after it on the screen only,
+ * then the next prompt; the line is not run and not kept in the history,
+ * and serial and dmesg get only a fixed line, never the text. At a yes/no
+ * question it answers no: the question's own answer path with an empty
+ * answer (its cancel line); the typed answer is not logged either. */
+static void ctrl_c_line(void)
+{
+    uint32_t scrolls_before = screen.scrolls;
+    textbuf_set_cursor(&screen, prompt_row, (uint8_t)(PROMPT_LEN + input.len));
+    write_screen("^C\n", ATTR_TEXT);
+    history_end_browse(&hist);
+    if (confirming) {
+        char empty[1] = { '\0' };
+        klogf("console: Ctrl+C: answered no\n");
+        run_line(empty, scrolls_before);
+        return;
+    }
+    klogf("console: Ctrl+C: line cleared\n");
+    next_prompt();
+}
+
+/* Tab completes a command name when the line holds only its first word and
+ * the cursor is at its end (not at a question): one match types the rest
+ * and a space, several the part they share; with several and nothing to
+ * add, the second Tab in a row lists them (screen and serial, like command
+ * output) and draws the prompt and the line again. Otherwise nothing. */
+static void tab_key(void)
+{
+    bool armed = tab_armed;
+    tab_armed = false;
+    if (confirming || input.pos != input.len)
+        return;
+    uint8_t start = 0;
+    while (start < input.len && (input.buf[start] == ' ' || input.buf[start] == '\t'))
+        start++;
+    if (start == input.len)
+        return;                             /* no word */
+    for (uint8_t i = start; i < input.len; i++)
+        if (input.buf[i] == ' ' || input.buf[i] == '\t')
+            return;                         /* a later word */
+
+    struct shell_context ctx;
+    struct shell_completion comp;
+    build_context(&ctx);
+    shell_complete(&ctx, input.buf + start, (uint32_t)(LINE_MAX - input.len), &comp, 0);
+    if (comp.add[0]) {
+        for (const char *p = comp.add; *p; p++) {
+            struct key_event k = { KEY_CHAR, *p, KEY_PRESSED, 0 };
+            lineedit_key(&input, &k);
+        }
+        draw_input();
+        return;
+    }
+    if (comp.count < 2 || comp.no_room)
+        return;
+    tab_armed = true;
+    if (!armed)
+        return;
+
+    char saved[LINE_MAX + 1];
+    for (uint8_t i = 0; i <= input.len; i++)
+        saved[i] = input.buf[i];
+    textbuf_set_cursor(&screen, prompt_row, (uint8_t)(PROMPT_LEN + input.len));
+    grid_putc('\n');
+    shell_complete(&ctx, saved + start, (uint32_t)(LINE_MAX - input.len), &comp, &sink);
+    show_prompt();
+    recall(saved);
+    render_all();
+    place_cursor();
 }
 
 /* ---- Public ---- */
@@ -1314,6 +1398,27 @@ void console_handle_key(const struct key_event *e)
     }
     if (k == SB_KEY_OTHER)
         leave_scrollback();
+
+    /* 1.1: Ctrl+C clears the line (at a question: answers no), Esc clears
+     * it, Tab completes a command name; Tab never reaches the line editor,
+     * so no tab character is typed. */
+    if ((e->flags & KEY_PRESSED) && e->keycode != KEY_TAB)
+        tab_armed = false;
+    if (is_ctrl_c(e)) {
+        ctrl_c_line();
+        return;
+    }
+    if (e->keycode == KEY_ESC && (e->flags & KEY_PRESSED) && !(e->flags & (KEY_CTRL | KEY_ALT))) {
+        lineedit_reset(&input);
+        history_end_browse(&hist);
+        draw_input();
+        return;
+    }
+    if (e->keycode == KEY_TAB) {
+        if ((e->flags & KEY_PRESSED) && !(e->flags & (KEY_CTRL | KEY_ALT)))
+            tab_key();
+        return;
+    }
 
     if ((e->keycode == KEY_UP || e->keycode == KEY_DOWN) && (e->flags & KEY_PRESSED)
         && !(e->flags & (KEY_CTRL | KEY_ALT)) && !confirming) {

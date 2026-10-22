@@ -419,4 +419,35 @@ bool shell_reboot_confirmed(const char *answer);
 enum shell_result shell_execute(char *line, const struct shell_context *c,
                                 const struct shell_output *o);
 
+/*
+ * 1.1: Tab completion of command names (the console's Tab key). The names
+ * are the built-in commands the context offers, from the same tables and
+ * conditions as the command lookup (the file commands only with files);
+ * aliases are not completed.
+ */
+#define SHELL_COMPLETE_ADD_MAX  16          /* characters one Tab may type */
+#define SHELL_COMPLETE_WIDTH    79          /* a line of the match list fills 79 columns */
+
+struct shell_completion {
+    uint32_t count;                         /* the names that start with the prefix */
+    bool no_room;                           /* something to add, but it does not fit */
+    char add[SHELL_COMPLETE_ADD_MAX + 1];   /* what Tab types; "" for nothing */
+};
+
+/* The completion of `prefix` over names[0..n-1] (any order, no duplicates),
+ * with room for `room` more characters on the line: one match -> the rest
+ * of its name and a space; several -> what they all share past the prefix
+ * (the longest common prefix). add is "" when there is no match, nothing to
+ * add, or it does not fit in `room` (no_room; nothing is typed then). When
+ * `list` is set and there are several matches, they are written to it in
+ * byte order, two spaces apart, a line filling while the next name still
+ * fits in SHELL_COMPLETE_WIDTH columns. Pure: for the unit tests. */
+void shell_complete_names(const char *const *names, uint32_t n, const char *prefix, uint32_t room,
+                          struct shell_completion *out, const struct shell_output *list);
+
+/* The same over the commands the context offers. Its name list is static:
+ * one caller at a time (the console, thread 0). */
+void shell_complete(const struct shell_context *c, const char *prefix, uint32_t room,
+                    struct shell_completion *out, const struct shell_output *list);
+
 #endif

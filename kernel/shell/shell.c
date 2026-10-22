@@ -2804,3 +2804,84 @@ enum shell_result shell_execute(char *line, const struct shell_context *c,
         shell_redirect_end();
     return r;
 }
+
+/* ---- 1.1: Tab completion of command names ---- */
+
+static bool starts_with(const char *s, const char *prefix)
+{
+    while (*prefix)
+        if (*s++ != *prefix++)
+            return false;
+    return true;
+}
+
+void shell_complete_names(const char *const *names, uint32_t n, const char *prefix, uint32_t room,
+                          struct shell_completion *out, const struct shell_output *list)
+{
+    uint32_t plen = str_len(prefix), common = 0;
+    const char *first = 0;
+    out->count = 0;
+    out->no_room = false;
+    out->add[0] = '\0';
+    for (uint32_t i = 0; i < n; i++) {
+        if (!starts_with(names[i], prefix))
+            continue;
+        if (!first) {
+            first = names[i];
+            common = str_len(first);
+        } else {
+            uint32_t k = plen;
+            while (k < common && names[i][k] == first[k])
+                k++;
+            common = k;
+        }
+        out->count++;
+    }
+    if (out->count == 0)
+        return;
+
+    uint32_t add = common - plen + (out->count == 1 ? 1 : 0);  /* one match: and a space */
+    if (add > room || add > SHELL_COMPLETE_ADD_MAX) {
+        out->no_room = true;
+    } else if (add) {
+        for (uint32_t k = 0; k < common - plen; k++)
+            out->add[k] = first[plen + k];
+        if (out->count == 1)
+            out->add[add - 1] = ' ';
+        out->add[add] = '\0';
+    }
+
+    if (!list || out->count < 2)
+        return;
+    /* The matches in byte order: each pass takes the smallest one after the
+     * last written (no sort buffer). */
+    struct line l;
+    const char *last = 0;
+    l_reset(&l);
+    for (uint32_t written = 0; written < out->count; written++) {
+        const char *next = 0;
+        for (uint32_t i = 0; i < n; i++)
+            if (starts_with(names[i], prefix) && (!last || str_cmp(names[i], last) > 0) &&
+                (!next || str_cmp(names[i], next) < 0))
+                next = names[i];
+        if (l.n && l.n + 2 + str_len(next) > SHELL_COMPLETE_WIDTH)
+            emit(list, &l, SHELL_TEXT);
+        if (l.n)
+            l_str(&l, "  ");
+        l_str(&l, next);
+        last = next;
+    }
+    if (l.n)
+        emit(list, &l, SHELL_TEXT);
+}
+
+void shell_complete(const struct shell_context *c, const char *prefix, uint32_t room,
+                    struct shell_completion *out, const struct shell_output *list)
+{
+    static const struct command *cmds[OFFERED_MAX];
+    static const char *names[OFFERED_MAX];
+    uint32_t n = offered(c, cmds);
+    for (uint32_t i = 0; i < n; i++)
+        names[i] = cmds[i]->name;
+    shell_complete_names(names, n, prefix, room, out, list);
+}
