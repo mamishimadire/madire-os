@@ -8,7 +8,8 @@
 # temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
 # adds the [1.0] filesystem checks of the normal boot at the end; stage 2
 # the data budget and the self-test's data step after them. 1.1 stage 5
-# adds a report-only trace probe at the end.
+# adds a report-only trace probe at the end. 1.2 stage 3 adds the probes
+# (report only) at the end.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1567,3 +1568,91 @@ expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
     '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
 reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
     "[1.1] console keys boot: no panic, nothing dropped, no light failure"
+
+# ---- 1.2 stage 3: the probes (report only; they decide no check) ----
+
+echo "== Probes (1.2 stage 3; report only, decides no check)"
+# docs/plans/1.2.md, stage 3 (probes a-e and g; f is VirtualBox only). The
+# probe kernel (make probe: build/probe/madire.kernel, boot/boot.asm with
+# -DPROBE) asks for a video mode in its Multiboot header and logs what it
+# is given ("probe: " lines). tests/probe-iso.sh makes one ISO per case,
+# that case first (booted with no key); tests/probe_fb.py classes a
+# screendump every 250 ms (size, blank, the menu's header box) and sends
+# the mouse events once the probe polls the aux port. Every line here
+# starts with PROBE; none is a PASS or FAIL line. The logs stay in
+# $OUT/probe-run/, not serial-*.log, so part final's boot figures are
+# unchanged; no boot here prints BOOT_SECONDS.
+PROBE_T0=$(date +%s)
+PRUN=$OUT/probe-run
+rm -rf "$PRUN" && mkdir -p "$PRUN"
+PKERNEL=$OUT/probe/madire.kernel
+PROBEFB=$(dirname "$0")/probe_fb.py
+PWP=$OUT/wallpaper.png
+# probe_boot <name> <until text> <qemu args...>: QEMU paused with a QMP
+# socket, tests/probe_fb.py watch until <until text> is logged (the mouse
+# events once "probe: aux ready" is), then QEMU stopped. Prints the
+# watcher's lines, the probe's serial lines and QEMU's stderr.
+probe_boot() {
+    local name=$1 until=$2 log=$PRUN/$1.log sock=$PRUN/qmp.sock t0 qpid
+    shift 2
+    rm -f "$log" "$sock"
+    t0=$(date +%s)
+    timeout 150 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off "$@" > /dev/null 2> "$PRUN/$name.stderr" &
+    qpid=$!
+    python3 "$PROBEFB" watch "$sock" "$log" --until "$until" --wallpaper "$PWP" \
+        --layout "$PRUN/layout.json" --mouse-after "probe: aux ready" > "$PRUN/$name.watch.txt" 2>&1
+    sleep 0.5
+    kill "$qpid" 2> /dev/null
+    wait "$qpid" 2> /dev/null
+    [ -f "$log" ] || : > "$log"
+    sed "s/^/PROBE $name: /" "$PRUN/$name.watch.txt"
+    grep -a '^probe: ' "$log" | sed "s/^/PROBE $name serial: /"
+    sed "s/^/PROBE $name stderr: /" "$PRUN/$name.stderr"
+    echo "PROBE $name: $(( $(date +%s) - t0 )) s"
+}
+if [ ! -s "$PKERNEL" ]; then
+    echo "PROBE no probe kernel (make probe failed or did not run; see $OUT/probe.log)"
+else
+    echo "PROBE kernels: probe $(sha256sum < "$PKERNEL" | cut -d' ' -f1), real $(sha256sum < "$KERNEL" | cut -d' ' -f1)"
+    python3 "$(dirname "$0")/../scripts/check-multiboot.py" "$PKERNEL" 2>&1 | sed 's/^/PROBE check-multiboot.py: /'
+    python3 "$(dirname "$0")/../scripts/make-wallpaper.py" "$PRUN/wallpaper-layout.png" --version "$VERSION" \
+        --layout-json "$PRUN/layout.json" > /dev/null 2>&1
+    echo "PROBE layout: $(tr -d ' \n' < "$PRUN/layout.json" 2> /dev/null)"
+    # a, c, e, g: the seven cases, each booted with no key (QEMU's std-vga);
+    # case 2 (textmode: yes) runs to System ready, so its text shows.
+    for c in 1 2 3 4 5 6 7; do
+        sh "$(dirname "$0")/probe-iso.sh" "$OUT" "$c" "$PRUN/case$c.iso" 2>&1 | sed 's/^/PROBE /'
+        if [ "$c" = 2 ]; then u="System ready."; else u="probe: done"; fi
+        probe_boot "case$c" "$u" -cdrom "$PRUN/case$c.iso"
+    done
+    # b and g with the menu shown: Home until Limine's menu shows (case 1's
+    # ISO), a shot compared with the wallpaper (qmp_menu.py's header count:
+    # 0 = the header box equals wallpaper.png), then Down, Enter boots case 2
+    # (textmode: yes) from the shown menu.
+    PLOG=$PRUN/menu.log
+    rm -f "$PLOG" "$PRUN/qmp.sock"
+    timeout 150 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$PLOG" \
+        -qmp unix:"$PRUN/qmp.sock",server=on,wait=off -cdrom "$PRUN/case1.iso" > /dev/null 2>&1 &
+    qpid=$!
+    python3 "$(dirname "$0")/qmp_menu.py" menu "$PRUN/qmp.sock" "$PLOG" "$PWP" "$PRUN/layout.json" \
+        hold:1 shot:menu down ret 'until:System ready.' hold:1 --shots "$PRUN" > "$PRUN/menu.watch.txt" 2>&1
+    sed 's/^/PROBE menu: /' "$PRUN/menu.watch.txt"
+    sleep 0.5
+    kill "$qpid" 2> /dev/null
+    wait "$qpid" 2> /dev/null
+    [ -f "$PLOG" ] || : > "$PLOG"
+    grep -a '^probe: ' "$PLOG" | sed 's/^/PROBE menu serial: /'
+    # d and e under -kernel: QEMU's own Multiboot loader.
+    probe_boot kernel "probe: done" -kernel "$PKERNEL" -append "probeaux"
+    # One line per boot: the mode asked for, the mode given, the screen 1 s
+    # after the until text.
+    for n in case1 case2 case3 case4 case5 case6 case7 menu kernel; do
+        req=$(sed -n 's/^probe: header requests mode_type [0-9]*, width \([0-9]*\), height \([0-9]*\), depth \([0-9]*\)$/\1x\2x\3/p' "$PRUN/$n.log" | tail -1)
+        got=$(sed -n 's/^probe: framebuffer (flags bit 12): address \(0x[0-9a-f]*\), pitch \([0-9]*\), width \([0-9]*\), height \([0-9]*\), bpp \([0-9]*\), type \([0-9]*\)$/\3x\4x\5 type \6, pitch \2, at \1/p' "$PRUN/$n.log" | tail -1)
+        scr=$(sed -n 's/^FINAL 1 s later: size=\([0-9x]*\) .*/\1/p' "$PRUN/$n.watch.txt" 2> /dev/null)
+        [ "$n" = menu ] && scr=$(sed -n 's/^HOLD 1 s: serial [0-9]* bytes, screen \([0-9x]*\)$/\1/p' "$PRUN/menu.watch.txt" | tail -1)
+        echo "PROBE_MODE $n: requested ${req:-none logged}; given ${got:-no framebuffer fields}; screen after ${scr:-unknown}"
+    done
+fi
+echo "PROBE section: $(( $(date +%s) - PROBE_T0 )) s"

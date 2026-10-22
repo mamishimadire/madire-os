@@ -61,6 +61,18 @@ $(BUILD)/kpad.o:
 	$(AS) $(ASFLAGS) $(BUILD)/kpad.asm -o $@
 endif
 
+# 1.2 stage 3: the probe kernel. PROBE=1 assembles boot/boot.asm with
+# -DPROBE (a video request in the Multiboot header and the probe's report,
+# docs/plans/1.2.md stage 3). Like KERNEL_PAD it builds only into its own
+# BUILD directory (make probe: build/probe), so the real kernel, the ISO and
+# make repro never see it.
+ifneq ($(PROBE),)
+ifeq ($(BUILD),build)
+$(error PROBE builds a test-only kernel: give it its own BUILD directory (make probe builds build/probe))
+endif
+ASFLAGS += -DPROBE
+endif
+
 # Host unit tests: kernel modules with no hardware access, built as ordinary
 # 64-bit Linux programs (0.7: the kernel's integer and pointer sizes).
 # Non-PIE and linked at 256 MiB: the memory tests pass the addresses of their
@@ -83,7 +95,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck repro padkernel probe probe-iso clean
 
 all: $(KERNEL)
 
@@ -276,17 +288,37 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+# 1.2 stage 3: the probe kernel in build/probe, for the report-only probe
+# section of tests/qemu-part-1.sh; probe-iso also makes the probe ISO for
+# the VirtualBox probe (scripts/vbox-probe.ps1; never acceptance evidence).
+# A failed build is reported and leaves no kernel there.
+PROBE_BUILD := $(BUILD)/probe
+probe:
+	@echo "PROBE_REFUSAL (make -n PROBE=1, the default BUILD; a dry run): $$($(MAKE) -n PROBE=1 BUILD=build all 2>&1 | grep -m1 'PROBE' || echo 'NOT REFUSED')"
+	@rm -rf $(PROBE_BUILD)
+	@start=$$(date +%s); \
+	if $(MAKE) -s BUILD=$(PROBE_BUILD) PROBE=1 all > $(BUILD)/probe.log 2>&1; \
+	then echo "PROBE_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
+	else echo "PROBE_BUILD=FAILED (see $(BUILD)/probe.log)"; rm -f $(PROBE_BUILD)/madire.kernel; fi
+
+probe-iso: probe $(BUILD)/limine.conf $(BUILD)/wallpaper.png
+	sh tests/probe-iso.sh $(BUILD) 1 $(PROBE_BUILD)/madire-probe.iso
+	python3 scripts/make-wallpaper.py $(PROBE_BUILD)/wallpaper-layout.png --version $(MADIRE_VERSION) \
+	    --layout-json $(PROBE_BUILD)/layout.json
+	sha256sum $(PROBE_BUILD)/madire-probe.iso $(PROBE_BUILD)/madire.kernel $(BUILD)/wallpaper.png
+
+test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel probe
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
 # the parts: bash tests/qemu-tests.sh --list-parts), for the parallel jobs
 # of .github/workflows/regression.yml. The unit tests and make repro run
 # only with SHARD=static, so a sharded run runs them once; the padded test
-# kernel (1.0) is built only for part 4, which boots it.
+# kernel (1.0) is built only for part 4, which boots it; the probe kernel
+# (1.2 stage 3) only for part 1.
 SHARD ?= static
 test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro) \
-            $(if $(filter 4,$(SHARD)),padkernel)
+            $(if $(filter 4,$(SHARD)),padkernel) $(if $(filter 1,$(SHARD)),probe)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)

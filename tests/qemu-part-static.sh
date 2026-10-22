@@ -9,7 +9,8 @@
 # the 0.13 report's comparison with v0.12's kernel (decided no check) removed.
 # 1.1 stage 1: the default entry's title is "Boot Madire OS" (C1), and the
 # [1.1] checks of the boot menu's global options and its wallpaper (S1-S3)
-# are added at the end. 1.2 stage 2: the size report (no check) at the end.
+# are added at the end. 1.2 stage 2: the size report (no check) at the end;
+# stage 3 labels its lines shipped or test-only.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -231,8 +232,15 @@ echo "== Size report (1.2 stage 2; report only)"
 # program ELF, and the kernel margin below 4 MiB (computed as the workflow
 # does) against the 524,288-byte trigger for a size-gate stage. Every line
 # starts with SIZE or KERNEL_MARGIN_TRIGGER, so tests/combine-shards.sh can
-# repeat them; none is a PASS or FAIL line.
-(cd "$OUT" && size madire.elf user/*.elf test-user/*.elf 2>&1) | sed 's/^/SIZE /'
+# repeat them; none is a PASS or FAIL line. 1.2 stage 3: each file's line
+# ends with its label: "shipped" (madire.elf, and every user/*.elf, which
+# the kernel links as a built-in program) or "test-only" (test-user/*.elf,
+# never in the kernel or the ISO).
+(cd "$OUT" && size madire.elf user/*.elf test-user/*.elf 2>&1) |
+    awk '$NF == "filename" { print $0 "\tlabel"; next }
+         $NF == "madire.elf" || $NF ~ /^user\// { print $0 "\tshipped"; next }
+         $NF ~ /^test-user\// { print $0 "\ttest-only"; next }
+         { print }' | sed 's/^/SIZE /'
 KEND=$(nm -n "$OUT/madire.elf" 2>/dev/null | awk '$3 == "__kernel_end" { print $1; exit }')
 if [ -n "$KEND" ]; then
     KMARGIN=$(( 0x400000 - (0x$KEND - 0xffffffff80000000) ))

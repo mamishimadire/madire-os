@@ -31,7 +31,13 @@ KERNEL_VIRT_OFFSET equ 0xFFFFFFFF80000000   ; = VM_KERNEL_VIRT_OFFSET
 MB_ALIGN    equ 1 << 0              ; align loaded modules on page boundaries
 MB_MEMINFO  equ 1 << 1              ; ask the loader for a memory map
 MB_AOUT     equ 1 << 16             ; the load addresses below are valid
+%ifdef PROBE
+; 1.2 stage 3: the probe kernel (make probe) also asks for a video mode.
+MB_VIDEO    equ 1 << 2
+MB_FLAGS    equ MB_ALIGN | MB_MEMINFO | MB_VIDEO | MB_AOUT
+%else
 MB_FLAGS    equ MB_ALIGN | MB_MEMINFO | MB_AOUT
+%endif
 MB_MAGIC    equ 0x1BADB002
 MB_CHECKSUM equ -(MB_MAGIC + MB_FLAGS)
 
@@ -56,6 +62,12 @@ mb_header:
     dd __data_end_phys              ; load_end_addr: the file ends here
     dd __kernel_end_phys            ; bss_end_addr: ALL of .bss (tables, stacks)
     dd _start                       ; entry_addr
+%ifdef PROBE
+    dd 0                            ; mode_type: linear framebuffer
+    dd 1280                         ; width (tests/probe_fb.py patch rewrites
+    dd 800                          ; height  these three for the probe's
+    dd 32                           ; depth   other modes)
+%endif
 
 ; ---- 32-bit stub ----
 section .boot32
@@ -76,9 +88,15 @@ _start:
     xor eax, eax
     rep stosd
 
+%ifdef PROBE
+    call probe_delay                ; before the first serial byte
+%endif
     call serial_init
     mov esi, msg_start
     call serial_puts
+%ifdef PROBE
+    call probe_report
+%endif
 
     ; CPUID present? Only CPUs with CPUID let EFLAGS.ID (bit 21) change.
     pushfd
@@ -230,6 +248,498 @@ serial_puts:
     jmp .next
 .done:
     ret
+
+%ifdef PROBE
+; ---- 1.2 stage 3: the probe (test-only; docs/plans/1.2.md, stage 3) ----
+; Assembled only with -DPROBE, into its own BUILD directory (make probe):
+; the real kernel contains none of it. The header asks for a linear
+; framebuffer (flag bit 2). With "probedelay" on the command line the stub
+; waits 4-5 s before its first serial byte, so the screen Limine leaves
+; between its mode set and the kernel's first byte can be captured. After
+; "boot32: start" it reports the header's request and the Multiboot
+; information's video fields; with "probeaux" it also enables the i8042's
+; aux port (the PS/2 mouse), reports every byte it reads for about 10 s,
+; and disables the port again. Every line starts with "probe: ".
+
+; Prints the text (NUL added), then carries on after it.
+%macro PROBE_SAY 1+
+    jmp %%skip
+%%text: db %1, 0
+%%skip:
+    mov esi, %%text
+    call serial_puts
+%endmacro
+
+probe_w_delay: db "probedelay", 0
+probe_w_aux:   db "probeaux", 0
+
+; With "probedelay": five changes of the RTC's seconds (4-5 s).
+probe_delay:
+    mov esi, probe_w_delay
+    call probe_has
+    test eax, eax
+    jz .done
+    mov ecx, 5
+    call probe_rtc_wait
+.done:
+    ret
+
+; esi = word; eax = 1 if the Multiboot command line contains it, else 0.
+probe_has:
+    push ebx
+    push ecx
+    push edi
+    xor eax, eax
+    mov ebx, [boot_info - KERNEL_VIRT_OFFSET]
+    test dword [ebx], 1 << 2        ; information flag 2: cmdline valid
+    jz .done
+    mov edi, [ebx + 16]
+.scan:
+    xor ecx, ecx
+.cmp:
+    mov al, [esi + ecx]
+    test al, al
+    jz .found
+    cmp al, [edi + ecx]
+    jne .next
+    inc ecx
+    jmp .cmp
+.next:
+    cmp byte [edi], 0
+    je .none
+    inc edi
+    jmp .scan
+.found:
+    mov eax, 1
+    jmp .done
+.none:
+    xor eax, eax
+.done:
+    pop edi
+    pop ecx
+    pop ebx
+    ret
+
+; al = the RTC's seconds (CMOS register 0; the NMI bit left clear).
+probe_rtc_sec:
+    mov al, 0
+    out 0x70, al
+    in al, 0x71
+    ret
+
+; ecx = changes of the RTC's seconds to wait for; at most 0x4000000 reads
+; in all, so a stopped RTC can't hang the probe.
+probe_rtc_wait:
+    push ebx
+    push edi
+    mov edi, 0x4000000
+    call probe_rtc_sec
+    mov bl, al
+.poll:
+    dec edi
+    jz .out
+    call probe_rtc_sec
+    cmp al, bl
+    je .poll
+    mov bl, al
+    dec ecx
+    jnz .poll
+.out:
+    pop edi
+    pop ebx
+    ret
+
+; al = character, to COM1.
+probe_putc:
+    push eax
+    push edx
+    mov ah, al
+.wait:
+    mov dx, COM1 + 5
+    in al, dx
+    test al, 0x20
+    jz .wait
+    mov al, ah
+    mov dx, COM1
+    out dx, al
+    pop edx
+    pop eax
+    ret
+
+; eax = value, ecx = number of hex digits (the low ones): "0x" and the
+; digits (probe_digits: the digits only).
+probe_hex:
+    push eax
+    mov al, '0'
+    call probe_putc
+    mov al, 'x'
+    call probe_putc
+    pop eax
+probe_digits:
+    pushad
+    mov ebx, eax
+    lea eax, [ecx * 4]
+    neg eax
+    add eax, 32
+    xchg eax, ecx                   ; ecx = 32 - 4 x digits, eax = digits
+    rol ebx, cl                     ; the first digit wanted at the top
+    mov ecx, eax
+.digit:
+    rol ebx, 4
+    mov eax, ebx
+    and eax, 15
+    cmp al, 10
+    jb .num
+    add al, 'a' - 10 - '0'
+.num:
+    add al, '0'
+    call probe_putc
+    loop .digit
+    popad
+    ret
+
+; eax = value, in decimal.
+probe_dec:
+    pushad
+    mov ebx, 10
+    xor ecx, ecx
+.div:
+    xor edx, edx
+    div ebx
+    push edx
+    inc ecx
+    test eax, eax
+    jnz .div
+.out:
+    pop eax
+    add al, '0'
+    call probe_putc
+    loop .out
+    popad
+    ret
+
+; The header's request and the Multiboot information's video fields, then
+; the aux port (with "probeaux"), then "probe: done".
+probe_report:
+    pushad
+    PROBE_SAY "probe: header requests mode_type "
+    mov eax, [mb_header + 32]
+    call probe_dec
+    PROBE_SAY ", width "
+    mov eax, [mb_header + 36]
+    call probe_dec
+    PROBE_SAY ", height "
+    mov eax, [mb_header + 40]
+    call probe_dec
+    PROBE_SAY ", depth "
+    mov eax, [mb_header + 44]
+    call probe_dec
+    PROBE_SAY 10
+    mov ebx, [boot_info - KERNEL_VIRT_OFFSET]
+    PROBE_SAY "probe: Multiboot information at "
+    mov eax, ebx
+    mov ecx, 8
+    call probe_hex
+    PROBE_SAY ", flags "
+    mov eax, [ebx]
+    mov ecx, 8
+    call probe_hex
+    PROBE_SAY 10
+    test dword [ebx], 1 << 9        ; boot_loader_name
+    jz .vbe
+    PROBE_SAY "probe: boot loader name: "
+    mov esi, [ebx + 64]
+    call serial_puts
+    PROBE_SAY 10
+.vbe:
+    test dword [ebx], 1 << 11       ; the VBE fields
+    jnz .vbe_fields
+    PROBE_SAY "probe: VBE fields: none (flags bit 11 clear)", 10
+    jmp .fb
+.vbe_fields:
+    PROBE_SAY "probe: VBE fields (flags bit 11): control info "
+    mov eax, [ebx + 72]
+    mov ecx, 8
+    call probe_hex
+    PROBE_SAY ", mode info "
+    mov eax, [ebx + 76]
+    mov ecx, 8
+    call probe_hex
+    PROBE_SAY ", mode "
+    movzx eax, word [ebx + 80]
+    mov ecx, 4
+    call probe_hex
+    PROBE_SAY ", interface segment "
+    movzx eax, word [ebx + 82]
+    mov ecx, 4
+    call probe_hex
+    PROBE_SAY " offset "
+    movzx eax, word [ebx + 84]
+    mov ecx, 4
+    call probe_hex
+    PROBE_SAY " length "
+    movzx eax, word [ebx + 86]
+    mov ecx, 4
+    call probe_hex
+    PROBE_SAY 10
+.fb:
+    test dword [ebx], 1 << 12       ; the framebuffer fields
+    jnz .fb_fields
+    PROBE_SAY "probe: framebuffer fields: none (flags bit 12 clear)", 10
+    jmp .aux
+.fb_fields:
+    PROBE_SAY "probe: framebuffer (flags bit 12): address "
+    mov eax, [ebx + 92]
+    mov ecx, 8
+    call probe_hex
+    mov eax, [ebx + 88]
+    mov ecx, 8
+    call probe_digits
+    PROBE_SAY ", pitch "
+    mov eax, [ebx + 96]
+    call probe_dec
+    PROBE_SAY ", width "
+    mov eax, [ebx + 100]
+    call probe_dec
+    PROBE_SAY ", height "
+    mov eax, [ebx + 104]
+    call probe_dec
+    PROBE_SAY ", bpp "
+    movzx eax, byte [ebx + 108]
+    call probe_dec
+    PROBE_SAY ", type "
+    movzx eax, byte [ebx + 109]
+    call probe_dec
+    PROBE_SAY 10
+    cmp byte [ebx + 109], 1         ; direct RGB: the colour fields
+    jne .palette
+    PROBE_SAY "probe: colour fields: red at bit "
+    movzx eax, byte [ebx + 110]
+    call probe_dec
+    PROBE_SAY " size "
+    movzx eax, byte [ebx + 111]
+    call probe_dec
+    PROBE_SAY ", green at bit "
+    movzx eax, byte [ebx + 112]
+    call probe_dec
+    PROBE_SAY " size "
+    movzx eax, byte [ebx + 113]
+    call probe_dec
+    PROBE_SAY ", blue at bit "
+    movzx eax, byte [ebx + 114]
+    call probe_dec
+    PROBE_SAY " size "
+    movzx eax, byte [ebx + 115]
+    call probe_dec
+    PROBE_SAY 10
+    jmp .aux
+.palette:
+    cmp byte [ebx + 109], 0         ; indexed: the palette
+    jne .aux
+    PROBE_SAY "probe: palette at "
+    mov eax, [ebx + 110]
+    mov ecx, 8
+    call probe_hex
+    PROBE_SAY ", "
+    movzx eax, word [ebx + 114]
+    call probe_dec
+    PROBE_SAY " colours", 10
+.aux:
+    call probe_aux
+    PROBE_SAY "probe: done", 10
+    popad
+    ret
+
+; dx = port (0x60 or 0x64), al = byte: written once the controller's
+; input buffer is empty (a bounded wait).
+probe_kbc_write:
+    push ecx
+    push eax
+    mov ecx, 0x100000
+.wait:
+    in al, 0x64
+    test al, 2
+    jz .ready
+    loop .wait
+.ready:
+    pop eax
+    out dx, al
+    pop ecx
+    ret
+
+; eax = the next byte from the controller (bits 0-7) and the status it
+; came with (bits 8-15); bit 31 set if none came within a bounded wait.
+probe_kbc_read:
+    push ecx
+    mov ecx, 0x400000
+.wait:
+    in al, 0x64
+    test al, 1
+    jnz .full
+    loop .wait
+    mov eax, 0x80000000
+    pop ecx
+    ret
+.full:
+    movzx eax, al
+    shl eax, 8
+    in al, 0x60
+    pop ecx
+    ret
+
+; eax as probe_kbc_read returns it: "0xBB (status 0xSS, aux)" or
+; "... keyboard)" by status bit 5, or "none".
+probe_kbc_show:
+    pushad
+    test eax, eax
+    jns .byte
+    PROBE_SAY "none"
+    jmp .done
+.byte:
+    mov ebx, eax
+    mov ecx, 2
+    call probe_hex
+    PROBE_SAY " (status "
+    mov eax, ebx
+    shr eax, 8
+    mov ecx, 2
+    call probe_hex
+    test bh, 0x20
+    jz .kbd
+    PROBE_SAY ", aux)"
+    jmp .done
+.kbd:
+    PROBE_SAY ", keyboard)"
+.done:
+    popad
+    ret
+
+; Drops what the controller holds (at most 32 bytes) and says how many.
+probe_kbc_flush:
+    push ecx
+    push edi
+    xor edi, edi
+    mov ecx, 32
+.next:
+    in al, 0x64
+    test al, 1
+    jz .done
+    in al, 0x60
+    inc edi
+    loop .next
+.done:
+    PROBE_SAY "probe: aux: flushed "
+    mov eax, edi
+    call probe_dec
+    PROBE_SAY " bytes", 10
+    pop edi
+    pop ecx
+    ret
+
+; With "probeaux": the aux port enabled, the mouse's data reporting on,
+; every byte read for 10 changes of the RTC's seconds (the first 96
+; printed; a line each second, so the stall watch never sees silence),
+; then reporting off and the port disabled again.
+probe_aux:
+    mov esi, probe_w_aux
+    call probe_has
+    test eax, eax
+    jnz .run
+    ret
+.run:
+    call probe_kbc_flush
+    mov dx, 0x64
+    mov al, 0x20                    ; read the configuration byte
+    call probe_kbc_write
+    call probe_kbc_read
+    push eax
+    PROBE_SAY "probe: aux: configuration byte "
+    pop eax
+    call probe_kbc_show
+    PROBE_SAY 10
+    mov dx, 0x64
+    mov al, 0xA8                    ; enable the aux port
+    call probe_kbc_write
+    mov dx, 0x64
+    mov al, 0xD4                    ; the next data byte goes to the aux device
+    call probe_kbc_write
+    mov dx, 0x60
+    mov al, 0xF4                    ; mouse: enable data reporting
+    call probe_kbc_write
+    call probe_kbc_read
+    push eax
+    PROBE_SAY "probe: aux: reply to 0xF4: "
+    pop eax
+    call probe_kbc_show
+    PROBE_SAY 10
+    PROBE_SAY "probe: aux ready: polling the controller for 10 s (move the mouse now)", 10
+    xor edi, edi                    ; bytes read
+    xor ebp, ebp                    ; of them with the aux bit
+    push dword 0x4000000            ; the bound on status reads
+    call probe_rtc_sec
+    mov bl, al
+    mov ecx, 10                     ; changes of the RTC's seconds to go
+.poll:
+    in al, 0x64
+    test al, 1
+    jz .idle
+    mov ah, al
+    in al, 0x60
+    movzx eax, ax
+    inc edi
+    test ah, 0x20
+    jz .count
+    inc ebp
+.count:
+    cmp edi, 96
+    ja .idle
+    push eax
+    PROBE_SAY "probe: aux: byte "
+    pop eax
+    call probe_kbc_show
+    PROBE_SAY 10
+.idle:
+    call probe_rtc_sec
+    cmp al, bl
+    je .next
+    mov bl, al
+    PROBE_SAY "probe: aux: polling, "
+    mov eax, edi
+    call probe_dec
+    PROBE_SAY " bytes so far", 10
+    dec ecx
+    jz .end
+.next:
+    dec dword [esp]
+    jnz .poll
+.end:
+    add esp, 4
+    PROBE_SAY "probe: aux: "
+    mov eax, edi
+    call probe_dec
+    PROBE_SAY " bytes in 10 s, "
+    mov eax, ebp
+    call probe_dec
+    PROBE_SAY " with the aux bit (status bit 5)", 10
+    mov dx, 0x64
+    mov al, 0xD4
+    call probe_kbc_write
+    mov dx, 0x60
+    mov al, 0xF5                    ; mouse: disable data reporting
+    call probe_kbc_write
+    call probe_kbc_read
+    push eax
+    PROBE_SAY "probe: aux: reply to 0xF5: "
+    pop eax
+    call probe_kbc_show
+    PROBE_SAY 10
+    mov dx, 0x64
+    mov al, 0xA7                    ; disable the aux port
+    call probe_kbc_write
+    call probe_kbc_flush
+    PROBE_SAY "probe: aux: port disabled again (0xA7)", 10
+    ret
+%endif
 
 ; 64-bit, still at the load address: jump to the kernel's high address.
 bits 64
