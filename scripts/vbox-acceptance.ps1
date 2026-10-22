@@ -280,6 +280,16 @@ function Start-Diag([string]$test) {
     $script:DiagBooted[$test] = $Diag[$test]
 }
 
+# 1.1 (stage 9): VBoxManage debugvm <vm> info ps2k (read only), and the light
+# byte of its "LED state XX" line ("none" if there is no such line).
+function Get-Ps2k {
+    try { return @(VBox debugvm $VM info ps2k) } catch { return @("debugvm failed: $_") }
+}
+function Get-Ps2kLeds([string[]]$lines) {
+    $m = [regex]::Match(($lines -join "`n"), 'LED state ([0-9A-Fa-f]{2})')
+    if ($m.Success) { return $m.Groups[1].Value.ToUpper() } else { return "none" }
+}
+
 function Want([string]$group) { return ($Only.Count -eq 0) -or ($Only -contains $group) }
 
 $halted = "System halted\. Power off the machine\."
@@ -328,7 +338,29 @@ if (Want "boot") {
           $(if ($ready -and -not $wide) { "OK" } else { "MISSING" }))
     Start-Sleep -Seconds 1
     Shot "boot"
+    # 1.1 (stage 9): VirtualBox's own view of its PS/2 keyboard (debugvm info
+    # only reads the device's state), printed as a report-only line. The
+    # light rows read its "LED state XX" line (the PS/2 light byte: bit 0
+    # Scroll Lock, bit 1 Num Lock, bit 2 Caps Lock), so they depend on that
+    # output format of VirtualBox.
+    $ps2k = Get-Ps2k
+    Note ("ps2k (report only): {0}" -f (($ps2k | Where-Object { "$_".Trim() }) -join " | "))
+    Note ("{0,-16} {1,-8} /VirtualBox keyboard lights after boot: Num Lock on, Caps Lock and Scroll Lock off/" -f "lights",
+          $(if ((Get-Ps2kLeds $ps2k) -eq "02") { "OK" } else { "MISSING" }))
     Key 39 b9; Start-Sleep -Seconds 1      # opens the console (not typed)
+    # Caps Lock: the kernel sends the lights from its idle loop after the
+    # key, so the state is read every 200 ms for at most 2 s until it is 06.
+    Key 3a ba
+    $until = (Get-Date).AddSeconds(2)
+    do {
+        Start-Sleep -Milliseconds 200
+        $ps2k = Get-Ps2k
+        $leds = Get-Ps2kLeds $ps2k
+    } while ($leds -ne "06" -and (Get-Date) -lt $until)
+    Note ("ps2k after Caps Lock (report only): {0}" -f (($ps2k | Where-Object { "$_".Trim() }) -join " | "))
+    Note ("{0,-16} {1,-8} /VirtualBox keyboard lights after Caps Lock: Num Lock on, Caps Lock on, Scroll Lock off/" -f "lights",
+          $(if ($leds -eq "06") { "OK" } else { "MISSING" }))
+    Key 3a ba; Start-Sleep -Milliseconds 500      # Caps Lock off again before anything is typed
     TypeText "ps"; Enter
     TypeText "version"; Enter
     Start-Sleep -Seconds 1
@@ -340,7 +372,8 @@ if (Want "boot") {
     Stop-Run "boot-console" @("^Scheduler self-test: PASS", "^System ready\.", "^madire> ps$",
         "^  0  running .* kernel$", "^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$",
         "^Kernel stack: +[0-9]+ bytes at peak, of 16384$",
-        "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$")
+        "^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$",
+        "^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$")
     # 0.9.2: keys were typed (the console was opened and used), but key
     # events are not logged on a normal boot.
     $log = Join-Path $OutDir "$Prefix-boot-console.serial.log"
@@ -567,9 +600,11 @@ if (Want "diag") {
     Start-Diag "keyboard"
     Wait-Serial "^Keyboard test: ready" 40 | Out-Null
     TypeText "ab"; Key 2a 1e 9e aa; Key e0 48 e0 c8      # a, b, Shift+A, Up
+    Key 56 d6; Key 45 c5; Key 48 c8                      # 1.1: the ISO key, Num Lock off, keypad 8
     Start-Sleep -Seconds 1
     Shot "keyboard"
-    Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP")
+    Stop-Run "keyboard" @("^key: press .*ascii='a'", "^key: press .*ascii='A' flags=0x03", "^key: press .*key=UP",
+        "^key: press sc=0x56 key=CHAR ascii='\\'", "^key: press sc=0x48 key=UP ascii=none flags=0x01")
 }
 # 0.13: the four Diagnostics entries no other group boots (positions 1, 2, 10
 # and 11), so that every one of the 27 positions is booted through the boot
@@ -929,6 +964,20 @@ if (Want "shell") {
     Start-Sleep -Seconds 15
     Cmd "dmesg 5"
     Start-Sleep -Seconds 1; Shot "shell-dmesg-idle"
+
+    # 1.1 (stage 9): the console keys. Ctrl+C and Esc clear the line (the
+    # cleared text is never logged), Tab completes a command name, Caps Lock
+    # types exactly, and Ctrl+C at a yes/no question answers no.
+    TypeScan "echo secretvbox"; & $ctrlC
+    Expect @("^console: Ctrl\+C: line cleared$")
+    TypeScan "echo escvbox"; Key 01 81                   # Esc
+    Cmd "echo after-clear" @("^after-clear$")
+    TypeScan "his"; Key 0f 8f; Enter                     # Tab
+    Expect @("^madire> history $")
+    TypeScan "echo "; Key 3a ba; TypeScan "q"; Key 3a ba; TypeScan "r"; Enter   # Caps Lock around q
+    Expect @("^madire> echo Qr$", "^Qr$")
+    Cmd "reboot"; TypeScan "ye"; & $ctrlC
+    Expect @("^console: Ctrl\+C: answered no$", "^Restart cancelled\.$")
     Cmd "echo end-of-shell-test" @("^end-of-shell-test$")
     Wait-Serial "^end-of-shell-test$" 30 | Out-Null
     Stop-Run "shell" @("^System ready\.")
@@ -962,6 +1011,7 @@ if (Want "shell") {
     }
     Absent "shell" "^key: "
     Absent "shell" "PANIC|Screen output from thread|events dropped|Unexpected IRQ"
+    Absent "shell" "secretvbox|escvbox"
 }
 # 1.0 (stage 11): the file commands, typed as in the shell group, with the
 # same expected lines as the QEMU [1.0] file sessions: the Live label, pwd,
