@@ -43,6 +43,41 @@ ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
 C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
+# 1.2 stage 6: the console fonts, converted at build time from the pinned
+# BDF files in third_party/terminus/ (decision 8) by scripts/make-font.py
+# (Madire's own; it refuses a file whose SHA-256 is not the one SHA256SUMS
+# pins). Every size is generated in both weights (part static regenerates
+# and compares them); only the regular ones are linked so far (font.h).
+FONT_SIZES  := 8x16 10x20 12x24 16x32
+FONT_C      := $(foreach s,$(FONT_SIZES),$(BUILD)/font/font_$(s).c $(BUILD)/font/font_$(s)_bold.c)
+FONT_OBJS   := $(FONT_SIZES:%=$(BUILD)/font/font_%.o)
+FONT_SUMS   := third_party/terminus/SHA256SUMS
+OBJS        += $(FONT_OBJS)
+define font_rule
+$(BUILD)/font/font_$(1).c: third_party/terminus/ter-u$(2)n.bdf $(FONT_SUMS) scripts/make-font.py
+	@mkdir -p $$(dir $$@)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-font.py $$< $$@ font_$(1) --sums $(FONT_SUMS)
+$(BUILD)/font/font_$(1)_bold.c: third_party/terminus/ter-u$(2)b.bdf $(FONT_SUMS) scripts/make-font.py
+	@mkdir -p $$(dir $$@)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-font.py $$< $$@ font_$(1)_bold --sums $(FONT_SUMS)
+endef
+$(eval $(call font_rule,8x16,16))
+$(eval $(call font_rule,10x20,20))
+$(eval $(call font_rule,12x24,24))
+$(eval $(call font_rule,16x32,32))
+
+# 1.2 stage 8: the splash's generated data (kernel/logo.c's strokes and the
+# wordmark's polylines, in the kernel's fixed point) from
+# scripts/make-wallpaper.py, the one reference algorithm (never committed;
+# part static regenerates and compares it). Only wallpaper_core.c and the
+# host tools that include it read build/gen/.
+GEN := $(BUILD)/gen
+$(GEN)/splash_data.h: scripts/make-wallpaper.py
+	@mkdir -p $(dir $@)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-wallpaper.py --emit-c $@
+$(BUILD)/kernel/display/wallpaper_core.o: $(GEN)/splash_data.h
+$(BUILD)/kernel/display/wallpaper_core.o: CFLAGS += -I$(GEN)
+
 # 1.0 stage 1 (D1): a test-only kernel padded past 2 MiB. KERNEL_PAD=<n>[K|M]
 # links one more object, a .bss pad of that size, so the image ends that
 # much higher. It is never the shipped kernel: it builds only into its own
@@ -69,7 +104,7 @@ endif
 UNIT_CC      := gcc -m64 -no-pie -Wl,-Ttext-segment=0x10000000
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -fno-pie -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
-                            drivers/keyboard/scancode.c drivers/keyboard/ps2leds.c kernel/input/keyqueue.c \
+                            drivers/keyboard/scancode.c drivers/keyboard/ps2leds.c drivers/ps2/i8042.c kernel/input/keyqueue.c \
                             kernel/console/textbuf.c kernel/console/lineedit.c kernel/console/outq.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
@@ -83,7 +118,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump repro padkernel clean
 
 all: $(KERNEL)
 
@@ -95,11 +130,14 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
+$(BUILD)/font/%.o: $(BUILD)/font/%.c kernel/display/font.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # 0.10 stage 4: the built-in user programs (build/user/images.o, below)
 # are linked into the kernel, after its own objects.
 USER_IMAGES := $(BUILD)/user/images.o
 
-$(ELF): $(OBJS) $(USER_IMAGES) linker/linker.ld
+$(ELF): $(OBJS) $(USER_IMAGES) linker/linker.ld | $(FONT_C)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(USER_IMAGES)
 
 # The bootable image: the ELF's loaded sections as one flat binary starting
@@ -182,10 +220,11 @@ $(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 
 # 1.1: the boot menu's wallpaper (1024x768 PNG, Python standard library
 # only), with the M of kernel/logo.c and the version from kernel/kernel.h.
+# 1.2 stage 5b: no __pycache__/ in scripts/ (part of the files under test).
 $(BUILD)/wallpaper.png: scripts/make-wallpaper.py kernel/kernel.h kernel/logo.c
 	@mkdir -p $(BUILD)
 	@test -n "$(MADIRE_VERSION)" || { echo "cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1; }
-	python3 scripts/make-wallpaper.py $@ --version $(MADIRE_VERSION)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-wallpaper.py $@ --version $(MADIRE_VERSION)
 
 # 0.13: LIMINE_DIR holds the pinned package's BIOS files and notices, LIMINE
 # is its host tool (scripts/install-deps.sh installs both). "limine
@@ -197,14 +236,19 @@ $(BUILD)/wallpaper.png: scripts/make-wallpaper.py kernel/kernel.h kernel/logo.c
 # 1.0 (stage 0a): Madire's own LICENSE, NOTICE and THIRD_PARTY_NOTICES go to
 # the ISO root (Apache 2.0, section 4); Limine's stay in /boot/limine/.
 # 1.1: the boot menu's wallpaper goes to /boot/limine/wallpaper.png.
+# 1.2 stage 6: the kernel carries the console font (decision 8), so its
+# notices go to the ISO too: /THIRD_PARTY_ASSETS.md and the font's licence,
+# /third_party/terminus/OFL.txt (the repository's paths).
 LIMINE_DIR ?= /usr/local/share/limine
 LIMINE ?= limine
 ISO_EPOCH := 1791763200
-$(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES
+$(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES \
+        THIRD_PARTY_ASSETS.md third_party/terminus/OFL.txt
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
-	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog
-	cp LICENSE NOTICE THIRD_PARTY_NOTICES $(BUILD)/isodir/
+	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog $(BUILD)/isodir/third_party/terminus
+	cp LICENSE NOTICE THIRD_PARTY_NOTICES THIRD_PARTY_ASSETS.md $(BUILD)/isodir/
+	cp third_party/terminus/OFL.txt $(BUILD)/isodir/third_party/terminus/OFL.txt
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
 	cp $(BUILD)/limine.conf $(BUILD)/isodir/boot/limine/limine.conf
 	cp $(BUILD)/wallpaper.png $(BUILD)/isodir/boot/limine/wallpaper.png
@@ -219,10 +263,12 @@ $(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BU
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
                  kernel/bootmod.h kernel/stackpeak.h kernel/rtc_time.h kernel/logbuf.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
-                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
-                 $(wildcard kernel/proc/*.h kernel/fs/*.h)
+                 $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
+                 $(wildcard drivers/mouse/*.h drivers/mouse/*_core.c) \
+                 $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c) \
+                 $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
-	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< $(UNIT_MODULES) -o $@
 
 unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do $$t || exit 1; done
@@ -237,6 +283,18 @@ $(ELFCHECK): tests/elfcheck.c kernel/proc/elf_core.c kernel/proc/elf_core.h
 
 elfcheck: $(ELFCHECK)
 
+# 1.2 stage 8: the kernel's wallpaper and splash code (wallpaper_core.c,
+# with the console fonts) as a host tool that writes a splash as a PPM;
+# part static compares it with scripts/make-wallpaper.py's rendering.
+SPLASHDUMP := $(BUILD)/splashdump
+$(SPLASHDUMP): tests/splashdump.c kernel/display/wallpaper_core.c kernel/display/wallpaper_core.h \
+               kernel/display/surface_core.c kernel/display/fbcon_core.c $(GEN)/splash_data.h \
+               $(FONT_SIZES:%=$(BUILD)/font/font_%.c)
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/splashdump.c $(FONT_SIZES:%=$(BUILD)/font/font_%.c) -o $@
+
+splashdump: $(SPLASHDUMP)
+
 # Reproducible build (0.8): copy the sources into two fresh trees and build
 # each from clean. Tree b is built with a `find` that lists files in reverse
 # order, so a link order that followed the file system would show up as a
@@ -248,7 +306,9 @@ elfcheck: $(ELFCHECK)
 REPRO := $(BUILD)/repro
 repro: $(KERNEL)
 	rm -rf $(REPRO) && mkdir -p $(REPRO)/a $(REPRO)/b $(REPRO)/bin
-	find Makefile boot kernel drivers linker user scripts/user-images.sh -type f | LC_ALL=C sort > $(REPRO)/files
+	find Makefile boot kernel drivers linker user scripts/user-images.sh scripts/make-font.py \
+	    scripts/make-wallpaper.py third_party/terminus \
+	    -type f | LC_ALL=C sort > $(REPRO)/files
 	tar -cf - -T $(REPRO)/files | tar -xf - -C $(REPRO)/a
 	tar -cf - -T $(REPRO)/files | tar -xf - -C $(REPRO)/b
 	printf '#!/bin/sh\n%s "$$@" | LC_ALL=C sort -r\n' "$$(command -v find)" > $(REPRO)/bin/find
@@ -276,7 +336,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+test: unit user elfcheck splashdump $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -285,7 +345,7 @@ test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repr
 # only with SHARD=static, so a sharded run runs them once; the padded test
 # kernel (1.0) is built only for part 4, which boots it.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump) \
             $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 

@@ -54,4 +54,61 @@
 # and Ctrl+C, Esc and Tab at the prompt, one normal boot (C1-C10, L6),
 # part 1; 1 unit suite (complete11).
 1.1 36
-unit-suites 70
+# 1.2 stage 4: 1 unit suite (i8042); no counted check yet. Stage 5: 4
+# checks: the header's video request and every limine.conf entry in text
+# mode (part static), the Display line of a -kernel boot and of the real
+# ISO's text-mode boot (part 1); 1 unit suite (fbinfo). Stage 5b: 25
+# more, all in part 1: the real ISO's text boot without slot 506 (2), two
+# framebuffer test ISOs with test=fbpattern, 1024x768x32 and Limine's
+# resolution: 800x600x24 (7 each), the undo path, test=fbfail=868 (5), and
+# the size refusal, 1920x1080x32 at 32M (4); 1 unit suite (surface).
+# Stage 6: 33 more: the console font in part static (4: the pinned files,
+# the C files regenerated, the ISO's notices, the name never in the
+# interface); in part 1, test=fbcon in five modes (5 each: the mode, the
+# console's layout, screens 1 and 2 against tests/fbcon_ref.py, done
+# without a refused draw or a FAILED line), the 1024x768 console scrolled
+# by dmesg (1), the crash screen (1) and the serial twins (2); 1 unit
+# suite (fbcon). The two 5b framebuffer boots' health checks also require
+# no FAILED status line now (reworded, not added). Stage 7: 38 more, all
+# in part 1: test=mouse under -kernel (5), a mouselog session on the
+# 1024x768 framebuffer console (9: the start, the mask, the pointer line,
+# the 30 packets, 4 screens, the boot's health) and test=mouse at
+# 1024x768 and 2560x1440 (3 each), and the give-up path, test=mousefail=4,
+# =6 and =7 under -kernel (6 each: the line, the configuration, the
+# ownership, the mask, the boot's health, the keyboard); 2 unit suites
+# (mouse, pointer). The stress part's 2 mouse-burst checks are [stress],
+# counted apart. Stage 8: 31 more: in part static 8 (make-wallpaper.py in
+# integer maths renders v1.1's wallpaper pixel for pixel; the splash's
+# generated data regenerated and its M equal to kernel/logo.c's; the
+# kernel's splash code, tests/splashdump.c, equal to make-wallpaper.py's
+# rendering in 5 modes); in part 1 23 (test=splash still at 1024x768x32 and
+# 1280x1024x32, 6 each: the Splash: line, 4 screens, done; at 2560x1440x32
+# 2: the Splash: line, done; Esc 3, verbose 2, test=splashfail 2,
+# test=splashpanic 2); 1 unit suite (wallpaper). Stage 10a: 10 more: in
+# part static 2 (the kernel's splash code with its ready state equal to
+# make-wallpaper.py's rendering at 800x600x24 and 1280x1024x32); in part 1
+# 8: the console without a pointer, a mouselog session without the test
+# option pointer (4: the line, the 4 packets without a position, the
+# screen, the boot's health), the ready state as screen 5 of test=splash
+# still at 1024x768x32 and 1280x1024x32 (1 each), and the early crash
+# screen, test=earlypanic (2: the lines, the screen). The Esc case's first
+# check now reads the ready state at System ready (reworded, not added);
+# the mouselog session's boot gets the test option pointer (its checks
+# unchanged). Stage 10b (the switch): 8 more: in part 1 3 (the real ISO,
+# now in graphics: its Display: lines, the framebuffer and its console;
+# slot 506 built and frozen with the kernel half, and tests/pagetables.py
+# modelling it); in part 3 4 (display under -kernel,
+# display on the real ISO after the key that closes the splash, that key
+# not typed, the console after clear equal to tests/screen_ref.py's
+# reference); in part 4 1 (the Diagnostics entries boot in text mode); 1
+# unit suite (shell_display12). Changed, not added: the limine.conf check
+# (static: the default entry in graphics, the others in text mode), and
+# stage 5's Display: check of a textmode: yes entry and stage 5b's two
+# text-boot checks without slot 506 (part 1: on the text twin instead of
+# the real ISO); outside [1.2]: [1.1] Q1, Q5 and Q6 (the
+# menu told by its header box, D2), [0.11] row 23 (read from the
+# console's cell grid, D2), and six help checks for display (two [0.9.1]
+# and [0.12] lines of names, [0.12] help system, the 39 -> 40 counts of
+# [0.12] help sections and [1.0] help, the [1.0] purpose rows).
+1.2 149
+unit-suites 78

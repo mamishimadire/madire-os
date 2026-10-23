@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "drivers/keyboard/ps2kbd.h"
+#include "drivers/mouse/ps2mouse.h"
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/cpuid.h"
@@ -26,6 +27,10 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/display/display.h"
+#include "kernel/display/fbcon.h"
+#include "kernel/display/pointer.h"
+#include "kernel/display/splash.h"
 #include "kernel/fs/dirtest.h"
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
@@ -522,6 +527,22 @@ static void run_diagnostics(void)
         diag_message("IF-state test: interrupt flag across thread switches...");
         diag_message(schedtest_ifstate() ? "IF-state test: PASS"
                                          : "IF-state test: FAIL (see serial log)");
+    } else if (cmdline_has("test=splashpanic")) {                               /* 1.2 stage 8 */
+        klogf("Splash fault test: a panic while the splash is shown\n");
+        panic("Splash test: a panic while the splash is shown (on purpose).");
+    } else if (cmdline_has("test=splashfail")) {                                /* 1.2 stage 8 */
+        klogf("Splash fault test: the Console & shell line was reported FAILED on purpose (above)\n");
+    } else if (cmdline_has("test=splash")) {                                    /* 1.2 stage 8 */
+        splash_test();
+    } else if (cmdline_has("test=fbpattern") || cmdline_has("test=fbfail")) {   /* 1.2 stage 5b */
+        display_fbpattern();
+    } else if (cmdline_has("test=fbcon")) {                                     /* 1.2 stage 6 */
+        fbcon_test();
+    } else if (cmdline_has("test=mousefail")) {                                 /* 1.2 stage 7 */
+        klogf("Mouse fault test: start-up step %u failed on purpose (the Mouse: lines above); "
+              "the keyboard and the console go on\n", mouse_fail_step());
+    } else if (cmdline_has("test=mouse")) {                                     /* 1.2 stage 7 */
+        mouse_test();
     } else if (cmdline_has("test=timer")) {
         devtest_timer();
     } else if (cmdline_has("test=keyboard")) {
@@ -692,6 +713,7 @@ static bool start_devices(void)
 
     struct kbd_selftest ks = { 0 };
     enum kbd_status kst = keyboard_init();
+    splash_step(!timer_ok);
     bool kbd_ok = kst == KBD_OK && keyboard_selftest(&ks);
     if (kbd_ok)
         ksnprintf(note, sizeof(note), "controller set up, echo via IRQ1, decoder and queue checked");
@@ -706,6 +728,7 @@ static bool start_devices(void)
     if (lights)                                 /* 1.1: always logged (K8) */
         log_lights(lights);
     bootscreen_status("Keyboard (PS/2):", kbd_ok ? BOOT_OK : BOOT_FAILED, note);
+    splash_step(!kbd_ok);
 
     /* Exactly the lines that were enabled, and never anything beyond IRQ0/1. */
     uint16_t enabled = (uint16_t)((timer_started ? 1u << IRQ_TIMER : 0)
@@ -743,10 +766,18 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                 console_handle_key(&e);
             } else if (e.flags & KEY_PRESSED) {
                 BOOTSCREEN_SAFE(bootscreen_last_key(&e));
-                if (console_offered)
+                /* 1.2 stage 8 (decision 17): a key closes the splash; Esc
+                 * shows the text boot screen and opens nothing. */
+                bool esc = splash_showing() && e.keycode == KEY_ESC;
+                if (splash_showing())
+                    splash_close_key(esc);
+                if (console_offered && !esc)
                     console_start(mem);
             }
         }
+
+        splash_tick();                      /* 1.2 stage 8: the dots, every 400 ms */
+        pointer_poll();                     /* 1.2 stage 7: nothing without a mouse */
 
         /* 1.1: the lights follow the lock keys; a change is logged only
          * with keylog (K8), a failure always. */
@@ -817,26 +848,48 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
      * the string before anything reads it. */
     if (mbi->flags & MULTIBOOT_INFO_CMDLINE)
         cmdline = phys_view(mbi->cmdline);
+    /* 1.2: what the loader gave for the display (the "Display:" line);
+     * before memory_init(), see kernel/display/display.h. */
+    display_probe(mb_info);
+    /* 1.2 stage 8: the splash (decision 17) and its boot options: not with
+     * `verbose`, nor with a test= option other than the splash's own; its
+     * lines are logged only with `still` or those. Every status line below
+     * is a boot step for it (splash_step). */
+    bool splash_opt = cmdline_has("test=splash");
+    splash_options(cmdline_word("verbose"), cmdline_word("still"), !cmdline_has("test=") || splash_opt,
+                   cmdline_word("still") || splash_opt);
 
     bootscreen_draw_header();
 
-    bootscreen_status("GDT loaded:", gdt_init() ? BOOT_OK : BOOT_FAILED,
+    bool ok = gdt_init();
+    bootscreen_status("GDT loaded:", ok ? BOOT_OK : BOOT_FAILED,
                       "64-bit code 0x08, data 0x10, TSS 0x18 (IST1, IST2), user data 0x33, code 0x3B");
-    bootscreen_status("IDT loaded (256 entries):", idt_init() ? BOOT_OK : BOOT_FAILED, NULL);
+    splash_step(!ok);
+    ok = idt_init();
+    bootscreen_status("IDT loaded (256 entries):", ok ? BOOT_OK : BOOT_FAILED, NULL);
+    splash_step(!ok);
     log_cpu_mode();
     log_user_segments();
-    bootscreen_status("Interrupt controller:", pic_init() ? BOOT_OK : BOOT_FAILED,
+    ok = pic_init();
+    bootscreen_status("Interrupt controller:", ok ? BOOT_OK : BOOT_FAILED,
                       "remapped, IRQs masked");
+    splash_step(!ok);
 
     interrupts_enable();
     __asm__ volatile ("int3");
-    bootscreen_status("Exception handling:",
-                      interrupts_breakpoint_count() == 1 ? BOOT_OK : BOOT_FAILED,
-                      "int3 self-test");
+    ok = interrupts_breakpoint_count() == 1;
+    bootscreen_status("Exception handling:", ok ? BOOT_OK : BOOT_FAILED, "int3 self-test");
+    splash_step(!ok);
 
     /* After the IDT, so a fault while reading boot data shows the crash
      * screen instead of resetting the machine. */
     static struct memory_stats mem;
+    /* 1.2 stage 10: test=earlypanic (a test option): a panic before
+     * paging and the framebuffer console, for the early crash screen. */
+    if (cmdline_has("test=earlypanic")) {
+        klogf("Early panic test: a panic before paging and the framebuffer console\n");
+        panic("Early panic test: a panic before the framebuffer console (on purpose).");
+    }
     memory_init(mbi_phys, &mem);
     uint32_t mem_checks = memtest_boot();
 
@@ -847,7 +900,20 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     ksnprintf(note, sizeof(note), "%u reserved ranges, self-test PASS, %u checks",
               mem.reservations, mem_checks);
     bootscreen_status("Memory initialization:", BOOT_OK, note);
-    bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
+    splash_step(false);
+
+    /* 1.2 stage 5b: slot 506 for a usable framebuffer, planned now that
+     * the allocator knows the free pages; paging_init() builds it. */
+    display_plan_slot(mbi);
+    uint32_t fbfail;
+    if (cmdline_has("test=fbfail") && cmdline_u32("test=fbfail=", &fbfail))
+        display_test_fail_at(fbfail);           /* a test option: the undo path */
+    /* 1.2 stage 6: on a framebuffer boot VGA memory does not read back
+     * (the screen is in a graphics mode); the display works if slot 506 is
+     * planned, for the framebuffer console. */
+    ok = display_ok || display_slot_plan();
+    bootscreen_status("Display initialization:", ok ? BOOT_OK : BOOT_FAILED, NULL);
+    splash_step(!ok);
     bootscreen_memory(&mem);
 
     /* Paging: build, walk-check, enable; before any IRQ is unmasked. A
@@ -858,6 +924,20 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     if (paging_on && !paging_selftest())
         panic("Paging self-test failed (details on the serial log).");
     bool heap_ok = paging_on && kheap_init() && kheap_selftest();
+    /* 1.2 stage 6: the console on the framebuffer, once slot 506 is live
+     * (test=fbpattern keeps the framebuffer to itself, as in stage 5b).
+     * 1.2 stage 8: held behind the splash, which starts from the screen
+     * Limine handed over (black), a cut. */
+    if (display_active()) {
+        if (cmdline_has("test=fbpattern")) {
+            klogf("Display: console kept in VGA text memory (test=fbpattern draws on the framebuffer)\n");
+        } else {
+            bool splash = splash_wanted();
+            fbcon_start(splash);
+            if (splash)
+                splash_start();
+        }
+    }
 
     const struct paging_stats *ps = paging_stats();
     char paging_note[112], heap_note[80];
@@ -878,6 +958,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_status_pair("Paging & kernel heap:",
                            "Paging enabled:", "paging", paging_on ? BOOT_OK : BOOT_FAILED, paging_note,
                            "Kernel heap:", "heap", heap_ok ? BOOT_OK : BOOT_FAILED, heap_note);
+    splash_step(!paging_on || !heap_ok);
 
     /* 0.9: kernel_main becomes thread 0 ("kernel"). Other threads get their
      * stacks from slot 507, so they exist only with paging on. */
@@ -887,6 +968,21 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     check_boot_modules(mbi);
 
     bool keyboard_ok = start_devices();
+    /* 1.2 stage 7: the mouse only on framebuffer boots and for test=mouse
+     * (decision 10), after the keyboard and its IRQ mask line; a missing
+     * or failing aux port is one log line, and the boot goes on. The
+     * substring "test=mouse" also matches test=mousefail=N (a test
+     * option): step N of the start fails, so the give-up path runs. */
+    if (display_active() || cmdline_has("test=mouse")) {
+        uint32_t mousefail;
+        if (cmdline_has("test=mousefail") && cmdline_u32("test=mousefail=", &mousefail))
+            mouse_fail_at(mousefail);
+        mouse_init();
+        /* 1.2 stage 10: no pointer on the console but with the test
+         * option `pointer` or test=mouse. */
+        pointer_start(cmdline_word("mouselog") || cmdline_has("test=mouse"),
+                      cmdline_word("pointer") || cmdline_has("test=mouse"));
+    }
     bootscreen_uptime(timer_uptime_seconds());
     bootscreen_last_key(NULL);
 
@@ -894,8 +990,17 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
      * shell, text grid). Keyboard and VGA hardware are proven separately,
      * by the keyboard self-test and the QEMU / VirtualBox console tests. */
     bool console_ok = console_selftest();
+    /* 1.2 stage 8: test=splashfail (a test option) reports this line
+     * FAILED on purpose, so a FAILED status closes the splash; the
+     * console is then disabled, as for a real failure. */
+    bool forced = cmdline_has("test=splashfail");
+    if (forced)
+        klogf("Console & shell self-test: %s; reported FAILED on purpose (test=splashfail)\n",
+              console_ok ? "PASS" : "FAIL");
+    console_ok = console_ok && !forced;
     bootscreen_status("Console & shell:", console_ok ? BOOT_OK : BOOT_FAILED,
                       "pure self-test of line editor, parser, shell, text grid; not a hardware test");
+    splash_step(!console_ok);
 
     /* 0.12 stage 3: the stall bound of the diagnostic waits, measured while
      * the timer works and thread 0 is alone (before the self-test's threads). */
@@ -906,10 +1011,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     if (paging_on) {
         if (!schedtest_boot())
             panic("Scheduler self-test failed (details on the serial log).");
+        splash_tick();                      /* 1.2 stage 8: the dots, between the long steps */
         /* 0.10: three programs as processes (hello, exitcode, nullptr);
          * deterministic (no timing assumptions), fatal on failure. */
         if (!usertest_boot())
             panic("User-mode self-test failed (details on the serial log).");
+        splash_tick();
     } else {
         klogf("Scheduler self-test: NOT APPLICABLE (paging is off: no thread stacks)\n");
     }
@@ -923,6 +1030,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     } else {
         klogf("Filesystem: NOT AVAILABLE (the kernel heap is off)\n");
     }
+    splash_tick();
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
     run_diagnostics();
@@ -932,6 +1040,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
           FD_MAX, FILE_MAX, fd_open_files());
 
     bool console_offered = console_ok && keyboard_ok;
+    splash_ready(console_offered);          /* 1.2 stage 10: drawn before "System ready." is logged */
     bootscreen_ready(console_offered ? "Press any key to open the console."
                      : !keyboard_ok ? "Keyboard unavailable: console disabled."
                      : "Console self-test failed: console disabled.");

@@ -269,6 +269,14 @@ void shell_redirect_end(void);
 
 #define SHELL_CP_CANCELLED  "cp: cancelled."
 
+/* 1.2 stage 10b: what "display" shows (read only; decision 16). */
+struct shell_display {
+    bool framebuffer;           /* the console is on a framebuffer; else VGA text */
+    uint32_t width, height, bpp;
+    uint32_t scale;             /* percent: 100, 125, 150 or 200 */
+    uint32_t cell_w, cell_h;    /* the console font's cell, in pixels */
+};
+
 struct shell_context {
     const char *version;                    /* e.g. "0.5" */
     bool timer_ok;                          /* timer verified at boot */
@@ -332,6 +340,10 @@ struct shell_context {
      * or ">>" as separate words. NULL leaves every output exactly as before
      * (">" is then an ordinary word). */
     const struct shell_storage *storage;
+    /* 1.2 stage 10b, optional: when set, "display" exists ("help" lists it
+     * after "reboot", in the section "system") and shows the screen's mode
+     * and scale, or VGA text. NULL leaves every output exactly as before. */
+    const struct shell_display *display;
 };
 
 enum shell_text {

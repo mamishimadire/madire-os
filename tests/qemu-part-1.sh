@@ -8,7 +8,32 @@
 # temporary stage 1 A/B section was removed again in stage 3b). 1.0 stage 1
 # adds the [1.0] filesystem checks of the normal boot at the end; stage 2
 # the data budget and the self-test's data step after them. 1.1 stage 5
-# adds a report-only trace probe at the end.
+# adds a report-only trace probe at the end. 1.2 stage 3 added the probes
+# (report only) at the end; stage 4 removed them again, and stage 5 removed
+# the probe build and its tools (rerun them from 287b355, docs/testing.md).
+# 1.2 stage 5 adds the [1.2] Display checks of the text boots at the end;
+# stage 5b, after them, the text boots' slot 506 checks and four framebuffer
+# test ISOs (slot 506, test=fbpattern and tests/qmp_fb.py; the undo path,
+# test=fbfail; the size refusal at 32M). Stage 6 adds the framebuffer
+# console at the end: test=fbcon in five modes (the 1024x768 boot also
+# scrolls the console) and the crash screen
+# against tests/fbcon_ref.py (tests/qmp_fbcon.py), and the serial twins
+# (tests/serial_twin.py). Stage 7 adds the mouse at the end: test=mouse
+# under -kernel, a mouselog session on the 1024x768 framebuffer console
+# (the packets, the edges, the pointer and its save-under against
+# tests/pointer_ref.py), and test=mouse at 1024x768 and 2560x1440 (the
+# scale and the timing; tests/qmp_mouse.py), then the give-up path under
+# -kernel (test=mousefail=4, =6 and =7, the keyboard checked after it). The
+# crash case now waits for the halt line instead of "System ready.". Stage 8
+# adds the splash at the end: test=splash still at 1024x768 and 1280x1024
+# (four screens each against scripts/make-wallpaper.py, tests/qmp_splash.py)
+# and its timing at 2560x1440, then Esc, the boot option verbose, a FAILED
+# status line (test=splashfail) and a panic (test=splashpanic). Stage 10:
+# the mouselog session gets the test option pointer (the console has no
+# pointer without it), and a session without it follows; the splash cases
+# take a fifth screen, the ready state at System ready, and the Esc case's
+# first screen is that state; at the end, the early crash screen
+# (test=earlypanic).
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -122,11 +147,15 @@ echo "== [0.7] Boot module through the boot menu (ISO with a module entry; 0.13:
 LOG=$OUT/serial-bootmenu-module.log
 limine_tree "$OUT/isomod"
 cp "$OUT/test-module.bin" "$OUT/isomod/boot/test-module.bin"
+# 1.2 stage 5: "textmode: yes" (then in every entry of the real limine.conf;
+# since stage 10b in its Diagnostics entries) keeps text mode now that the
+# kernel's header asks for a framebuffer.
 cat > "$OUT/isomod/boot/limine/limine.conf" <<'CFG'
 timeout: 0
 
 /Madire OS (module test)
     protocol: multiboot1
+    textmode: yes
     path: boot():/boot/madire.kernel
     module_path: boot():/boot/test-module.bin
     module_string: test-module
@@ -1567,3 +1596,822 @@ expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
     '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
 reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
     "[1.1] console keys boot: no panic, nothing dropped, no light failure"
+
+# ---- 1.2: the Display line of the text boots (stage 5) ----
+
+echo "== [1.2] Display: a -kernel boot (VGA text) and the real ISO (graphics, since stage 10b)"
+# The logs of two boots made above (no new boot): QEMU's -kernel gives no
+# framebuffer fields (flag bit 12 clear) and keeps VGA text (decision 4).
+# The real ISO's default entry, without a "textmode" line since the switch
+# (stage 10b), gets the header's 1024x768x32 framebuffer and its console
+# on it (a new check in 10b). (Until 10a it had "textmode: yes" and logged
+# Limine's text mode; that check reads the text twin since 10b, below, and
+# the Diagnostics entries are checked in part 4.)
+expect "$OUT/serial-mem-32M.log" "^Display: VGA text 80x25 \(no framebuffer\)$" \
+    "[1.2] -kernel boot: Display: VGA text 80x25 (no framebuffer)"
+if grep -qE "^Display: framebuffer 1024x768x32 at 0x[0-9a-f]+, pitch 4096, RGB at bits 16/8/0$" "$OUT/serial-boot.log" &&
+   grep -qxF "Display: console on the framebuffer: 80x25 cells of 8x16 pixels at (192, 184), scale 100 %" "$OUT/serial-boot.log"; then
+    pass "[1.2] real ISO, default entry (graphics): Display: framebuffer 1024x768x32, pitch 4096, RGB at bits 16/8/0, and the console on it: 80x25 cells of 8x16 pixels at (192, 184), scale 100 %"
+else
+    fail "[1.2] real ISO, default entry: not the 1024x768x32 framebuffer with its console at scale 100 % ($(grep -E '^Display: ' "$OUT/serial-boot.log" | tr '\n' ' '))"
+fi
+
+# ---- 1.2 stage 5b: slot 506 and the framebuffer test ISOs ----
+
+echo "== [1.2] The real ISO (graphics, since stage 10b): slot 506"
+# The real ISO's normal boot now builds slot 506 (the framebuffer and its
+# back buffer) and freezes it with the kernel half (7 entries), and
+# tests/pagetables.py, which models slot 506 from the "Display: slot 506"
+# line, agrees with the kernel's count. (Stage 5b's two checks of a text
+# boot without slot 506 read the text twin since 10b, below.)
+LOG=$OUT/serial-boot.log
+if grep -qE "^Display: slot 506: framebuffer 0x[0-9a-f]+-0x[0-9a-f]+ at 0xfffffd0000000000 \([0-9]+ pages\), back buffer at 0xfffffd0040000000 \([0-9]+ pages of free RAM, pitch 4096\), [0-9]+ page tables$" "$LOG" &&
+   grep -qxF "Kernel half frozen: PML4 slots 256, 506, 507, 508, 509, 510, 511 (7 entries); every process shares them, a new one now panics" "$LOG"; then
+    pass "[1.2] real ISO (graphics): slot 506 built (its Display: slot 506 line), PML4[506] frozen with the kernel half: slots 256, 506, 507, 508, 509, 510, 511 (7 entries)"
+else
+    fail "[1.2] real ISO (graphics): no Display: slot 506 line, or the kernel half frozen with other slots, in $LOG"
+fi
+FB_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label iso)
+sed 's/^/      /' <<< "$FB_PT"
+if grep -qE "^PAGETABLES_RESULT label=iso computed=([0-9]+) logged=\1 .* display_slot=([0-9]+)/\2 MATCH$" <<< "$FB_PT"; then
+    pass "[1.2] real ISO (graphics): tests/pagetables.py models slot 506: computed = logged, and the slot's tables as logged"
+else
+    fail "[1.2] real ISO (graphics): tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$FB_PT")"
+fi
+# Report only (decides no check): the boots' paging figures. 5a's (run
+# 39909205323): the real ISO 14 page tables, 573 mapped pages, free pages
+# 32160 (a text boot then); -kernel -m 32M free pages 7597; kernel end
+# 0x232000. A text boot's mapped pages may differ from 5a's only by the
+# kernel image's own pages (the change of __kernel_end, printed here).
+fb_figures() {   # fb_figures <log> <label>
+    local t m f e
+    t=$(sed -nE 's/^Paging tables: ([0-9]+) page tables \+ PML4, ([0-9]+) mapped pages.*/\1/p' "$1" | head -n 1)
+    m=$(sed -nE 's/^Paging tables: ([0-9]+) page tables \+ PML4, ([0-9]+) mapped pages.*/\2/p' "$1" | head -n 1)
+    f=$(grep -oE '^memory: .* free_pages=[0-9]+' "$1" | grep -oE '[0-9]+$' | head -n 1)
+    e=$(sed -nE 's/^Kernel: text .* end 0x([0-9a-f]+)$/\1/p' "$1" | head -n 1)
+    echo "      FIGURES $2: ${t:-?} page tables, ${m:-?} mapped pages, free pages ${f:-?} (memory_init), kernel end 0x${e:-?} ($(( (0x${e:-232000} - 0x232000) / 4096 )) kernel pages against 5a's 0x232000)"
+    grep -E "^Paging self-test: no page leak|^Kernel half frozen|^Display: slot 506|^Kernel stack: [0-9]+ bytes at peak" "$1" | sed "s/^/      FIGURES $2: /"
+}
+fb_figures "$OUT/serial-boot.log" "framebuffer boot (real ISO since 10b; 5a's text boot: 14, 573, 32160)"
+fb_figures "$OUT/serial-mem-32M.log" "text boot (-kernel -m 32M; 5a: free 7597)"
+
+echo "== [1.2] Framebuffer boots: slot 506 and test=fbpattern (two test ISOs, tests/qmp_fb.py)"
+# Two test ISOs with one entry each and no "textmode" line (in stage 5b the
+# real ISO and every other test ISO kept "textmode: yes", decision 3; since
+# 10b the real ISO's default entry has none either): the header's
+# request (1024x768x32), and Limine's per-entry "resolution: 800x600x24",
+# which overrides the executable's request for multiboot1 (Limine 12.9.3:
+# CONFIG.md; common/protos/multiboot1.c reads RESOLUTION when the header's
+# mode type is 0, as Madire's is). Each boots with test=fbpattern, paused,
+# with a QMP socket: tests/qmp_fb.py waits for the kernel's "display:
+# frame 1" line, stops the guest, takes a screendump and lets it go on to
+# System ready. The screen's size must be the logged mode and its CRC-32
+# the one the kernel logged for the framebuffer (read back after present).
+QMPFB=$(dirname "$0")/qmp_fb.py
+# fb_boot <log> <iso>: boots <iso> paused at -m 128M, runs qmp_fb.py, then
+# stops QEMU. FB_OUT holds qmp_fb.py's output (also kept in <log>.fb.txt).
+fb_boot() {
+    local log=$1 iso=$2 sock=$OUT/qmp-fb.sock t0 qpid
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 90 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    FB_OUT=$(python3 "$QMPFB" "$sock" "$log" "display: frame 1" --until "System ready." --timeout 75 2>&1)
+    sed 's/^/      /' <<< "$FB_OUT"
+    echo "$FB_OUT" > "${log%.log}.fb.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# fb_case <name> <mode WxHxD> <label> <the first check's text> [a limine.conf line]
+fb_case() {
+    local name=$1 mode=$2 label=$3 first=$4 extra=${5:-} dir=$OUT/isofb-$1 iso=$OUT/madire-os-fb-$1.iso
+    local log=$OUT/serial-fb-$1.log w h d pt crc
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; d=${mode##*x}
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (framebuffer test)\n    protocol: multiboot1\n'
+        [ -z "$extra" ] || printf '    %s\n' "$extra"
+        printf '    path: boot():/boot/madire.kernel\n    cmdline: test=fbpattern\n'
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    FB_OUT=""
+    if limine_iso "$dir" "$iso"; then fb_boot "$log" "$iso"; else : > "$log"; echo "      the test ISO could not be made"; fi
+    grep -E "^Display: |^Paging walk-check: |^Paging self-test: PASS|^Paging check: display|^Kernel half frozen|^fbpattern: |^display: frame " "$log" | sed 's/^/      /'
+    fb_figures "$log" "$label"
+    expect "$log" "^Display: framebuffer $mode at 0x[0-9a-f]+, pitch [0-9]+, RGB at bits 16/8/0$" "$first"
+    if grep -qE "^Display: slot 506: framebuffer 0x[0-9a-f]+-0x[0-9a-f]+ at 0xfffffd0000000000 \([0-9]+ pages\), back buffer at 0xfffffd0040000000 \([0-9]+ pages of free RAM, pitch $((w * d / 8))\), [0-9]+ page tables$" "$log" &&
+       grep -qE "^Paging check: display framebuffer .*: OK$" "$log" &&
+       grep -qE "^Paging check: display back buffer .*: OK$" "$log" &&
+       grep -qE "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "$log" &&
+       grep -qE "^Paging self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "$log" &&
+       grep -qxF "Kernel half frozen: PML4 slots 256, 506, 507, 508, 509, 510, 511 (7 entries); every process shares them, a new one now panics" "$log"; then
+        pass "[1.2] $label: slot 506 built (framebuffer and back buffer, walk-checked), paging self-test PASS, PML4[506] frozen with the kernel half (7 entries)"
+    else
+        fail "[1.2] $label: slot 506 not built, not walk-checked or not frozen with the kernel half, or paging failed (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label fb)
+    sed 's/^/      /' <<< "$pt"
+    if grep -qE "^PAGETABLES_RESULT label=fb computed=([0-9]+) logged=\1 .* display_slot=([0-9]+)/\2 MATCH$" <<< "$pt"; then
+        pass "[1.2] $label: tests/pagetables.py models slot 506: computed = logged, and the slot's tables as logged"
+    else
+        fail "[1.2] $label: tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$pt")"
+    fi
+    crc=$(sed -nE "s/^fbpattern: $mode: [0-9]+ fills and [0-9]+ blits drawn on the back buffer, presented; CRC-32 of the RGB bytes: back buffer (0x[0-9a-f]{8}), framebuffer \1 \(equal\)$/\1/p" "$log" | head -n 1)
+    if [ -n "$crc" ] && grep -qxF "display: frame 1" "$log"; then
+        pass "[1.2] $label: test=fbpattern drew and presented: the back buffer's and the framebuffer's CRC-32 equal ($crc), display: frame 1 logged"
+    else
+        fail "[1.2] $label: no fbpattern line with equal CRCs, or no display: frame 1 (see $log)"
+    fi
+    if grep -qxE "SCREEN size=${w}x${h} crc=0x[0-9a-f]{8} colours=[0-9]+" <<< "$FB_OUT"; then
+        pass "[1.2] $label: the screendump is ${w}x${h}, the logged mode"
+    else
+        fail "[1.2] $label: no ${w}x${h} screendump after display: frame 1 ($(grep -E '^(SCREEN|MARKER|qmp_fb)' <<< "$FB_OUT" | tr '\n' ' '))"
+    fi
+    if [ -n "$crc" ] && grep -qxE "SCREEN size=${w}x${h} crc=$crc colours=[0-9]+" <<< "$FB_OUT"; then
+        pass "[1.2] $label: the screendump's CRC-32 equals the framebuffer's logged CRC-32 ($crc)"
+    else
+        fail "[1.2] $label: the screendump's CRC-32 is not the logged ${crc:-(none)} ($(grep '^SCREEN' <<< "$FB_OUT"))"
+    fi
+    # 1.2 stage 6: also no FAILED status line (in 5b these boots logged
+    # "Display initialization: FAILED" unnoticed; slot 506 planned now
+    # counts as a working display, kernel/kernel.c).
+    if grep -q "^System ready\." "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: System ready, no FAILED status line, no panic, no paging mismatch"
+    else
+        fail "[1.2] $label: no System ready, a FAILED status line, or a panic or a paging mismatch (see $log)"
+    fi
+}
+fb_case 1024 1024x768x32 "framebuffer boot (the header's 1024x768x32)" \
+    "[1.2] framebuffer boot: the header's request is given: Display: framebuffer 1024x768x32, RGB at bits 16/8/0"
+fb_case 800x24 800x600x24 "framebuffer boot (resolution: 800x600x24)" \
+    "[1.2] Limine's per-entry resolution: 800x600x24 overrides the header's 1024x768x32: Display: framebuffer 800x600x24, RGB at bits 16/8/0" \
+    "resolution: 800x600x24"
+
+echo "== [1.2] Framebuffer boots that keep VGA text: the undo path (test=fbfail) and the size refusal (32M)"
+# Two more test ISOs, booted without QMP to System ready. Neither gets slot
+# 506, so each must look like a text boot from paging on: no PML4[506], the
+# page tables tests/pagetables.py computes without slot 506, and every
+# frame back. fb_text_boot <name> <memory> <limine.conf line or ""> <cmdline>
+FB_READY="System ready. Press any key to open the console."
+fb_text_boot() {
+    local dir=$OUT/isofb-$1 iso=$OUT/madire-os-fb-$1.iso log=$OUT/serial-fb-$1.log
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (framebuffer test)\n    protocol: multiboot1\n'
+        [ -z "$3" ] || printf '    %s\n' "$3"
+        printf '    path: boot():/boot/madire.kernel\n    cmdline: %s\n' "$4"
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    if limine_iso "$dir" "$iso"; then boot_until "$log" 60 "$FB_READY" -m "$2" -cdrom "$iso"
+    else : > "$log"; echo "      the test ISO could not be made"; fi
+    grep -E "^Display: |^Free pages: |^Paging tables: |^Paging walk-check: |^Paging self-test: (PASS|no page leak)|^Kernel half frozen|^fbpattern: " "$log" | sed 's/^/      /'
+    fb_figures "$log" "$1"
+}
+# fb_kept <log> <label>: the checks both boots share.
+fb_kept() {
+    local log=$1 pt
+    if grep -qxF "Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 (6 entries); every process shares them, a new one now panics" "$log" &&
+       ! grep -q "^Display: slot 506:" "$log" && ! grep -q "^Paging check: display" "$log"; then
+        pass "[1.2] $2: no PML4[506]: the kernel half frozen with slots 256, 507, 508, 509, 510, 511 (6 entries) as before 1.2, no slot 506 line or walk-check item"
+    else
+        fail "[1.2] $2: a slot 506 line or walk-check item, or the kernel half frozen with other slots (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label kept)
+    sed 's/^/      /' <<< "$pt"
+    FB_KEPT_TABLES=$(sed -nE 's/^PAGETABLES_RESULT label=kept computed=([0-9]+) logged=\1 .* display_slot=none MATCH$/\1/p' <<< "$pt")
+    if [ -n "$FB_KEPT_TABLES" ]; then
+        pass "[1.2] $2: tests/pagetables.py computed = logged ($FB_KEPT_TABLES page tables), slot 506 not modelled"
+    else
+        fail "[1.2] $2: tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$pt")"
+    fi
+    if grep -qxF "fbpattern: no framebuffer mapped (see the Display: lines); nothing drawn" "$log" &&
+       grep -qxF "$FB_READY" "$log" && grep -qE "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "$log" &&
+       ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $2: VGA text and serial kept (fbpattern: no framebuffer mapped), walk-check PASS, System ready, no panic"
+    else
+        fail "[1.2] $2: no 'no framebuffer mapped' line, no walk-check PASS or System ready, or a panic or mismatch (see $log)"
+    fi
+}
+
+# The undo path: test=fbfail=868 on the 1024x768x32 boot. Steps 1-768 are
+# the framebuffer's pages, so step 868 is the back buffer's page 99 (from 0):
+# by then 99 back-buffer frames are taken, and 6 page tables (the PDPT, the
+# framebuffer's directory and its 2 page tables, the back buffer's
+# directory and its first page table); all of them must come back.
+fb_text_boot fail 128M "" "test=fbfail=868"
+LOG=$OUT/serial-fb-fail.log
+expect "$LOG" "^Display: slot 506 not built \(back buffer page at 0xfffffd0040063000: test=fbfail\); 768 framebuffer pages unmapped, 99 back-buffer frames and 6 page tables returned; VGA text and serial kept$" \
+    "[1.2] test=fbfail=868: Display: slot 506 not built (back buffer page at 0xfffffd0040063000: test=fbfail); 768 framebuffer pages unmapped, 99 back-buffer frames and 6 page tables returned; VGA text and serial kept"
+fb_kept "$LOG" "test=fbfail=868"
+# Every frame back: the free pages the paging self-test finds equal what a
+# text boot of the same machine has there: the free pages when slot 506 was
+# planned (the boot screen's "Free pages:", logged after the memory
+# self-test, with nothing allocated until paging_init) minus the kernel's
+# own tables, as many as tests/pagetables.py computes from this log without
+# slot 506, plus the PML4.
+FB_F=$(sed -nE 's/^Free pages: +([0-9]+)$/\1/p' "$LOG" | head -n 1)
+FB_P=$(sed -nE 's/^Paging self-test: no page leak: free pages ([0-9]+) -> \1: OK$/\1/p' "$LOG" | head -n 1)
+FB_T=${FB_KEPT_TABLES:-}
+if [ -n "$FB_F" ] && [ -n "$FB_P" ] && [ -n "$FB_T" ] && [ "$FB_P" -eq $((FB_F - FB_T - 1)) ]; then
+    pass "[1.2] test=fbfail=868: every frame returned: free pages at the paging self-test $FB_P = the text-mode figure $FB_F - $FB_T page tables - the PML4"
+else
+    fail "[1.2] test=fbfail=868: free pages at the paging self-test ${FB_P:-?}, expected ${FB_F:-?} - ${FB_T:-?} - 1"
+fi
+
+# The size refusal: 1920x1080x32 at 32M. Its back buffer is 2025 pages and
+# slot 506 would need 11 page tables: 2036 pages, more than a quarter of a
+# 32M machine's free pages (about 7600).
+fb_text_boot 1920 32M "resolution: 1920x1080x32" "test=fbpattern"
+LOG=$OUT/serial-fb-1920.log
+FB_A=$(sed -nE 's/^Display: framebuffer 1920x1080x32 at (0x[0-9a-f]+), pitch [0-9]+, RGB at bits 16\/8\/0$/\1/p' "$LOG" | head -n 1)
+FB_F=$(sed -nE 's/^Free pages: +([0-9]+)$/\1/p' "$LOG" | head -n 1)
+FB_WANT="Display: framebuffer 1920x1080x32 at ${FB_A:-?} not mapped (back buffer and page tables: 2036 pages, over a quarter of the ${FB_F:-?} free pages); VGA text and serial kept"
+if [ -n "$FB_A" ] && [ -n "$FB_F" ] && grep -qxF "$FB_WANT" "$LOG"; then
+    pass "[1.2] 1920x1080x32 at 32M: Display: framebuffer 1920x1080x32 at $FB_A not mapped (back buffer and page tables: 2036 pages, over a quarter of the $FB_F free pages); VGA text and serial kept"
+else
+    fail "[1.2] 1920x1080x32 at 32M: no line '$FB_WANT' in $LOG"
+fi
+fb_kept "$LOG" "1920x1080x32 at 32M"
+
+# ---- 1.2 stage 6: the framebuffer console ----
+
+echo "== [1.2] The framebuffer console: its screens against the reference renderer (tests/qmp_fbcon.py)"
+# Test ISOs with one entry, no "textmode" line and "cmdline: test=fbcon":
+# the kernel shows the boot screen, then a chart of the 256 characters, the
+# 16 x 16 colour pairs and the cursor, each after "display: frame N" and
+# held still for 3 s. tests/qmp_fbcon.py stops the guest at each marker,
+# takes a screendump, saves the kernel's cell grid (vga_shadow, read at its
+# physical address) and compares the screen with tests/fbcon_ref.py's
+# rendering of that grid, made from the BDF files themselves (never the
+# generated C). The expected layout of each mode (decision 19) is written
+# out below, not computed.
+QMPFBCON=$(dirname "$0")/qmp_fbcon.py
+FONTDIR=$(dirname "$0")/../third_party/terminus
+SHADOW_V=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+SHADOW_P=$(printf '0x%x' $(( 0x${SHADOW_V:-0} - 0xffffffff80000000 )))
+echo "      vga_shadow at 0x${SHADOW_V:-?} (physical $SHADOW_P)"
+# fbcon_boot <log> <iso> <memory> <markers...>: boots <iso> paused, runs
+# qmp_fbcon.py with the markers, then stops QEMU. FBC_OUT holds its output
+# (also kept in <log>.fbcon.txt).
+fbcon_boot() {
+    local log=$1 iso=$2 mem=$3 sock=$OUT/qmp-fbcon.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 120 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m "$mem" -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    FBC_OUT=$(python3 "$QMPFBCON" "$sock" "$log" "$SHADOW_P" "$FONTDIR" "$@" --until "${FBC_UNTIL:-System ready.}" \
+              --timeout 100 2>&1)
+    sed 's/^/      /' <<< "$FBC_OUT"
+    echo "$FBC_OUT" > "${log%.log}.fbcon.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# fbcon_iso <name> <cmdline> [a limine.conf line]: the test ISO
+# madire-os-fbcon-<name>.iso; FBC_ISO is its path, empty if it failed.
+fbcon_iso() {
+    local dir=$OUT/isofbcon-$1
+    FBC_ISO=$OUT/madire-os-fbcon-$1.iso
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (framebuffer console test)\n    protocol: multiboot1\n'
+        [ -z "${3:-}" ] || printf '    %s\n' "$3"
+        printf '    path: boot():/boot/madire.kernel\n'
+        [ -z "$2" ] || printf '    cmdline: %s\n' "$2"
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    limine_iso "$dir" "$FBC_ISO" || { echo "      the test ISO could not be made"; FBC_ISO=""; }
+}
+# fbcon_case <name> <mode WxHxD> <cell WxH> <x> <y> <percent> <label> [a limine.conf line]
+#            [more qmp_fbcon.py steps]
+fbcon_case() {
+    local name=$1 mode=$2 cell=$3 x=$4 y=$5 pct=$6 label=$7 extra=${8:-} log=$OUT/serial-fbcon-$1.log w h
+    shift $(( $# < 8 ? $# : 8 ))
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    FBC_W=$w FBC_H=$h FBC_LABEL=$label FBC_LOG=$log
+    fbcon_iso "$name" "test=fbcon" "$extra"
+    FBC_OUT=""
+    if [ -n "$FBC_ISO" ]; then fbcon_boot "$log" "$FBC_ISO" 128M "display: frame 1" "display: frame 2" "$@"
+    else : > "$log"; fi
+    grep -E "^Display: |^fbcon |^display: frame " "$log" | sed 's/^/      /'
+    grep -E "^fbcon timing: " "$log" | sed "s/^/      FBCON_TIMING $mode: /"
+    expect "$log" "^Display: framebuffer $mode at 0x[0-9a-f]+, pitch [0-9]+, RGB at bits 16/8/0$" \
+        "[1.2] $label: Display: framebuffer $mode"
+    expect "$log" "^Display: console on the framebuffer: 80x25 cells of $cell pixels at \($x, $y\), scale $pct %$" \
+        "[1.2] $label: Display: console on the framebuffer: 80x25 cells of $cell pixels at ($x, $y), scale $pct %"
+    if grep -qE "^SCREEN 1 size=${w}x${h} held=yes differ=0 \(" <<< "$FBC_OUT"; then
+        pass "[1.2] $label: screen 1 (the boot screen, held still) equals the reference rendering of the cell grid pixel for pixel"
+    else
+        fail "[1.2] $label: screen 1 differs from the reference rendering, or was not held still ($(grep -E '^(MARKER 1|SCREEN 1|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qE "^SCREEN 2 size=${w}x${h} held=yes differ=0 \(.*cursor at row 21, column 14\)$" <<< "$FBC_OUT"; then
+        pass "[1.2] $label: screen 2 (the 256 characters, the 16 x 16 colour pairs, the cursor) equals the reference rendering pixel for pixel"
+    else
+        fail "[1.2] $label: screen 2 differs from the reference rendering, or was not held still ($(grep -E '^(MARKER 2|SCREEN 2|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qxF "fbcon test: done: 2 screens held, the boot screen back; 0 draws refused off thread 0" "$log" &&
+       grep -q "^System ready\." "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: test=fbcon done, 0 draws refused off thread 0; System ready, no FAILED status line, no panic, no mismatch"
+    else
+        fail "[1.2] $label: test=fbcon not done, a draw refused, no System ready, a FAILED status line, or a panic or mismatch (see $log)"
+    fi
+}
+# The 1024x768x32 boot then opens the console and runs dmesg, whose
+# ~250 lines scroll it (the console logs "console: scrolled N lines");
+# screen 3 is taken 1 s after that line, at the prompt, and must equal the
+# reference rendering of the scrolled grid, with the prompt on the last row.
+fbcon_case 1024 1024x768x32 8x16 192 184 100 "fbcon at 1024x768x32 (the header's mode)" "" \
+    "wait:$FB_READY" "type:{ret}" "wait:console: started" "type:dmesg{ret}" "regex:^console: scrolled [0-9]+ lines$"
+SCROLLED=$(sed -nE 's/^console: scrolled ([0-9]+) lines$/\1/p' "$FBC_LOG" | head -n 1)
+if [ "${SCROLLED:-0}" -gt 0 ] && grep -qE "^SCREEN 3 size=${FBC_W}x${FBC_H} held=yes differ=0 \(" <<< "$FBC_OUT" &&
+   grep -qE "^ROWS 3 top='.*' bottom='madire[^']*>'$" <<< "$FBC_OUT"; then
+    pass "[1.2] $FBC_LABEL: screen 3 (the console after dmesg scrolled it $SCROLLED lines, the prompt on the last row) equals the reference rendering pixel for pixel"
+else
+    fail "[1.2] $FBC_LABEL: screen 3: no scroll logged, the screen differs, or the prompt is not on the last row ($(grep -E '^(MARKER 3|SCREEN 3|ROWS 3|WAIT|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+fi
+fbcon_case 800x24 800x600x24 8x16 80 100 100 "fbcon at 800x600x24" "resolution: 800x600x24"
+fbcon_case 1280x1024 1280x1024x32 10x20 240 262 125 "fbcon at 1280x1024x32" "resolution: 1280x1024x32"
+fbcon_case 1920 1920x1080x32 12x24 480 240 150 "fbcon at 1920x1080x32" "resolution: 1920x1080x32"
+fbcon_case 2560 2560x1440x32 16x32 640 320 200 "fbcon at 2560x1440x32" "resolution: 2560x1440x32"
+
+echo "== [1.2] The crash screen on the framebuffer (test=gpflimit)"
+LOG=$OUT/serial-fbcon-crash.log
+fbcon_iso crash "test=gpflimit"
+FBC_OUT=""
+# 1.2 stage 7: --until the halt line (the marker itself), not "System
+# ready.", which a halted kernel never prints (the case took 100.5 s).
+if [ -n "$FBC_ISO" ]; then
+    FBC_UNTIL="System halted. Power off the machine." fbcon_boot "$LOG" "$FBC_ISO" 128M " System halted. Power off the machine."
+else : > "$LOG"; fi
+grep -E "^Display: console|CPU exception|System halted" "$LOG" | sed 's/^/      /'
+if grep -q "CPU exception 13: General Protection Fault (#GP)" "$LOG" && ! grep -q "FAILED" "$LOG" &&
+   grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$FBC_OUT"; then
+    pass "[1.2] crash screen on the framebuffer (test=gpflimit): no FAILED status line before it, CPU exception 13 logged, and the screen equals the reference rendering of the cell grid pixel for pixel"
+else
+    fail "[1.2] crash screen on the framebuffer: a FAILED status line, no CPU exception 13, or the screen differs ($(grep -E '^(MARKER|SCREEN|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+fi
+
+echo "== [1.2] Serial twins: a framebuffer boot and its text twin (tests/serial_twin.py)"
+# One test ISO entry without a command line, booted to System ready at
+# -m 128M twice: with "textmode: yes" (VGA text) and without (the
+# framebuffer and its console). The serial logs must be the same apart
+# from the allowed differences tests/serial_twin.py names.
+fbcon_iso twintext "" "textmode: yes"
+TT_ISO=$FBC_ISO
+fbcon_iso twinfb ""
+TF_ISO=$FBC_ISO
+TT_LOG=$OUT/serial-twin-text.log TF_LOG=$OUT/serial-twin-fb.log
+if [ -n "$TT_ISO" ]; then boot_until "$TT_LOG" 60 "$FB_READY" -m 128M -cdrom "$TT_ISO"; else : > "$TT_LOG"; fi
+if [ -n "$TF_ISO" ]; then boot_until "$TF_LOG" 60 "$FB_READY" -m 128M -cdrom "$TF_ISO"; else : > "$TF_LOG"; fi
+grep -hE "^Display: " "$TT_LOG" "$TF_LOG" | sed 's/^/      /'
+TWIN=$(python3 "$(dirname "$0")/serial_twin.py" "$TT_LOG" "$TF_LOG")
+sed 's/^/      /' <<< "$TWIN"
+if grep -qxF "$FB_READY" "$TT_LOG" && grep -qxF "$FB_READY" "$TF_LOG" &&
+   ! grep -q "FAILED" "$TT_LOG" "$TF_LOG" && ! grep -qE "PANIC|MISMATCH" "$TT_LOG" "$TF_LOG" &&
+   grep -qE "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" "$TT_LOG" &&
+   grep -qE "^Display: console on the framebuffer: 80x25 cells of 8x16 pixels at \(192, 184\), scale 100 %$" "$TF_LOG"; then
+    pass "[1.2] serial twins: both reach System ready with no FAILED status line and no panic; the text twin on VGA text, the other with its console on the 1024x768 framebuffer"
+else
+    fail "[1.2] serial twins: no System ready, a FAILED status line, a panic, or not one VGA text and one framebuffer console boot (see $TT_LOG, $TF_LOG)"
+fi
+if grep -qE "^TWIN_RESULT lines=[1-9][0-9]* .* other=0 MATCH$" <<< "$TWIN"; then
+    pass "[1.2] serial twins: the framebuffer boot's serial log equals the text boot's apart from the allowed differences (fb-only, frames, display, figures; tests/serial_twin.py)"
+else
+    fail "[1.2] serial twins: $(grep '^TWIN_RESULT' <<< "$TWIN")"
+fi
+# Stage 5's Display: check of a textmode: yes entry and stage 5b's two
+# checks of a text boot without slot 506 (stage 10b: on the text twin, a
+# test ISO entry with "textmode: yes" as every Diagnostics entry has;
+# until 10a they read the real ISO's normal boot, then in text mode). The
+# exact Display: line is checked here: tests/serial_twin.py lets it differ.
+# The text boot has no PML4[506] entry: the kernel half is frozen with the
+# same six slots as before 1.2, no "Display: slot 506" line is logged, and
+# tests/pagetables.py, which models slot 506 only when that line is
+# logged, agrees with the kernel's count.
+expect "$TT_LOG" "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" \
+    "[1.2] the text twin (textmode: yes): Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000)"
+LOG=$TT_LOG
+if grep -qxF "Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 (6 entries); every process shares them, a new one now panics" "$LOG" &&
+   ! grep -q "^Display: slot 506" "$LOG"; then
+    pass "[1.2] text boot (the text twin, textmode: yes): no PML4[506]: the kernel half frozen with slots 256, 507, 508, 509, 510, 511 (6 entries) as before 1.2, no Display: slot 506 line"
+else
+    fail "[1.2] text boot (the text twin): a slot 506 line, or the kernel half frozen with other slots, in $LOG"
+fi
+FB_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label text)
+sed 's/^/      /' <<< "$FB_PT"
+if grep -qE "^PAGETABLES_RESULT label=text computed=([0-9]+) logged=\1 .* display_slot=none MATCH$" <<< "$FB_PT"; then
+    pass "[1.2] text boot (the text twin): tests/pagetables.py computed = logged, slot 506 not modelled"
+else
+    fail "[1.2] text boot (the text twin): tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$FB_PT")"
+fi
+
+# ---- 1.2 stage 7: the PS/2 mouse and the pointer ----
+
+# The helpers (mouse_boot, mouse_done_ok, expect_line) are in tests/qemu-lib.sh.
+
+echo "== [1.2] The mouse: test=mouse under QEMU -kernel (no framebuffer: no pointer)"
+LOG=$OUT/serial-mouse-kernel.log
+MB_OUT=""
+mouse_boot "$LOG" 120 -kernel "$KERNEL" -append "test=mouse" -- "wait:$MOUSE_READY" \
+    move:10,5 move:-30,-20 move:127,-127 move:-127,127 btn:left:down btn:left:up btn:right:down \
+    btn:middle:down btn:right:up btn:middle:up move:3,0 --until "System ready."
+grep -E "^IRQ mask: |^Mouse|^Display: " "$LOG" | sed 's/^/      /'
+expect_line "$LOG" "$MOUSE_START" "[1.2] -kernel test=mouse: $MOUSE_START"
+expect_line "$LOG" "$MOUSE_MASK" "[1.2] -kernel test=mouse: $MOUSE_MASK"
+if grep -qxF "PACKETS sent=11 exact=11" <<< "$MB_OUT"; then
+    pass "[1.2] -kernel test=mouse: the 11 packets injected (moves both ways up to 127, each button pressed and released) decoded exactly, in order"
+else
+    fail "[1.2] -kernel test=mouse: not every injected packet decoded exactly ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+if mouse_done_ok "$LOG" 11 &&
+   grep -qxF "Mouse test: motion dx -17 dy -15; pressed L 1 M 1 R 1, released L 1 M 1 R 1" "$LOG"; then
+    pass "[1.2] -kernel test=mouse: IRQ12 delivered every byte (33 read, one interrupt each), no bad byte, overflow or drop; the motion and button totals as injected"
+else
+    fail "[1.2] -kernel test=mouse: the counts or the totals are not as injected (see $LOG)"
+fi
+if grep -q "^System ready\." "$LOG" && ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] -kernel test=mouse: System ready, no FAILED status line, no panic"
+else
+    fail "[1.2] -kernel test=mouse: no System ready, a FAILED status line, or a panic (see $LOG)"
+fi
+
+echo "== [1.2] The mouse on the framebuffer console: a mouselog session at 1024x768x32"
+# The idle loop's path (the boot option mouselog, no test=): the console is
+# opened, then 30 packets: a first move (screen 1), moves both ways and
+# every button, 5 past the top-left corner (screen 2 at (0, 0)), 10 past
+# the bottom-right one (screen 3 at (1023, 767), the sprite clipped to one
+# pixel), and 5 back near the centre (screen 4). Each screen must equal
+# the reference: the console's cells with the pointer at the logged place
+# and nowhere else, so every earlier place shows the console again exactly
+# (save-under). 1.2 stage 10: with the test option pointer (the console
+# draws none without it; the next section).
+fbcon_iso mouse1024 "mouselog pointer"
+LOG=$OUT/serial-mouse-1024.log
+MB_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    mouse_boot "$LOG" 150 -cdrom "$FBC_ISO" -- --screen 1024x768 --shadow "$SHADOW_P" --fontdir "$FONTDIR" \
+        "wait:$FB_READY" "type:{ret}" "wait:console: started" move:10,5 screen \
+        move:-30,-20 move:127,-127 move:-127,127 btn:left:down btn:left:up btn:right:down btn:middle:down \
+        btn:right:up btn:middle:up move:-120,-100 move:-120,-100 move:-120,-100 move:-120,-100 move:-120,-100 screen \
+        move:120,100 move:120,100 move:120,100 move:120,100 move:120,100 move:120,100 move:120,100 \
+        move:120,100 move:120,100 move:120,100 screen \
+        move:-102,-77 move:-102,-77 move:-102,-77 move:-102,-77 move:-102,-77 screen
+else : > "$LOG"; fi
+grep -E "^Mouse|^Display: console" "$LOG" | sed 's/^/      /'
+expect_line "$LOG" "$MOUSE_START" "[1.2] mouse at 1024x768: $MOUSE_START"
+expect_line "$LOG" "$MOUSE_MASK" "[1.2] mouse at 1024x768: $MOUSE_MASK"
+expect "$LOG" "^Mouse: pointer 12x18 pixels \(scale 100 %\), hidden until the first packet, then at \(512, 384\) moved by it$" \
+    "[1.2] mouse at 1024x768: Mouse: pointer 12x18 pixels (scale 100 %), hidden until the first packet, then at (512, 384) moved by it"
+if grep -qxF "PACKETS sent=30 exact=30" <<< "$MB_OUT" &&
+   grep -qE "^mouse: packet 15: .* at \(0, 0\)$" "$LOG" && grep -qE "^mouse: packet 25: .* at \(1023, 767\)$" "$LOG"; then
+    pass "[1.2] mouse at 1024x768: the 30 packets (moves both ways, every button, past the top-left and the bottom-right edges) decoded exactly, the position clamped to (0, 0) and (1023, 767)"
+else
+    fail "[1.2] mouse at 1024x768: not every packet decoded exactly with its clamped position ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+mouse_screen() {   # mouse_screen <n> <check text>
+    if grep -qE "^SCREEN $1 size=1024x768 differ=0 \(" <<< "$MB_OUT"; then pass "$2"
+    else fail "$2 ($(grep -E "^(SCREEN $1|qmp_mouse)" <<< "$MB_OUT" | tr '\n' ' '))"; fi
+}
+mouse_screen 1 "[1.2] mouse at 1024x768: screen 1, the pointer at (522, 389) on the console, equals the reference rendering pixel for pixel"
+mouse_screen 2 "[1.2] mouse at 1024x768: screen 2, the pointer clamped at (0, 0), equals the reference rendering pixel for pixel"
+mouse_screen 3 "[1.2] mouse at 1024x768: screen 3, the pointer clamped at (1023, 767) and clipped, equals the reference rendering pixel for pixel"
+mouse_screen 4 "[1.2] mouse at 1024x768: screen 4, the pointer moved away to (513, 382), equals the reference rendering pixel for pixel: every earlier place shows the console again (save-under exact)"
+if grep -qxF "$FB_READY" "$LOG" && grep -qxF "Mouse: packets logged on serial (boot option 'mouselog' or test=mouse)" "$LOG" &&
+   ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] mouse at 1024x768: mouselog on, System ready, no FAILED status line, no panic, no mismatch"
+else
+    fail "[1.2] mouse at 1024x768: no mouselog line or System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
+fi
+
+echo "== [1.2] The console without a pointer: a mouselog session at 1024x768x32 (stage 10)"
+# The boot option mouselog alone: the mouse runs and logs, but the console
+# draws no pointer. The console is opened, then 4 packets (moves both ways,
+# the left button); each must be logged exactly, without a position, and
+# the screen (taken after the idle loop's next uptime line) must equal the
+# console's cells alone.
+NOPTR_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
+fbcon_iso mousenoptr "mouselog"
+LOG=$OUT/serial-mouse-nopointer.log
+MB_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    mouse_boot "$LOG" 150 -cdrom "$FBC_ISO" -- --shadow "$SHADOW_P" --fontdir "$FONTDIR" \
+        "wait:$FB_READY" "type:{ret}" "wait:console: started" move:10,5 move:-30,-20 btn:left:down btn:left:up console
+else : > "$LOG"; fi
+grep -E "^Mouse|^Display: console" "$LOG" | sed 's/^/      /'
+expect_line "$LOG" "$NOPTR_LINE" "[1.2] mouse without the pointer option: $NOPTR_LINE"
+if grep -qxF "PACKETS sent=4 exact=4" <<< "$MB_OUT" && ! grep -qE "^mouse: packet .* at \(" "$LOG"; then
+    pass "[1.2] mouse without the pointer option: the 4 packets (moves both ways, the left button) logged exactly, with no position"
+else
+    fail "[1.2] mouse without the pointer option: not every packet logged exactly without a position ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 differ=0 \(" <<< "$MB_OUT" && ! grep -q "^pointer: drawn" "$LOG"; then
+    pass "[1.2] mouse without the pointer option: after the packets the screen equals the reference rendering of the console's cell grid pixel for pixel (no pointer drawn, no pointer: drawn line)"
+else
+    fail "[1.2] mouse without the pointer option: a pointer drawn, or the screen differs from the cell grid's rendering ($(grep -E '^(SCREEN|qmp_mouse)' <<< "$MB_OUT" | head -n 2 | tr '\n' ' '))"
+fi
+if grep -qxF "$FB_READY" "$LOG" && ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] mouse without the pointer option: System ready, no FAILED status line, no panic, no mismatch"
+else
+    fail "[1.2] mouse without the pointer option: no System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
+fi
+
+echo "== [1.2] The pointer's scale and timing: test=mouse at 1024x768x32 and 2560x1440x32"
+# mouse_scale <name> <mode WxH> <sprite WxH> <percent> <x> <y> [a limine.conf line]:
+# test=mouse on the framebuffer console; one move of (40, 30) from the
+# centre, a screen there, the report-only timing line.
+mouse_scale() {
+    local name=$1 wh=$2 sprite=$3 pct=$4 x=$5 y=$6 extra=${7:-} log=$OUT/serial-mouse-$1.log label="test=mouse at $2"
+    fbcon_iso "mouse$name" "test=mouse" "$extra"
+    MB_OUT=""
+    if [ -n "$FBC_ISO" ]; then
+        mouse_boot "$log" 150 -cdrom "$FBC_ISO" -- --screen "$wh" --shadow "$SHADOW_P" --fontdir "$FONTDIR" \
+            "wait:$MOUSE_READY" move:40,30 screen --until "System ready."
+    else : > "$log"; fi
+    grep -E "^Mouse|^Display: console" "$log" | sed 's/^/      /'
+    grep -E "^pointer timing: " "$log" | sed "s/^/      POINTER_TIMING $wh: /"
+    expect "$log" "^Mouse: pointer $sprite pixels \(scale $pct %\), hidden until the first packet, then at \($(( ${wh%x*} / 2 )), $(( ${wh#*x} / 2 ))\) moved by it$" \
+        "[1.2] $label: Mouse: pointer $sprite pixels (scale $pct %), hidden until the first packet, then at ($(( ${wh%x*} / 2 )), $(( ${wh#*x} / 2 ))) moved by it"
+    if grep -qE "^SCREEN 1 size=$wh differ=0 \(" <<< "$MB_OUT"; then
+        pass "[1.2] $label: the pointer at ($x, $y) on the boot screen equals the reference rendering pixel for pixel"
+    else
+        fail "[1.2] $label: the screen with the pointer differs from the reference ($(grep -E '^(SCREEN|PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+    fi
+    if grep -qxF "PACKETS sent=1 exact=1" <<< "$MB_OUT" && mouse_done_ok "$log" 1 &&
+       grep -qE "^pointer timing: one move \(${wh}x32, the $sprite sprite at $pct %: .*: [1-9][0-9]* in [0-9]+ ticks, about [0-9]+ us each$" "$log" &&
+       grep -q "^System ready\." "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: the packet decoded exactly, IRQ12 once per byte, the timing line logged; System ready, no FAILED status line, no panic"
+    else
+        fail "[1.2] $label: the packet, the counts, the timing line, System ready, a FAILED status line or a panic (see $log)"
+    fi
+}
+mouse_scale scale1024 1024x768 12x18 100 552 414
+mouse_scale scale2560 2560x1440 24x36 200 1320 750 "resolution: 2560x1440x32"
+
+echo "== [1.2] The mouse's give-up path: test=mousefail=N under QEMU -kernel"
+# What a machine without a PS/2 mouse goes through: start-up step N fails
+# as if no reply came (drivers/mouse/mouse_core.h: 4 is set defaults,
+# before port 2 is owned; 6 the configuration with IRQ12 on and 7 port 1
+# back on, after it).
+# The undo must leave the controller and the PIC as before the start, and
+# the keyboard must still work: a key session opens the console and types
+# "version".
+# mousefail_case <N> <the failed step, as the Mouse: none line gives it>
+mousefail_case() {
+    local log=$OUT/serial-mousefail-$1.log label="test=mousefail=$1"
+    local none="Mouse: none ($2); configuration 0x61 restored, port 2 not used; boot continues without a mouse"
+    local after
+    boot_text "$log" 90 "System ready." "x{wait:1}version{ret}echo end-of-mousefail-test{ret}" 0.05 \
+        $'\nend-of-mousefail-test\n' -kernel "$KERNEL" -append "test=mousefail=$1"
+    grep -E "^IRQ mask: |^Mouse|^madire> version|^Madire OS v" "$log" | sed 's/^/      /'
+    after=$(grep -E '^Mouse: after the undo: ' "$log" | head -n 1)
+    expect_line "$log" "$none" "[1.2] $label: $none"
+    if grep -qxF "$none" "$log" && grep -qE '^Mouse: after the undo: configuration 0x61, ' <<< "$after"; then
+        pass "[1.2] $label: the configuration read back after the undo is 0x61, the logged starting value"
+    else
+        fail "[1.2] $label: the configuration after the undo is not the starting value 0x61 (${after:-no after-the-undo line})"
+    fi
+    if grep -qE ', port 2 not owned, ' <<< "$after"; then
+        pass "[1.2] $label: port 2 not owned after the undo (IRQ1 reads its bytes again, as before the start)"
+    else
+        fail "[1.2] $label: port 2 ownership not given back (${after:-no after-the-undo line})"
+    fi
+    if grep -qE ', IRQ mask 0xfffc \(before the start: 0xfffc\)$' <<< "$after" && grep -qxF "IRQ mask: 0xfffc (expected 0xfffc)" "$log"; then
+        pass "[1.2] $label: the IRQ mask after the undo is 0xfffc, as before the start (IRQ12 and IRQ2 masked, IRQ1 unmasked)"
+    else
+        fail "[1.2] $label: the IRQ mask after the undo is not the one before the start (${after:-no after-the-undo line})"
+    fi
+    if grep -qxF "Mouse fault test: start-up step $1 failed on purpose (the Mouse: lines above); the keyboard and the console go on" "$log" &&
+       grep -q "^System ready\." "$log" && ! grep -q "^Mouse: IRQ12 " "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: no mouse, System ready, no FAILED status line, no panic"
+    else
+        fail "[1.2] $label: no fault-test line or System ready, a mouse started, a FAILED status line, or a panic (see $log)"
+    fi
+    expect_next "$log" "[1.2] $label: the keyboard still works: the console opened and 'version' typed on it answered 'Madire OS v$VERSION (64-bit x86-64, Multiboot 1)'" \
+        "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+}
+mousefail_case 4 "set defaults: no reply (test=mousefail=4)"
+mousefail_case 6 "the configuration with IRQ12 on: no reply (test=mousefail=6)"
+mousefail_case 7 "port 1 back on: no reply (test=mousefail=7)"
+
+# ---- 1.2 stage 8: the splash ----
+
+echo "== [1.2] The splash: test=splash with the dots frozen (still), against make-wallpaper.py (tests/qmp_splash.py)"
+# Test ISOs with one entry, no "textmode" line and "cmdline: test=splash
+# still": the splash shows from the hand-off; test=splash then draws the
+# dots with 0, 1, 2 and 3 lit, each after "display: frame N" and held still
+# for 3 s, and logs the report-only timing lines. tests/qmp_splash.py stops
+# the guest at each marker, takes a screendump and compares it with the
+# splash scripts/make-wallpaper.py renders (the one reference algorithm,
+# rendered before the guest starts: --size). The expected scale of each
+# mode (decision 19) is written out below.
+QMPSPLASH=$(dirname "$0")/qmp_splash.py
+# splash_boot <log> <iso> <WxH to render first, or ""> <steps...>: boots <iso>
+# paused at -m 128M, runs qmp_splash.py with the steps, then stops QEMU.
+# SPL_OUT holds its output (also kept in <log>.splash.txt); SPL_UNTIL is the
+# line it waits for at the end (default "System ready.").
+splash_boot() {
+    local log=$1 iso=$2 size=$3 sock=$OUT/qmp-splash.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    SPL_OUT=$(python3 "$QMPSPLASH" "$sock" "$log" "$SHADOW_P" "$FONTDIR" "$@" ${size:+--size "$size"} \
+              --until "${SPL_UNTIL:-System ready.}" --timeout 180 2>&1)
+    sed 's/^/      /' <<< "$SPL_OUT"
+    echo "$SPL_OUT" > "${log%.log}.splash.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# splash_done <log> <label>: test=splash's last line, its 3 timing lines,
+# and the boot's health.
+splash_done() {
+    if grep -qxF "splash test: done: 4 screens held; the splash still shown" "$1" &&
+       [ "$(grep -cE '^splash timing: .*: [1-9][0-9]* in [0-9]+ ticks, about [0-9]+ us each$' "$1")" -eq 3 ] &&
+       grep -q "^System ready\." "$1" && ! grep -q "FAILED" "$1" && ! grep -qE "PANIC|MISMATCH" "$1"; then
+        pass "[1.2] $2: test=splash done (4 screens held, its 3 timing lines logged); System ready, no FAILED status line, no panic"
+    else
+        fail "[1.2] $2: test=splash not done, not 3 timing lines, no System ready, a FAILED status line, or a panic (see $1)"
+    fi
+}
+# splash_case <name> <mode WxHxD> <percent> <label> [a limine.conf line]
+splash_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log=$OUT/serial-splash-$1.log w h n
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    fbcon_iso "splash$name" "test=splash still" "$extra"
+    SPL_OUT=""
+    if [ -n "$FBC_ISO" ]; then
+        splash_boot "$log" "$FBC_ISO" "${w}x${h}" "screen:dots0:display: frame 1" "screen:dots1:display: frame 2" \
+            "screen:dots2:display: frame 3" "screen:dots3:display: frame 4" "screen:ready:$FB_READY"
+    else : > "$log"; fi
+    grep -E "^Display: |^Splash|^splash test|^display: frame " "$log" | sed 's/^/      /'
+    grep -E "^splash timing: " "$log" | sed "s/^/      SPLASH_TIMING $mode: /"
+    expect "$log" "^Splash: shown on $mode \(scale $pct %, frame 1\); the dots frozen \(boot option 'still'\)$" \
+        "[1.2] $label: Splash: shown on $mode (scale $pct %, frame 1); the dots frozen (boot option 'still')"
+    for n in 1 2 3 4; do
+        if grep -qE "^SCREEN $n size=${w}x${h} held=yes differ=0 \(" <<< "$SPL_OUT"; then
+            pass "[1.2] $label: screen $n (the splash with $((n - 1)) of the 3 dots lit, held still) equals make-wallpaper.py's rendering pixel for pixel"
+        else
+            fail "[1.2] $label: screen $n differs from make-wallpaper.py's rendering, or was not held still ($(grep -E "^(MARKER $n|SCREEN $n|REFERENCE|qmp_splash)" <<< "$SPL_OUT" | tr '\n' ' '))"
+        fi
+    done
+    # 1.2 stage 10: screen 5, at System ready (drawn before that line).
+    if grep -qE "^SCREEN 5 size=${w}x${h} held=yes differ=0 \(" <<< "$SPL_OUT" && grep -qxF "$READY_LINE" "$log"; then
+        pass "[1.2] $label: screen 5 (at System ready the ready state: the dots stopped, \"Press any key to open the console\") equals make-wallpaper.py's rendering pixel for pixel"
+    else
+        fail "[1.2] $label: screen 5 differs from make-wallpaper.py's ready state, or no '$READY_LINE' line ($(grep -E "^(MARKER 5|SCREEN 5|qmp_splash)" <<< "$SPL_OUT" | tr '\n' ' '))"
+    fi
+    splash_done "$log" "$label"
+}
+READY_LINE="Splash: ready: the dots stopped, \"Press any key to open the console\" shown"
+splash_case 1024 1024x768x32 100 "splash at 1024x768x32 (the header's mode)"
+splash_case 1280 1280x1024x32 125 "splash at 1280x1024x32" "resolution: 1280x1024x32"
+
+echo "== [1.2] The splash's timing at 2560x1440x32 (test=splash still; no screens compared)"
+fbcon_iso splash2560 "test=splash still" "resolution: 2560x1440x32"
+LOG=$OUT/serial-splash-2560.log
+if [ -n "$FBC_ISO" ]; then boot_until "$LOG" 150 "$FB_READY" -m 128M -cdrom "$FBC_ISO"; else : > "$LOG"; fi
+grep -E "^Display: |^Splash|^splash test" "$LOG" | sed 's/^/      /'
+grep -E "^splash timing: " "$LOG" | sed "s/^/      SPLASH_TIMING 2560x1440x32: /"
+expect "$LOG" "^Splash: shown on 2560x1440x32 \(scale 200 %, frame 1\); the dots frozen \(boot option 'still'\)$" \
+    "[1.2] splash at 2560x1440x32: Splash: shown on 2560x1440x32 (scale 200 %, frame 1); the dots frozen (boot option 'still')"
+splash_done "$LOG" "splash at 2560x1440x32"
+
+echo "== [1.2] The splash closed by Esc; the next key opens the console (1024x768x32, boot option still)"
+# No test= option: the boot a user sees, with "still" (the dots frozen, the
+# splash's lines logged). At System ready the splash's ready state (1.2
+# stage 10; before it, the splash with none lit); Esc shows the text boot
+# screen and opens nothing; then "x" opens the console.
+ESC_LINE="Splash: closed (Esc): the text boot screen shown"
+fbcon_iso splashesc "still"
+LOG=$OUT/serial-splash-esc.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "screen:ready:$FB_READY" "type:{esc}" \
+        "screen:console:$ESC_LINE" "type:{wait:1}x"
+else : > "$LOG"; fi
+grep -E "^Splash|^System ready|^console: started" "$LOG" | sed 's/^/      /'
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots frozen (boot option 'still')" "$LOG" &&
+   grep -qxF "$READY_LINE" "$LOG"; then
+    pass "[1.2] still at 1024x768x32: at System ready the splash shows its ready state (the dots stopped, \"Press any key to open the console\"), equal to make-wallpaper.py's rendering pixel for pixel"
+else
+    fail "[1.2] still at 1024x768x32: no splash in its ready state at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(MARKER 1|SCREEN 1|REFERENCE|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+if grep -qE "^SCREEN 2 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 2 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
+    pass "[1.2] Esc closes the splash: $ESC_LINE, and the screen equals the reference rendering of the console's cell grid (the boot screen at System ready) pixel for pixel"
+else
+    fail "[1.2] Esc: no closed line, the screen differs from the cell grid's rendering, or the grid is not the boot screen at System ready ($(grep -E '^(MARKER 2|SCREEN 2|ROWS 2|WAIT|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+ESC_AT=$(grep -nxF "$ESC_LINE" "$LOG" | head -n 1 | cut -d: -f1)
+CON_AT=$(grep -nxF "console: started" "$LOG" | head -n 1 | cut -d: -f1)
+if [ -n "$ESC_AT" ] && [ -n "$CON_AT" ] && [ "$CON_AT" -gt "$ESC_AT" ] && [ "$(grep -cxF "console: started" "$LOG")" -eq 1 ] &&
+   ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] Esc opened no console; the next key ('x') opened it (console: started once, after the Esc line); no FAILED status line, no panic"
+else
+    fail "[1.2] Esc: the console started before or without the next key, or a FAILED status line or a panic (see $LOG)"
+fi
+
+echo "== [1.2] The boot option verbose: the text boot screen, no splash (1024x768x32)"
+fbcon_iso splashverbose "verbose"
+LOG=$OUT/serial-splash-verbose.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:console:$FB_READY"; else : > "$LOG"; fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 1 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
+    pass "[1.2] verbose at 1024x768x32: no splash: at System ready the screen equals the reference rendering of the console's cell grid (the boot screen) pixel for pixel"
+else
+    fail "[1.2] verbose at 1024x768x32: the screen at System ready is not the boot screen's rendering ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+if grep -qxF "$FB_READY" "$LOG" && ! grep -q "^Splash" "$LOG" && ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] verbose: System ready, no Splash: line, no FAILED status line, no panic"
+else
+    fail "[1.2] verbose: no System ready, a Splash: line, a FAILED status line, or a panic (see $LOG)"
+fi
+
+echo "== [1.2] A FAILED status line closes the splash (test=splashfail, 1024x768x32)"
+# test=splashfail reports the Console & shell line FAILED on purpose: the
+# splash must close there, and the console is disabled as for a real one.
+FAIL_READY="System ready. Console self-test failed: console disabled."
+fbcon_iso splashfail "test=splashfail"
+LOG=$OUT/serial-splash-fail.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:console:$FAIL_READY"; else : > "$LOG"; fi
+grep -E "^Splash|^Console & shell|^System ready" "$LOG" | sed 's/^/      /'
+CS_AT=$(grep -nE "^Console & shell: +FAILED" "$LOG" | head -n 1 | cut -d: -f1)
+CL_AT=$(grep -nxF "Splash: closed (a FAILED status line): the text boot screen shown" "$LOG" | head -n 1 | cut -d: -f1)
+if grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots move with the boot" "$LOG" &&
+   [ -n "$CS_AT" ] && [ -n "$CL_AT" ] && [ "$CL_AT" -gt "$CS_AT" ]; then
+    pass "[1.2] test=splashfail: the splash shown, then closed by the FAILED status line: Splash: closed (a FAILED status line): the text boot screen shown"
+else
+    fail "[1.2] test=splashfail: no splash, or not closed after the Console & shell FAILED line (see $LOG)"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 1 top='.*' bottom='  $FAIL_READY'$" <<< "$SPL_OUT" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] test=splashfail: at System ready the screen equals the reference rendering of the console's cell grid (the boot screen with the FAILED line) pixel for pixel; no panic"
+else
+    fail "[1.2] test=splashfail: the screen at System ready is not the boot screen's rendering, or a panic ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+
+echo "== [1.2] A panic while the splash shows: the crash screen (test=splashpanic, 1024x768x32)"
+fbcon_iso splashpanic "test=splashpanic"
+LOG=$OUT/serial-splash-panic.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    SPL_UNTIL="System halted. Power off the machine." splash_boot "$LOG" "$FBC_ISO" "" \
+        "screen:console: System halted. Power off the machine."
+else : > "$LOG"; fi
+grep -E "^Splash|KERNEL PANIC|Splash test:|System halted" "$LOG" | sed 's/^/      /'
+if grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots move with the boot" "$LOG" &&
+   grep -qxF " Splash test: a panic while the splash is shown (on purpose)." "$LOG"; then
+    pass "[1.2] test=splashpanic: the splash shown, then the panic: Splash test: a panic while the splash is shown (on purpose)."
+else
+    fail "[1.2] test=splashpanic: no splash, or no panic line (see $LOG)"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 1 top='' bottom='.*'$" <<< "$SPL_OUT"; then
+    pass "[1.2] test=splashpanic: the crash screen equals the reference rendering of the console's cell grid pixel for pixel (the console took the screen back from the splash)"
+else
+    fail "[1.2] test=splashpanic: the crash screen differs from the cell grid's rendering ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+
+echo "== [1.2] The early crash screen: a panic before the framebuffer console (test=earlypanic, 1024x768x32; stage 10)"
+# test=earlypanic panics just before memory_init(): still on the boot page
+# tables, before slot 506 and the console. The crash screen must be drawn
+# directly on the framebuffer (option A, decided at stage 8) and equal the
+# reference rendering of the console's cell grid, the panic message on it.
+EP_LINE=" Early panic test: a panic before the framebuffer console (on purpose)."
+EP_DIRECT="Display: the crash screen drawn directly on the framebuffer (the console was not on it yet)"
+fbcon_iso earlypanic "test=earlypanic"
+LOG=$OUT/serial-early-panic.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    SPL_UNTIL="System halted. Power off the machine." splash_boot "$LOG" "$FBC_ISO" "" \
+        "screen:console: System halted. Power off the machine." --rows
+else : > "$LOG"; fi
+grep -E "^Display|^Early panic|KERNEL PANIC|Early panic test:|System halted" "$LOG" | sed 's/^/      /'
+if grep -qE "^Display: framebuffer 1024x768x32 " "$LOG" && grep -qxF "$EP_DIRECT" "$LOG" && grep -qxF "$EP_LINE" "$LOG" &&
+   ! grep -q "^Display: console on the framebuffer" "$LOG" && ! grep -q "^Memory" "$LOG"; then
+    pass "[1.2] test=earlypanic: the panic before memory, paging and the console, on a 1024x768x32 framebuffer: $EP_DIRECT"
+else
+    fail "[1.2] test=earlypanic: no framebuffer, no early panic, the console already on the framebuffer, or no '$EP_DIRECT' line (see $LOG)"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qxF "ROW 1 3 '$EP_LINE'" <<< "$SPL_OUT"; then
+    pass "[1.2] test=earlypanic: the crash screen equals the reference rendering of the console's cell grid pixel for pixel, the panic message on row 3"
+else
+    fail "[1.2] test=earlypanic: the crash screen differs from the cell grid's rendering, or the message is not on row 3 ($(grep -E '^(MARKER 1|SCREEN 1|ROW 1 3|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi

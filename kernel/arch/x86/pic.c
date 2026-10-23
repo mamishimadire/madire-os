@@ -65,6 +65,9 @@ void pic_unmask(uint8_t irq)
 {
     uint16_t port = irq < 8 ? PIC1_DATA : PIC2_DATA;
     outb(port, inb(port) & (uint8_t)~(1u << (irq & 7)));
+    /* 1.2: a slave line reaches the CPU only through the master's IRQ 2. */
+    if (irq >= 8)
+        outb(PIC1_DATA, inb(PIC1_DATA) & (uint8_t)~(1u << 2));
 }
 
 void pic_mask(uint8_t irq)

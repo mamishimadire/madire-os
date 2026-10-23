@@ -4,7 +4,8 @@
 # first three lines and the closing brace of fixture_normal_boot and blank
 # lines, every line below was moved unchanged from the single script.
 # 0.13 stage 3a adds limine_iso and limine_tree, and builds the keylog test
-# ISO with Limine instead of GRUB.
+# ISO with Limine instead of GRUB. 1.2 stage 7 adds the mouse sessions'
+# helpers at the end (parts 1 and stress).
 
 # limine_iso <dir> <iso> (0.13): makes a bootable ISO from <dir> as `make iso`
 # does (xorriso, then limine bios-install). <dir> must hold boot/limine/ with
@@ -220,4 +221,57 @@ klock_bound_ok() {
     local w b a h
     read -r w b a h <<< "$(sed -nE 's/^Filesystem lock test: thread 0: longest wait ([0-9]+) ticks, bound ([0-9]+) \(at most ([0-9]+) tickets ahead x \(longest hold ([0-9]+) \+ 1\) \+ 1\);.*/\1 \2 \3 \4/p' "$1" | head -n 1)"
     [ -n "${h:-}" ] && [ "$b" -eq $((a * (h + 1) + 1)) ] && [ "$w" -le "$b" ]
+}
+
+# ---- 1.2 stage 7: the mouse sessions (parts 1 and stress) ----
+
+# tests/qmp_mouse.py injects every packet over QMP (input-send-event) and
+# compares each of the kernel's "mouse: packet" lines with the one it
+# predicts (the motion, the buttons, the edges and, on the framebuffer, the
+# clamped position); at "screen" it compares the screendump with
+# tests/fbcon_ref.py's cell grid plus tests/pointer_ref.py's pointer (the
+# sprite's rows from kernel/display/pointer_core.c, the colours from the
+# Design Guide). QEMU's controller starts with configuration 0x61 (port 2's
+# clock off; stage 3); VirtualBox's 0x45 is a unit-test case (test_mouse).
+QMPMOUSE=$(dirname "$0")/qmp_mouse.py
+MOUSE_START="Mouse: PS/2 aux port enabled and tested, defaults set, reporting on; configuration 0x61 -> 0x43 (port 2 clock on, IRQ12 on)"
+MOUSE_MASK="Mouse: IRQ12 and the cascade IRQ2 unmasked: IRQ mask 0xeff8 (expected 0xeff8)"
+MOUSE_READY="Mouse test: ready: every packet is logged; the test ends 5 s after the last packet, or after 60 s without any"
+# mouse_boot <log> <seconds> <qemu disk args> -- <qmp_mouse.py args...>:
+# boots paused with a QMP socket at -m 128M, runs qmp_mouse.py, then stops
+# QEMU. MB_OUT holds its output (also kept in <log>.mouse.txt).
+mouse_boot() {
+    local log=$1 secs=$2 sock=$OUT/qmp-mouse.sock t0 qpid qargs=()
+    shift 2
+    while [ "$1" != "--" ]; do qargs+=("$1"); shift; done
+    shift
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout "$secs" qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M "${qargs[@]}" >/dev/null 2>&1 &
+    qpid=$!
+    MB_OUT=$(python3 "$QMPMOUSE" "$sock" "$log" "$@" --timeout $((secs - 15)) 2>&1)
+    grep -v '^MISMATCH ' <<< "$MB_OUT" | sed 's/^/      /'
+    grep '^MISMATCH ' <<< "$MB_OUT" | head -n 5 | sed 's/^/      /'
+    echo "$MB_OUT" > "${log%.log}.mouse.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# expect_line <log> <line> <description>: <line> is a whole line of <log>.
+expect_line() {
+    if grep -qxF -- "$2" "$1"; then pass "$3"; else fail "$3 (no line '$2' in $1)"; fi
+}
+# mouse_done_ok <log> <packets>: test=mouse's summary: every packet from
+# 3 bytes each, no bad byte, overflow or drop; IRQ12 delivered once per
+# byte read (plus at most one edge latched while it was masked, with
+# nothing waiting), never with a port 1 byte. Prints the figures.
+mouse_done_ok() {
+    local d i b e
+    d=$(grep -E '^Mouse test: done: ' "$1" | head -n 1)
+    echo "      ${d:-no Mouse test: done line}"
+    read -r i b e <<< "$(sed -nE "s/^Mouse test: done: $2 packets from $(( $2 * 3 )) bytes \(0 bad bytes, 0 overflows, 0 dropped: queue full\); IRQ12 delivered ([0-9]+) times: ([0-9]+) bytes read, ([0-9]+) with nothing waiting, 0 with a port 1 byte$/\1 \2 \3/p" <<< "$d")"
+    [ -n "${e:-}" ] && [ "$b" -eq $(( $2 * 3 )) ] && [ "$e" -le 1 ] && [ "$i" -eq $(( b + e )) ]
 }

@@ -21,6 +21,8 @@
 # 5. The VFS lock under ring-3 load (1.0 stage 5): test=filecontend, 10
 #    boots, one check each; FILECONTEND lines and a FILECONTEND_SPREAD
 #    summary report the holds, the hand-off gaps, the waits and the turns.
+# 6. The mouse burst (1.2 stage 7): test=mouse, 1000 packets over QMP,
+#    every one decoded exactly; two checks.
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -301,3 +303,24 @@ for n in "${FC_NAMES[@]}"; do
     row+=" ${n// /_}=$(printf '%s' "${FC_ALL[$n]}" | spread)"
 done
 echo "$row"
+
+echo "== [stress] The mouse burst: 1000 packets under test=mouse (1.2 stage 7)"
+# tests/qmp_mouse.py's burst: 1000 moves (every 25th also a left button
+# change), sent as fast as the kernel decodes them with never more than 4
+# waiting (the PS/2 device's own queue holds 5, so it never merges two);
+# each of the kernel's 1000 packet lines must be the predicted one, in
+# order, and test=mouse's counts must show every byte through IRQ12 and
+# none dropped. QEMU -kernel: no framebuffer, no pointer.
+LOG=$OUT/serial-mouse-burst.log
+MB_OUT=""
+mouse_boot "$LOG" 300 -kernel "$KERNEL" -append "test=mouse" -- "wait:$MOUSE_READY" burst:1000 --until "System ready."
+if grep -qE "^BURST sent=1000 exact=1000 " <<< "$MB_OUT" && grep -qxF "PACKETS sent=1000 exact=1000" <<< "$MB_OUT"; then
+    pass "[stress] mouse burst: the 1000 packets decoded exactly, in order (none lost, merged or changed)"
+else
+    fail "[stress] mouse burst: not every packet decoded exactly ($(grep -E '^(BURST|PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+if mouse_done_ok "$LOG" 1000 && grep -q "^System ready\." "$LOG" && ! grep -qE "PANIC|FAILED" "$LOG"; then
+    pass "[stress] mouse burst: test=mouse counted 1000 packets from 3000 bytes, IRQ12 once per byte, 0 bad bytes, overflows or drops; System ready, no panic"
+else
+    fail "[stress] mouse burst: the counts are not 1000 packets from 3000 bytes through IRQ12, or no System ready, or a panic (see $LOG)"
+fi

@@ -30,8 +30,9 @@ KERNEL_VIRT_OFFSET equ 0xFFFFFFFF80000000   ; = VM_KERNEL_VIRT_OFFSET
 
 MB_ALIGN    equ 1 << 0              ; align loaded modules on page boundaries
 MB_MEMINFO  equ 1 << 1              ; ask the loader for a memory map
+MB_VIDEO    equ 1 << 2              ; 1.2: ask for the video mode below
 MB_AOUT     equ 1 << 16             ; the load addresses below are valid
-MB_FLAGS    equ MB_ALIGN | MB_MEMINFO | MB_AOUT
+MB_FLAGS    equ MB_ALIGN | MB_MEMINFO | MB_VIDEO | MB_AOUT
 MB_MAGIC    equ 0x1BADB002
 MB_CHECKSUM equ -(MB_MAGIC + MB_FLAGS)
 
@@ -56,6 +57,13 @@ mb_header:
     dd __data_end_phys              ; load_end_addr: the file ends here
     dd __kernel_end_phys            ; bss_end_addr: ALL of .bss (tables, stacks)
     dd _start                       ; entry_addr
+; 1.2: the preferred video mode (docs/plans/1.2.md, decision 2). Only a
+; request: the loader may give another mode or text mode (Limine does with
+; "textmode: yes"); kernel/display/ reads what was given.
+    dd 0                            ; mode_type: linear framebuffer
+    dd 1024                         ; width
+    dd 768                          ; height
+    dd 32                           ; depth
 
 ; ---- 32-bit stub ----
 section .boot32

@@ -267,6 +267,12 @@ if python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-progmod.bin" --log "$LOG" --wait '^
 else
     fail "[0.11] program modules: screen check failed (see $OUT/screen-progmod.txt)"
 fi
+# 1.2 stage 10b: "display" on a -kernel boot (VGA text). The first key,
+# x, opens the console and is not typed (as at every boot since 0.5).
+python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "x{wait:1}display{ret}" --gap 0.05 \
+    --done "Screen:  VGA text 80x25" --done-timeout 20 >/dev/null 2>&1
+expect_lines "$LOG" "[1.2] display under -kernel (VGA text): 'display' typed after the key that opens the console shows Screen:  VGA text 80x25" \
+    "^madire> display$" "^Screen:  VGA text 80x25$"
 kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
 
 # The 30 fixtures as modules, 10 per boot (each module takes 2 of the 32
@@ -385,16 +391,50 @@ fi
 LOG=$OUT/serial-iso-screen.log
 SOCK=$OUT/qmp.sock
 rm -f "$LOG" "$SOCK"
-timeout 40 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
+# 1.2 stage 10b (D2): the real ISO boots in graphics, so its screen is a
+# framebuffer and 0xB8000 holds nothing it shows. Row 23 is read from the
+# console's cell grid instead: the kernel's vga_shadow (its address in
+# madire.elf), whose cells have the VGA buffer's layout and hold the text
+# boot screen behind the splash (kernel/display/splash.h).
+CELLS_V=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+CELLS_P=$(printf '0x%x' $(( 0x${CELLS_V:-0} - 0xffffffff80000000 )))
+echo "      the console's cell grid (vga_shadow) at 0x${CELLS_V:-?} (physical $CELLS_P)"
+timeout 60 qemu-system-x86_64 -display none -no-reboot -serial file:"$LOG" \
     -qmp unix:"$SOCK",server=on,wait=off -cdrom "$ISO" >/dev/null 2>&1 &
 QPID=$!
 for i in $(seq 80); do grep -q "System ready\." "$LOG" 2>/dev/null && break; sleep 0.5; done
-if python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-iso.bin" --log "$LOG" --wait '^System ready\.' 1 \
-       --not-row 23 'Program module|Boot module|ELF' > "$OUT/screen-iso.txt" 2>&1 &&
+if [ -n "$CELLS_V" ] &&
+   python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-iso.bin" --log "$LOG" --wait '^System ready\.' 1 \
+       --addr "$CELLS_P" --not-row 23 'Program module|Boot module|ELF' > "$OUT/screen-iso.txt" 2>&1 &&
    grep -q "^Program modules: 7 accepted" "$LOG"; then
-    pass "[0.11] normal boot: no module line on the screen (row 23 read from the VGA buffer)"
+    pass "[0.11] normal boot: no module line on the screen (row 23 read from the console's cell grid)"
 else
     fail "[0.11] normal boot: screen check failed (see $OUT/screen-iso.txt)"
+fi
+# 1.2 stage 10b: "display" on the real ISO (graphics). The first key, x,
+# closes the splash and opens the console, and is not typed (decision 17;
+# the same key path as the text boot screen's since 0.5); every later key
+# is typed: "madire> display" exactly, no x before it.
+python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "x{wait:1}display{ret}" --gap 0.05 \
+    --done "Scale:   100 % (console: 80x25 cells of 8x16 pixels)" --done-timeout 20 >/dev/null 2>&1
+expect_lines "$LOG" "[1.2] display on the real ISO (graphics): 'display' typed whole after the key that closes the splash shows Screen:  framebuffer 1024x768, 32 bits per pixel and Scale:   100 % (console: 80x25 cells of 8x16 pixels)" \
+    "^madire> display$" "^Screen:  framebuffer 1024x768, 32 bits per pixel$" \
+    "^Scale:   100 % \(console: 80x25 cells of 8x16 pixels\)$"
+reject "$LOG" "^madire> x|PANIC|events dropped" \
+    "[1.2] real ISO (graphics): the key that closed the splash was not typed; no panic, no dropped key"
+# The console's screen right after "clear" against tests/screen_ref.py's
+# reference for it, the one the VirtualBox graphics group compares its
+# screenshot with (scripts/vbox-acceptance.ps1): proven here on the
+# kernel's own rendering.
+python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "clear{ret}" --gap 0.05 \
+    --done "console: cleared" --done-timeout 20 >/dev/null 2>&1
+sleep 1
+SREF=$(python3 "$(dirname "$0")/screen_ref.py" check-console "$SOCK" 2>&1)
+echo "      $SREF"
+if grep -qE "^CONSOLE size=1024x768 differ=0 " <<< "$SREF"; then
+    pass "[1.2] real ISO (graphics): the console's screen after clear equals tests/screen_ref.py's reference pixel for pixel (the VirtualBox graphics group's reference)"
+else
+    fail "[1.2] real ISO (graphics): the console after clear differs from tests/screen_ref.py's reference ($SREF)"
 fi
 kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
 

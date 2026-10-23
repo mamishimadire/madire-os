@@ -9,7 +9,14 @@
 # the 0.13 report's comparison with v0.12's kernel (decided no check) removed.
 # 1.1 stage 1: the default entry's title is "Boot Madire OS" (C1), and the
 # [1.1] checks of the boot menu's global options and its wallpaper (S1-S3)
-# are added at the end.
+# are added at the end. 1.2 stage 2: the size report (no check) at the end;
+# stage 3 labels its lines shipped or test-only. 1.2 stage 6: the [1.2]
+# checks of the console font (pinned files, regeneration, the ISO's
+# notices, the name) before the size report. 1.2 stage 8: after them, the
+# integer make-wallpaper.py against v1.1's wallpaper, the splash's
+# generated data, and the kernel's splash code (tests/splashdump.c) against
+# make-wallpaper.py in five modes. 1.2 stage 10: the splash's ready state
+# in two more.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -55,8 +62,10 @@ fi
 
 echo "== [0.13] scripts/check-multiboot.py: the real kernel, and each refusal"
 MBOUT=$(python3 "$MBCHECK" "$KERNEL")
-if [ $? -eq 0 ] && grep -qE '^MULTIBOOT OK: header at offset [0-9]+, flags 0x00010003, a\.out kludge: load 0x00100000-0x[0-9a-f]{8}, bss end 0x[0-9a-f]{8}, entry 0x[0-9a-f]{8}$' <<< "$MBOUT"; then
-    pass "[0.13] check-multiboot.py accepts the real kernel (flags 0x00010003, a.out kludge, loaded at 1 MiB)"
+# 1.2 stage 5 (docs/plans/1.2.md, D1): flags 0x00010003 -> 0x00010007, the
+# video request (bit 2) added; the mode fields are checked by [1.2] below.
+if [ $? -eq 0 ] && grep -qE '^MULTIBOOT OK: header at offset [0-9]+, flags 0x00010007, a\.out kludge: load 0x00100000-0x[0-9a-f]{8}, bss end 0x[0-9a-f]{8}, entry 0x[0-9a-f]{8}$' <<< "$MBOUT"; then
+    pass "[0.13] check-multiboot.py accepts the real kernel (flags 0x00010007, a.out kludge, video mode requested, loaded at 1 MiB)"
 else
     fail "[0.13] check-multiboot.py on the real kernel: $MBOUT"
 fi
@@ -222,4 +231,239 @@ if [ "$(printf '%s\n' "$SLOGO" | grep -c .)" -eq 4 ] && [ "$SLOGO" = "$SWP" ]; t
     pass "[1.1] make-wallpaper.py: the M's four strokes equal kernel/logo.c's"
 else
     fail "[1.1] make-wallpaper.py: the M's strokes differ from kernel/logo.c's"
+fi
+
+# ---- 1.2: the video request, and text mode until the switch stage ----
+
+echo "== [1.2] The Multiboot header's video request (stage 5)"
+# The mode fields after the a.out kludge's (header offsets 32-44): a linear
+# framebuffer (mode_type 0) of 1024x768x32 (docs/plans/1.2.md, decision 2).
+MBMODE=$(python3 - "$KERNEL" <<'EOF' 2>&1
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+for off in range(0, min(len(d), 8192) - 48 + 1, 4):
+    magic, flags, checksum = struct.unpack_from("<III", d, off)
+    if magic == 0x1BADB002 and (magic + flags + checksum) & 0xFFFFFFFF == 0:
+        print("MODE flags 0x%08x mode_type %d width %d height %d depth %d" % ((flags,) + struct.unpack_from("<IIII", d, off + 32)))
+        break
+else:
+    print("MODE no header")
+EOF
+)
+echo "      $MBMODE"
+if [ "$MBMODE" = "MODE flags 0x00010007 mode_type 0 width 1024 height 768 depth 32" ]; then
+    pass "[1.2] the Multiboot header asks for a 1024x768x32 linear framebuffer (flag bit 2; mode_type 0, width 1024, height 768, depth 32)"
+else
+    fail "[1.2] the Multiboot header's video request: $MBMODE"
+fi
+
+echo "== [1.2] limine.conf: the default entry in graphics, every other entry in text mode (stage 10b, decision 3)"
+# Since the switch (stage 10b): the first entry (the default one, "/Boot
+# Madire OS") holds no textmode line; every other entry (a line starting
+# "/" with a "protocol:" line: the Diagnostics) holds exactly one
+# "    textmode: yes" and no other textmode line; no textmode line outside
+# an entry. (Stage 5's check: every entry exactly one "textmode: yes".)
+TM=$(awk 'function done() { if (blk == "") return
+                            if (proto && ent == 0) { ent++; def = blk; if (tm || other) bad = bad blk " (the default entry: " tm " textmode: yes, " other " other); " }
+                            else if (proto) { ent++; if (tm != 1 || other) bad = bad blk " (" tm " textmode: yes, " other " other); " }
+                            else if (tm || other) bad = bad blk " (a textmode line, no protocol); " }
+          /^\// { done(); blk = $0; proto = 0; tm = 0; other = 0; next }
+          /^[ \t]*textmode:/ { if (blk == "") bad = bad "a textmode line before the first entry; "
+                               else if ($0 == "    textmode: yes") tm++; else other++; next }
+          /^[ \t]*protocol:/ { proto = 1 }
+          END { done(); printf "%d|%s|%s\n", ent, def, bad }' "$OUT/limine.conf")
+TMN=${TM%%|*}
+TMDEF=${TM#*|}
+TMDEF=${TMDEF%%|*}
+TMBAD=${TM##*|}
+echo "      $TMN entries; the default entry: ${TMDEF:-none}"
+if [ -z "$TMBAD" ] && [ "$TMDEF" = "/Boot Madire OS" ] && [ "$TMN" -gt 1 ]; then
+    pass "[1.2] limine.conf: the default entry boots in graphics (no textmode line) and every other entry in text mode (one 'textmode: yes' in each of the other $((TMN - 1)) entries)"
+else
+    fail "[1.2] limine.conf: text mode: ${TMBAD:-the default entry '${TMDEF:-none}', $TMN entries}"
+fi
+
+# ---- 1.2 stage 6: the console font (decision 8) ----
+
+echo "== [1.2] third_party/terminus: the pinned font files (stage 6)"
+# The hashes are written here (as the Limine package's are above), not read
+# from the repository's SHA256SUMS: the BDF files are the release package's
+# (terminus-font-4.49.1.tar.gz, SHA-256 d961c1b7...ef79), OFL.txt its
+# OFL.TXT with LF line endings.
+TPIN="ter-u16n.bdf 5197662b22bf9f3e68d4af9f969a7fefa3edae40dd82ae969a147381130fb4ae
+ter-u16b.bdf 92861fecd6f94c5ecc764fc43df5a69eb000ae13a75f652c6525db0495274f0a
+ter-u20n.bdf b3868699145f51f1c059b955110c35db990d10a07536995cbcf7a4a901f82178
+ter-u20b.bdf 3051598391e5f7f59f09dc5aa26a97700fcbbe57ac315495878c52fc74aba500
+ter-u24n.bdf ff640e9e097983355e8f70ed8fb645bd850184a0d590de17f6fc9ceec1bf8eaf
+ter-u24b.bdf 759e0dbbd137d0132cee5d83b681cea1c8a656f161e04f83e121525ea4eb1824
+ter-u32n.bdf 5ad01972d58adfee75077e2c65ba5947e260043031664cb8ad8f98b5473b23a4
+ter-u32b.bdf f6295e92ebbf95afbb6274f4621608d255c1287ec90d3fefbc50f077bf09dab4
+OFL.txt 29e51260692fca30c51c3c81c5aa12205cfaa1be7180bf5e7c8192e745e78308"
+TBAD=""
+while read -r f want; do
+    got=$(sha256sum < "$REPO/third_party/terminus/$f" 2>/dev/null | cut -d' ' -f1)
+    echo "      third_party/terminus/$f: ${got:-missing}"
+    [ "$got" = "$want" ] || TBAD="$TBAD $f"
+done <<< "$TPIN"
+if [ -z "$TBAD" ]; then pass "[1.2] third_party/terminus: the 8 BDF files and OFL.txt have their pinned SHA-256 (Terminus 4.49.1)"
+else fail "[1.2] third_party/terminus: not the pinned file:$TBAD"; fi
+
+echo "== [1.2] scripts/make-font.py: the font C files regenerate byte-identically (stage 6)"
+# The build converted all 8 files (build/font/); converted again here into
+# a fresh folder, each must be byte-identical.
+rm -rf "$OUT/font-regen" && mkdir -p "$OUT/font-regen"
+FBAD="" FN=0
+for s in 8x16:16 10x20:20 12x24:24 16x32:32; do
+    for w in n b; do
+        name=font_${s%%:*}; [ "$w" = b ] && name=${name}_bold
+        PYTHONDONTWRITEBYTECODE=1 python3 "$REPO/scripts/make-font.py" "$REPO/third_party/terminus/ter-u${s##*:}$w.bdf" \
+            "$OUT/font-regen/$name.c" "$name" --sums "$REPO/third_party/terminus/SHA256SUMS" | sed 's/^/      /'
+        FN=$((FN + 1))
+        echo "      $name.c: build $(sha256sum < "$OUT/font/$name.c" 2>/dev/null | cut -c1-16), again $(sha256sum < "$OUT/font-regen/$name.c" 2>/dev/null | cut -c1-16)"
+        [ -s "$OUT/font-regen/$name.c" ] && cmp -s "$OUT/font/$name.c" "$OUT/font-regen/$name.c" || FBAD="$FBAD $name.c"
+    done
+done
+if [ "$FN" -eq 8 ] && [ -z "$FBAD" ]; then pass "[1.2] scripts/make-font.py regenerates the 8 font C files byte-identically from the pinned BDF files"
+else fail "[1.2] font C files not regenerated byte-identically:${FBAD:- none made}"; fi
+
+echo "== [1.2] The ISO: the font's notices; the font never named in the interface (stage 6)"
+rm -rf "$OUT/iso-assets" && mkdir -p "$OUT/iso-assets"
+ABAD=""
+for f in THIRD_PARTY_ASSETS.md third_party/terminus/OFL.txt; do
+    xorriso -osirrox on -indev "$ISO" -extract "/$f" "$OUT/iso-assets/${f##*/}" >/dev/null 2>&1
+    got=$(sha256sum < "$OUT/iso-assets/${f##*/}" 2>/dev/null | cut -d' ' -f1)
+    want=$(sha256sum < "$REPO/$f" | cut -d' ' -f1)
+    echo "      /$f: ${got:-missing} (repository: $want)"
+    [ -n "$got" ] && [ "$got" = "$want" ] || ABAD="$ABAD $f"
+done
+if [ -z "$ABAD" ]; then pass "[1.2] ISO: /THIRD_PARTY_ASSETS.md and /third_party/terminus/OFL.txt present and byte-identical to the repository's"
+else fail "[1.2] ISO: missing or different from the repository's:$ABAD"; fi
+# OFL: the converted font is a Modified Version and must not use the
+# Reserved Font Name, so nothing the kernel can show names the font.
+TNAME="madire.kernel $(grep -c 'Terminus' "$OUT/madire.kernel"), limine.conf $(grep -c 'Terminus' "$OUT/limine.conf")"
+echo "      lines naming the font: $TNAME"
+if [ -s "$OUT/madire.kernel" ] && ! grep -q 'Terminus' "$OUT/madire.kernel" "$OUT/limine.conf"; then
+    pass "[1.2] the font is never named in the interface: no 'Terminus' in madire.kernel or limine.conf"
+else
+    fail "[1.2] 'Terminus' found: $TNAME"
+fi
+
+# ---- 1.2 stage 8: the wallpaper's integer maths and the splash ----
+
+echo "== [1.2] make-wallpaper.py in integer maths: v1.1's boot-menu wallpaper, pixel for pixel (stage 8)"
+# The script has no floating point since stage 8. Run with --version 1.1,
+# its pixels must be those of the wallpaper.png v1.1's ISO shipped (made by
+# the 1.1 floating-point script; run 39836152722, kernel a21b0cd6): the
+# SHA-256 of their RGB bytes, row by row, is written out below. The PNG's
+# own bytes depend on zlib, so the pixels are compared (S2a compares the
+# shipped file's bytes in one job, as before).
+WP11=$OUT/wallpaper-v1.1.png
+rm -f "$WP11"
+python3 "$WPGEN" "$WP11" --version 1.1 2>&1 | sed 's/^/      /'
+WP11RGB=$(python3 - "$WP11" <<'EOF' 2>&1
+import hashlib, struct, sys, zlib
+d = open(sys.argv[1], "rb").read()
+i, idat, w, h = 8, b"", 0, 0
+while i + 8 <= len(d):
+    n, kind = struct.unpack(">I", d[i:i + 4])[0], d[i + 4:i + 8]
+    if kind == b"IHDR":
+        w, h = struct.unpack(">II", d[i + 8:i + 16])
+    if kind == b"IDAT":
+        idat += d[i + 8:i + 8 + n]
+    i += 12 + n
+raw = zlib.decompress(idat)
+rows = [raw[y * (w * 3 + 1):(y + 1) * (w * 3 + 1)] for y in range(h)]
+if any(r[0] != 0 for r in rows):
+    sys.exit("a row filter other than 0")
+print(f"{w}x{h} {hashlib.sha256(b''.join(r[1:] for r in rows)).hexdigest()}")
+EOF
+)
+echo "      RGB pixels: $WP11RGB (v1.1's: 1024x768 4d228736e103df153c041b196c401e3c7b06464968dee12b3d7ea98ed1945318)"
+if [ "$WP11RGB" = "1024x768 4d228736e103df153c041b196c401e3c7b06464968dee12b3d7ea98ed1945318" ]; then
+    pass "[1.2] make-wallpaper.py in integer maths renders v1.1's boot-menu wallpaper pixel for pixel (--version 1.1: the RGB bytes of the v1.1 ISO's wallpaper.png, SHA-256 4d228736...)"
+else
+    fail "[1.2] make-wallpaper.py --version 1.1: the pixels are not v1.1's ($WP11RGB)"
+fi
+
+echo "== [1.2] The splash's generated data (stage 8)"
+# build/gen/splash_data.h: made by the build, made again here; and its copy
+# of the M against kernel/logo.c's stroke table (SLOGO, read for S3 above).
+SDGEN=$OUT/splash_data-regenerated.h
+rm -f "$SDGEN"
+PYTHONDONTWRITEBYTECODE=1 python3 "$WPGEN" --emit-c "$SDGEN"
+echo "      splash_data.h: build $(sha256sum < "$OUT/gen/splash_data.h" 2>/dev/null | cut -c1-16), again $(sha256sum < "$SDGEN" 2>/dev/null | cut -c1-16)"
+if [ -s "$SDGEN" ] && cmp -s "$OUT/gen/splash_data.h" "$SDGEN"; then
+    pass "[1.2] make-wallpaper.py --emit-c regenerates build/gen/splash_data.h byte-identically"
+else
+    fail "[1.2] build/gen/splash_data.h missing or not regenerated byte-identically"
+fi
+SDLOGO=$(awk '/splash_logo_strokes\[4\]\[4\] = \{/ { on = 1; next } on && /^\};/ { exit }
+              on { gsub(/[{},]/, " "); $1 = $1; if (NF == 4) print }' "$OUT/gen/splash_data.h" 2>/dev/null)
+echo "      splash_data.h: ${SDLOGO//$'\n'/; }"
+if [ "$(printf '%s\n' "$SDLOGO" | grep -c .)" -eq 4 ] && [ "$SDLOGO" = "$SLOGO" ]; then
+    pass "[1.2] the splash's copy of the M (build/gen/splash_data.h) equals kernel/logo.c's four strokes"
+else
+    fail "[1.2] the splash's copy of the M differs from kernel/logo.c's strokes"
+fi
+
+echo "== [1.2] The kernel's splash code against make-wallpaper.py (tests/splashdump.c, stage 8)"
+# wallpaper_core.c built as a host tool (build/splashdump, with the console
+# fonts) draws the splash as the kernel does; make-wallpaper.py --splash, the
+# reference, draws it from its own code and the BDF files. Four modes, the
+# four scales and both pixel formats, one dot phase each. 1.2 stage 10: the
+# ready state in two modes (splashdump draws it over the splash as the
+# kernel does at System ready; make-wallpaper.py draws it whole).
+splash_static() {   # splash_static <W> <H> <bytes per pixel> <phase or ready> <scale %>
+    local a=$OUT/splash-c-$1x$2-$4.ppm b=$OUT/splash-py-$1x$2-$4.ppm t0 n what="$4 of the 3 dots lit"
+    [ "$4" != ready ] || what="the ready state drawn over it at System ready"
+    rm -f "$a" "$b"
+    "$OUT/splashdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    PYTHONDONTWRITEBYTECODE=1 python3 "$WPGEN" --splash "$1x$2" --phase "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), $what: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.2] the kernel's splash code at $1x$2x$(($3 * 8)) (scale $5 %, $what) equals make-wallpaper.py's rendering pixel for pixel"
+    else
+        fail "[1.2] the kernel's splash code at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+splash_static 800 600 3 1 100
+splash_static 1024 768 4 2 100
+splash_static 1280 1024 4 3 125
+splash_static 1920 1080 4 1 150
+splash_static 2560 1440 4 0 200
+splash_static 800 600 3 ready 100
+splash_static 1280 1024 4 ready 125
+
+# ---- 1.2: the size report (decides no check) ----
+
+echo "== Size report (1.2 stage 2; report only)"
+# Stage 2 (docs/plans/1.2.md, decision 13): `size` of the kernel and of every
+# program ELF, and the kernel margin below 4 MiB (computed as the workflow
+# does) against the 524,288-byte trigger for a size-gate stage. Every line
+# starts with SIZE or KERNEL_MARGIN_TRIGGER, so tests/combine-shards.sh can
+# repeat them; none is a PASS or FAIL line. 1.2 stage 3: each file's line
+# ends with its label: "shipped" (madire.elf, and every user/*.elf, which
+# the kernel links as a built-in program) or "test-only" (test-user/*.elf,
+# never in the kernel or the ISO).
+(cd "$OUT" && size madire.elf user/*.elf test-user/*.elf 2>&1) |
+    awk '$NF == "filename" { print $0 "\tlabel"; next }
+         $NF == "madire.elf" || $NF ~ /^user\// { print $0 "\tshipped"; next }
+         $NF ~ /^test-user\// { print $0 "\ttest-only"; next }
+         { print }' | sed 's/^/SIZE /'
+KEND=$(nm -n "$OUT/madire.elf" 2>/dev/null | awk '$3 == "__kernel_end" { print $1; exit }')
+if [ -n "$KEND" ]; then
+    KMARGIN=$(( 0x400000 - (0x$KEND - 0xffffffff80000000) ))
+    if [ "$KMARGIN" -ge 524288 ]; then KVERDICT="at or above the trigger: no gate stage"
+    else KVERDICT="BELOW the trigger: STOP for a gate stage"; fi
+    echo "KERNEL_MARGIN_TRIGGER KERNEL_MARGIN_BYTES $KMARGIN, trigger 524288 (decision 13): $KVERDICT"
+else
+    echo "KERNEL_MARGIN_TRIGGER KERNEL_MARGIN_BYTES unknown (no __kernel_end in madire.elf), trigger 524288 (decision 13)"
 fi

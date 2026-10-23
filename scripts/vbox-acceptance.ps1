@@ -22,7 +22,8 @@ param(
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
     [string]$OutDir = "",               # default: build\vbox-acceptance
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow
+    [string[]]$Only = @(),              # menu, boot, graphics, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow
+    [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
     [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
@@ -115,6 +116,12 @@ foreach ($c in $ctls) {
         if ($k -notin @("SATA-0-0", "SATA-1-0") -and $info[$k] -ne "none") { $problems += "$k holds '$($info[$k])' (expected nothing)" }
     }
 }
+# 1.2 stage 10b: the display and the pointing device, as the stage 3 probe
+# found them (docs/plans/1.2.md: VBoxSVGA, 128 MB VRAM; decision 11: the
+# USB tablet kept). Read only, like every check here.
+if ($info["graphicscontroller"] -ne "vboxsvga") { $problems += "graphics controller is '$($info['graphicscontroller'])' (expected vboxsvga)" }
+if ($info["vram"] -ne "128") { $problems += "video memory is $($info['vram']) MB (expected 128)" }
+if ($info["hidpointing"] -ne "usbtablet") { $problems += "pointing device is '$($info['hidpointing'])' (expected usbtablet)" }
 if ($info["VMState"] -notin @("poweroff", "aborted")) {
     $problems += "the VM is '$($info['VMState'])'; power it off first (nothing is discarded here)"
 }
@@ -134,10 +141,101 @@ $summary = Join-Path $OutDir "$Prefix-summary.txt"
 $results = New-Object System.Collections.Generic.List[string]
 function Note([string]$s) { Write-Host $s; $script:results.Add($s) }
 
-Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else)"
+Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else; display VBoxSVGA, 128 MB VRAM; pointing device USB tablet)"
 foreach ($f in @($Iso, $ModuleIso)) {
     Note ("ISO: {0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf))
 }
+
+# ---- 1.2 stage 10b: the reference screens (made here, from this tree) ----
+# The menu's wallpaper and its layout (scripts/make-wallpaper.py, the one
+# source; the ISO's /boot/limine/wallpaper.png is byte-identical to it, the
+# [1.1] S2a check): Limine's menu is told by its header box, since the
+# kernel's own screen is 1024x768 too (docs/plans/1.2.md, D2). For the
+# graphics group also the splash's five screens and the console after
+# "clear" (tests/screen_ref.py; the QEMU [1.2] check proves the console's
+# reference equal to the kernel's rendering).
+$refDir = Join-Path $OutDir "ref"
+New-Item -ItemType Directory -Force $refDir | Out-Null
+$Wallpaper = Join-Path $refDir "wallpaper.png"
+$Layout = Join-Path $refDir "layout.json"
+function Py {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { $out = & $script:Python @args 2>&1 } finally { $ErrorActionPreference = $old }
+    $lines = @($out | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0) { throw "$Python $($args -join ' ') failed: $($lines -join ' ')" }
+    return $lines
+}
+$verText = $verMatch.Matches[0].Groups[1].Value
+Py -I (Join-Path $root "scripts\make-wallpaper.py") $Wallpaper --version $verText --layout-json $Layout | Out-Null
+$hb = @((Get-Content $Layout -Raw | ConvertFrom-Json).header)
+if ($hb.Count -ne 4) { throw "${Layout}: no header box" }
+Note ("reference (report only): the menu's wallpaper {0} (make-wallpaper.py, v{1}); header box {2}" -f
+      (Get-FileHash $Wallpaper -Algorithm SHA256).Hash.ToLower(), $verText, ($hb -join ','))
+if (($Only.Count -eq 0) -or ($Only -contains "graphics")) {
+    foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") splash 1024 768 $refDir)) { Note "reference (report only): $l" }
+    foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") console 1024 768 (Join-Path $refDir "console-cleared.rgb"))) {
+        Note "reference (report only): $l"
+    }
+}
+
+# A screenshot's size, whether it is one colour, whether it shows the
+# menu's header box (the wallpaper centred, as Limine's wallpaper_style:
+# centered draws it), and how many pixels differ from a raw RGB reference
+# (-1: another size). VirtualBox's screenshots are PNG files.
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Runtime.InteropServices;
+public static class MadireShot {
+    static string refPath;
+    static int[] refPx;
+    static int refW, refH;
+    static int[] Load(string path, out int w, out int h) {
+        using (Bitmap b = new Bitmap(path)) {
+            w = b.Width; h = b.Height;
+            BitmapData d = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
+            int[] px = new int[w * h];
+            for (int y = 0; y < h; y++)
+                Marshal.Copy(new IntPtr(d.Scan0.ToInt64() + (long)y * d.Stride), px, y * w, w);
+            b.UnlockBits(d);
+            for (int i = 0; i < px.Length; i++) px[i] &= 0xFFFFFF;
+            return px;
+        }
+    }
+    // "<w> <h> <blank: yes|no> <header: match|differ>"
+    public static string Classify(string shot, string wallpaper, int x0, int y0, int x1, int y1) {
+        int w, h;
+        int[] p = Load(shot, out w, out h);
+        bool blank = p.Length > 0;
+        for (int i = 1; i < p.Length && blank; i++) if (p[i] != p[0]) blank = false;
+        if (refPath != wallpaper) { refPx = Load(wallpaper, out refW, out refH); refPath = wallpaper; }
+        bool header = w >= refW && h >= refH;
+        if (header) {
+            int ox = (w - refW) / 2, oy = (h - refH) / 2;
+            for (int y = y0; y <= y1 && header; y++)
+                for (int x = x0; x <= x1; x++)
+                    if (p[(oy + y) * w + ox + x] != refPx[y * refW + x]) { header = false; break; }
+        }
+        return string.Format("{0} {1} {2} {3}", w, h, blank ? "yes" : "no", header ? "match" : "differ");
+    }
+    // The pixels of the screenshot that differ from the reference (raw RGB,
+    // width x height), or -1 for another size.
+    public static long Differ(string shot, string rgb, int width, int height) {
+        int w, h;
+        int[] p = Load(shot, out w, out h);
+        if (w != width || h != height) return -1;
+        byte[] r = File.ReadAllBytes(rgb);
+        if (r.Length != (long)w * h * 3) return -1;
+        long n = 0;
+        for (int i = 0; i < p.Length; i++)
+            if (p[i] != ((r[3 * i] << 16) | (r[3 * i + 1] << 8) | r[3 * i + 2])) n++;
+        return n;
+    }
+}
+'@
 
 # ---- keys and screenshots ----
 function Key { VBox controlvm $VM keyboardputscancode @args | Out-Null; Start-Sleep -Milliseconds 150 }
@@ -206,7 +304,10 @@ function Absent([string]$name, [string]$pattern) {
 
 # 0.13: the width of the VM's screen now (from a screenshot's PNG header).
 # Limine draws its menu on a 1024x768 graphics screen; the BIOS splash and
-# Madire's text screen are 720x400 (or 640x480).
+# Madire's text screen are 720x400 (or 640x480). 1.2 stage 10b: Madire's
+# normal boot is 1024x768 too since the switch, so only the menu's header
+# box tells the menu apart (Test-MenuShown, below); the width here only
+# tells whether there is a screen yet.
 # 1.0 (stage 11): 0 also when the VM has no screen yet (VirtualBox refuses
 # the screenshot, "Unsupported resolution 0x0"), instead of ending the run.
 function Get-ScreenWidth {
@@ -220,12 +321,38 @@ function Get-ScreenWidth {
     return ([int]$b[16] -shl 24) -bor ([int]$b[17] -shl 16) -bor ([int]$b[18] -shl 8) -bor [int]$b[19]
 }
 
+# 1.2 stage 10b: a screenshot now, classified (MadireShot): W, H, Blank (one
+# colour), Menu (the menu's header box shown) and Path (the PNG, kept until
+# the next call); $null when VirtualBox gives none (no screen yet).
+function Get-Shot {
+    $f = Join-Path $OutDir "$Prefix-screen-shot.png"
+    if (Test-Path $f) { Remove-Item $f -Confirm:$false }
+    try { VBox controlvm $VM screenshotpng $f 2>$null | Out-Null } catch { return $null }
+    if (-not (Test-Path $f)) { return $null }
+    $c = ([MadireShot]::Classify($f, $Wallpaper, [int]$hb[0], [int]$hb[1], [int]$hb[2], [int]$hb[3])) -split ' '
+    return [pscustomobject]@{ W = [int]$c[0]; H = [int]$c[1]; Blank = $c[2] -eq "yes"; Menu = $c[3] -eq "match"; Path = $f }
+}
+# Limine's menu is on the screen: a screenshot with the menu's header box.
+# (Until 1.2 stage 10b: a screen 1024 pixels wide; the kernel's own screen
+# is 1024x768 since the switch, docs/plans/1.2.md, D2.)
+function Test-MenuShown { $s = Get-Shot; return ($null -ne $s) -and $s.Menu }
+# The kernel's mode from its Display: line ("1024x768"; "720x400" for VGA
+# text; "" before the line).
+function Get-KernelMode {
+    if (-not (Test-Path $serial)) { return "" }
+    $m = Select-String -Path $serial -Pattern '^Display: framebuffer ([0-9]+)x([0-9]+)x[0-9]+ at ' | Select-Object -First 1
+    if ($m) { return "{0}x{1}" -f $m.Matches[0].Groups[1].Value, $m.Matches[0].Groups[2].Value }
+    if (Select-String -Path $serial -Pattern '^Display: VGA text ' -Quiet) { return "720x400" }
+    return ""
+}
+
 # 0.13: powers on and stops at the boot menu. 1.1: the menu is hidden (quiet):
 # Limine shows nothing and boots the first entry after 2 s unless a key
 # arrives; the first key shows the menu and is discarded (common/menu.c), and
 # the menu then waits with no countdown. So Home is pressed every 300 ms, for
-# at most $MenuHoldMs + 30 s, until the screen is 1024 pixels wide (Limine's
-# menu); Home only selects the first entry, so a press still queued changes
+# at most $MenuHoldMs + 30 s, until the screen shows Limine's menu (1.2 stage
+# 10b: its header box, Test-MenuShown; until then a screen 1024 pixels
+# wide); Home only selects the first entry, so a press still queued changes
 # nothing. (In 0.13 keys during the BIOS's power-on self-test stopped it with
 # "FATAL: Keyboard error" on this VM; the 1.1 probe on a scratch VM saw no
 # error, and the keywindow group repeats it here.) After 4 s, longer than the
@@ -252,13 +379,13 @@ function Start-Menu([string]$name) {
     while (-not $shown -and (Get-Date) -lt $until) {
         $next = (Get-Date).AddMilliseconds(300)
         HomeKey
-        if ((Get-ScreenWidth) -eq 1024) { $shown = $true; break }
+        if (Test-MenuShown) { $shown = $true; break }
         if ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) { break }   # booted without the menu
         while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
     }
     if ($shown) { Start-Sleep -Seconds 4 }
     $quiet = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
-    $held = $shown -and $quiet -and ((Get-ScreenWidth) -eq 1024)
+    $held = $shown -and $quiet -and (Test-MenuShown)
     if (-not $held) {
         Note ("{0,-16} {1,-8} /boot menu shown and held (menu seen: {2}; no kernel output: {3})/" -f $name, "MISSING", $shown, $quiet)
     }
@@ -321,21 +448,38 @@ if (Want "menu") {
     Stop-Run "menu" @("^SMAP test: ")
 }
 if (Want "boot") {
-    # 1.1: no key before System ready, so the hidden boot menu must never show:
-    # from startvm on the screen's width is read every 250 ms (720x400 or
-    # 640x480 throughout; Limine's menu would make it 1024).
+    # 1.1: no key before System ready, so the hidden boot menu must never show.
+    # 1.2 stage 10b (docs/plans/1.2.md, D2): the real ISO boots in graphics
+    # at 1024x768, so the width no longer tells the menu apart. From startvm
+    # on, a screenshot every 250 ms (or as fast as VirtualBox gives them),
+    # each placed by the serial log's size read just before it: while it is
+    # empty (Limine's time; the kernel writes serial before it draws) only
+    # 720x400, 640x480 or a blank screen in the kernel's mode; after it only
+    # the kernel's mode (its Display: line); no screenshot with the menu's
+    # header box. (Until 10a: no screenshot 1024 wide.)
     if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
     VBox startvm $VM --type headless | Out-Null
     $until = (Get-Date).AddMilliseconds($KeyDelayMs + 40000)
-    $wide = $false
     $ready = $false
+    $shots = New-Object System.Collections.Generic.List[object]
     while (-not $ready -and (Get-Date) -lt $until) {
-        if ((Get-ScreenWidth) -eq 1024) { $wide = $true }
+        $before = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
+        $s = Get-Shot
+        if ($s) { $shots.Add([pscustomobject]@{ Before = $before; Size = ("{0}x{1}" -f $s.W, $s.H); Blank = $s.Blank; Menu = $s.Menu }) }
         $ready = (Test-Path $serial) -and (Select-String -Path $serial -Pattern "System ready\." -Quiet)
         if (-not $ready) { Start-Sleep -Milliseconds 250 }
     }
-    Note ("{0,-16} {1,-8} /normal boot without the boot menu (screen never 1024 wide before System ready)/" -f "boot",
-          $(if ($ready -and -not $wide) { "OK" } else { "MISSING" }))
+    $kmode = Get-KernelMode
+    $badBefore = @($shots | Where-Object { $_.Before -and $_.Size -notin @("720x400", "640x480") -and -not ($_.Blank -and $_.Size -eq $kmode) }).Count
+    $badAfter = @($shots | Where-Object { -not $_.Before -and $_.Size -ne $kmode }).Count
+    $menus = @($shots | Where-Object { $_.Menu }).Count
+    $tally = { param($list) ($list | Group-Object { $_.Size + $(if ($_.Blank) { "/blank" } else { "" }) } |
+                             ForEach-Object { "{0}:{1}" -f $_.Name, $_.Count }) -join " " }
+    Note ("boot (report only): kernel mode {0}; before the first serial byte {1}; after {2}; menu header matches {3}" -f
+          $(if ($kmode) { $kmode } else { "none" }), (& $tally @($shots | Where-Object { $_.Before })),
+          (& $tally @($shots | Where-Object { -not $_.Before })), $menus)
+    Note ("{0,-16} {1,-8} /normal boot without the boot menu (before the first serial byte only 720x400, 640x480 or blank; no screenshot matches the menu header)/" -f "boot",
+          $(if ($ready -and $kmode -and $badBefore -eq 0 -and $badAfter -eq 0 -and $menus -eq 0) { "OK" } else { "MISSING" }))
     Start-Sleep -Seconds 1
     Shot "boot"
     # 1.1 (stage 9): VirtualBox's own view of its PS/2 keyboard (debugvm info
@@ -394,6 +538,66 @@ if (Want "boot") {
         $feat = @(Select-String -Path $log -Pattern '^(SMEP|SMAP|NX|CR0\.EM): ' | ForEach-Object { $_.Line })
         foreach ($f in $feat) { Write-Host "cpu (report only): $f"; $script:results.Add("cpu report: $f") }
     }
+}
+# 1.2 stage 10b: the graphics group. One normal boot of the real ISO (the
+# default entry, in graphics since the switch): the splash while it boots,
+# its ready state at System ready, then a key (not typed) closes it and
+# opens the console; "display", then "clear". Each screen against its
+# reference rendering, made above from this tree: the splash's
+# (scripts/make-wallpaper.py, as the QEMU [1.2] splash checks use) and the
+# console's after "clear" (tests/screen_ref.py, which the QEMU [1.2] check
+# proves equal to the kernel's rendering). No clock, no pointer (1.2 draws
+# neither on these screens). While it boots, every 1024x768 screenshot
+# after the first serial byte is counted as blank (the hand-off), one of
+# the splash's four dot phases, or other (taken while a frame was being
+# copied; report only).
+if (Want "graphics") {
+    if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
+    VBox startvm $VM --type headless | Out-Null
+    $until = (Get-Date).AddMilliseconds($KeyDelayMs + 40000)
+    $ready = $false
+    $phases = [ordered]@{ blank = 0; dots0 = 0; dots1 = 0; dots2 = 0; dots3 = 0; other = 0 }
+    while (-not $ready -and (Get-Date) -lt $until) {
+        $before = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)
+        $s = Get-Shot
+        $ready = (Test-Path $serial) -and (Select-String -Path $serial -Pattern "System ready\." -Quiet)
+        if ($s -and -not $before -and -not $ready -and $s.W -eq 1024 -and $s.H -eq 768) {
+            $kind = "other"
+            if ($s.Blank) { $kind = "blank" }
+            else {
+                foreach ($p in 0..3) {
+                    if ([MadireShot]::Differ($s.Path, (Join-Path $refDir "splash-dots$p.rgb"), 1024, 768) -eq 0) { $kind = "dots$p"; break }
+                }
+            }
+            $phases[$kind]++
+        }
+        if (-not $ready) { Start-Sleep -Milliseconds 250 }
+    }
+    $seen = $phases["dots0"] + $phases["dots1"] + $phases["dots2"] + $phases["dots3"]
+    Note ("graphics (report only): screenshots while booting: " + (($phases.Keys | ForEach-Object { "{0} {1}" -f $_, $phases[$_] }) -join ", "))
+    Note ("{0,-16} {1,-8} /the splash while booting: a screenshot equal to its reference rendering with 0-3 dots lit (make-wallpaper.py): {2}/" -f "graphics",
+          $(if ($ready -and $seen -gt 0) { "OK" } else { "MISSING" }), $seen)
+    Start-Sleep -Seconds 1
+    Shot "graphics-ready"
+    $d = [MadireShot]::Differ((Join-Path $OutDir "$Prefix-graphics-ready.png"), (Join-Path $refDir "splash-ready.rgb"), 1024, 768)
+    Note ("{0,-16} {1,-8} /the splash's ready state at System ready equals its reference rendering (make-wallpaper.py): {2} pixels differ/" -f "graphics",
+          $(if ($ready -and $d -eq 0) { "OK" } else { "MISSING" }), $d)
+    Key 39 b9; Start-Sleep -Seconds 1      # closes the splash, opens the console (not typed)
+    TypeText "display"; Enter
+    Start-Sleep -Seconds 1
+    Shot "graphics-display"
+    TypeText "clear"; Enter
+    Start-Sleep -Seconds 1
+    Shot "graphics-console"
+    $d = [MadireShot]::Differ((Join-Path $OutDir "$Prefix-graphics-console.png"), (Join-Path $refDir "console-cleared.rgb"), 1024, 768)
+    Note ("{0,-16} {1,-8} /the console after clear equals its reference rendering (tests/screen_ref.py): {2} pixels differ/" -f "graphics",
+          $(if ($d -eq 0) { "OK" } else { "MISSING" }), $d)
+    Stop-Run "graphics" @("^Display: framebuffer 1024x768x32 at 0x[0-9a-f]+, pitch 4096, RGB at bits 16/8/0$",
+        "^Display: console on the framebuffer: 80x25 cells of 8x16 pixels at \(192, 184\), scale 100 %$",
+        "^System ready\. Press any key to open the console\.$", "^console: started$",
+        "^madire> display$", "^Screen:  framebuffer 1024x768, 32 bits per pixel$",
+        "^Scale:   100 % \(console: 80x25 cells of 8x16 pixels\)$", "^console: cleared$")
+    Absent "graphics" "PANIC|FAILED|events dropped|Unexpected IRQ"
 }
 # 0.9.2: console scrollback. dmesg 60 gives enough lines to page back.
 if (Want "scrollback") {
@@ -506,7 +710,7 @@ if (Want "commands") {
     Stop-Run "commands" @("^mem: Show memory information$", "^Usage: mem$",
         "^Madire OS madire $VRe x86_64$", "^madire$",
         "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \(RTC; time zone not set\)$",
-        "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot$",
+        "^madire> dmesg 5$", "^ +[0-9]+  history$", "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot  display$",
         "^Restart Madire OS now\? Type 'yes' to confirm:$", "^yes/no> no$", "^Restart cancelled\.$")
     $log = Join-Path $OutDir "$Prefix-commands.serial.log"
     if (Test-Path $log) {
@@ -784,7 +988,7 @@ if (Want "shell") {
     Cmd "clear"
     Cmd "help shell" @("^shell: The shell's own commands$", "^  help     Show this list$", "^  time     Time a command: time <command>$")
     Cmd "help system" @("^system: Information about the system$", "^  version  Show the Madire OS version$",
-                        "^  reboot   Restart the computer \(asks first\)$")
+                        "^  reboot   Restart the computer \(asks first\)$", "^  display  Show the screen's mode and scale$")
     Cmd "help programs" @("^programs: Programs and processes$", "^  ps       Show threads and processes$",
                           "^  run      Run a program: run \[-b\] <name> \[args\]$", "^  kill     End a process: kill <pid> \(asks first\)$")
     Start-Sleep -Seconds 1; Shot "shell-help-sections"
@@ -1212,10 +1416,12 @@ if ($Repeat -gt 0 -and ((Want "repeat") -or $Only.Count -eq 0)) {
 
 # 1.1: the key window: the 0.13 keyboard error repeated on this VM. Twelve
 # boots; in each, Home is pressed every 300 ms from 0, 0.5, 1, ... 5 or 6 s
-# after startvm until the screen is 1024 wide (the hidden menu shown). A
+# after startvm until the hidden menu shows (1.2 stage 10b: its header box,
+# Test-MenuShown; until then a screen 1024 wide). A
 # BIOS stopped by keys ("FATAL: Keyboard error") shows no menu and starts no
-# kernel: the row is MISSING, with a screenshot, if the screen stays below
-# 1024 wide and the serial log empty for 30 s (or the kernel starts first).
+# kernel: the row is MISSING, with a screenshot, if the screen stays
+# without the menu and the serial log empty for 30 s (or the kernel starts
+# first).
 # A shown menu is held 4 s, then Enter boots the first entry to System ready
 # (report only, with the earliest reveal).
 if (Want "keywindow") {
@@ -1234,7 +1440,7 @@ if (Want "keywindow") {
         while (-not $shown -and -not $booted -and (Get-Date) -lt $until) {
             $next = (Get-Date).AddMilliseconds(300)
             try { HomeKey } catch {}            # the VM may not take keys yet right after startvm
-            if ((Get-ScreenWidth) -eq 1024) { $shown = $true; break }
+            if (Test-MenuShown) { $shown = $true; break }
             $booted = (Test-Path $serial) -and (Get-Item $serial).Length -gt 0
             while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
         }
@@ -1242,7 +1448,7 @@ if (Want "keywindow") {
         if ($shown) {
             $reveals.Add($at)
             Start-Sleep -Seconds 4
-            if (-not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Get-ScreenWidth) -eq 1024) { $kwHeld++ }
+            if (-not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Test-MenuShown)) { $kwHeld++ }
             Enter
             if (Wait-Serial "System ready\." 40) { $kwReady++ }
         } else {
@@ -1250,7 +1456,7 @@ if (Want "keywindow") {
         }
         # A shown menu also proves "no BIOS keyboard error": that error halts
         # the BIOS during its power-on self-test, before it loads Limine, so
-        # Limine's menu (the 1024-wide screen) can't appear after it.
+        # Limine's menu (its header box) can't appear after it.
         Note ("{0,-16} {1,-8} /menu shown with keys from {2} ms; no BIOS keyboard error/" -f "keywindow",
               $(if ($shown) { "OK" } else { "MISSING" }), $start)
         Write-Host ("{0}: keys from {1} ms, {2} after {3} ms" -f $name, $start, $(if ($shown) { "menu shown" } elseif ($booted) { "kernel started without the menu" } else { "no menu, no kernel output" }), $at)

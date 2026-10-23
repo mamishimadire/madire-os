@@ -9,12 +9,20 @@ caller's checks read. It decides no check itself.
     qmp_menu.py menu SOCKET SERIAL WALLPAPER LAYOUT STEP... [--band NAME=Y0-Y1]...
                      [--shots DIR]
     qmp_menu.py nokey SOCKET SERIAL TEXT [--every SECONDS] [--timeout SECONDS]
+                      [--wallpaper WALLPAPER --layout LAYOUT]
 
 menu: presses Home every 300 ms from power-on, taking a screendump after
-each press, until the screen is 1024x768 (Limine's menu revealed; at most
-30 s), prints "REVEAL <s> s, <n> presses", then runs the steps in order:
-    hold:S        wait S seconds, then print the serial log's size and the
-                  screen's size ("HOLD")
+each press, until the screen shows Limine's menu (at most 30 s), prints
+"REVEAL <s> s, <n> presses, <w>x<h>", then runs the steps in order. 1.2
+stage 10b (docs/plans/1.2.md, D2): the menu is told by its header box (a
+screen whose pixels in LAYOUT's header box equal WALLPAPER's, the wallpaper
+centred as Limine's wallpaper_style: centered draws it), no longer by the
+1024x768 size alone: since the switch the kernel's own screen is 1024x768
+too. The stage 3 probe found the shown menu's header box equal to the
+wallpaper's in every screendump, and no other screen equal to it.
+    hold:S        wait S seconds, then print the serial log's size, the
+                  screen's size and whether its header box matches
+                  ("HOLD ... header match|differ")
     shot:NAME     a screendump compared with WALLPAPER (the PNG Limine
                   shows) pixel by pixel ("STATE"): the box of every pixel
                   that differs (what Limine drew), whether that box lies
@@ -29,7 +37,18 @@ DIR/menu-NAME.png (evidence only).
 
 nokey: presses nothing; takes a screendump every 250 ms until TEXT is in
 the serial log (at most 90 s) and prints the number of screendumps of each
-size ("SIZES").
+size ("SIZES"). 1.2 stage 10b: every 250 ms only while the serial log is
+empty (Limine's time, when a menu could show); every 1 s once it is not
+(--every-after), so the kernel's 1024x768 screendumps load the guest less
+(a TCG guest is stopped during each). Also since 10b (D2): the serial
+log's size is read just before each screendump; a screendump is "before"
+while it was still empty (no kernel yet: the kernel writes serial before
+it draws), "after" once it was not. Prints the screendumps of each phase by size, "/blank" for a
+screen of one colour ("BEFORE ...", "AFTER ..."), with WALLPAPER and
+LAYOUT the screendumps whose header box matches the menu's ("HEADER
+matches=<n>"), the kernel's mode from its Display: line ("MODE <w>x<h>"
+for a framebuffer, 720x400 for VGA text, "none") and the number of
+"boot32: start" lines at the end ("BOOTS boot32=<n>").
 
 One QMP client at a time: the caller never runs this together with
 tests/qmp_keys.py on the same QEMU. Any error prints "qmp_menu: ERROR: ..."
@@ -38,6 +57,7 @@ and exits 1.
 import argparse
 import json
 import os
+import re
 import socket
 import struct
 import sys
@@ -150,6 +170,31 @@ def differing(w, pix, ref):
     return out
 
 
+def header_match(w, h, pix, ww, wh, ref, box):
+    """1.2 stage 10b: whether the screen (w x h) shows the wallpaper's
+    header box (x0, y0, x1, y1, inclusive) pixel for pixel, the wallpaper
+    (ww x wh) centred on the screen."""
+    if w < ww or h < wh:
+        return False
+    ox, oy = (w - ww) // 2, (h - wh) // 2
+    x0, y0, x1, y1 = box
+    for y in range(y0, y1 + 1):
+        a = ((oy + y) * w + ox + x0) * 3
+        b = (y * ww + x0) * 3
+        if pix[a:a + (x1 - x0 + 1) * 3] != ref[b:b + (x1 - x0 + 1) * 3]:
+            return False
+    return True
+
+
+def blank(pix):
+    """1.2 stage 10b: a screen of one colour."""
+    return len(pix) >= 3 and pix == pix[:3] * (len(pix) // 3)
+
+
+def serial_size(path):
+    return os.path.getsize(path) if os.path.exists(path) else 0
+
+
 def serial_text(path):
     try:
         with open(path, errors="replace") as f:
@@ -176,6 +221,7 @@ def run_menu(a, qmp, dump):
         name, rows = b.split("=")
         y0, y1 = rows.split("-")
         bands[name] = (int(y0), int(y1))
+    header = layout["header"]
     t0 = time.monotonic()
     qmp.command("cont")
     presses = 0
@@ -183,19 +229,21 @@ def run_menu(a, qmp, dump):
         qmp.key("home")
         presses += 1
         time.sleep(0.3)
-        w, h, _ = qmp.screendump(dump)
-        if (w, h) == (ww, wh):
+        w, h, pix = qmp.screendump(dump)
+        if (w, h) == (ww, wh) and header_match(w, h, pix, ww, wh, ref, header):
             print(f"REVEAL {time.monotonic() - t0:.1f} s, {presses} presses, {w}x{h}", flush=True)
             break
     else:
-        print(f"REVEAL none: the screen never became {ww}x{wh} in 30 s ({presses} presses)", flush=True)
+        print(f"REVEAL none: no {ww}x{wh} screen showed the menu's header box in 30 s ({presses} presses)",
+              flush=True)
         return 1
     for step in a.steps:
         if step.startswith("hold:"):
             time.sleep(float(step[5:]))
-            w, h, _ = qmp.screendump(dump)
-            size = os.path.getsize(a.serial) if os.path.exists(a.serial) else 0
-            print(f"HOLD {step[5:]} s: serial {size} bytes, screen {w}x{h}", flush=True)
+            w, h, pix = qmp.screendump(dump)
+            size = serial_size(a.serial)
+            match = "match" if header_match(w, h, pix, ww, wh, ref, header) else "differ"
+            print(f"HOLD {step[5:]} s: serial {size} bytes, screen {w}x{h}, header {match}", flush=True)
         elif step.startswith("shot:"):
             name = step[5:]
             time.sleep(0.4)
@@ -235,18 +283,39 @@ def run_menu(a, qmp, dump):
 
 
 def run_nokey(a, qmp, dump):
-    sizes = {}
+    ref = header = None
+    if a.wallpaper and a.layout:
+        ww, wh, ref = png_rgb(a.wallpaper)
+        with open(a.layout) as f:
+            header = json.load(f)["header"]
+    sizes, phase = {}, {"before": {}, "after": {}}
+    matches = 0
     t0 = time.monotonic()
     qmp.command("cont")
     seen = None
     while time.monotonic() - t0 < a.timeout:
-        w, h, _ = qmp.screendump(dump)
+        before = serial_size(a.serial) == 0
+        w, h, pix = qmp.screendump(dump)
         sizes[f"{w}x{h}"] = sizes.get(f"{w}x{h}", 0) + 1
+        key = f"{w}x{h}" + ("/blank" if blank(pix) else "")
+        p = phase["before" if before else "after"]
+        p[key] = p.get(key, 0) + 1
+        if ref is not None and header_match(w, h, pix, ww, wh, ref, header):
+            matches += 1
         if a.text in serial_text(a.serial):
             seen = time.monotonic() - t0
             break
-        time.sleep(a.every)
+        time.sleep(a.every if serial_size(a.serial) == 0 else a.every_after)
     print(f"SIZES {' '.join(f'{k}:{v}' for k, v in sizes.items())}", flush=True)
+    for name in ("before", "after"):
+        print(f"{name.upper()} " + (" ".join(f"{k}:{v}" for k, v in phase[name].items()) or "none"), flush=True)
+    if ref is not None:
+        print(f"HEADER matches={matches}", flush=True)
+    log = serial_text(a.serial)
+    m = re.search(r"^Display: framebuffer (\d+)x(\d+)x\d+ at ", log, re.M)
+    mode = f"{m.group(1)}x{m.group(2)}" if m else "720x400" if re.search(r"^Display: VGA text ", log, re.M) else "none"
+    print(f"MODE {mode}", flush=True)
+    print(f"BOOTS boot32={len(re.findall(r'^boot32: start$', log, re.M))}", flush=True)
     print(f"UNTIL {a.text!r}: " + ("not seen in %d s" % a.timeout if seen is None else f"seen after {seen:.1f} s"),
           flush=True)
     return 0
@@ -268,7 +337,11 @@ def main():
     n.add_argument("serial")
     n.add_argument("text")
     n.add_argument("--every", type=float, default=0.25)
+    n.add_argument("--every-after", type=float, default=1.0,
+                   help="1.2 stage 10b: the interval once the serial log is not empty")
     n.add_argument("--timeout", type=float, default=90)
+    n.add_argument("--wallpaper", help="the PNG Limine shows (1.2 stage 10b: the header comparison)")
+    n.add_argument("--layout", help="make-wallpaper.py --layout-json (its header box)")
     a = ap.parse_args()
     dump = a.socket + ".ppm"
     try:

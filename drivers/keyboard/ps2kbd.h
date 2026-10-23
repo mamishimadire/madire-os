@@ -6,7 +6,13 @@
  *
  * "Light touch" set-up: no controller self-test and no keyboard reset
  * (either can disturb the BIOS configuration). Every wait is bounded, so
- * a missing controller or keyboard gives an error status, never a hang.
+ * a missing controller or keyboard gives an error status, never a hang
+ * (1.2: polled through drivers/ps2/i8042.h, bounded by the timer when it
+ * is verified and interrupts are on, and always by a spin limit).
+ *
+ * A port 2 (mouse) byte seen by IRQ1 is read and discarded, as before
+ * 1.2, until a mouse driver owns port 2 (i8042_set_aux_owned); then it is
+ * left unread, for IRQ12.
  */
 
 #include <stdbool.h>

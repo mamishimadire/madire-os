@@ -7,8 +7,11 @@ Status key: **[built]** exists in the current version, **[planned]** is designed
 ```
 VirtualBox power-on
   -> BIOS firmware        finds the ISO in the optical drive (El Torito boot)
-  -> Limine 12.9.3        reads /boot/limine/limine.conf, shows menu (3 s)
-                          (GRUB 2 until 0.12)
+  -> Limine 12.9.3        reads /boot/limine/limine.conf; the menu hidden
+                          behind a key (2 s; since 1.1); for the default
+                          entry (since 1.2) sets the video mode the kernel's
+                          header asks for (1024x768x32), the Diagnostics
+                          entries stay in text mode (GRUB 2 until 0.12)
   -> Multiboot load       Limine loads build/madire.kernel (a flat binary, through
                           the a.out kludge fields) at 1 MiB, in 32-bit protected mode
   -> boot/boot.asm        _start (32-bit stub, 0.7; runs at its load address):
@@ -29,6 +32,10 @@ VirtualBox power-on
        1. serial_init, vga_init    drivers ready; cursor off, blink off; VGA
                                    and boot data read through the physical view
        2. check Multiboot magic    and info pointer (wrong → crash screen)
+       2a. display_probe (1.2)     the framebuffer fields of the Multiboot
+                                   information (before memory_init: they
+                                   reach byte 117) → the "Display:" line;
+                                   the splash's boot options
        3. boot screen header       logo (custom palette), title, version
        4. gdt_init                 64-bit GDT: code 0x08, data 0x10, TSS 0x18
                                    (IST1 = double-fault stack, IST2 (0.10) =
@@ -44,7 +51,10 @@ VirtualBox power-on
        7. sti + int3 self-test     exception path works and returns
                                    (sti is safe: every IRQ is still masked)
        8. memory_init              validate memory map → reservations →
-                                   kernel-in-RAM check → page allocator
+                                   kernel-in-RAM check → page allocator;
+                                   then (1.2) display_plan_slot: a usable
+                                   framebuffer checked against usable RAM
+                                   and the free pages → slot 506 planned
        9. memtest_boot             allocate / write / read / free self-test
       10. status + memory panel    "Memory initialization: OK" only now
       10a. paging_init             NX detected and enabled (EFER.NXE); build
@@ -55,8 +65,14 @@ VirtualBox power-on
                                    (check fails → the boot tables stay, FAILED)
            paging_selftest         map/read back, TLB flush, window, no leak
                                    (fails once the tables are loaded → crash screen)
+                                   (1.2: slot 506, the framebuffer and the
+                                   back buffer, built here when planned)
       10b. kheap_init + selftest   first 64 KiB of the heap; mixed allocations,
                                    growth, no leak (fails → kmalloc returns NULL)
+           fbcon_start (1.2)       on a framebuffer boot: the console on the
+                                   framebuffer, held behind the splash, which
+                                   draws its first frame (a cut from the
+                                   black hand-off screen)
            status                  "Paging & kernel heap: OK" (one screen line,
                                    two serial lines)
       10b'. thread_init (0.9)      kernel_main becomes thread 0 ("kernel");
@@ -78,6 +94,11 @@ VirtualBox power-on
                                    IRQ1 handler → clear pending → unmask IRQ1
             keyboard_selftest      echo reply through IRQ1, decoder, queue
             PIC mask check         must be exactly 0xFFFC (only IRQ0/IRQ1)
+            mouse_init (1.2)       framebuffer boots and test=mouse only:
+                                   the aux port (polled, IRQ1 masked) →
+                                   IRQ12 handler → port 2 owned → IRQ12
+                                   and the cascade IRQ2 unmasked (mask
+                                   0xEFF8, verified); pointer_start
       12. console_selftest         pure console/shell code (not hardware)
       12a. schedtest_boot (0.9)    scheduler self-test, serial only: two threads
                                    ping-pong through yield, preemption of a
@@ -97,7 +118,8 @@ VirtualBox power-on
                                    boot option keylog or a keyboard diagnostic
       13. diagnostics if requested (test=… on the boot command line)
       14. "System ready. Press any key to open the console."; the stack's
-          high-water mark so far goes to serial (0.8)
+          high-water mark so far goes to serial (0.8); just before it
+          (1.2) the splash goes to its ready state
       15. idle loop                handle queued keys, uptime, counters;
                                    first key press → console; then keys → shell;
                                    then thread_idle (0.9): free exited
@@ -106,7 +128,7 @@ VirtualBox power-on
   any CPU exception → isr.asm stub → interrupt_dispatch → panic → crash screen
             (0.10: one raised in ring 3 by a process → process_fault: only
             that process ends, the kernel continues)
-  IRQ0/IRQ1 → isr.asm stub → interrupt_dispatch → irq_dispatch → driver handler → EOI
+  IRQ0/IRQ1 (and IRQ12, 1.2) → isr.asm stub → interrupt_dispatch → irq_dispatch → driver handler → EOI
             → (0.9) thread_tick (IRQ0 only) → thread_preempt_point (may switch threads)
             → (0.10) if it interrupted ring 3: process_return_to_user (a
               pending kill ends the process here)
@@ -438,6 +460,8 @@ The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and I
 | `0xFFFF800000001000–0xFFFF8000000FFFFF` | 256 | physical `0x1000–0xFFFFF` (pages 1–255) | physical view: read/write, no-execute (VGA text buffer at `0xFFFF8000000B8000`, EBDA, ROM, the boot loader's data) |
 | `0xFFFF800000000000` + each boot-data reservation | 256 | that reservation | physical view: read/write, no-execute (Multiboot info, memory map, command line, module table, modules, module names) |
 | rest of slot 256 | 256 | – | unmapped: page 0 (`0xFFFF800000000000`), **free RAM** and the **kernel image** are deliberately not in the view |
+| `0xFFFFFD0000000000` (+ the framebuffer's offset in its first page) (1.2) | 506 | the framebuffer | **only on boots with a usable framebuffer**: read/write, no-execute, mapped write-back (no PAT write-combining yet); up to 1 GiB, its own page directory. See *Display* |
+| `0xFFFFFD0040000000` (1.2) | 506 | back-buffer frames (free RAM) | the back buffer, the framebuffer's size and format (3 MiB at 1024×768×32); read/write, no-execute; up to 1 GiB, its own page directory. Absent on every other boot (no PML4[506] entry); frozen with the kernel half when present |
 | `0xFFFFFD8000000000–0xFFFFFD80001FFFFF` (0.9) | 507 | thread stack frames | kernel thread stacks: 64 slots of 32 KiB; in each, a 16 KiB **unmapped guard**, then a 16 KiB stack (read/write, no-execute) mapped while its thread exists. Empty at boot; its page table is made at boot |
 | `0xFFFFFE0000000000` | 508 | – | page used by the paging self-test |
 | `0xFFFFFE0000001000` | 508 | any frame | physical-access window (one page) |
@@ -936,12 +960,15 @@ Built-in images and ELF files are both turned into a **load plan**, and `process
 
 | Driver | File | Status |
 |---|---|---|
-| VGA text mode (80×25) | `drivers/vga/vga_text.c` | blink off (all 16 background colours usable); direct cell writes; palette programming (attribute controller + DAC); hardware cursor off at start-up, switched on and moved by the console (0.5). Scrolling is done by the console's own grid, not the driver. |
+| VGA text mode (80×25) | `drivers/vga/vga_text.c` | blink off (all 16 background colours usable); direct cell writes; palette programming (attribute controller + DAC); hardware cursor off at start-up, switched on and moved by the console (0.5). Scrolling is done by the console's own grid, not the driver. Since 1.2 it keeps a shadow of the cell grid and, while the framebuffer console is active, forwards every change to it (`fbcon`) |
 | Serial COM1 (38400 8N1, polled) | `drivers/serial/serial.c` | debug output and automated tests |
 | PIT timer | `drivers/pit/pit.c` | channel 0, 100 Hz, IRQ0 (0.4) |
-| PS/2 keyboard | `drivers/keyboard/ps2kbd.c`, `scancode.c` | i8042 port 1, set 1, IRQ1, US layout (0.4) |
-| Mouse, storage, USB, network, audio | – | planned |
-| Framebuffer / EFI GOP display | – | planned |
+| i8042 controller (1.2) | `drivers/ps2/i8042.c` | polled access shared by the PS/2 drivers (pure, unit-tested on a fake bus); every wait bounded by 10 ticks once the timer is verified and interrupts are on, and always by 1,000,000 status reads; the aux-owner flag: until the mouse owns port 2, IRQ1 reads and drops its bytes, as before 1.2 |
+| PS/2 keyboard | `drivers/keyboard/ps2kbd.c`, `scancode.c` | i8042 port 1, set 1, IRQ1, US layout (0.4); the lights through `ps2leds.c` (1.1); since 1.2 through the i8042 module, leaving port 2 bytes for IRQ12 |
+| PS/2 mouse (1.2) | `drivers/mouse/ps2mouse.c`, the pure decoder `mouse_core.c` | i8042 port 2, the standard 3-byte packet, IRQ12 through the cascade IRQ2; only on framebuffer boots and `test=mouse`; IRQ12 reads one byte and queues it (bounded, a full queue counted), thread 0 decodes (see *Display*) |
+| Framebuffer (1.2) | `kernel/display/` | the mode the boot loader set through the Multiboot 1 video request (see *Display*) |
+| Storage, USB, network, audio | – | planned |
+| EFI GOP display | – | planned (with UEFI and the Limine protocol) |
 
 **Console:** `kernel/kprintf.c` has these output functions:
 
@@ -982,7 +1009,39 @@ Once the console starts it owns the whole screen (see *Console and shell*). The 
 5. Output uses half-block cells: each character cell is `▀` (CP437 `0xDF`), with the foreground colour as the top pixel and the background colour as the bottom pixel. That gives 80×50 addressable pixels in text mode.
 6. The six gradient colours are custom RGB values loaded into VGA palette slots 1, 5, 6, 8, 9 and 13, which the rest of the kernel doesn't use.
 
-The same stroke data can later be drawn with smooth edges on a graphics framebuffer. `scripts/logo-preview.py` is the independent reference model used by the tests.
+The same stroke data is drawn with smooth edges on the framebuffer since 1.2 (the splash, below; a copy of the strokes with an equality check, so `kernel/logo.c` is unchanged). `scripts/logo-preview.py` is the independent reference model used by the tests.
+
+Since 1.2 the text boot screen above is what VGA text boots show (the Diagnostics entries, `-kernel` boots, any boot without a usable framebuffer), and what a framebuffer boot shows on Esc, with `verbose`, after a FAILED line or a panic.
+
+## Display (framebuffer) [built: 1.2]
+
+The design rules (colours, sizes in dp, scaling) are in the [Madire Design Guide](design/design-guide.md); the decisions are in [plans/1.2.md](plans/1.2.md).
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/display/mbfb.h`, `fbinfo_core.c` | yes | The Multiboot 1 framebuffer fields (flag bit 12; the colour fields at byte 112 of the information, as Limine 12.9.3 writes them, not at 110 as the specification's table gives) and the verdict: usable is type 1 (direct RGB) at 32 or 24 bpp with colours 16/8, 8/8, 0/8, from 800×600 to 4096×4096, a sane pitch and address; the slot plan |
+| `kernel/display/display.c` | no | `display_probe` (the `Display:` line), the slot plan checked against usable RAM, slot 506 built by `paging_init`, `display_present`, the early crash screen's surface |
+| `kernel/display/surface_core.c` | yes | Surfaces (the framebuffer, the back buffer, the kernel's buffers): fill and blit, every operation clipped, 4 or 3 bytes per pixel |
+| `kernel/display/fbcon_core.c`, `fbcon.c`, `font.h` | core yes | The framebuffer console: the 80×25 cell grid drawn with Terminus (8×16, 10×20, 12×24 or 16×32, converted at build time by `scripts/make-font.py` from the pinned BDF files in `third_party/terminus/`), centred, black around it; the scale from the screen's height (below 900 → 100 %, below 1080 → 125 %, below 1440 → 150 %, otherwise 200 %, stepping down until the grid fits); the VGA palette's 6-bit DAC values widened to 8 bits; the cursor as VGA's underline |
+| `kernel/display/wallpaper_core.c`, `splash.c` | core yes | The procedural wallpaper and the splash, integer fixed point (24.8) only, the same rules as `scripts/make-wallpaper.py`, which renders the boot menu's wallpaper and the tests' references |
+| `kernel/display/pointer_core.c`, `pointer.c` | core yes | The pointer sprite (12×18 dp), its clamp to the screen and its save-under; thread 0's mouse polling |
+| `drivers/mouse/mouse_core.c`, `ps2mouse.c` | core yes | The aux port's start and undo, the IRQ12 byte queue, the 3-byte packet decoder |
+
+**The framebuffer.** The kernel's Multiboot header (flags `0x00010007`) asks for a linear framebuffer of 1024×768×32 (decision 2; VirtualBox's BIOS gives only 800×600×32 and 1024×768×32 exactly, QEMU every mode). Limine sets it for the default entry; `textmode: yes` keeps the Diagnostics entries in text mode, and QEMU's `-kernel` gives no framebuffer at all. `display_probe` reads the fields before `memory_init()` (they reach byte 117, past the 116 bytes `reserve.c` keeps) and logs one line, `Display: framebuffer 1024x768x32 at 0xe0000000, pitch 4096, RGB at bits 16/8/0`, or the reason the boot stays in VGA text. A usable framebuffer that overlaps usable RAM, or whose back buffer the free pages can't hold, is refused (one line, VGA text).
+
+**Slot 506.** On a usable boot `paging_init` maps the framebuffer at `0xFFFFFD0000000000` and a **back buffer** of free-RAM frames, of the same size and format, at `0xFFFFFD0040000000`, each in its own page directory; a failed step undoes them all (`test=fbfail=N`). The slot exists only on those boots and is frozen with the kernel half (`Kernel half frozen: PML4 slots 256, 506, 507, …`); `tests/pagetables.py` models it. The framebuffer is mapped write-back; write-combining through the PAT is for real hardware later.
+
+**Who draws.** Only thread 0 draws (decision 6), and the crash screen. Pictures are drawn on the back buffer and copied to the framebuffer: a whole screen (`display_present`) or the changed cells. A draw from another thread is refused and counted.
+
+**The console on the framebuffer (`fbcon`).** `drivers/vga/vga_text.c` keeps its cell grid in a shadow; once `fbcon_start` has run it forwards every change (a cell, the whole grid, a palette slot, the cursor) to `fbcon`, which draws only the cells that changed. The shell, the scrollback and every console rule are unchanged; the grid is the same 80×25, so every check that reads cells reads the same text (`tests/qmp_screen.py --addr` reads the shadow from `madire.elf`'s symbol). **The crash screen** is drawn through the same grid; before `fbcon_start` (stage 10a, option A) `fbcon_crash_early` draws it straight on the framebuffer, through slot 506 or, before `paging_init`, the boot tables' view of a framebuffer below 4 GiB. Serial only: a panic before `display_probe` and `boot/boot.asm`'s halt message.
+
+**The splash.** On a framebuffer boot without `verbose` and without a test option (other than the splash's own), `fbcon_start(true)` holds the console (the text boot screen is still written, to the shadow only) and the splash draws its first frame whole, a cut from the black hand-off screen: the wallpaper (a vertical gradient, a glow, three glowing curves), the logo's strokes, "MADIRE OS" and "Booting Madire OS" with three dots, one more per boot step and then every 400 ms. Its buffers are static (no heap). It closes on Esc (the text boot screen), on a FAILED status line or a panic; just before "System ready." it goes to its **ready state** ("Press any key to open the console"), and the key that closes it opens the console, as in text mode. Keys are handled by the idle loop, so they act from System ready on.
+
+**The mouse.** Only on framebuffer boots and in `test=mouse` (decision 10). `mouse_init` runs after the keyboard's mask check, with IRQ1 masked: the aux port enabled and tested, the mouse's defaults, reporting on, the IRQ12 handler, port 2's ownership (from then on IRQ1 leaves port 2 bytes alone), the configuration with IRQ12 on (`0x45 -> 0x47` in VirtualBox), then IRQ12 and the cascade IRQ2 unmasked (`IRQ mask 0xeff8`, verified) and IRQ1 again. Any failure undoes the start (one line; the boot goes on without a mouse; `test=mousefail=N`). IRQ12 reads one byte and queues it; thread 0 decodes the packets in its idle loop and moves the pointer, which starts at the screen's centre, hidden until the first packet. **The pointer is drawn only with the test option `pointer` or in `test=mouse`** (the console has no use for it); it is drawn on the framebuffer only, over the console, with save-under, and hidden around every copy the console makes. With `mouselog` (off by default) or in `test=mouse` every packet and draw is logged on serial (never in `dmesg`).
+
+**`display`** (MOCS v0.10) prints `Screen:  framebuffer 1024x768, 32 bits per pixel` and `Scale:   100 % (console: 80x25 cells of 8x16 pixels)`, or in text mode only `Screen:  VGA text 80x25`; read only.
+
+**Not in 1.2:** the desktop (1.3), run-time mode changes, UEFI GOP, more than one screen, smooth fonts.
 
 ## Hardware Abstraction Layer [planned]
 
@@ -1076,4 +1135,4 @@ User-mode services (init, logging, device manager). User mode and system calls e
 
 ## User interface [planned]
 
-A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history (0.9.1) and scrollback (0.9.2) exist; running programs from the console (`run`, `kill`, `ps` with process numbers) comes in 0.11, on top of the 0.10 user processes. The desktop environment, settings, application runtime, Madire Store and update system come much later. They depend on the framebuffer driver, input drivers, a filesystem and processes.
+A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history (0.9.1) and scrollback (0.9.2) exist; running programs from the console (`run`, `kill`, `ps` with process numbers) comes in 0.11, on top of the 0.10 user processes. Since 1.2 the console is drawn on a framebuffer, after a splash, and a PS/2 mouse driver moves a pointer (see *Display*). The desktop comes in 1.3; settings, the application runtime, the Madire Store and the update system much later.

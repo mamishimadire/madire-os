@@ -2,18 +2,11 @@
 #include <stddef.h>
 #include "drivers/keyboard/ps2kbd.h"
 #include "drivers/keyboard/ps2leds.h"
+#include "drivers/ps2/i8042.h"
 #include "kernel/arch/x86/io.h"
 #include "kernel/arch/x86/irq.h"
 #include "kernel/input/keyqueue.h"
 #include "kernel/timer.h"
-
-#define KBD_DATA            0x60
-#define KBD_STATUS          0x64    /* read */
-#define KBD_COMMAND         0x64    /* write */
-
-#define STATUS_OUTPUT_FULL  0x01    /* a byte is waiting in port 0x60 */
-#define STATUS_INPUT_FULL   0x02    /* controller has not taken our last byte */
-#define STATUS_AUX_DATA     0x20    /* the waiting byte is from port 2 (mouse) */
 
 #define CMD_READ_CONFIG     0x20
 #define CMD_WRITE_CONFIG    0x60
@@ -26,8 +19,7 @@
 
 #define DEV_ECHO            0xEE
 
-#define SPIN_LIMIT          1000000u   /* per controller wait */
-#define FLUSH_LIMIT         64u
+#define REPLY_LIMIT         64u        /* bytes read for one polled reply */
 #define ECHO_WAIT_TICKS     20u        /* 200 ms at 100 Hz */
 #define LIGHTS_WAIT_TICKS   3u         /* per reply at run time: 30 ms at 100 Hz */
 
@@ -47,13 +39,15 @@ static uint8_t lights_set;      /* the state last acknowledged */
 
 static void keyboard_irq(void)
 {
-    uint8_t status = inb(KBD_STATUS);
-    if (!(status & STATUS_OUTPUT_FULL))
+    enum i8042_irq1_action act = i8042_irq1_action(inb(I8042_STATUS));
+    if (act == I8042_IRQ1_NONE)
         return;                     /* edge latched while masked, data already gone */
-    uint8_t byte = inb(KBD_DATA);
+    if (act == I8042_IRQ1_LEAVE)
+        return;                     /* 1.2: port 2 owned: its byte is left for IRQ12 */
+    uint8_t byte = inb(I8042_DATA);
     bytes_read++;
-    if (status & STATUS_AUX_DATA)
-        return;                     /* port 2 byte: not ours */
+    if (act == I8042_IRQ1_DISCARD)
+        return;                     /* port 2 byte, no owner: not ours */
     if (scancode_is_response(byte)) {
         last_response = byte;
         responses++;
@@ -64,52 +58,45 @@ static void keyboard_irq(void)
         keyqueue_push(&queue, &e);  /* counts a drop when full */
 }
 
-/* ---- Polled controller access (used only while IRQ1 is masked). ---- */
+/* ---- Polled controller access (drivers/ps2/i8042.h; reads only while
+ * IRQ1 is masked). 1.2: every wait is bounded by the timer when it is
+ * verified and interrupts are on, and always by the spin limit. ---- */
 
-static bool wait_can_write(void)
+static uint8_t hw_read_status(void)      { return inb(I8042_STATUS); }
+static uint8_t hw_read_data(void)        { return inb(I8042_DATA); }
+static void hw_write_command(uint8_t c)  { outb(I8042_COMMAND, c); }
+static void hw_write_data(uint8_t b)     { outb(I8042_DATA, b); }
+
+static bool hw_ticks(uint64_t *now)
 {
-    for (uint32_t i = 0; i < SPIN_LIMIT; i++)
-        if (!(inb(KBD_STATUS) & STATUS_INPUT_FULL))
-            return true;
-    return false;
+    if (!timer_verified() || !irq_enabled())
+        return false;
+    *now = timer_ticks();
+    return true;
 }
 
-static bool wait_can_read(void)
-{
-    for (uint32_t i = 0; i < SPIN_LIMIT; i++)
-        if (inb(KBD_STATUS) & STATUS_OUTPUT_FULL)
-            return true;
-    return false;
-}
+static const struct i8042_bus hw = {
+    hw_read_status, hw_read_data, hw_write_command, hw_write_data, hw_ticks,
+};
 
 static bool send_command(uint8_t cmd)
 {
-    if (!wait_can_write())
-        return false;
-    outb(KBD_COMMAND, cmd);
-    return true;
+    return i8042_send_command(&hw, cmd);
 }
 
 static bool send_data(uint8_t data)
 {
-    if (!wait_can_write())
-        return false;
-    outb(KBD_DATA, data);
-    return true;
+    return i8042_send_data(&hw, data);
 }
 
 static bool read_data(uint8_t *out)
 {
-    if (!wait_can_read())
-        return false;
-    *out = inb(KBD_DATA);
-    return true;
+    return i8042_read_data(&hw, out);
 }
 
 static void flush_output(void)
 {
-    for (uint32_t i = 0; i < FLUSH_LIMIT && (inb(KBD_STATUS) & STATUS_OUTPUT_FULL); i++)
-        (void)inb(KBD_DATA);
+    i8042_flush(&hw);
 }
 
 /* ---- The keyboard lights (1.1, see ps2leds.h) ---- */
@@ -124,12 +111,15 @@ static void lights_result(struct kbd_lights *out, const struct leds_exchange *x)
 }
 
 /* Polled (IRQ1 masked): the next reply byte; a byte that is not a reply is
- * discarded, as flush_output discards bytes before IRQ1 is unmasked. */
+ * discarded, as flush_output discards bytes before IRQ1 is unmasked. 1.2:
+ * one wait for the whole reply, the discarded bytes included. */
 static int read_reply_polled(void)
 {
+    struct i8042_wait w;
+    i8042_wait_begin(&hw, &w);
     uint8_t byte;
-    for (uint32_t i = 0; i < FLUSH_LIMIT; i++) {
-        if (!read_data(&byte))
+    for (uint32_t i = 0; i < REPLY_LIMIT; i++) {
+        if (!i8042_read_data_within(&hw, &w, &byte))
             return LEDS_TIMEOUT;
         if (scancode_is_response(byte))
             return byte;
@@ -207,7 +197,7 @@ enum kbd_sync keyboard_lights_sync(struct kbd_lights *out)
 
 enum kbd_status keyboard_init(void)
 {
-    if (inb(KBD_STATUS) == 0xFF)
+    if (inb(I8042_STATUS) == 0xFF)
         return KBD_NO_CONTROLLER;
 
     keyqueue_init(&queue);

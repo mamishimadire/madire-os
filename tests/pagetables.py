@@ -9,7 +9,12 @@ The kernel's own tables (kernel/memory/paging.c, build_tables) map:
     0x1000, but never a page of the kernel image;
   - one page table for the physical-access window (slot 508) and one for
     the kernel thread stacks (slot 507), at the addresses the walk-check
-    logs.
+    logs;
+  - 1.2 stage 5b, only when the kernel logs its "Display: slot 506: ..."
+    line (a boot with a usable framebuffer): the framebuffer's pages from
+    0xFFFFFD0000000000 and the back buffer's from 0xFFFFFD0040000000
+    (slot 506), as many as that line gives; the slot's own count of page
+    tables, logged on the same line, must equal the one computed here.
 A page-directory-pointer table, page directory or page table exists for each
 distinct 512 GiB, 1 GiB or 2 MiB region holding a mapped page (the recursive
 slot 510 is not a table). The count is compared with the kernel's
@@ -51,6 +56,9 @@ def main():
     logged = re.search(r"^Paging tables: (\d+) page tables \+ PML4, (\d+) mapped pages", text, re.M)
     win = re.search(r"^Paging check: window page table present 0x([0-9a-f]{16})-", text, re.M)
     kst = re.search(r"^Paging check: kernel thread stack page table present 0x([0-9a-f]{16})-", text, re.M)
+    disp = re.search(r"^Display: slot 506: framebuffer 0x[0-9a-f]+-0x[0-9a-f]+ at 0x([0-9a-f]{16}) "
+                     r"\((\d+) pages\), back buffer at 0x([0-9a-f]{16}) \((\d+) pages of free RAM, "
+                     r"pitch \d+\), (\d+) page tables$", text, re.M)
     res = re.findall(r"^reserve: start=0x([0-9a-f]+) end=0x([0-9a-f]+) (.*)$", text, re.M)
     missing = [n for n, m in (("Kernel:", k), ("Paging tables:", logged), ("window", win),
                               ("kernel thread stack", kst)) if not m] + ([] if res else ["reserve:"])
@@ -74,9 +82,19 @@ def main():
     regions["physical view (slot 256)"] = view
     regions["window (slot 508)"] = {int(win.group(1), 16)}
     regions["kernel thread stacks (slot 507)"] = {int(kst.group(1), 16)}
+    if disp:
+        fb_va, fb_n, bb_va, bb_n = (int(disp.group(1), 16), int(disp.group(2)),
+                                    int(disp.group(3), 16), int(disp.group(4)))
+        say("display slot 506: framebuffer %d pages at 0x%016x, back buffer %d pages at 0x%016x, "
+            "%s page tables logged" % (fb_n, fb_va, bb_n, bb_va, disp.group(5)))
+        regions["display (slot 506)"] = ({fb_va + i * PAGE for i in range(fb_n)} |
+                                         {bb_va + i * PAGE for i in range(bb_n)})
+    else:
+        say("no display slot 506 line: slot 506 not modelled")
 
     total = 0
     kernel_slot = None
+    display_slot = None
     for name, vas in regions.items():
         l3 = {(va >> 39) & 511 for va in vas}
         l2 = {((va >> 39) & 511, (va >> 30) & 511) for va in vas}
@@ -85,14 +103,18 @@ def main():
         total += n
         if name.startswith("kernel image"):
             kernel_slot = n
+        if name.startswith("display"):
+            display_slot = n
         say("%s: %d PDPT + %d PD + %d PT = %d tables (2 MiB regions: %s)" % (
             name, len(l3), len(l2), len(l1), n,
             ", ".join("0x%016x" % r for r in sorted({(va >> 21) << 21 for va in vas}))))
     got = int(logged.group(1))
     say("computed %d tables, logged %d (%s mapped pages logged)" % (total, got, logged.group(2)))
-    print("PAGETABLES_RESULT label=%s computed=%d logged=%d kernel_slot=%d kernel_end=0x%x %s" % (
-        a.label, total, got, kernel_slot, kend, "MATCH" if total == got else "DIFFER"))
-    return 0 if total == got else 1
+    ok = total == got and (not disp or display_slot == int(disp.group(5)))
+    print("PAGETABLES_RESULT label=%s computed=%d logged=%d kernel_slot=%d kernel_end=0x%x display_slot=%s %s" % (
+        a.label, total, got, kernel_slot, kend,
+        "none" if not disp else "%d/%s" % (display_slot, disp.group(5)), "MATCH" if ok else "DIFFER"))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

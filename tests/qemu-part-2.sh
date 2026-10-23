@@ -40,7 +40,7 @@ boot_text "$LOG" 120 "System ready." "$S" 0.03 $'\nend-of-091-test\n' -kernel "$
 # commands come before ps (programs); was "after ps".
 expect_in_order "$LOG" "[0.9.1] help lists the six new commands in their sections, in order" \
     "^madire> help$" "^  help  clear  echo  history  " \
-    "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot$" "^  ps  run  kill$"
+    "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot  display$" "^  ps  run  kill$"
 expect_lines "$LOG" "[0.9.1] help mem: purpose and usage" \
     "^madire> help mem$" "^mem: Show memory information$" "^Usage: mem$"
 expect_lines "$LOG" "[0.9.1] help nosuch: unknown command" \
@@ -300,11 +300,15 @@ if [ -n "${UC4:-}" ] && [ $(( UC0 & 0x4 )) -ne 0 ] && [ $(( UC4 & (3 << 20) )) -
 else
     fail "[0.10] default CPU control registers: ${UCPU:-missing}"
 fi
-expect "$LOG" "^Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 \(6 entries\); every process shares them, a new one now panics$" \
-                                                      "[0.10] kernel half frozen at boot: slots 256, 507-511"
 
 LOG=$OUT/serial-clac.log
 boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=clac"
+# 1.2 stage 10b: the freeze check of a text boot reads this -kernel boot
+# (default CPU, VGA text): the real ISO's normal boot is a framebuffer boot
+# since the switch and freezes slot 506 too (7 entries, the [1.2] check),
+# and part 2 makes no Limine boot in text mode.
+expect "$LOG" "^Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 \(6 entries\); every process shares them, a new one now panics$" \
+                                                      "[0.10] kernel half frozen at boot: slots 256, 507-511 (a -kernel boot)"
 expect "$LOG" "^clac test: SMAP off; [0-9]+ interrupts taken with AC=1 in the interrupted code; AC=1 seen by the handler [0-9]+ times; clac executed 0 times$" \
                                                       "[0.10] default CPU: clac never executed (no #UD without SMAP)"
 expect "$LOG" "^clac test: PASS$"                     "[0.10] default CPU: clac test PASS"
@@ -716,7 +720,7 @@ expect_lines "$LOG" "[0.12] help: one screen, the commands by section, then the 
     "^  help  clear  echo  history  prompt  alias  unalias  set  unset  export  env$" \
     "^  sleep  presskey  time$" \
     "^system: Information about the system$" \
-    "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot$" \
+    "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot  display$" \
     "^programs: Programs and processes$" "^  ps  run  kill$" \
     "^files: Files and folders$" "^  pwd  cd  ls  mkdir  rmdir  touch  stat  cat  rm  cp  mv  df  du$" \
     "^Purposes and usage: help <command>; one section: help <section>\.$" \
@@ -727,7 +731,8 @@ expect_lines "$LOG" "[0.12] help shell: the shell's commands" \
     "^  env      " "^  sleep    " "^  presskey " "^  time     " "$NEXT"
 expect_lines "$LOG" "[0.12] help system: the system's commands" \
     "^madire> help system$" "^system: Information about the system$" "^  version  " "^  uptime   " \
-    "^  mem      " "^  cpu      " "^  uname    " "^  hostname " "^  date     " "^  dmesg    " "^  reboot   " "$NEXT"
+    "^  mem      " "^  cpu      " "^  uname    " "^  hostname " "^  date     " "^  dmesg    " "^  reboot   " \
+    "^  display  " "$NEXT"
 expect_lines "$LOG" "[0.12] help programs: programs and processes" \
     "^madire> help programs$" "^programs: Programs and processes$" "^  ps       " "^  run      " \
     "^  kill     " "$NEXT"
@@ -735,7 +740,8 @@ expect_lines "$LOG" "[0.12] help programs: programs and processes" \
 # is a command (stage 2's new commands must be placed in a section; 1.0
 # stage 8: the section "files" and its 8 commands, 34 in all; stage 9: rm,
 # cp, mv, df and du in "files", 39 in all; 1.0 stage 10: help lists
-# several names per line, so every word of its indented lines is read).
+# several names per line, so every word of its indented lines is read;
+# 1.2 stage 10b: display in "system", 40 in all).
 if awk '
         /^madire> / { cur = $0; next }
         cur == "madire> help" && /^  [a-z]/ { for (i = 1; i <= NF; i++) all[$i] = 1; next }
@@ -745,9 +751,9 @@ if awk '
             for (c in in_sec) if (!(c in all)) bad = 1
             split("shell system programs files", s, " ")
             for (i = 1; i <= 4; i++) if (s[i] in all) bad = 1
-            exit !(na == 39 && !bad)
+            exit !(na == 40 && !bad)
         }' "$LOG"; then
-    pass "[0.12] help sections: each of the 39 commands in exactly one section, no section named like a command"
+    pass "[0.12] help sections: each of the 40 commands in exactly one section, no section named like a command"
 else
     fail "[0.12] help sections: a command missing from the sections, in two, or a section named like a command"
 fi
@@ -790,12 +796,12 @@ HELP_SEC_NAMES=$(printf '%s\n' "$HELP_OUT" | awk '
 if [ -n "$HELP_OUT" ] && printf '%s\n' "$HELP_OUT" | awk -v want="$ALL_SEC" '
         /^  [a-z]/ { for (i = 1; i <= NF; i++) { seen[$i]++; total++ } }
         END {
-            n = split(want, w, " "); if (n != 39 || total != 39) exit 1
+            n = split(want, w, " "); if (n != 40 || total != 40) exit 1
             for (i = 1; i <= n; i++) if (seen[w[i]] != 1) exit 1
         }'; then
-    pass "[1.0] help: each of the 39 commands listed exactly once"
+    pass "[1.0] help: each of the 40 commands listed exactly once"
 else
-    fail "[1.0] help: a command missing, listed twice, or not 39 in all"
+    fail "[1.0] help: a command missing, listed twice, or not 40 in all"
 fi
 if [ -n "$HELP_OUT" ] && [ "$HELP_SEC_NAMES" = "$SEC_NAMES" ]; then
     pass "[1.0] help: each section's names in the order help <section> lists them"
@@ -809,7 +815,7 @@ else
     fail "[1.0] help: titles '$HELP_TITLES', help <section> '$SEC_TITLES'"
 fi
 # The 39 purpose rows, word for word as help listed them before stage 10,
-# now in the four sections.
+# now in the four sections; 1.2 stage 10b: and display's, the 40th.
 rows_after() {   # rows_after <typed line> <regex...>: the lines right after it
     local typed=$1
     shift
@@ -835,7 +841,7 @@ if rows_after "help shell" "^shell: The shell's own commands$" \
         "^  mem      Show memory information$" "^  cpu      Show processor information$" \
         "^  uname    Show the system name: uname \[-a\]$" "^  hostname Show the computer's name$" \
         "^  date     Show the date and time \(RTC\)$" "^  dmesg    Show kernel messages: dmesg \[lines\]$" \
-        "^  reboot   Restart the computer \(asks first\)$" "$NEXT" &&
+        "^  reboot   Restart the computer \(asks first\)$" "^  display  Show the screen's mode and scale$" "$NEXT" &&
    rows_after "help programs" "^programs: Programs and processes$" \
         "^  ps       Show threads and processes$" "^  run      Run a program: run \[-b\] <name> \[args\]$" \
         "^  kill     End a process: kill <pid> \(asks first\)$" "$NEXT" &&
@@ -847,7 +853,7 @@ if rows_after "help shell" "^shell: The shell's own commands$" \
         "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$" "^  cp       Copy a file: cp \[-y\] <from> <to>$" \
         "^  mv       Move or rename: mv \[-y\] <from> <to>$" "^  df       Show the filesystem's nodes and pages in use$" \
         "^  du       Show the pages under a folder: du \[path\]$" "$NEXT"; then
-    pass "[1.0] help <section>: the 39 rows with their purposes, word for word as help listed them before stage 10"
+    pass "[1.0] help <section>: the 40 rows with their purposes: the 39 word for word as help listed them before stage 10, and display's (1.2)"
 else
     fail "[1.0] help <section>: a row differs from the purposes help listed before stage 10"
 fi
