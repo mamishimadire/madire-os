@@ -272,29 +272,40 @@ function Watch-NoKey([string]$name) {
     Stop-Boot $name
 }
 
-# Boots B-G: Home every 300 ms until Limine's menu shows (1024 wide), a
-# screenshot of the shown menu (classed: the header box against the
-# wallpaper), then Down to the case's entry, Enter, until <until>, and a
-# screenshot 1 s later.
+# Boots B-G: Home every 300 ms until Limine's menu shows, a screenshot of
+# the shown menu (classed: the header box against the wallpaper), then
+# Down to the case's entry, Enter, until <until>, and a screenshot 1 s
+# later. The menu counts as shown only when a screenshot's header box
+# equals the wallpaper's (header=match; docs/plans/1.2.md D2, amended in
+# stage 3): a blank or other 1024x768 screen (the hand-off to the kernel)
+# never does. The screenshots taken while waiting for the menu are deleted
+# once it shows; if it never shows they are kept (with the serial log, as
+# for every boot) and the reason is noted.
 function Start-MenuCase([string]$name, [int]$case, [string]$until) {
     if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
     VBox startvm $VM --type headless | Out-Null
     $t0 = Get-Date
     $shown = $false
+    $shots = New-Object System.Collections.Generic.List[string]
+    $why = "45 s passed"
     while (((Get-Date) - $t0).TotalSeconds -lt 45) {
         $next = (Get-Date).AddMilliseconds(300)
         HomeKey
-        $f = Take "$name-probe"
+        $f = Take ("{0}-reveal-{1:D3}" -f $name, ($shots.Count + 1))
         if ($f) {
-            $b = [IO.File]::ReadAllBytes($f)
-            $w = ([int]$b[16] -shl 24) -bor ([int]$b[17] -shl 16) -bor ([int]$b[18] -shl 8) -bor [int]$b[19]
-            Remove-Item $f -Confirm:$false
-            if ($w -eq 1024) { $shown = $true; break }
+            $shots.Add($f)
+            if ((Classify $f) -like '* header=match') { $shown = $true; break }
         }
-        if ((SerialSize) -gt 0) { break }       # booted without the menu
+        if ((SerialSize) -gt 0) { $why = "the serial log grew (booted without the menu)"; break }
         while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
     }
-    if (-not $shown) { Note "PROBE ${name}: the menu did not show in 45 s"; Stop-Boot $name; return }
+    if (-not $shown) {
+        Note ("PROBE {0}: the menu did not show ({1} after {2:N1} s); {3} screenshots kept ({0}-reveal-*.png), the last: {4}" -f
+              $name, $why, ((Get-Date) - $t0).TotalSeconds, $shots.Count, $(if ($shots.Count) { Classify $shots[$shots.Count - 1] } else { "none" }))
+        Stop-Boot $name
+        return
+    }
+    foreach ($f in $shots) { Remove-Item $f -Confirm:$false }
     Start-Sleep -Seconds 1
     Note ("PROBE {0}: menu shown after {1:N1} s: {2}" -f $name, ((Get-Date) - $t0).TotalSeconds, (Classify (Take "$name-menu")))
     HomeKey; Start-Sleep -Milliseconds 300
