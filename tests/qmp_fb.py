@@ -32,6 +32,9 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# No tests/__pycache__/ from this import: tests/ is in the files under test,
+# which must not change during a run (run 39923089306).
+sys.dont_write_bytecode = True
 from qmp_menu import Qmp, serial_text, wait_serial  # noqa: E402
 
 

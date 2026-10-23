@@ -182,10 +182,11 @@ $(BUILD)/limine.conf: iso/boot/limine/limine.conf kernel/kernel.h
 
 # 1.1: the boot menu's wallpaper (1024x768 PNG, Python standard library
 # only), with the M of kernel/logo.c and the version from kernel/kernel.h.
+# 1.2 stage 5b: no __pycache__/ in scripts/ (part of the files under test).
 $(BUILD)/wallpaper.png: scripts/make-wallpaper.py kernel/kernel.h kernel/logo.c
 	@mkdir -p $(BUILD)
 	@test -n "$(MADIRE_VERSION)" || { echo "cannot read MADIRE_OS_VERSION from kernel/kernel.h"; exit 1; }
-	python3 scripts/make-wallpaper.py $@ --version $(MADIRE_VERSION)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-wallpaper.py $@ --version $(MADIRE_VERSION)
 
 # 0.13: LIMINE_DIR holds the pinned package's BIOS files and notices, LIMINE
 # is its host tool (scripts/install-deps.sh installs both). "limine

@@ -6,6 +6,8 @@
 #   bash tests/qemu-tests.sh build/madire.kernel build/madire-os.iso --shard <part>
 #   bash tests/qemu-tests.sh --list-parts
 set -u
+# 1.2 stage 5b: no Python helper writes __pycache__/ into the files under test.
+export PYTHONDONTWRITEBYTECODE=1
 
 # 0.12 (stage 0c): the checks are in parts (tests/qemu-part-<part>.sh, the
 # shared helpers in tests/qemu-lib.sh). A full run (make test) sources every
