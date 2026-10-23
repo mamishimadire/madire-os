@@ -107,3 +107,59 @@ enum fb_kind fbinfo_parse(const struct fbinfo_raw *raw, struct fb_info *out, cha
               raw->width, raw->height, raw->bpp, (unsigned long long)raw->addr, raw->pitch);
     return out->kind;
 }
+
+#define FBPLAN_PAGE       4096u
+#define FBPLAN_PT_PAGES    512u     /* pages one page table maps */
+
+static uint32_t pages_for(uint64_t bytes)
+{
+    return (uint32_t)((bytes + FBPLAN_PAGE - 1) / FBPLAN_PAGE);
+}
+
+static uint32_t tables_for(uint32_t pages)
+{
+    return (pages + FBPLAN_PT_PAGES - 1) / FBPLAN_PT_PAGES;
+}
+
+/* The sizes, from a FB_USABLE fb (fbinfo_parse bounds every field). */
+static void plan_sizes(const struct fb_info *fb, struct fb_plan *p)
+{
+    p->fb_phys = fb->addr & ~(uint64_t)(FBPLAN_PAGE - 1);
+    p->fb_offset = (uint32_t)(fb->addr & (FBPLAN_PAGE - 1));
+    p->fb_pages = pages_for((uint64_t)p->fb_offset + (uint64_t)fb->pitch * fb->height);
+    p->bb_pitch = fb->width * fb->bytes_per_pixel;
+    p->bb_pages = pages_for((uint64_t)p->bb_pitch * fb->height);
+    p->tables = 1 + 2 + tables_for(p->fb_pages) + tables_for(p->bb_pages);
+}
+
+bool fbinfo_overlaps(const struct fb_info *fb, const struct fb_ram *ram)
+{
+    struct fb_plan p;
+    plan_sizes(fb, &p);
+    uint64_t start = p.fb_phys, end = p.fb_phys + (uint64_t)p.fb_pages * FBPLAN_PAGE;
+    return ram->length != 0 && start < ram->base + ram->length && ram->base < end;
+}
+
+enum fb_plan_kind fbinfo_plan(const struct fb_info *fb, const struct fb_ram *overlap,
+                              uint32_t free_pages, struct fb_plan *plan, char *line)
+{
+    plan_sizes(fb, plan);
+    line[0] = '\0';
+    if (overlap) {
+        ksnprintf(line, FBINFO_LINE, "Display: framebuffer %ux%ux%u at 0x%llx overlaps usable RAM "
+                  "0x%llx-0x%llx (memory map); not mapped, VGA text and serial kept",
+                  fb->width, fb->height, fb->bpp, (unsigned long long)fb->addr,
+                  (unsigned long long)overlap->base,
+                  (unsigned long long)(overlap->base + overlap->length));
+        return FBPLAN_OVERLAP;
+    }
+    uint32_t need = plan->bb_pages + plan->tables;
+    if (plan->tables > FBPLAN_MAX_TABLES || need > free_pages / FBPLAN_SHARE) {
+        ksnprintf(line, FBINFO_LINE, "Display: framebuffer %ux%ux%u at 0x%llx not mapped (back buffer "
+                  "and page tables: %u pages, over a quarter of the %u free pages); VGA text and "
+                  "serial kept", fb->width, fb->height, fb->bpp, (unsigned long long)fb->addr,
+                  need, free_pages);
+        return FBPLAN_NO_ROOM;
+    }
+    return FBPLAN_MAP;
+}

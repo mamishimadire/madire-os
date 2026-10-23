@@ -57,6 +57,10 @@
 # 1.2 stage 4: 1 unit suite (i8042); no counted check yet. Stage 5: 4
 # checks: the header's video request and every limine.conf entry in text
 # mode (part static), the Display line of a -kernel boot and of the real
-# ISO's text-mode boot (part 1); 1 unit suite (fbinfo).
-1.2 4
-unit-suites 72
+# ISO's text-mode boot (part 1); 1 unit suite (fbinfo). Stage 5b: 25
+# more, all in part 1: the real ISO's text boot without slot 506 (2), two
+# framebuffer test ISOs with test=fbpattern, 1024x768x32 and Limine's
+# resolution: 800x600x24 (7 each), the undo path, test=fbfail=868 (5), and
+# the size refusal, 1920x1080x32 at 32M (4); 1 unit suite (surface).
+1.2 29
+unit-suites 73

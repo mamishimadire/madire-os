@@ -11,7 +11,10 @@
 # adds a report-only trace probe at the end. 1.2 stage 3 added the probes
 # (report only) at the end; stage 4 removed them again, and stage 5 removed
 # the probe build and its tools (rerun them from 287b355, docs/testing.md).
-# 1.2 stage 5 adds the [1.2] Display checks of the text boots at the end.
+# 1.2 stage 5 adds the [1.2] Display checks of the text boots at the end;
+# stage 5b, after them, the text boots' slot 506 checks and four framebuffer
+# test ISOs (slot 506, test=fbpattern and tests/qmp_fb.py; the undo path,
+# test=fbfail; the size refusal at 32M).
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1585,3 +1588,219 @@ expect "$OUT/serial-mem-32M.log" "^Display: VGA text 80x25 \(no framebuffer\)$" 
     "[1.2] -kernel boot: Display: VGA text 80x25 (no framebuffer)"
 expect "$OUT/serial-boot.log" "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" \
     "[1.2] real ISO, default entry (textmode: yes): Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000)"
+
+# ---- 1.2 stage 5b: slot 506 and the framebuffer test ISOs ----
+
+echo "== [1.2] Text boots: no slot 506 (the real ISO with textmode: yes)"
+# The text boot has no PML4[506] entry: the kernel half is frozen with the
+# same six slots as before 1.2, no "Display: slot 506" line is logged, and
+# tests/pagetables.py, which models slot 506 only when that line is
+# logged, agrees with the kernel's count.
+LOG=$OUT/serial-boot.log
+if grep -qxF "Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 (6 entries); every process shares them, a new one now panics" "$LOG" &&
+   ! grep -q "^Display: slot 506" "$LOG"; then
+    pass "[1.2] text boot (real ISO, textmode: yes): no PML4[506]: the kernel half frozen with slots 256, 507, 508, 509, 510, 511 (6 entries) as before 1.2, no Display: slot 506 line"
+else
+    fail "[1.2] text boot (real ISO): a slot 506 line, or the kernel half frozen with other slots, in $LOG"
+fi
+FB_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label text)
+sed 's/^/      /' <<< "$FB_PT"
+if grep -qE "^PAGETABLES_RESULT label=text computed=([0-9]+) logged=\1 .* display_slot=none MATCH$" <<< "$FB_PT"; then
+    pass "[1.2] text boot (real ISO): tests/pagetables.py computed = logged, slot 506 not modelled"
+else
+    fail "[1.2] text boot (real ISO): tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$FB_PT")"
+fi
+# Report only (decides no check): the boots' paging figures. 5a's (run
+# 39909205323): the real ISO 14 page tables, 573 mapped pages, free pages
+# 32160; -kernel -m 32M free pages 7597; kernel end 0x232000. A text boot's
+# mapped pages may differ from 5a's only by the kernel image's own pages
+# (the change of __kernel_end, printed here).
+fb_figures() {   # fb_figures <log> <label>
+    local t m f e
+    t=$(sed -nE 's/^Paging tables: ([0-9]+) page tables \+ PML4, ([0-9]+) mapped pages.*/\1/p' "$1" | head -n 1)
+    m=$(sed -nE 's/^Paging tables: ([0-9]+) page tables \+ PML4, ([0-9]+) mapped pages.*/\2/p' "$1" | head -n 1)
+    f=$(grep -oE '^memory: .* free_pages=[0-9]+' "$1" | grep -oE '[0-9]+$' | head -n 1)
+    e=$(sed -nE 's/^Kernel: text .* end 0x([0-9a-f]+)$/\1/p' "$1" | head -n 1)
+    echo "      FIGURES $2: ${t:-?} page tables, ${m:-?} mapped pages, free pages ${f:-?} (memory_init), kernel end 0x${e:-?} ($(( (0x${e:-232000} - 0x232000) / 4096 )) kernel pages against 5a's 0x232000)"
+    grep -E "^Paging self-test: no page leak|^Kernel half frozen|^Display: slot 506|^Kernel stack: [0-9]+ bytes at peak" "$1" | sed "s/^/      FIGURES $2: /"
+}
+fb_figures "$OUT/serial-boot.log" "text boot (real ISO; 5a: 14, 573, 32160)"
+fb_figures "$OUT/serial-mem-32M.log" "text boot (-kernel -m 32M; 5a: free 7597)"
+
+echo "== [1.2] Framebuffer boots: slot 506 and test=fbpattern (two test ISOs, tests/qmp_fb.py)"
+# Two test ISOs with one entry each and no "textmode" line (the real ISO and
+# every other test ISO keep "textmode: yes", decision 3): the header's
+# request (1024x768x32), and Limine's per-entry "resolution: 800x600x24",
+# which overrides the executable's request for multiboot1 (Limine 12.9.3:
+# CONFIG.md; common/protos/multiboot1.c reads RESOLUTION when the header's
+# mode type is 0, as Madire's is). Each boots with test=fbpattern, paused,
+# with a QMP socket: tests/qmp_fb.py waits for the kernel's "display:
+# frame 1" line, stops the guest, takes a screendump and lets it go on to
+# System ready. The screen's size must be the logged mode and its CRC-32
+# the one the kernel logged for the framebuffer (read back after present).
+QMPFB=$(dirname "$0")/qmp_fb.py
+# fb_boot <log> <iso>: boots <iso> paused at -m 128M, runs qmp_fb.py, then
+# stops QEMU. FB_OUT holds qmp_fb.py's output (also kept in <log>.fb.txt).
+fb_boot() {
+    local log=$1 iso=$2 sock=$OUT/qmp-fb.sock t0 qpid
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 90 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    FB_OUT=$(python3 "$QMPFB" "$sock" "$log" "display: frame 1" --until "System ready." --timeout 75 2>&1)
+    sed 's/^/      /' <<< "$FB_OUT"
+    echo "$FB_OUT" > "${log%.log}.fb.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# fb_case <name> <mode WxHxD> <label> <the first check's text> [a limine.conf line]
+fb_case() {
+    local name=$1 mode=$2 label=$3 first=$4 extra=${5:-} dir=$OUT/isofb-$1 iso=$OUT/madire-os-fb-$1.iso
+    local log=$OUT/serial-fb-$1.log w h d pt crc
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; d=${mode##*x}
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (framebuffer test)\n    protocol: multiboot1\n'
+        [ -z "$extra" ] || printf '    %s\n' "$extra"
+        printf '    path: boot():/boot/madire.kernel\n    cmdline: test=fbpattern\n'
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    FB_OUT=""
+    if limine_iso "$dir" "$iso"; then fb_boot "$log" "$iso"; else : > "$log"; echo "      the test ISO could not be made"; fi
+    grep -E "^Display: |^Paging walk-check: |^Paging self-test: PASS|^Paging check: display|^Kernel half frozen|^fbpattern: |^display: frame " "$log" | sed 's/^/      /'
+    fb_figures "$log" "$label"
+    expect "$log" "^Display: framebuffer $mode at 0x[0-9a-f]+, pitch [0-9]+, RGB at bits 16/8/0$" "$first"
+    if grep -qE "^Display: slot 506: framebuffer 0x[0-9a-f]+-0x[0-9a-f]+ at 0xfffffd0000000000 \([0-9]+ pages\), back buffer at 0xfffffd0040000000 \([0-9]+ pages of free RAM, pitch $((w * d / 8))\), [0-9]+ page tables$" "$log" &&
+       grep -qE "^Paging check: display framebuffer .*: OK$" "$log" &&
+       grep -qE "^Paging check: display back buffer .*: OK$" "$log" &&
+       grep -qE "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "$log" &&
+       grep -qE "^Paging self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "$log" &&
+       grep -qxF "Kernel half frozen: PML4 slots 256, 506, 507, 508, 509, 510, 511 (7 entries); every process shares them, a new one now panics" "$log"; then
+        pass "[1.2] $label: slot 506 built (framebuffer and back buffer, walk-checked), paging self-test PASS, PML4[506] frozen with the kernel half (7 entries)"
+    else
+        fail "[1.2] $label: slot 506 not built, not walk-checked or not frozen with the kernel half, or paging failed (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label fb)
+    sed 's/^/      /' <<< "$pt"
+    if grep -qE "^PAGETABLES_RESULT label=fb computed=([0-9]+) logged=\1 .* display_slot=([0-9]+)/\2 MATCH$" <<< "$pt"; then
+        pass "[1.2] $label: tests/pagetables.py models slot 506: computed = logged, and the slot's tables as logged"
+    else
+        fail "[1.2] $label: tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$pt")"
+    fi
+    crc=$(sed -nE "s/^fbpattern: $mode: [0-9]+ fills and [0-9]+ blits drawn on the back buffer, presented; CRC-32 of the RGB bytes: back buffer (0x[0-9a-f]{8}), framebuffer \1 \(equal\)$/\1/p" "$log" | head -n 1)
+    if [ -n "$crc" ] && grep -qxF "display: frame 1" "$log"; then
+        pass "[1.2] $label: test=fbpattern drew and presented: the back buffer's and the framebuffer's CRC-32 equal ($crc), display: frame 1 logged"
+    else
+        fail "[1.2] $label: no fbpattern line with equal CRCs, or no display: frame 1 (see $log)"
+    fi
+    if grep -qxE "SCREEN size=${w}x${h} crc=0x[0-9a-f]{8} colours=[0-9]+" <<< "$FB_OUT"; then
+        pass "[1.2] $label: the screendump is ${w}x${h}, the logged mode"
+    else
+        fail "[1.2] $label: no ${w}x${h} screendump after display: frame 1 ($(grep -E '^(SCREEN|MARKER|qmp_fb)' <<< "$FB_OUT" | tr '\n' ' '))"
+    fi
+    if [ -n "$crc" ] && grep -qxE "SCREEN size=${w}x${h} crc=$crc colours=[0-9]+" <<< "$FB_OUT"; then
+        pass "[1.2] $label: the screendump's CRC-32 equals the framebuffer's logged CRC-32 ($crc)"
+    else
+        fail "[1.2] $label: the screendump's CRC-32 is not the logged ${crc:-(none)} ($(grep '^SCREEN' <<< "$FB_OUT"))"
+    fi
+    if grep -q "^System ready\." "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: System ready, no panic, no paging mismatch"
+    else
+        fail "[1.2] $label: no System ready, or a panic or a paging mismatch (see $log)"
+    fi
+}
+fb_case 1024 1024x768x32 "framebuffer boot (the header's 1024x768x32)" \
+    "[1.2] framebuffer boot: the header's request is given: Display: framebuffer 1024x768x32, RGB at bits 16/8/0"
+fb_case 800x24 800x600x24 "framebuffer boot (resolution: 800x600x24)" \
+    "[1.2] Limine's per-entry resolution: 800x600x24 overrides the header's 1024x768x32: Display: framebuffer 800x600x24, RGB at bits 16/8/0" \
+    "resolution: 800x600x24"
+
+echo "== [1.2] Framebuffer boots that keep VGA text: the undo path (test=fbfail) and the size refusal (32M)"
+# Two more test ISOs, booted without QMP to System ready. Neither gets slot
+# 506, so each must look like a text boot from paging on: no PML4[506], the
+# page tables tests/pagetables.py computes without slot 506, and every
+# frame back. fb_text_boot <name> <memory> <limine.conf line or ""> <cmdline>
+FB_READY="System ready. Press any key to open the console."
+fb_text_boot() {
+    local dir=$OUT/isofb-$1 iso=$OUT/madire-os-fb-$1.iso log=$OUT/serial-fb-$1.log
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (framebuffer test)\n    protocol: multiboot1\n'
+        [ -z "$3" ] || printf '    %s\n' "$3"
+        printf '    path: boot():/boot/madire.kernel\n    cmdline: %s\n' "$4"
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    if limine_iso "$dir" "$iso"; then boot_until "$log" 60 "$FB_READY" -m "$2" -cdrom "$iso"
+    else : > "$log"; echo "      the test ISO could not be made"; fi
+    grep -E "^Display: |^Free pages: |^Paging tables: |^Paging walk-check: |^Paging self-test: (PASS|no page leak)|^Kernel half frozen|^fbpattern: " "$log" | sed 's/^/      /'
+    fb_figures "$log" "$1"
+}
+# fb_kept <log> <label>: the checks both boots share.
+fb_kept() {
+    local log=$1 pt
+    if grep -qxF "Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 (6 entries); every process shares them, a new one now panics" "$log" &&
+       ! grep -q "^Display: slot 506:" "$log" && ! grep -q "^Paging check: display" "$log"; then
+        pass "[1.2] $2: no PML4[506]: the kernel half frozen with slots 256, 507, 508, 509, 510, 511 (6 entries) as before 1.2, no slot 506 line or walk-check item"
+    else
+        fail "[1.2] $2: a slot 506 line or walk-check item, or the kernel half frozen with other slots (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label kept)
+    sed 's/^/      /' <<< "$pt"
+    FB_KEPT_TABLES=$(sed -nE 's/^PAGETABLES_RESULT label=kept computed=([0-9]+) logged=\1 .* display_slot=none MATCH$/\1/p' <<< "$pt")
+    if [ -n "$FB_KEPT_TABLES" ]; then
+        pass "[1.2] $2: tests/pagetables.py computed = logged ($FB_KEPT_TABLES page tables), slot 506 not modelled"
+    else
+        fail "[1.2] $2: tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$pt")"
+    fi
+    if grep -qxF "fbpattern: no framebuffer mapped (see the Display: lines); nothing drawn" "$log" &&
+       grep -qxF "$FB_READY" "$log" && grep -qE "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "$log" &&
+       ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $2: VGA text and serial kept (fbpattern: no framebuffer mapped), walk-check PASS, System ready, no panic"
+    else
+        fail "[1.2] $2: no 'no framebuffer mapped' line, no walk-check PASS or System ready, or a panic or mismatch (see $log)"
+    fi
+}
+
+# The undo path: test=fbfail=868 on the 1024x768x32 boot. Steps 1-768 are
+# the framebuffer's pages, so step 868 is the back buffer's page 99 (from 0):
+# by then 99 back-buffer frames are taken, and 6 page tables (the PDPT, the
+# framebuffer's directory and its 2 page tables, the back buffer's
+# directory and its first page table); all of them must come back.
+fb_text_boot fail 128M "" "test=fbfail=868"
+LOG=$OUT/serial-fb-fail.log
+expect "$LOG" "^Display: slot 506 not built \(back buffer page at 0xfffffd0040063000: test=fbfail\); 768 framebuffer pages unmapped, 99 back-buffer frames and 6 page tables returned; VGA text and serial kept$" \
+    "[1.2] test=fbfail=868: Display: slot 506 not built (back buffer page at 0xfffffd0040063000: test=fbfail); 768 framebuffer pages unmapped, 99 back-buffer frames and 6 page tables returned; VGA text and serial kept"
+fb_kept "$LOG" "test=fbfail=868"
+# Every frame back: the free pages the paging self-test finds equal what a
+# text boot of the same machine has there: the free pages when slot 506 was
+# planned (the boot screen's "Free pages:", logged after the memory
+# self-test, with nothing allocated until paging_init) minus the kernel's
+# own tables, as many as tests/pagetables.py computes from this log without
+# slot 506, plus the PML4.
+FB_F=$(sed -nE 's/^Free pages: +([0-9]+)$/\1/p' "$LOG" | head -n 1)
+FB_P=$(sed -nE 's/^Paging self-test: no page leak: free pages ([0-9]+) -> \1: OK$/\1/p' "$LOG" | head -n 1)
+FB_T=${FB_KEPT_TABLES:-}
+if [ -n "$FB_F" ] && [ -n "$FB_P" ] && [ -n "$FB_T" ] && [ "$FB_P" -eq $((FB_F - FB_T - 1)) ]; then
+    pass "[1.2] test=fbfail=868: every frame returned: free pages at the paging self-test $FB_P = the text-mode figure $FB_F - $FB_T page tables - the PML4"
+else
+    fail "[1.2] test=fbfail=868: free pages at the paging self-test ${FB_P:-?}, expected ${FB_F:-?} - ${FB_T:-?} - 1"
+fi
+
+# The size refusal: 1920x1080x32 at 32M. Its back buffer is 2025 pages and
+# slot 506 would need 11 page tables: 2036 pages, more than a quarter of a
+# 32M machine's free pages (about 7600).
+fb_text_boot 1920 32M "resolution: 1920x1080x32" "test=fbpattern"
+LOG=$OUT/serial-fb-1920.log
+FB_A=$(sed -nE 's/^Display: framebuffer 1920x1080x32 at (0x[0-9a-f]+), pitch [0-9]+, RGB at bits 16\/8\/0$/\1/p' "$LOG" | head -n 1)
+FB_F=$(sed -nE 's/^Free pages: +([0-9]+)$/\1/p' "$LOG" | head -n 1)
+FB_WANT="Display: framebuffer 1920x1080x32 at ${FB_A:-?} not mapped (back buffer and page tables: 2036 pages, over a quarter of the ${FB_F:-?} free pages); VGA text and serial kept"
+if [ -n "$FB_A" ] && [ -n "$FB_F" ] && grep -qxF "$FB_WANT" "$LOG"; then
+    pass "[1.2] 1920x1080x32 at 32M: Display: framebuffer 1920x1080x32 at $FB_A not mapped (back buffer and page tables: 2036 pages, over a quarter of the $FB_F free pages); VGA text and serial kept"
+else
+    fail "[1.2] 1920x1080x32 at 32M: no line '$FB_WANT' in $LOG"
+fi
+fb_kept "$LOG" "1920x1080x32 at 32M"

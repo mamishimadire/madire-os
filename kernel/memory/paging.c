@@ -10,6 +10,8 @@
  *   kernel     slot 511: the kernel image at VM_KERNEL_VIRT_OFFSET + phys
  *   phys-view  slot 256: the low 1 MiB and the boot data (never page 0,
  *              free RAM or the kernel image) at VM_PHYS_VIEW_BASE + phys
+ *   display    slot 506 (1.2), only when display.c planned it: the
+ *              framebuffer and a back buffer of free-RAM frames
  * Nothing is mapped in the lower half (PML4 slot 0 is empty): once these
  * tables are loaded, every address in 0-4 GiB faults, which the checks
  * below prove. Before anything is loaded, the result is walk-checked: everything the
@@ -29,6 +31,7 @@
 #include "kernel/arch/x86/idt.h"
 #include "kernel/arch/x86/interrupts.h"
 #include "kernel/arch/x86/irq.h"
+#include "kernel/display/display.h"
 #include "kernel/kprintf.h"
 #include "kernel/panic.h"
 #include "kernel/memory/memory.h"
@@ -54,7 +57,8 @@ typedef unsigned long long ull;
 #define VGA_TEXT_START   0x00000000000B8000ull                  /* physical */
 #define VGA_TEXT_END     (VGA_TEXT_START + 80u * 25 * 2)
 #define LOW_4G           0x0000000100000000ull
-#define MAX_TABLE_FRAMES 64u
+/* 1.2: plus slot 506's tables at their most (fbinfo_core.h). */
+#define MAX_TABLE_FRAMES (64u + FBPLAN_MAX_TABLES)
 
 /* The three spaces: virtual address = base + physical address. */
 #define SPACE_KERNEL     VM_KERNEL_VIRT_OFFSET
@@ -67,6 +71,7 @@ static unsigned table_frame_count;
 static struct vmm vm;
 static struct paging_stats stats;
 static unsigned check_items, check_failures;
+static bool display_built;              /* slot 506 holds the display's plan */
 
 /* ---- vmm_core operations while the boot tables are in use ---- */
 
@@ -110,6 +115,12 @@ static void phys_flush(void *ctx, uint64_t va)
 static const struct vmm_ops phys_ops = {
     phys_alloc_frame, phys_free_frame, phys_table, phys_flush, 0
 };
+
+/* The PML4 being built (not loaded yet), through the physical view. */
+static uint64_t *phys_view_pml4(void)
+{
+    return phys_view(pml4_phys);
+}
 
 /* ---- vmm_core operations once CR3 holds the kernel's PML4 ---- */
 
@@ -239,6 +250,118 @@ static bool map_reservations(uint64_t base, enum expect e)
     return true;
 }
 
+/*
+ * 1.2 stage 5b: slot 506, the display (vm_layout.h), only when display.c
+ * planned it (a usable framebuffer, outside usable RAM, with room for the
+ * back buffer: fbinfo_core.h). The framebuffer's pages at VM_FB_BASE and
+ * one frame of free RAM per back-buffer page at VM_BACKBUF_BASE, cleared,
+ * all read/write and no-execute.
+ *
+ * The framebuffer is mapped write-back, as every other page (PAT is not
+ * set up): correct in QEMU and VirtualBox, slow on real hardware, where it
+ * should be write-combining (docs/plans/1.2.md, risk 10; accepted for 1.2).
+ *
+ * The plan leaves room for every frame this needs, and nothing else
+ * allocates while the tables are built, so this cannot fail; if a step
+ * fails anyway, everything slot 506 got is given back (its pages unmapped,
+ * the back buffer's frames and the slot's tables freed, PML4[506] cleared),
+ * a "Display:" line says so, and the boot goes on in VGA text: never a
+ * half-mapped slot, never a failed paging set-up because of the display.
+ * The test option test=fbfail=N makes step N fail (display.h), so this
+ * undo is tested on a real boot.
+ */
+static void unmap_display_area(uint64_t base, uint32_t pages, bool free_frames)
+{
+    for (uint32_t i = 0; i < pages; i++) {
+        uint64_t phys = 0;
+        if (vmm_unmap(&vm, base + (uint64_t)i * VM_PAGE_SIZE, &phys) == VMM_OK && free_frames)
+            memory_free_page((uint32_t)phys);
+    }
+}
+
+static void build_display_slot(void)
+{
+    const struct fb_plan *p = display_slot_plan();
+    display_built = false;
+    if (!p)
+        return;
+    unsigned table_mark = table_frame_count;
+    uint32_t tables_before = vm.page_tables;
+    uint64_t nx = pte_nx_flag(stats.nx);
+    uint32_t fb_done = 0, bb_done = 0, fail = display_test_fail_step();
+    const char *failed = 0, *why = 0;
+    uint64_t failed_va = 0;
+
+    for (; fb_done < p->fb_pages; fb_done++) {
+        failed_va = VM_FB_BASE + (uint64_t)fb_done * VM_PAGE_SIZE;
+        enum vmm_result r = fail == fb_done + 1 ? VMM_OK
+                          : vmm_map(&vm, failed_va, p->fb_phys + (uint64_t)fb_done * VM_PAGE_SIZE,
+                                    PTE_WRITE | nx);
+        if (fail == fb_done + 1 || r != VMM_OK) {
+            failed = "framebuffer";
+            why = r != VMM_OK ? vmm_result_str(r) : "test=fbfail";
+            break;
+        }
+    }
+    for (; !failed && bb_done < p->bb_pages; bb_done++) {
+        failed_va = VM_BACKBUF_BASE + (uint64_t)bb_done * VM_PAGE_SIZE;
+        if (fail == p->fb_pages + bb_done + 1) {
+            failed = "back buffer";
+            why = "test=fbfail";
+            break;
+        }
+        uint32_t frame = memory_alloc_page();
+        if (!frame) {
+            failed = "back buffer";
+            why = "no free page";
+            break;
+        }
+        enum vmm_result r = vmm_map(&vm, failed_va, frame, PTE_WRITE | nx);
+        if (r != VMM_OK) {
+            memory_free_page(frame);
+            failed = "back buffer";
+            why = vmm_result_str(r);
+            break;
+        }
+        /* Cleared through the boot tables' view of 0-4 GiB (the frame is
+         * below 4 GiB). volatile: a loop that must stay a loop. */
+        volatile uint64_t *z = phys_view(frame);
+        for (uint32_t i = 0; i < VM_PAGE_SIZE / 8; i++)
+            z[i] = 0;
+    }
+    if (!failed) {
+        display_built = true;
+        klogf("Display: slot 506: framebuffer 0x%llx-0x%llx at 0x%016llx (%u pages), back buffer at "
+              "0x%016llx (%u pages of free RAM, pitch %u), %u page tables\n", (ull)p->fb_phys,
+              (ull)(p->fb_phys + (uint64_t)p->fb_pages * VM_PAGE_SIZE), (ull)VM_FB_BASE, p->fb_pages,
+              (ull)VM_BACKBUF_BASE, p->bb_pages, p->bb_pitch, vm.page_tables - tables_before);
+        return;
+    }
+    unmap_display_area(VM_FB_BASE, fb_done, false);
+    unmap_display_area(VM_BACKBUF_BASE, bb_done, true);
+    unsigned tables = table_frame_count - table_mark;
+    while (table_frame_count > table_mark)
+        memory_free_page((uint32_t)table_frames[--table_frame_count]);
+    phys_view_pml4()[VM_DISPLAY_INDEX] = 0;
+    vm.page_tables = tables_before;
+    klogf("Display: slot 506 not built (%s page at 0x%016llx: %s); %u framebuffer pages unmapped, "
+          "%u back-buffer frames and %u page tables returned; VGA text and serial kept\n", failed,
+          (ull)failed_va, why, fb_done, bb_done, tables);
+}
+
+/* The back buffer's frames, given back when the kernel's tables are not
+ * loaded after all (paging_init's failure path; the tables themselves are
+ * in table_frames). */
+static void release_display_slot(void)
+{
+    const struct fb_plan *p = display_slot_plan();
+    if (display_built && p) {
+        unmap_display_area(VM_FB_BASE, p->fb_pages, false);
+        unmap_display_area(VM_BACKBUF_BASE, p->bb_pages, true);
+    }
+    display_built = false;
+}
+
 static bool build_tables(void)
 {
     pml4_phys = memory_alloc_page();
@@ -288,6 +411,8 @@ static bool build_tables(void)
         return false;
     }
 
+    build_display_slot();
+
     stats.mapped_pages = vm.mapped_pages;
     stats.page_tables = vm.page_tables;
     stats.kernel_ro_pages = (uint32_t)((SYM(__data_start) - SYM(__text_start)) / VM_PAGE_SIZE);
@@ -296,6 +421,7 @@ static bool build_tables(void)
 
 static void release_tables(void)
 {
+    release_display_slot();
     while (table_frame_count)
         memory_free_page((uint32_t)table_frames[--table_frame_count]);
     if (pml4_phys)
@@ -497,6 +623,61 @@ static uint64_t phys_entry(uint64_t va, int level)
     return table_at(table)[vm_index(va, level)];
 }
 
+/*
+ * 1.2 stage 5b: slot 506, when it was built. The framebuffer's pages map
+ * the framebuffer, in order; each back-buffer page maps a frame of usable
+ * RAM that is no reservation and is not in the physical view; all
+ * read/write, no-execute, kernel only; the page after each area is
+ * unmapped.
+ */
+static bool display_page_ok(uint64_t va, uint64_t *phys)
+{
+    uint64_t flags = 0;
+    if (!vmm_translate(&vm, va, phys, &flags))
+        return false;
+    return (flags & PTE_WRITE) && ((flags & PTE_NX) != 0) == stats.nx && !(flags & PTE_USER);
+}
+
+static void check_display_slot(void)
+{
+    const struct fb_plan *p = display_slot_plan();
+    const char *nx = stats.nx ? "rw nx" : "rw exec";
+    char expected[96], actual[96];
+    uint64_t end = VM_FB_BASE + (uint64_t)p->fb_pages * VM_PAGE_SIZE, phys = 0, bad = 0;
+    bool ok = true;
+
+    check_fact("display slot (PML4[506])", VM_FB_BASE, VM_FB_BASE + 2 * VM_DISPLAY_AREA - 1,
+               "present, maps the framebuffer and the back buffer",
+               pte_present(table_at(pml4_phys)[VM_DISPLAY_INDEX]));
+
+    for (uint32_t i = 0; i < p->fb_pages && ok; i++) {
+        bad = VM_FB_BASE + (uint64_t)i * VM_PAGE_SIZE;
+        ok = display_page_ok(bad, &phys) && phys == p->fb_phys + (uint64_t)i * VM_PAGE_SIZE;
+    }
+    ksnprintf(expected, sizeof(expected), "%s, framebuffer 0x%llx onwards", nx, (ull)p->fb_phys);
+    if (ok)
+        ksnprintf(actual, sizeof(actual), "as expected (%u pages)", p->fb_pages);
+    else
+        ksnprintf(actual, sizeof(actual), "page 0x%016llx -> 0x%016llx", (ull)bad, (ull)phys);
+    report("display framebuffer", VM_FB_BASE, end, expected, actual, ok);
+    check_range("display framebuffer: the next page", SPACE_IDENTITY, end, end + 1, EXPECT_UNMAPPED);
+
+    end = VM_BACKBUF_BASE + (uint64_t)p->bb_pages * VM_PAGE_SIZE;
+    ok = true;
+    for (uint32_t i = 0; i < p->bb_pages && ok; i++) {
+        bad = VM_BACKBUF_BASE + (uint64_t)i * VM_PAGE_SIZE;
+        ok = display_page_ok(bad, &phys) && phys < LOW_4G && memory_page_is_safe((uint32_t)phys) &&
+             !vmm_translate(&vm, SPACE_VIEW + phys, 0, 0);
+    }
+    ksnprintf(expected, sizeof(expected), "%s, frames of free RAM, not in the physical view", nx);
+    if (ok)
+        ksnprintf(actual, sizeof(actual), "as expected (%u pages)", p->bb_pages);
+    else
+        ksnprintf(actual, sizeof(actual), "page 0x%016llx -> 0x%016llx", (ull)bad, (ull)phys);
+    report("display back buffer", VM_BACKBUF_BASE, end, expected, actual, ok);
+    check_range("display back buffer: the next page", SPACE_IDENTITY, end, end + 1, EXPECT_UNMAPPED);
+}
+
 static void walk_check(void)
 {
     uint64_t rip, rsp;
@@ -658,6 +839,9 @@ static void walk_check(void)
                pte_present(rec) && pte_writable(rec) && pte_frame(rec) == pml4_phys &&
                !(rec & PTE_USER) && pte_nx(rec) == stats.nx);
 
+    if (display_built)
+        check_display_slot();
+
     /* Counts, recomputed independently of vmm_core's counters. */
     uint32_t tables = 0, pages = 0;
     const uint64_t *l4 = table_at(pml4_phys);
@@ -755,6 +939,8 @@ bool paging_init(void)
     load();
     klogf("Paging: enabled; CR0=0x%08x CR3=0x%016llx CR4=0x%016llx EFER=0x%016llx\n",
           cpu_read_cr0(), (ull)read_cr3(), (ull)cpu_read_cr4(), (ull)cpu_read_efer());
+    if (display_built)
+        display_slot_ready();           /* 1.2: slot 506 is live now */
     return true;
 }
 

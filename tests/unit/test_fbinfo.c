@@ -261,6 +261,141 @@ static void test_longest_line(void)
                   "VGA text and serial kept"));
 }
 
+/* ---- 1.2 stage 5b: the plan for slot 506 ---- */
+
+static struct fb_plan plan;
+
+static struct fb_info usable(uint64_t addr, uint32_t pitch, uint32_t w, uint32_t h, uint8_t bpp)
+{
+    make(FLAGS_FB, addr, pitch, w, h, bpp, 1, RGB);
+    parse();
+    return fb;
+}
+
+/* The requested mode on the normal boot's 32,160 free pages: mapped. The
+ * sizes: 768 framebuffer pages, a back buffer of 4096-byte rows (768
+ * pages), 1 PDPT + 2 directories + 2 + 2 page tables. */
+static void test_plan_1024x768(void)
+{
+    struct fb_info f = usable(0xfd000000u, 4096, 1024, 768, 32);
+    line[0] = 'x';
+    CHECK_EQ(fbinfo_plan(&f, NULL, 32160, &plan, line), FBPLAN_MAP);
+    CHECK_EQ(line[0], '\0');
+    CHECK_EQ(plan.fb_phys, 0xfd000000u);
+    CHECK_EQ(plan.fb_offset, 0);
+    CHECK_EQ(plan.fb_pages, 768);
+    CHECK_EQ(plan.bb_pitch, 4096);
+    CHECK_EQ(plan.bb_pages, 768);
+    CHECK_EQ(plan.tables, 7);
+    /* And on a 32 MiB machine's 7,597: 775 pages, at most 1,899. */
+    CHECK_EQ(fbinfo_plan(&f, NULL, 7597, &plan, line), FBPLAN_MAP);
+}
+
+/* A wide pitch and a framebuffer not on a page boundary: the framebuffer
+ * maps whole pages from its first one; the back buffer's rows are exact. */
+static void test_plan_sizes(void)
+{
+    struct fb_info f = usable(0xe0000100u, 3200, 800, 600, 24);
+    CHECK_EQ(fbinfo_plan(&f, NULL, 32160, &plan, line), FBPLAN_MAP);
+    CHECK_EQ(plan.fb_phys, 0xe0000000u);
+    CHECK_EQ(plan.fb_offset, 0x100);
+    CHECK_EQ(plan.fb_pages, 469);           /* 256 + 3200 x 600 = 1,920,256 bytes */
+    CHECK_EQ(plan.bb_pitch, 2400);
+    CHECK_EQ(plan.bb_pages, 352);           /* 2400 x 600 = 1,440,000 bytes */
+    CHECK_EQ(plan.tables, 5);
+    f = usable(0xfd000000u, 7680, 1920, 1080, 32);
+    fbinfo_plan(&f, NULL, 32160, &plan, line);
+    CHECK_EQ(plan.fb_pages, 2025);
+    CHECK_EQ(plan.bb_pages, 2025);
+    CHECK_EQ(plan.tables, 11);              /* 1 + 2 + 4 + 4 */
+}
+
+/* Up to a quarter of the free pages: the back buffer and the slot's
+ * tables, 775 pages at 1024x768x32. */
+static void test_plan_no_room(void)
+{
+    struct fb_info f = usable(0xfd000000u, 4096, 1024, 768, 32);
+    CHECK_EQ(fbinfo_plan(&f, NULL, 3100, &plan, line), FBPLAN_MAP);      /* 775 = 3100 / 4 */
+    CHECK_EQ(fbinfo_plan(&f, NULL, 3099, &plan, line), FBPLAN_NO_ROOM);
+    CHECK(line_is("Display: framebuffer 1024x768x32 at 0xfd000000 not mapped (back buffer and page "
+                  "tables: 775 pages, over a quarter of the 3099 free pages); VGA text and serial kept"));
+    CHECK_EQ(plan.bb_pages, 768);           /* the sizes are filled in anyway */
+    CHECK_EQ(fbinfo_plan(&f, NULL, 0, &plan, line), FBPLAN_NO_ROOM);
+    /* The largest mode the parser accepts on the normal boot: 16384 + 3 +
+     * 32 + 32 pages, over 8040. */
+    f = usable(0xfd000000u, 16384, 4096, 4096, 32);
+    CHECK_EQ(fbinfo_plan(&f, NULL, 32160, &plan, line), FBPLAN_NO_ROOM);
+    CHECK(line_is("Display: framebuffer 4096x4096x32 at 0xfd000000 not mapped (back buffer and page "
+                  "tables: 16451 pages, over a quarter of the 32160 free pages); VGA text and serial kept"));
+    /* 1920x1080x32 on a 32 MiB machine: 2036 pages, over 1899. */
+    f = usable(0xfd000000u, 7680, 1920, 1080, 32);
+    CHECK_EQ(fbinfo_plan(&f, NULL, 7597, &plan, line), FBPLAN_NO_ROOM);
+    CHECK_EQ(fbinfo_plan(&f, NULL, 4 * 2036, &plan, line), FBPLAN_MAP);
+}
+
+/* The most tables a usable framebuffer needs is FBPLAN_MAX_TABLES: a pitch
+ * of 65536 x 4096 rows at an offset of one byte short of a page, with the
+ * back buffer at 4096x4096x32. */
+static void test_plan_max_tables(void)
+{
+    struct fb_info f = usable(0x800000ffcull, 65536, 4096, 4096, 32);
+    CHECK_EQ(f.kind, FB_USABLE);
+    fbinfo_plan(&f, NULL, 0xFFFFFFFFu, &plan, line);
+    CHECK_EQ(plan.fb_pages, 65537);
+    CHECK_EQ(plan.bb_pages, 16384);
+    CHECK_EQ(plan.tables, FBPLAN_MAX_TABLES);
+    CHECK_EQ(fbinfo_plan(&f, NULL, 0xFFFFFFFFu, &plan, line), FBPLAN_MAP);
+}
+
+/* Usable RAM over any of the framebuffer's pages (rounded out) refuses it. */
+static void test_plan_overlap(void)
+{
+    struct fb_info f = usable(0xfd000000u, 4096, 1024, 768, 32);   /* 0xfd000000-0xfd300000 */
+    struct fb_ram below = { 0x100000u, 0xfcf00000u };              /* ends at 0xfd000000 */
+    struct fb_ram above = { 0xfd300000u, 0x1000u };
+    struct fb_ram first = { 0xfcfff000u, 0x2000u };                /* its first page */
+    struct fb_ram last = { 0xfd2ff000u, 0x1000u };                 /* its last page */
+    struct fb_ram inside = { 0xfd100000u, 0x1000u };
+    struct fb_ram around = { 0, 0x100000000ull };
+    struct fb_ram empty = { 0xfd100000u, 0 };
+    CHECK(!fbinfo_overlaps(&f, &below));
+    CHECK(!fbinfo_overlaps(&f, &above));
+    CHECK(fbinfo_overlaps(&f, &first));
+    CHECK(fbinfo_overlaps(&f, &last));
+    CHECK(fbinfo_overlaps(&f, &inside));
+    CHECK(fbinfo_overlaps(&f, &around));
+    CHECK(!fbinfo_overlaps(&f, &empty));
+    CHECK_EQ(fbinfo_plan(&f, &first, 32160, &plan, line), FBPLAN_OVERLAP);
+    CHECK(line_is("Display: framebuffer 1024x768x32 at 0xfd000000 overlaps usable RAM "
+                  "0xfcfff000-0xfd001000 (memory map); not mapped, VGA text and serial kept"));
+    /* An unaligned framebuffer: its first page counts, from its start. */
+    f = usable(0xfd000800u, 4096, 1024, 768, 32);
+    struct fb_ram page_below = { 0xfcfff000u, 0x1000u };
+    struct fb_ram same_page = { 0xfd000000u, 0x800u };
+    CHECK(!fbinfo_overlaps(&f, &page_below));
+    CHECK(fbinfo_overlaps(&f, &same_page));
+    /* The overlap is refused before the room is looked at. */
+    CHECK_EQ(fbinfo_plan(&f, &same_page, 0, &plan, line), FBPLAN_OVERLAP);
+}
+
+/* The refusals' longest lines fit the buffer whole. */
+static void test_plan_longest_line(void)
+{
+    struct fb_info f = usable((1ull << 52) - 65536ull * 4096, 65536, 4096, 4096, 32);
+    CHECK_EQ(f.kind, FB_USABLE);
+    struct fb_ram huge = { 0xffffffffffff0000ull, 0xffff };
+    CHECK_EQ(fbinfo_plan(&f, &huge, 0, &plan, line), FBPLAN_OVERLAP);
+    CHECK(strlen(line) < FBINFO_LINE - 1);
+    /* A refusal needs fewer than 4 x 16548 free pages, so its numbers have
+     * at most 5 digits: 66187 is the most free pages refused here. */
+    CHECK_EQ(fbinfo_plan(&f, NULL, 66187, &plan, line), FBPLAN_NO_ROOM);
+    CHECK(strlen(line) < FBINFO_LINE - 1);
+    CHECK(line_is("Display: framebuffer 4096x4096x32 at 0xffffff0000000 not mapped (back buffer and "
+                  "page tables: 16547 pages, over a quarter of the 66187 free pages); VGA text and "
+                  "serial kept"));
+    CHECK_EQ(fbinfo_plan(&f, NULL, 66188, &plan, line), FBPLAN_MAP);
+}
+
 int main(void)
 {
     RUN(test_probe_bytes);
@@ -275,5 +410,11 @@ int main(void)
     RUN(test_pitch);
     RUN(test_address);
     RUN(test_longest_line);
+    RUN(test_plan_1024x768);
+    RUN(test_plan_sizes);
+    RUN(test_plan_no_room);
+    RUN(test_plan_max_tables);
+    RUN(test_plan_overlap);
+    RUN(test_plan_longest_line);
     return unit_report("fbinfo");
 }

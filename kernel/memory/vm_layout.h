@@ -14,6 +14,11 @@
  *   slot 256  (0.8) the physical view: VM_PHYS_VIEW_BASE + physical address
  *             for the low 1 MiB and the boot data only (never free RAM,
  *             page 0 or the kernel image); phys_view() below
+ *   slot 506  (1.2) the display, only on boots with a usable framebuffer
+ *             (kernel/display/display.h): the framebuffer at VM_FB_BASE
+ *             (plus its offset in its first page) and the back buffer,
+ *             frames of free RAM, at VM_BACKBUF_BASE; each area up to
+ *             1 GiB, so each has its own page directory
  *   slot 507  (0.9) kernel thread stacks: VM_KSTACK_BASE, one 32 KiB slot
  *             per thread (16 KiB unmapped guard, then the 16 KiB stack);
  *             kernel/proc/sched_core.h
@@ -32,6 +37,11 @@
 #define VM_NULL_GUARD_END     0x0000000000001000ull
 #define VM_LOW_MAP_START      0x0000000000001000ull
 #define VM_LOW_MAP_END        0x0000000000100000ull
+
+#define VM_DISPLAY_INDEX      506u
+#define VM_FB_BASE            0xFFFFFD0000000000ull
+#define VM_BACKBUF_BASE       0xFFFFFD0040000000ull /* VM_FB_BASE + 1 GiB */
+#define VM_DISPLAY_AREA       0x0000000040000000ull /* each area's size */
 
 #define VM_KSTACK_INDEX       507u
 #define VM_KSTACK_BASE        0xFFFFFD8000000000ull

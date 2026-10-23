@@ -523,6 +523,8 @@ static void run_diagnostics(void)
         diag_message("IF-state test: interrupt flag across thread switches...");
         diag_message(schedtest_ifstate() ? "IF-state test: PASS"
                                          : "IF-state test: FAIL (see serial log)");
+    } else if (cmdline_has("test=fbpattern") || cmdline_has("test=fbfail")) {   /* 1.2 stage 5b */
+        display_fbpattern();
     } else if (cmdline_has("test=timer")) {
         devtest_timer();
     } else if (cmdline_has("test=keyboard")) {
@@ -853,6 +855,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bootscreen_status("Memory initialization:", BOOT_OK, note);
     bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
     bootscreen_memory(&mem);
+
+    /* 1.2 stage 5b: slot 506 for a usable framebuffer, planned now that
+     * the allocator knows the free pages; paging_init() builds it. */
+    display_plan_slot(mbi);
+    uint32_t fbfail;
+    if (cmdline_has("test=fbfail") && cmdline_u32("test=fbfail=", &fbfail))
+        display_test_fail_at(fbfail);           /* a test option: the undo path */
 
     /* Paging: build, walk-check, enable; before any IRQ is unmasked. A
      * failed check leaves paging off; a failed self-test once it is on is
