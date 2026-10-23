@@ -54,4 +54,5 @@
 # and Ctrl+C, Esc and Tab at the prompt, one normal boot (C1-C10, L6),
 # part 1; 1 unit suite (complete11).
 1.1 36
-unit-suites 70
+# 1.2 stage 4: 1 unit suite (i8042); no counted check yet.
+unit-suites 71

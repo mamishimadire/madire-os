@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define MADIRE_OS_NAME    "Madire OS"
-#define MADIRE_OS_VERSION "1.1"
+#define MADIRE_OS_VERSION "1.2"
 #define MADIRE_HOSTNAME   "madire"  /* 0.9.1: fixed until settings can be stored */
 
 void kernel_main(uint32_t magic, uint32_t mb_info);

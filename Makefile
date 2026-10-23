@@ -81,7 +81,7 @@ endif
 UNIT_CC      := gcc -m64 -no-pie -Wl,-Ttext-segment=0x10000000
 UNIT_CFLAGS  := -std=gnu11 -O2 -Wall -Wextra -Werror -fno-pie -I.
 UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memory/reserve.c \
-                            drivers/keyboard/scancode.c drivers/keyboard/ps2leds.c kernel/input/keyqueue.c \
+                            drivers/keyboard/scancode.c drivers/keyboard/ps2leds.c drivers/ps2/i8042.c kernel/input/keyqueue.c \
                             kernel/console/textbuf.c kernel/console/lineedit.c kernel/console/outq.c \
                             kernel/shell/parser.c kernel/shell/shell.c kernel/shell/cpuinfo.c \
                             kernel/memory/vmm_core.c kernel/memory/heap.c kernel/bootmod.c \
@@ -231,7 +231,7 @@ $(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BU
 
 $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard kernel/memory/*.h) kernel/multiboot.h \
                  kernel/bootmod.h kernel/stackpeak.h kernel/rtc_time.h kernel/logbuf.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
-                 $(wildcard drivers/keyboard/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
+                 $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard kernel/proc/*.h kernel/fs/*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
@@ -288,9 +288,11 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-# 1.2 stage 3: the probe kernel in build/probe, for the report-only probe
-# section of tests/qemu-part-1.sh; probe-iso also makes the probe ISO for
-# the VirtualBox probe (scripts/vbox-probe.ps1; never acceptance evidence).
+# 1.2 stage 3: the probe kernel in build/probe (stage 4: no longer run by
+# the tests; kept so the probes can be rerun on request, with
+# tests/probe-iso.sh and tests/probe_fb.py); probe-iso also makes the probe
+# ISO for the VirtualBox probe (scripts/vbox-probe.ps1; never acceptance
+# evidence).
 # A failed build is reported and leaves no kernel there.
 PROBE_BUILD := $(BUILD)/probe
 probe:
@@ -308,18 +310,18 @@ probe-iso: probe $(BUILD)/limine.conf $(BUILD)/wallpaper.png
 	    --layout-json $(PROBE_BUILD)/layout.json
 	sha256sum $(PROBE_BUILD)/madire-probe.iso $(PROBE_BUILD)/madire.kernel $(BUILD)/wallpaper.png
 
-test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel probe
+test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
 # the parts: bash tests/qemu-tests.sh --list-parts), for the parallel jobs
 # of .github/workflows/regression.yml. The unit tests and make repro run
 # only with SHARD=static, so a sharded run runs them once; the padded test
-# kernel (1.0) is built only for part 4, which boots it; the probe kernel
-# (1.2 stage 3) only for part 1.
+# kernel (1.0) is built only for part 4, which boots it. (1.2 stage 4: the
+# probe kernel is no longer built for part 1; make probe still builds it.)
 SHARD ?= static
 test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro) \
-            $(if $(filter 4,$(SHARD)),padkernel) $(if $(filter 1,$(SHARD)),probe)
+            $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)
