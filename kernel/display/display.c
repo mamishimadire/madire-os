@@ -92,6 +92,11 @@ struct surface *display_back_buffer(void)
     return active ? &back : 0;
 }
 
+struct surface *display_front_buffer(void)
+{
+    return active ? &fb : 0;
+}
+
 uint32_t display_present(void)
 {
     surface_blit(&fb, 0, 0, &back, 0, 0, (int32_t)back.width, (int32_t)back.height);

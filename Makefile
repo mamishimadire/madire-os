@@ -43,6 +43,29 @@ ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
 C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
+# 1.2 stage 6: the console fonts, converted at build time from the pinned
+# BDF files in third_party/terminus/ (decision 8) by scripts/make-font.py
+# (Madire's own; it refuses a file whose SHA-256 is not the one SHA256SUMS
+# pins). Every size is generated in both weights (part static regenerates
+# and compares them); only the regular ones are linked so far (font.h).
+FONT_SIZES  := 8x16 10x20 12x24 16x32
+FONT_C      := $(foreach s,$(FONT_SIZES),$(BUILD)/font/font_$(s).c $(BUILD)/font/font_$(s)_bold.c)
+FONT_OBJS   := $(FONT_SIZES:%=$(BUILD)/font/font_%.o)
+FONT_SUMS   := third_party/terminus/SHA256SUMS
+OBJS        += $(FONT_OBJS)
+define font_rule
+$(BUILD)/font/font_$(1).c: third_party/terminus/ter-u$(2)n.bdf $(FONT_SUMS) scripts/make-font.py
+	@mkdir -p $$(dir $$@)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-font.py $$< $$@ font_$(1) --sums $(FONT_SUMS)
+$(BUILD)/font/font_$(1)_bold.c: third_party/terminus/ter-u$(2)b.bdf $(FONT_SUMS) scripts/make-font.py
+	@mkdir -p $$(dir $$@)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-font.py $$< $$@ font_$(1)_bold --sums $(FONT_SUMS)
+endef
+$(eval $(call font_rule,8x16,16))
+$(eval $(call font_rule,10x20,20))
+$(eval $(call font_rule,12x24,24))
+$(eval $(call font_rule,16x32,32))
+
 # 1.0 stage 1 (D1): a test-only kernel padded past 2 MiB. KERNEL_PAD=<n>[K|M]
 # links one more object, a .bss pad of that size, so the image ends that
 # much higher. It is never the shipped kernel: it builds only into its own
@@ -95,11 +118,14 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
+$(BUILD)/font/%.o: $(BUILD)/font/%.c kernel/display/font.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # 0.10 stage 4: the built-in user programs (build/user/images.o, below)
 # are linked into the kernel, after its own objects.
 USER_IMAGES := $(BUILD)/user/images.o
 
-$(ELF): $(OBJS) $(USER_IMAGES) linker/linker.ld
+$(ELF): $(OBJS) $(USER_IMAGES) linker/linker.ld | $(FONT_C)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(USER_IMAGES)
 
 # The bootable image: the ELF's loaded sections as one flat binary starting
@@ -198,14 +224,19 @@ $(BUILD)/wallpaper.png: scripts/make-wallpaper.py kernel/kernel.h kernel/logo.c
 # 1.0 (stage 0a): Madire's own LICENSE, NOTICE and THIRD_PARTY_NOTICES go to
 # the ISO root (Apache 2.0, section 4); Limine's stay in /boot/limine/.
 # 1.1: the boot menu's wallpaper goes to /boot/limine/wallpaper.png.
+# 1.2 stage 6: the kernel carries the console font (decision 8), so its
+# notices go to the ISO too: /THIRD_PARTY_ASSETS.md and the font's licence,
+# /third_party/terminus/OFL.txt (the repository's paths).
 LIMINE_DIR ?= /usr/local/share/limine
 LIMINE ?= limine
 ISO_EPOCH := 1791763200
-$(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES
+$(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BUILD)/user/%.elf) LICENSE NOTICE THIRD_PARTY_NOTICES \
+        THIRD_PARTY_ASSETS.md third_party/terminus/OFL.txt
 	sh scripts/check-bootscreen.sh
 	rm -rf $(BUILD)/isodir
-	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog
-	cp LICENSE NOTICE THIRD_PARTY_NOTICES $(BUILD)/isodir/
+	mkdir -p $(BUILD)/isodir/boot/limine $(BUILD)/isodir/boot/prog $(BUILD)/isodir/third_party/terminus
+	cp LICENSE NOTICE THIRD_PARTY_NOTICES THIRD_PARTY_ASSETS.md $(BUILD)/isodir/
+	cp third_party/terminus/OFL.txt $(BUILD)/isodir/third_party/terminus/OFL.txt
 	cp $(KERNEL) $(BUILD)/isodir/boot/madire.kernel
 	cp $(BUILD)/limine.conf $(BUILD)/isodir/boot/limine/limine.conf
 	cp $(BUILD)/wallpaper.png $(BUILD)/isodir/boot/limine/wallpaper.png
@@ -249,7 +280,8 @@ elfcheck: $(ELFCHECK)
 REPRO := $(BUILD)/repro
 repro: $(KERNEL)
 	rm -rf $(REPRO) && mkdir -p $(REPRO)/a $(REPRO)/b $(REPRO)/bin
-	find Makefile boot kernel drivers linker user scripts/user-images.sh -type f | LC_ALL=C sort > $(REPRO)/files
+	find Makefile boot kernel drivers linker user scripts/user-images.sh scripts/make-font.py third_party/terminus \
+	    -type f | LC_ALL=C sort > $(REPRO)/files
 	tar -cf - -T $(REPRO)/files | tar -xf - -C $(REPRO)/a
 	tar -cf - -T $(REPRO)/files | tar -xf - -C $(REPRO)/b
 	printf '#!/bin/sh\n%s "$$@" | LC_ALL=C sort -r\n' "$$(command -v find)" > $(REPRO)/bin/find

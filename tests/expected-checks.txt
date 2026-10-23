@@ -62,5 +62,13 @@
 # framebuffer test ISOs with test=fbpattern, 1024x768x32 and Limine's
 # resolution: 800x600x24 (7 each), the undo path, test=fbfail=868 (5), and
 # the size refusal, 1920x1080x32 at 32M (4); 1 unit suite (surface).
-1.2 29
-unit-suites 73
+# Stage 6: 33 more: the console font in part static (4: the pinned files,
+# the C files regenerated, the ISO's notices, the name never in the
+# interface); in part 1, test=fbcon in five modes (5 each: the mode, the
+# console's layout, screens 1 and 2 against tests/fbcon_ref.py, done
+# without a refused draw or a FAILED line), the 1024x768 console scrolled
+# by dmesg (1), the crash screen (1) and the serial twins (2); 1 unit
+# suite (fbcon). The two 5b framebuffer boots' health checks also require
+# no FAILED status line now (reworded, not added).
+1.2 62
+unit-suites 74

@@ -9,6 +9,26 @@ kernel or programs.
 Madire OS's own LICENSE, NOTICE and this file are at every ISO's root (1.0).
 
 =============================================================================
+Terminus 4.49.1 (the console font, an asset, since 1.2)
+=============================================================================
+
+What:     the bitmap font Terminus 4.49.1, by Dimitar Toshkov Zhekov,
+          https://terminus-font.sourceforge.net/ : eight BDF files of the
+          release package terminus-font-4.49.1.tar.gz (SHA-256
+          d961c1b781627bf417f9b340693d64fc219e0113ad3a3af1a3424c7aa373ef79),
+          kept unmodified in third_party/terminus/ with their SHA-256.
+How:      an asset, not code (AGENTS.md section 11, item 6). Madire's own
+          scripts/make-font.py converts the BDF files to C at build time;
+          the kernel links the result (the glyphs of code page 437). The
+          converted font is a Modified Version under the OFL and does not
+          use the Reserved Font Name "Terminus Font".
+Licence:  SIL Open Font License, Version 1.1. Copyright (C) 2020 Dimitar
+          Toshkov Zhekov, with Reserved Font Name "Terminus Font". The full
+          licence text is in third_party/terminus/OFL.txt, at
+          /third_party/terminus/OFL.txt on every ISO; the details are in
+          THIRD_PARTY_ASSETS.md (also at every ISO's root).
+
+=============================================================================
 Limine v12.9.3 (the boot loader, since 0.13)
 =============================================================================
 

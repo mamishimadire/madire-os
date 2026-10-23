@@ -1,0 +1,90 @@
+/*
+ * The framebuffer console, the pure part (1.2 stage 6); see fbcon_core.h.
+ */
+#include "kernel/display/fbcon_core.h"
+
+uint32_t fbcon_scale_for_height(uint32_t height)
+{
+    if (height < 900)
+        return 4;
+    if (height < 1080)
+        return 5;
+    if (height < 1440)
+        return 6;
+    return 8;
+}
+
+bool fbcon_layout(uint32_t width, uint32_t height, const struct font *const fonts[4],
+                  struct fbcon_layout *out)
+{
+    static const uint32_t scales[4] = { 4, 5, 6, 8 };
+    uint32_t want = fbcon_scale_for_height(height);
+    int i = 3;
+    while (i > 0 && scales[i] > want)
+        i--;
+    for (; i >= 0; i--) {
+        const struct font *f = fonts[i];
+        uint64_t gw = (uint64_t)FBCON_COLS * f->width, gh = (uint64_t)FBCON_ROWS * f->height;
+        if (gw <= width && gh <= height) {
+            out->font = f;
+            out->scale = scales[i];
+            out->cell_w = f->width;
+            out->cell_h = f->height;
+            out->x = (uint32_t)((width - gw) / 2);
+            out->y = (uint32_t)((height - gh) / 2);
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint32_t widen(uint8_t v)
+{
+    v &= 0x3F;
+    return (uint32_t)(v << 2 | v >> 4);
+}
+
+uint32_t fbcon_rgb6(const uint8_t rgb6[3])
+{
+    return widen(rgb6[0]) << 16 | widen(rgb6[1]) << 8 | widen(rgb6[2]);
+}
+
+void fbcon_cursor_rows(uint32_t height, uint32_t *first, uint32_t *end)
+{
+    *first = height * 13 / 16;
+    *end = height * 15 / 16;
+}
+
+struct rect fbcon_cell_rect(const struct fbcon_layout *l, uint32_t row, uint32_t col)
+{
+    return (struct rect){ (int32_t)(l->x + col * l->cell_w), (int32_t)(l->y + row * l->cell_h),
+                          (int32_t)l->cell_w, (int32_t)l->cell_h };
+}
+
+void fbcon_draw_cell(struct surface *s, const struct fbcon_layout *l, uint32_t row, uint32_t col,
+                     uint8_t ch, uint32_t fg, uint32_t bg, bool cursor)
+{
+    if (row >= FBCON_ROWS || col >= FBCON_COLS)
+        return;
+    uint64_t x0 = l->x + (uint64_t)col * l->cell_w, y0 = l->y + (uint64_t)row * l->cell_h;
+    if (x0 + l->cell_w > s->width || y0 + l->cell_h > s->height)
+        return;
+    const struct font *f = l->font;
+    const uint8_t *glyph = f->bits + (uint32_t)ch * f->height * f->row_bytes;
+    uint32_t c_first, c_end, bpp = s->bytes_per_pixel;
+    fbcon_cursor_rows(f->height, &c_first, &c_end);
+    for (uint32_t y = 0; y < f->height; y++) {
+        const uint8_t *bits = glyph + y * f->row_bytes;
+        bool under = cursor && y >= c_first && y < c_end;
+        uint8_t *p = s->pixels + (y0 + y) * s->pitch + x0 * bpp;
+        for (uint32_t x = 0; x < f->width; x++, p += bpp) {
+            bool on = under || (bits[x >> 3] & (0x80u >> (x & 7)));
+            uint32_t rgb = on ? fg : bg;
+            p[0] = (uint8_t)rgb;
+            p[1] = (uint8_t)(rgb >> 8);
+            p[2] = (uint8_t)(rgb >> 16);
+            if (bpp == 4)
+                p[3] = 0;
+        }
+    }
+}

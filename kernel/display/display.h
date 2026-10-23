@@ -55,6 +55,10 @@ bool display_active(void);
  * only while display_active(). */
 struct surface *display_back_buffer(void);
 
+/* The framebuffer itself (1.2 stage 6: the console copies each changed
+ * cell to it); only while display_active(). */
+struct surface *display_front_buffer(void);
+
 /* Copies the whole back buffer to the framebuffer; returns the frame
  * number (1 for the first). Only while display_active(). */
 uint32_t display_present(void);

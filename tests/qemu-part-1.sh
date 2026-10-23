@@ -14,7 +14,11 @@
 # 1.2 stage 5 adds the [1.2] Display checks of the text boots at the end;
 # stage 5b, after them, the text boots' slot 506 checks and four framebuffer
 # test ISOs (slot 506, test=fbpattern and tests/qmp_fb.py; the undo path,
-# test=fbfail; the size refusal at 32M).
+# test=fbfail; the size refusal at 32M). Stage 6 adds the framebuffer
+# console at the end: test=fbcon in five modes (the 1024x768 boot also
+# scrolls the console) and the crash screen
+# against tests/fbcon_ref.py (tests/qmp_fbcon.py), and the serial twins
+# (tests/serial_twin.py).
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1707,10 +1711,13 @@ fb_case() {
     else
         fail "[1.2] $label: the screendump's CRC-32 is not the logged ${crc:-(none)} ($(grep '^SCREEN' <<< "$FB_OUT"))"
     fi
-    if grep -q "^System ready\." "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
-        pass "[1.2] $label: System ready, no panic, no paging mismatch"
+    # 1.2 stage 6: also no FAILED status line (in 5b these boots logged
+    # "Display initialization: FAILED" unnoticed; slot 506 planned now
+    # counts as a working display, kernel/kernel.c).
+    if grep -q "^System ready\." "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: System ready, no FAILED status line, no panic, no paging mismatch"
     else
-        fail "[1.2] $label: no System ready, or a panic or a paging mismatch (see $log)"
+        fail "[1.2] $label: no System ready, a FAILED status line, or a panic or a paging mismatch (see $log)"
     fi
 }
 fb_case 1024 1024x768x32 "framebuffer boot (the header's 1024x768x32)" \
@@ -1804,3 +1811,151 @@ else
     fail "[1.2] 1920x1080x32 at 32M: no line '$FB_WANT' in $LOG"
 fi
 fb_kept "$LOG" "1920x1080x32 at 32M"
+
+# ---- 1.2 stage 6: the framebuffer console ----
+
+echo "== [1.2] The framebuffer console: its screens against the reference renderer (tests/qmp_fbcon.py)"
+# Test ISOs with one entry, no "textmode" line and "cmdline: test=fbcon":
+# the kernel shows the boot screen, then a chart of the 256 characters, the
+# 16 x 16 colour pairs and the cursor, each after "display: frame N" and
+# held still for 3 s. tests/qmp_fbcon.py stops the guest at each marker,
+# takes a screendump, saves the kernel's cell grid (vga_shadow, read at its
+# physical address) and compares the screen with tests/fbcon_ref.py's
+# rendering of that grid, made from the BDF files themselves (never the
+# generated C). The expected layout of each mode (decision 19) is written
+# out below, not computed.
+QMPFBCON=$(dirname "$0")/qmp_fbcon.py
+FONTDIR=$(dirname "$0")/../third_party/terminus
+SHADOW_V=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+SHADOW_P=$(printf '0x%x' $(( 0x${SHADOW_V:-0} - 0xffffffff80000000 )))
+echo "      vga_shadow at 0x${SHADOW_V:-?} (physical $SHADOW_P)"
+# fbcon_boot <log> <iso> <memory> <markers...>: boots <iso> paused, runs
+# qmp_fbcon.py with the markers, then stops QEMU. FBC_OUT holds its output
+# (also kept in <log>.fbcon.txt).
+fbcon_boot() {
+    local log=$1 iso=$2 mem=$3 sock=$OUT/qmp-fbcon.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 120 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m "$mem" -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    FBC_OUT=$(python3 "$QMPFBCON" "$sock" "$log" "$SHADOW_P" "$FONTDIR" "$@" --until "System ready." \
+              --timeout 100 2>&1)
+    sed 's/^/      /' <<< "$FBC_OUT"
+    echo "$FBC_OUT" > "${log%.log}.fbcon.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# fbcon_iso <name> <cmdline> [a limine.conf line]: the test ISO
+# madire-os-fbcon-<name>.iso; FBC_ISO is its path, empty if it failed.
+fbcon_iso() {
+    local dir=$OUT/isofbcon-$1
+    FBC_ISO=$OUT/madire-os-fbcon-$1.iso
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (framebuffer console test)\n    protocol: multiboot1\n'
+        [ -z "${3:-}" ] || printf '    %s\n' "$3"
+        printf '    path: boot():/boot/madire.kernel\n'
+        [ -z "$2" ] || printf '    cmdline: %s\n' "$2"
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    limine_iso "$dir" "$FBC_ISO" || { echo "      the test ISO could not be made"; FBC_ISO=""; }
+}
+# fbcon_case <name> <mode WxHxD> <cell WxH> <x> <y> <percent> <label> [a limine.conf line]
+#            [more qmp_fbcon.py steps]
+fbcon_case() {
+    local name=$1 mode=$2 cell=$3 x=$4 y=$5 pct=$6 label=$7 extra=${8:-} log=$OUT/serial-fbcon-$1.log w h
+    shift $(( $# < 8 ? $# : 8 ))
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    FBC_W=$w FBC_H=$h FBC_LABEL=$label FBC_LOG=$log
+    fbcon_iso "$name" "test=fbcon" "$extra"
+    FBC_OUT=""
+    if [ -n "$FBC_ISO" ]; then fbcon_boot "$log" "$FBC_ISO" 128M "display: frame 1" "display: frame 2" "$@"
+    else : > "$log"; fi
+    grep -E "^Display: |^fbcon |^display: frame " "$log" | sed 's/^/      /'
+    grep -E "^fbcon timing: " "$log" | sed "s/^/      FBCON_TIMING $mode: /"
+    expect "$log" "^Display: framebuffer $mode at 0x[0-9a-f]+, pitch [0-9]+, RGB at bits 16/8/0$" \
+        "[1.2] $label: Display: framebuffer $mode"
+    expect "$log" "^Display: console on the framebuffer: 80x25 cells of $cell pixels at \($x, $y\), scale $pct %$" \
+        "[1.2] $label: Display: console on the framebuffer: 80x25 cells of $cell pixels at ($x, $y), scale $pct %"
+    if grep -qE "^SCREEN 1 size=${w}x${h} held=yes differ=0 \(" <<< "$FBC_OUT"; then
+        pass "[1.2] $label: screen 1 (the boot screen, held still) equals the reference rendering of the cell grid pixel for pixel"
+    else
+        fail "[1.2] $label: screen 1 differs from the reference rendering, or was not held still ($(grep -E '^(MARKER 1|SCREEN 1|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qE "^SCREEN 2 size=${w}x${h} held=yes differ=0 \(.*cursor at row 21, column 14\)$" <<< "$FBC_OUT"; then
+        pass "[1.2] $label: screen 2 (the 256 characters, the 16 x 16 colour pairs, the cursor) equals the reference rendering pixel for pixel"
+    else
+        fail "[1.2] $label: screen 2 differs from the reference rendering, or was not held still ($(grep -E '^(MARKER 2|SCREEN 2|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qxF "fbcon test: done: 2 screens held, the boot screen back; 0 draws refused off thread 0" "$log" &&
+       grep -q "^System ready\." "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: test=fbcon done, 0 draws refused off thread 0; System ready, no FAILED status line, no panic, no mismatch"
+    else
+        fail "[1.2] $label: test=fbcon not done, a draw refused, no System ready, a FAILED status line, or a panic or mismatch (see $log)"
+    fi
+}
+# The 1024x768x32 boot then opens the console and runs dmesg, whose
+# ~250 lines scroll it (the console logs "console: scrolled N lines");
+# screen 3 is taken 1 s after that line, at the prompt, and must equal the
+# reference rendering of the scrolled grid, with the prompt on the last row.
+fbcon_case 1024 1024x768x32 8x16 192 184 100 "fbcon at 1024x768x32 (the header's mode)" "" \
+    "wait:$FB_READY" "type:{ret}" "wait:console: started" "type:dmesg{ret}" "regex:^console: scrolled [0-9]+ lines$"
+SCROLLED=$(sed -nE 's/^console: scrolled ([0-9]+) lines$/\1/p' "$FBC_LOG" | head -n 1)
+if [ "${SCROLLED:-0}" -gt 0 ] && grep -qE "^SCREEN 3 size=${FBC_W}x${FBC_H} held=yes differ=0 \(" <<< "$FBC_OUT" &&
+   grep -qE "^ROWS 3 top='.*' bottom='madire[^']*>'$" <<< "$FBC_OUT"; then
+    pass "[1.2] $FBC_LABEL: screen 3 (the console after dmesg scrolled it $SCROLLED lines, the prompt on the last row) equals the reference rendering pixel for pixel"
+else
+    fail "[1.2] $FBC_LABEL: screen 3: no scroll logged, the screen differs, or the prompt is not on the last row ($(grep -E '^(MARKER 3|SCREEN 3|ROWS 3|WAIT|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+fi
+fbcon_case 800x24 800x600x24 8x16 80 100 100 "fbcon at 800x600x24" "resolution: 800x600x24"
+fbcon_case 1280x1024 1280x1024x32 10x20 240 262 125 "fbcon at 1280x1024x32" "resolution: 1280x1024x32"
+fbcon_case 1920 1920x1080x32 12x24 480 240 150 "fbcon at 1920x1080x32" "resolution: 1920x1080x32"
+fbcon_case 2560 2560x1440x32 16x32 640 320 200 "fbcon at 2560x1440x32" "resolution: 2560x1440x32"
+
+echo "== [1.2] The crash screen on the framebuffer (test=gpflimit)"
+LOG=$OUT/serial-fbcon-crash.log
+fbcon_iso crash "test=gpflimit"
+FBC_OUT=""
+if [ -n "$FBC_ISO" ]; then fbcon_boot "$LOG" "$FBC_ISO" 128M " System halted. Power off the machine."
+else : > "$LOG"; fi
+grep -E "^Display: console|CPU exception|System halted" "$LOG" | sed 's/^/      /'
+if grep -q "CPU exception 13: General Protection Fault (#GP)" "$LOG" && ! grep -q "FAILED" "$LOG" &&
+   grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$FBC_OUT"; then
+    pass "[1.2] crash screen on the framebuffer (test=gpflimit): no FAILED status line before it, CPU exception 13 logged, and the screen equals the reference rendering of the cell grid pixel for pixel"
+else
+    fail "[1.2] crash screen on the framebuffer: a FAILED status line, no CPU exception 13, or the screen differs ($(grep -E '^(MARKER|SCREEN|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
+fi
+
+echo "== [1.2] Serial twins: a framebuffer boot and its text twin (tests/serial_twin.py)"
+# One test ISO entry without a command line, booted to System ready at
+# -m 128M twice: with "textmode: yes" (VGA text) and without (the
+# framebuffer and its console). The serial logs must be the same apart
+# from the allowed differences tests/serial_twin.py names.
+fbcon_iso twintext "" "textmode: yes"
+TT_ISO=$FBC_ISO
+fbcon_iso twinfb ""
+TF_ISO=$FBC_ISO
+TT_LOG=$OUT/serial-twin-text.log TF_LOG=$OUT/serial-twin-fb.log
+if [ -n "$TT_ISO" ]; then boot_until "$TT_LOG" 60 "$FB_READY" -m 128M -cdrom "$TT_ISO"; else : > "$TT_LOG"; fi
+if [ -n "$TF_ISO" ]; then boot_until "$TF_LOG" 60 "$FB_READY" -m 128M -cdrom "$TF_ISO"; else : > "$TF_LOG"; fi
+grep -hE "^Display: " "$TT_LOG" "$TF_LOG" | sed 's/^/      /'
+TWIN=$(python3 "$(dirname "$0")/serial_twin.py" "$TT_LOG" "$TF_LOG")
+sed 's/^/      /' <<< "$TWIN"
+if grep -qxF "$FB_READY" "$TT_LOG" && grep -qxF "$FB_READY" "$TF_LOG" &&
+   ! grep -q "FAILED" "$TT_LOG" "$TF_LOG" && ! grep -qE "PANIC|MISMATCH" "$TT_LOG" "$TF_LOG" &&
+   grep -qE "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" "$TT_LOG" &&
+   grep -qE "^Display: console on the framebuffer: 80x25 cells of 8x16 pixels at \(192, 184\), scale 100 %$" "$TF_LOG"; then
+    pass "[1.2] serial twins: both reach System ready with no FAILED status line and no panic; the text twin on VGA text, the other with its console on the 1024x768 framebuffer"
+else
+    fail "[1.2] serial twins: no System ready, a FAILED status line, a panic, or not one VGA text and one framebuffer console boot (see $TT_LOG, $TF_LOG)"
+fi
+if grep -qE "^TWIN_RESULT lines=[1-9][0-9]* .* other=0 MATCH$" <<< "$TWIN"; then
+    pass "[1.2] serial twins: the framebuffer boot's serial log equals the text boot's apart from the allowed differences (fb-only, frames, display, figures; tests/serial_twin.py)"
+else
+    fail "[1.2] serial twins: $(grep '^TWIN_RESULT' <<< "$TWIN")"
+fi

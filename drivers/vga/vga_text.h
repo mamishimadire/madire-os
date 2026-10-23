@@ -40,4 +40,21 @@ void vga_set_palette(uint8_t slot, uint8_t r, uint8_t g, uint8_t b);
 void vga_cursor_show(bool visible);
 void vga_cursor_move(size_t row, size_t col);
 
+/* 1.2 stage 6: what the screen shows, kept on every boot: each cell as
+ * written to video memory (character | attribute << 8), the 16 colour
+ * slots (6-bit DAC values; the BIOS's standard colours until
+ * vga_set_palette() changes one) and the hardware cursor. The framebuffer
+ * console (kernel/display/fbcon.c) draws from it; while it is active the
+ * calls above update this and forward to it instead of touching the VGA.
+ * tests/fbcon_ref.py reads it by its symbol's address in madire.elf. */
+struct vga_shadow {
+    uint16_t cells[VGA_WIDTH * VGA_HEIGHT];
+    uint8_t palette[16][3];
+    uint8_t cursor_visible;
+    uint8_t cursor_row;
+    uint8_t cursor_col;
+};
+
+const struct vga_shadow *vga_text_shadow(void);
+
 #endif

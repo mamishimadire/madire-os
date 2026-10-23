@@ -27,6 +27,7 @@
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
 #include "kernel/display/display.h"
+#include "kernel/display/fbcon.h"
 #include "kernel/fs/dirtest.h"
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
@@ -525,6 +526,8 @@ static void run_diagnostics(void)
                                          : "IF-state test: FAIL (see serial log)");
     } else if (cmdline_has("test=fbpattern") || cmdline_has("test=fbfail")) {   /* 1.2 stage 5b */
         display_fbpattern();
+    } else if (cmdline_has("test=fbcon")) {                                     /* 1.2 stage 6 */
+        fbcon_test();
     } else if (cmdline_has("test=timer")) {
         devtest_timer();
     } else if (cmdline_has("test=keyboard")) {
@@ -853,8 +856,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     ksnprintf(note, sizeof(note), "%u reserved ranges, self-test PASS, %u checks",
               mem.reservations, mem_checks);
     bootscreen_status("Memory initialization:", BOOT_OK, note);
-    bootscreen_status("Display initialization:", display_ok ? BOOT_OK : BOOT_FAILED, NULL);
-    bootscreen_memory(&mem);
 
     /* 1.2 stage 5b: slot 506 for a usable framebuffer, planned now that
      * the allocator knows the free pages; paging_init() builds it. */
@@ -862,6 +863,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     uint32_t fbfail;
     if (cmdline_has("test=fbfail") && cmdline_u32("test=fbfail=", &fbfail))
         display_test_fail_at(fbfail);           /* a test option: the undo path */
+    /* 1.2 stage 6: on a framebuffer boot VGA memory does not read back
+     * (the screen is in a graphics mode); the display works if slot 506 is
+     * planned, for the framebuffer console. */
+    bootscreen_status("Display initialization:", display_ok || display_slot_plan() ? BOOT_OK : BOOT_FAILED,
+                      NULL);
+    bootscreen_memory(&mem);
 
     /* Paging: build, walk-check, enable; before any IRQ is unmasked. A
      * failed check leaves paging off; a failed self-test once it is on is
@@ -871,6 +878,14 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     if (paging_on && !paging_selftest())
         panic("Paging self-test failed (details on the serial log).");
     bool heap_ok = paging_on && kheap_init() && kheap_selftest();
+    /* 1.2 stage 6: the console on the framebuffer, once slot 506 is live
+     * (test=fbpattern keeps the framebuffer to itself, as in stage 5b). */
+    if (display_active()) {
+        if (cmdline_has("test=fbpattern"))
+            klogf("Display: console kept in VGA text memory (test=fbpattern draws on the framebuffer)\n");
+        else
+            fbcon_start();
+    }
 
     const struct paging_stats *ps = paging_stats();
     char paging_note[112], heap_note[80];
