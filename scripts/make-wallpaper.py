@@ -35,12 +35,21 @@ TEXT, MUTED = (0xE6, 0xED, 0xF3), (0x8B, 0x9B, 0xB4)
 # The layout (O2, the plan's section F), in one place. The boxes are
 # inclusive pixel rectangles x0, y0, x1, y1; the drawn header, hint and
 # version must lie inside theirs (checked before the file is written).
+# 1.2: the version box holds any two-digit major and minor version (it
+# held only "v1.1" before), see WORST_VERSIONS.
 LAYOUT = {
     "header": [308, 36, 715, 257],
     "panel": [224, 276, 800, 492],
     "hint": [391, 507, 632, 519],
-    "version": [972, 727, 995, 740],
+    "version": [942, 727, 996, 740],
 }
+# 1.2: the widest versions the version box must hold, checked on every run.
+# The text is right-aligned at W - 28, so its left edge depends only on its
+# total advance and its right edge only on its last glyph: "4" has the
+# widest advance (10 units; "1" 5, the other digits 9), and every last
+# digit is tried. Measured over all 10,000 strings v00.00-v99.99, their
+# union is the box above.
+WORST_VERSIONS = ["44.4" + d for d in "0123456789"]
 PX0, PY0, PX1, PY1 = LAYOUT["panel"]
 PANEL_RADIUS = 14
 # The header: the logo's top and its px per 1/8-pixel unit, the title's cap
@@ -147,7 +156,7 @@ def text_width(s, scale, track):
     return sum((G[ch][0] + track) for ch in s) * scale - track * scale
 
 
-def draw_text(cv, s, x, y, scale, r, track, colour, name, weight_of=None):
+def text_coverage(cv, s, x, y, scale, r, track, weight_of=None):
     cov = {}
     pen = x
     for i, ch in enumerate(s):
@@ -160,7 +169,45 @@ def draw_text(cv, s, x, y, scale, r, track, colour, name, weight_of=None):
             for (ax, ay), (bx, by) in zip(pts, pts[1:]):
                 cv.capsule(cov, ax, ay, bx, by, rr)
         pen += (adv + track) * scale
-    cv.paint(cov, lambda X, Y: colour, name)
+    return cov
+
+
+def draw_text(cv, s, x, y, scale, r, track, colour, name, weight_of=None):
+    cv.paint(text_coverage(cv, s, x, y, scale, r, track, weight_of), lambda X, Y: colour, name)
+
+
+def version_at(cv, version, paint=True):
+    """The version, right-aligned at W - 28 on the bottom line; drawn, or
+    (paint=False) only measured: its inclusive pixel box."""
+    vs = "v" + version
+    args = (vs, W - 28 - text_width(vs, 0.82, 3.0), H - 28 - 14 * 0.82, 0.82, 0.72, 3.0)
+    if paint:
+        draw_text(cv, *args, MUTED, "version")
+        return None
+    cov = text_coverage(cv, *args)
+    xs = [k[0] for k in cov]
+    ys = [k[1] for k in cov]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def check_layout(cv):
+    """Every box on screen, no two boxes overlapping, and the worst-case
+    versions inside the version box (1.2)."""
+    for name, (x0, y0, x1, y1) in LAYOUT.items():
+        if not (0 <= x0 <= x1 < W and 0 <= y0 <= y1 < H):
+            sys.exit(f"make-wallpaper.py: the {name} layout box {x0},{y0}-{x1},{y1} is not on screen")
+    names = sorted(LAYOUT)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) = LAYOUT[a], LAYOUT[b]
+            if ax0 <= bx1 and bx0 <= ax1 and ay0 <= by1 and by0 <= ay1:
+                sys.exit(f"make-wallpaper.py: the {a} and {b} layout boxes overlap")
+    lx0, ly0, lx1, ly1 = LAYOUT["version"]
+    for v in WORST_VERSIONS:
+        x0, y0, x1, y1 = version_at(cv, v, paint=False)
+        if not (lx0 <= x0 and ly0 <= y0 and x1 <= lx1 and y1 <= ly1):
+            sys.exit(f"make-wallpaper.py: the worst-case version v{v} drawn at {x0},{y0}-{x1},{y1} "
+                     f"is outside its layout box {lx0},{ly0}-{lx1},{ly1}")
 
 
 def centred(cv, s, y, scale, r, track, colour, name, weight_of=None):
@@ -245,8 +292,8 @@ def render(version):
     centred(cv, TAGLINE, TAG_Y, TAG_S, TAG_R, 7.0, MUTED, "header")
     panel(cv)
     centred(cv, HINT, PY1 + 16, 0.78, 0.7, 4.0, MUTED, "hint")
-    vs = "v" + version
-    draw_text(cv, vs, W - 28 - text_width(vs, 0.82, 3.0), H - 28 - 14 * 0.82, 0.82, 0.72, 3.0, MUTED, "version")
+    version_at(cv, version)
+    check_layout(cv)
     for name, (x0, y0, x1, y1) in cv.boxes.items():
         lx0, ly0, lx1, ly1 = LAYOUT[name]
         if not (lx0 <= x0 and ly0 <= y0 and x1 <= lx1 and y1 <= ly1):
