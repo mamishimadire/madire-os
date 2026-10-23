@@ -94,6 +94,21 @@
 # screen, test=earlypanic (2: the lines, the screen). The Esc case's first
 # check now reads the ready state at System ready (reworded, not added);
 # the mouselog session's boot gets the test option pointer (its checks
-# unchanged).
-1.2 141
-unit-suites 77
+# unchanged). Stage 10b (the switch): 8 more: in part 1 3 (the real ISO,
+# now in graphics: its Display: lines, the framebuffer and its console;
+# slot 506 built and frozen with the kernel half, and tests/pagetables.py
+# modelling it); in part 3 4 (display under -kernel,
+# display on the real ISO after the key that closes the splash, that key
+# not typed, the console after clear equal to tests/screen_ref.py's
+# reference); in part 4 1 (the Diagnostics entries boot in text mode); 1
+# unit suite (shell_display12). Changed, not added: the limine.conf check
+# (static: the default entry in graphics, the others in text mode), and
+# stage 5's Display: check of a textmode: yes entry and stage 5b's two
+# text-boot checks without slot 506 (part 1: on the text twin instead of
+# the real ISO); outside [1.2]: [1.1] Q1, Q5 and Q6 (the
+# menu told by its header box, D2), [0.11] row 23 (read from the
+# console's cell grid, D2), and six help checks for display (two [0.9.1]
+# and [0.12] lines of names, [0.12] help system, the 39 -> 40 counts of
+# [0.12] help sections and [1.0] help, the [1.0] purpose rows).
+1.2 149
+unit-suites 78

@@ -10,6 +10,9 @@
 #include "kernel/console/outq.h"
 #include "kernel/console/scrollback.h"
 #include "kernel/console/textbuf.h"
+#include "kernel/display/display.h"
+#include "kernel/display/fbcon.h"
+#include "kernel/display/fbcon_core.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/fsys_core.h"
 #include "kernel/fs/ramfs_core.h"
@@ -895,6 +898,20 @@ static void build_context(struct shell_context *c)
     c->files = fs_up() ? &files_ops : 0;
     /* 1.0 stage 9: rm, cp, mv, df, du and "> file". */
     c->storage = fs_up() ? &storage_ops : 0;
+    /* 1.2 stage 10b: "display": the framebuffer console's mode and scale,
+     * or VGA text. */
+    static struct shell_display disp;
+    const struct fbcon_layout *lay = fbcon_current_layout();
+    disp.framebuffer = lay != 0;
+    if (lay) {
+        disp.width = display_info()->width;
+        disp.height = display_info()->height;
+        disp.bpp = display_info()->bpp;
+        disp.scale = lay->scale * 25;
+        disp.cell_w = lay->cell_w;
+        disp.cell_h = lay->cell_h;
+    }
+    c->display = &disp;
 }
 
 /* 0.12 stage 2: Ctrl held with c (as for a foreground program). */

@@ -121,6 +121,24 @@ while IFS='|' read -r opt name err cause; do
 done <<< "$SENTRIES"
 if [ "$(wc -l <<< "$DIAGS")" -eq 27 ]; then pass "[0.10] boot menu Diagnostics: 27 entries (16 earlier, 9 user-mode, smep and smap)"
 else fail "[0.10] boot menu Diagnostics: $(wc -l <<< "$DIAGS") entries, expected 27"; fi
+# 1.2 stage 10b (decision 3): the Diagnostics entries keep "textmode: yes"
+# after the switch, so each boot above (an entry of the real limine.conf,
+# booted through the menu) is in Limine's text mode: its Display: line,
+# and no console on a framebuffer.
+DT_N=0 DT_BAD=""
+for f in $(cut -d'|' -f1 <<< "$UENTRIES") smep smap smep-cpu smap-cpu; do
+    l=$OUT/serial-bootmenu-$f.log
+    DT_N=$((DT_N + 1))
+    if ! grep -qxF "Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000)" "$l" ||
+       grep -q "^Display: console on the framebuffer" "$l"; then
+        DT_BAD+="$f "
+    fi
+done
+if [ "$DT_N" -eq 13 ] && [ -z "$DT_BAD" ]; then
+    pass "[1.2] boot menu Diagnostics (textmode: yes): each of the 13 boots of positions 16-26 above is in text mode: Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000), no console on a framebuffer"
+else
+    fail "[1.2] boot menu Diagnostics: not in text mode: ${DT_BAD:-?} ($DT_N boots)"
+fi
 
 echo "== [0.12] Self-check (stage 2b): each forbidden state panics, naming it"
 # The always-on self-check: a destroyed address space loaded (thread_set_cr3)
@@ -1129,7 +1147,7 @@ LOG=$MENUDIR/reveal.log
 menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:5 shot:collapsed down ret shot:open \
     'down*27' shot:position-26 'up*28' shot:back-top --band up=288-303 --band down=464-479 --shots "$MENUDIR"
 if grep -qE '^REVEAL [0-9]+\.[0-9] s, [0-9]+ presses, 1024x768$' <<< "$MENU_OUT" &&
-   grep -qxF 'HOLD 5 s: serial 0 bytes, screen 1024x768' <<< "$MENU_OUT"; then
+   grep -qxF 'HOLD 5 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT"; then
     pass "[1.1] boot menu: a key during the 2 s shows the menu (1024x768), and nothing boots for 5 s"
 else
     fail "[1.1] boot menu: no 1024x768 menu within 30 s of keys, or the serial log not empty 5 s later (see ${LOG%.log}.menu.txt)"
@@ -1168,20 +1186,29 @@ fi
 # check would need changing.
 LOG=$MENUDIR/position-26.log
 menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:1 down ret 'down*27' ret 'until:SMAP test:'
-if grep -qE '^REVEAL ' <<< "$MENU_OUT" && grep -qxF 'HOLD 1 s: serial 0 bytes, screen 1024x768' <<< "$MENU_OUT" &&
+if grep -qE '^REVEAL ' <<< "$MENU_OUT" && grep -qxF 'HOLD 1 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT" &&
    grep -q '^SMAP test: ' "$LOG" && ! grep -q "PANIC" "$LOG"; then
     pass "[1.1] boot menu: Down, Enter, Down x27 boots Diagnostics position 26 to 'SMAP test:'"
 else
     fail "[1.1] boot menu: Down, Enter, Down x27, Enter did not boot position 26 to 'SMAP test:' (or booted early, or a panic; see $LOG)"
 fi
 
-# Q6: no key: a screendump every 250 ms until System ready.
+# Q6: no key: a screendump every 250 ms until System ready. 1.2 stage 10b
+# (docs/plans/1.2.md, D2): the real ISO now boots in graphics at 1024x768,
+# so the width no longer tells the menu apart. Each screendump is placed
+# by the serial log's size read just before it: before the first serial
+# byte (Limine's time) only 640x480, 720x400 or a blank screen in the
+# kernel's mode; after it, only the kernel's mode; no screendump at any
+# time with the menu's header box; one boot (boot32: start once).
 LOG=$MENUDIR/no-key.log
-menu_boot "$LOG" 150 nokey "System ready."
-if grep -qE '^SIZES( (640x480|720x400):[0-9]+)+$' <<< "$MENU_OUT" &&
-   grep -qE "^UNTIL 'System ready\.': seen after " <<< "$MENU_OUT"; then
-    pass "[1.1] no key: the real ISO boots to System ready without Limine's graphics screen (never 1024 wide)"
+menu_boot "$LOG" 150 nokey "System ready." --wallpaper "$MENU_WP" --layout "$MENU_LAYOUT"
+Q6MODE=$(sed -n 's/^MODE //p' <<< "$MENU_OUT")
+if grep -qE "^BEFORE( (640x480|720x400)(/blank)?:[0-9]+| ${Q6MODE:-none}/blank:[0-9]+)+$" <<< "$MENU_OUT" &&
+   grep -qE "^AFTER( ${Q6MODE:-none}(/blank)?:[0-9]+)+$" <<< "$MENU_OUT" &&
+   grep -qxF "HEADER matches=0" <<< "$MENU_OUT" && grep -qxF "BOOTS boot32=1" <<< "$MENU_OUT" &&
+   [ "${Q6MODE:-none}" != none ] && grep -qE "^UNTIL 'System ready\.': seen after " <<< "$MENU_OUT"; then
+    pass "[1.1] no key: the real ISO boots to System ready and Limine's menu is never shown (before the first serial byte only 640x480, 720x400 or a blank screen; no screen ever matches the menu wallpaper's header)"
 else
-    fail "[1.1] no key: no System ready, or a screen size other than 640x480 and 720x400 on the way (see ${LOG%.log}.menu.txt)"
+    fail "[1.1] no key: no System ready, a non-blank or other-size screen before the first serial byte, or a screen matching the menu wallpaper's header (see ${LOG%.log}.menu.txt)"
 fi
 echo "      [1.1] boot menu checks: $(( $(date +%s) - MENU_T0 )) s (report only)"

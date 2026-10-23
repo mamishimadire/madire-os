@@ -147,8 +147,9 @@ echo "== [0.7] Boot module through the boot menu (ISO with a module entry; 0.13:
 LOG=$OUT/serial-bootmenu-module.log
 limine_tree "$OUT/isomod"
 cp "$OUT/test-module.bin" "$OUT/isomod/boot/test-module.bin"
-# 1.2 stage 5: "textmode: yes", as in every entry of the real limine.conf,
-# keeps text mode now that the kernel's header asks for a framebuffer.
+# 1.2 stage 5: "textmode: yes" (then in every entry of the real limine.conf;
+# since stage 10b in its Diagnostics entries) keeps text mode now that the
+# kernel's header asks for a framebuffer.
 cat > "$OUT/isomod/boot/limine/limine.conf" <<'CFG'
 timeout: 0
 
@@ -1598,42 +1599,50 @@ reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
 
 # ---- 1.2: the Display line of the text boots (stage 5) ----
 
-echo "== [1.2] Display: the text boots (QEMU -kernel; the real ISO with textmode: yes)"
+echo "== [1.2] Display: a -kernel boot (VGA text) and the real ISO (graphics, since stage 10b)"
 # The logs of two boots made above (no new boot): QEMU's -kernel gives no
-# framebuffer fields (flag bit 12 clear); the real ISO's default entry,
-# with "textmode: yes", gets Limine's text mode (type 2, 80x25 at 0xB8000).
-# Both keep VGA text, as before 1.2 (docs/plans/1.2.md, decision 4).
+# framebuffer fields (flag bit 12 clear) and keeps VGA text (decision 4).
+# The real ISO's default entry, without a "textmode" line since the switch
+# (stage 10b), gets the header's 1024x768x32 framebuffer and its console
+# on it (a new check in 10b). (Until 10a it had "textmode: yes" and logged
+# Limine's text mode; that check reads the text twin since 10b, below, and
+# the Diagnostics entries are checked in part 4.)
 expect "$OUT/serial-mem-32M.log" "^Display: VGA text 80x25 \(no framebuffer\)$" \
     "[1.2] -kernel boot: Display: VGA text 80x25 (no framebuffer)"
-expect "$OUT/serial-boot.log" "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" \
-    "[1.2] real ISO, default entry (textmode: yes): Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000)"
+if grep -qE "^Display: framebuffer 1024x768x32 at 0x[0-9a-f]+, pitch 4096, RGB at bits 16/8/0$" "$OUT/serial-boot.log" &&
+   grep -qxF "Display: console on the framebuffer: 80x25 cells of 8x16 pixels at (192, 184), scale 100 %" "$OUT/serial-boot.log"; then
+    pass "[1.2] real ISO, default entry (graphics): Display: framebuffer 1024x768x32, pitch 4096, RGB at bits 16/8/0, and the console on it: 80x25 cells of 8x16 pixels at (192, 184), scale 100 %"
+else
+    fail "[1.2] real ISO, default entry: not the 1024x768x32 framebuffer with its console at scale 100 % ($(grep -E '^Display: ' "$OUT/serial-boot.log" | tr '\n' ' '))"
+fi
 
 # ---- 1.2 stage 5b: slot 506 and the framebuffer test ISOs ----
 
-echo "== [1.2] Text boots: no slot 506 (the real ISO with textmode: yes)"
-# The text boot has no PML4[506] entry: the kernel half is frozen with the
-# same six slots as before 1.2, no "Display: slot 506" line is logged, and
-# tests/pagetables.py, which models slot 506 only when that line is
-# logged, agrees with the kernel's count.
+echo "== [1.2] The real ISO (graphics, since stage 10b): slot 506"
+# The real ISO's normal boot now builds slot 506 (the framebuffer and its
+# back buffer) and freezes it with the kernel half (7 entries), and
+# tests/pagetables.py, which models slot 506 from the "Display: slot 506"
+# line, agrees with the kernel's count. (Stage 5b's two checks of a text
+# boot without slot 506 read the text twin since 10b, below.)
 LOG=$OUT/serial-boot.log
-if grep -qxF "Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 (6 entries); every process shares them, a new one now panics" "$LOG" &&
-   ! grep -q "^Display: slot 506" "$LOG"; then
-    pass "[1.2] text boot (real ISO, textmode: yes): no PML4[506]: the kernel half frozen with slots 256, 507, 508, 509, 510, 511 (6 entries) as before 1.2, no Display: slot 506 line"
+if grep -qE "^Display: slot 506: framebuffer 0x[0-9a-f]+-0x[0-9a-f]+ at 0xfffffd0000000000 \([0-9]+ pages\), back buffer at 0xfffffd0040000000 \([0-9]+ pages of free RAM, pitch 4096\), [0-9]+ page tables$" "$LOG" &&
+   grep -qxF "Kernel half frozen: PML4 slots 256, 506, 507, 508, 509, 510, 511 (7 entries); every process shares them, a new one now panics" "$LOG"; then
+    pass "[1.2] real ISO (graphics): slot 506 built (its Display: slot 506 line), PML4[506] frozen with the kernel half: slots 256, 506, 507, 508, 509, 510, 511 (7 entries)"
 else
-    fail "[1.2] text boot (real ISO): a slot 506 line, or the kernel half frozen with other slots, in $LOG"
+    fail "[1.2] real ISO (graphics): no Display: slot 506 line, or the kernel half frozen with other slots, in $LOG"
 fi
-FB_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label text)
+FB_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label iso)
 sed 's/^/      /' <<< "$FB_PT"
-if grep -qE "^PAGETABLES_RESULT label=text computed=([0-9]+) logged=\1 .* display_slot=none MATCH$" <<< "$FB_PT"; then
-    pass "[1.2] text boot (real ISO): tests/pagetables.py computed = logged, slot 506 not modelled"
+if grep -qE "^PAGETABLES_RESULT label=iso computed=([0-9]+) logged=\1 .* display_slot=([0-9]+)/\2 MATCH$" <<< "$FB_PT"; then
+    pass "[1.2] real ISO (graphics): tests/pagetables.py models slot 506: computed = logged, and the slot's tables as logged"
 else
-    fail "[1.2] text boot (real ISO): tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$FB_PT")"
+    fail "[1.2] real ISO (graphics): tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$FB_PT")"
 fi
 # Report only (decides no check): the boots' paging figures. 5a's (run
 # 39909205323): the real ISO 14 page tables, 573 mapped pages, free pages
-# 32160; -kernel -m 32M free pages 7597; kernel end 0x232000. A text boot's
-# mapped pages may differ from 5a's only by the kernel image's own pages
-# (the change of __kernel_end, printed here).
+# 32160 (a text boot then); -kernel -m 32M free pages 7597; kernel end
+# 0x232000. A text boot's mapped pages may differ from 5a's only by the
+# kernel image's own pages (the change of __kernel_end, printed here).
 fb_figures() {   # fb_figures <log> <label>
     local t m f e
     t=$(sed -nE 's/^Paging tables: ([0-9]+) page tables \+ PML4, ([0-9]+) mapped pages.*/\1/p' "$1" | head -n 1)
@@ -1643,12 +1652,13 @@ fb_figures() {   # fb_figures <log> <label>
     echo "      FIGURES $2: ${t:-?} page tables, ${m:-?} mapped pages, free pages ${f:-?} (memory_init), kernel end 0x${e:-?} ($(( (0x${e:-232000} - 0x232000) / 4096 )) kernel pages against 5a's 0x232000)"
     grep -E "^Paging self-test: no page leak|^Kernel half frozen|^Display: slot 506|^Kernel stack: [0-9]+ bytes at peak" "$1" | sed "s/^/      FIGURES $2: /"
 }
-fb_figures "$OUT/serial-boot.log" "text boot (real ISO; 5a: 14, 573, 32160)"
+fb_figures "$OUT/serial-boot.log" "framebuffer boot (real ISO since 10b; 5a's text boot: 14, 573, 32160)"
 fb_figures "$OUT/serial-mem-32M.log" "text boot (-kernel -m 32M; 5a: free 7597)"
 
 echo "== [1.2] Framebuffer boots: slot 506 and test=fbpattern (two test ISOs, tests/qmp_fb.py)"
-# Two test ISOs with one entry each and no "textmode" line (the real ISO and
-# every other test ISO keep "textmode: yes", decision 3): the header's
+# Two test ISOs with one entry each and no "textmode" line (in stage 5b the
+# real ISO and every other test ISO kept "textmode: yes", decision 3; since
+# 10b the real ISO's default entry has none either): the header's
 # request (1024x768x32), and Limine's per-entry "resolution: 800x600x24",
 # which overrides the executable's request for multiboot1 (Limine 12.9.3:
 # CONFIG.md; common/protos/multiboot1.c reads RESOLUTION when the header's
@@ -1976,6 +1986,31 @@ if grep -qE "^TWIN_RESULT lines=[1-9][0-9]* .* other=0 MATCH$" <<< "$TWIN"; then
     pass "[1.2] serial twins: the framebuffer boot's serial log equals the text boot's apart from the allowed differences (fb-only, frames, display, figures; tests/serial_twin.py)"
 else
     fail "[1.2] serial twins: $(grep '^TWIN_RESULT' <<< "$TWIN")"
+fi
+# Stage 5's Display: check of a textmode: yes entry and stage 5b's two
+# checks of a text boot without slot 506 (stage 10b: on the text twin, a
+# test ISO entry with "textmode: yes" as every Diagnostics entry has;
+# until 10a they read the real ISO's normal boot, then in text mode). The
+# exact Display: line is checked here: tests/serial_twin.py lets it differ.
+# The text boot has no PML4[506] entry: the kernel half is frozen with the
+# same six slots as before 1.2, no "Display: slot 506" line is logged, and
+# tests/pagetables.py, which models slot 506 only when that line is
+# logged, agrees with the kernel's count.
+expect "$TT_LOG" "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" \
+    "[1.2] the text twin (textmode: yes): Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000)"
+LOG=$TT_LOG
+if grep -qxF "Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 (6 entries); every process shares them, a new one now panics" "$LOG" &&
+   ! grep -q "^Display: slot 506" "$LOG"; then
+    pass "[1.2] text boot (the text twin, textmode: yes): no PML4[506]: the kernel half frozen with slots 256, 507, 508, 509, 510, 511 (6 entries) as before 1.2, no Display: slot 506 line"
+else
+    fail "[1.2] text boot (the text twin): a slot 506 line, or the kernel half frozen with other slots, in $LOG"
+fi
+FB_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label text)
+sed 's/^/      /' <<< "$FB_PT"
+if grep -qE "^PAGETABLES_RESULT label=text computed=([0-9]+) logged=\1 .* display_slot=none MATCH$" <<< "$FB_PT"; then
+    pass "[1.2] text boot (the text twin): tests/pagetables.py computed = logged, slot 506 not modelled"
+else
+    fail "[1.2] text boot (the text twin): tests/pagetables.py: $(grep '^PAGETABLES_RESULT' <<< "$FB_PT")"
 fi
 
 # ---- 1.2 stage 7: the PS/2 mouse and the pointer ----

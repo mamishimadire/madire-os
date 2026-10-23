@@ -257,25 +257,30 @@ else
     fail "[1.2] the Multiboot header's video request: $MBMODE"
 fi
 
-echo "== [1.2] limine.conf: every entry boots in text mode (stage 5, decision 3)"
-# Until the switch stage, every entry (a line starting "/" with a
-# "protocol:" line) holds exactly one "    textmode: yes" and no other
-# textmode line; no textmode line outside an entry.
+echo "== [1.2] limine.conf: the default entry in graphics, every other entry in text mode (stage 10b, decision 3)"
+# Since the switch (stage 10b): the first entry (the default one, "/Boot
+# Madire OS") holds no textmode line; every other entry (a line starting
+# "/" with a "protocol:" line: the Diagnostics) holds exactly one
+# "    textmode: yes" and no other textmode line; no textmode line outside
+# an entry. (Stage 5's check: every entry exactly one "textmode: yes".)
 TM=$(awk 'function done() { if (blk == "") return
-                            if (proto) { ent++; if (tm != 1 || other) bad = bad blk " (" tm " textmode: yes, " other " other); " }
+                            if (proto && ent == 0) { ent++; def = blk; if (tm || other) bad = bad blk " (the default entry: " tm " textmode: yes, " other " other); " }
+                            else if (proto) { ent++; if (tm != 1 || other) bad = bad blk " (" tm " textmode: yes, " other " other); " }
                             else if (tm || other) bad = bad blk " (a textmode line, no protocol); " }
           /^\// { done(); blk = $0; proto = 0; tm = 0; other = 0; next }
           /^[ \t]*textmode:/ { if (blk == "") bad = bad "a textmode line before the first entry; "
                                else if ($0 == "    textmode: yes") tm++; else other++; next }
           /^[ \t]*protocol:/ { proto = 1 }
-          END { done(); printf "%d|%s\n", ent, bad }' "$OUT/limine.conf")
+          END { done(); printf "%d|%s|%s\n", ent, def, bad }' "$OUT/limine.conf")
 TMN=${TM%%|*}
-TMBAD=${TM#*|}
-echo "      $TMN entries"
-if [ -z "$TMBAD" ] && [ "$TMN" -gt 0 ]; then
-    pass "[1.2] limine.conf: every entry boots in text mode (one 'textmode: yes' in each of its $TMN entries)"
+TMDEF=${TM#*|}
+TMDEF=${TMDEF%%|*}
+TMBAD=${TM##*|}
+echo "      $TMN entries; the default entry: ${TMDEF:-none}"
+if [ -z "$TMBAD" ] && [ "$TMDEF" = "/Boot Madire OS" ] && [ "$TMN" -gt 1 ]; then
+    pass "[1.2] limine.conf: the default entry boots in graphics (no textmode line) and every other entry in text mode (one 'textmode: yes' in each of the other $((TMN - 1)) entries)"
 else
-    fail "[1.2] limine.conf: text mode: ${TMBAD:-no entries}"
+    fail "[1.2] limine.conf: text mode: ${TMBAD:-the default entry '${TMDEF:-none}', $TMN entries}"
 fi
 
 # ---- 1.2 stage 6: the console font (decision 8) ----

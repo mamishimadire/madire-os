@@ -7,8 +7,13 @@ buffer (physical 0xB8000, 80x25 cells of character + attribute) with the
 QMP command pmemsave, prints the 25 rows, and checks them.
 
     python3 tests/qmp_screen.py SOCKET DUMPFILE [--log LOG --wait REGEX COUNT]
-            [--row N REGEX]... [--attr N HEX]... [--not-row N REGEX]...
+            [--row N REGEX]... [--attr N HEX]... [--not-row N REGEX]... [--addr HEX]
 
+  --addr HEX           1.2 stage 10b: read the 80x25 cells at this physical
+                       address instead of 0xB8000: the console's cell grid
+                       (the kernel's vga_shadow, whose cells have the VGA
+                       buffer's layout), on a boot whose screen is a
+                       framebuffer
   --wait REGEX COUNT   wait (up to --timeout s) until COUNT lines of LOG match
   --row N REGEX        row N's text (trailing spaces removed) must match
   --not-row N REGEX    row N's text must not match
@@ -72,6 +77,7 @@ def main():
     p.add_argument("--row", nargs=2, action="append", default=[], metavar=("N", "REGEX"))
     p.add_argument("--not-row", nargs=2, action="append", default=[], metavar=("N", "REGEX"))
     p.add_argument("--attr", nargs=2, action="append", default=[], metavar=("N", "HEX"))
+    p.add_argument("--addr", default=hex(VGA))
     a = p.parse_args()
 
     ok = True
@@ -87,7 +93,7 @@ def main():
 
     if os.path.exists(a.dumpfile):
         os.remove(a.dumpfile)
-    qmp_pmemsave(a.socket, VGA, COLS * ROWS * 2, os.path.abspath(a.dumpfile))
+    qmp_pmemsave(a.socket, int(a.addr, 16), COLS * ROWS * 2, os.path.abspath(a.dumpfile))
     deadline = time.time() + 10
     while not (os.path.exists(a.dumpfile) and os.path.getsize(a.dumpfile) >= COLS * ROWS * 2):
         if time.time() > deadline:

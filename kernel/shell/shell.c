@@ -473,6 +473,40 @@ static enum shell_result cmd_hostname(int argc, char **argv, const struct shell_
     return SHELL_OK;
 }
 
+/* 1.2 stage 10b: "display": the screen's mode and the console's scale, or
+ * VGA text (read only; decision 16). */
+static enum shell_result cmd_display(int argc, char **argv, const struct shell_context *c,
+                                     const struct shell_output *o)
+{
+    const struct shell_display *d = c->display;
+    struct line l;
+    (void)argc; (void)argv;
+    l_reset(&l);
+    l_str(&l, "Screen:  ");
+    if (!d->framebuffer) {
+        l_str(&l, "VGA text 80x25");
+        emit(o, &l, SHELL_TEXT);
+        return SHELL_OK;
+    }
+    l_str(&l, "framebuffer ");
+    l_uint(&l, d->width, 0, ' ');
+    l_char(&l, 'x');
+    l_uint(&l, d->height, 0, ' ');
+    l_str(&l, ", ");
+    l_uint(&l, d->bpp, 0, ' ');
+    l_str(&l, " bits per pixel");
+    emit(o, &l, SHELL_TEXT);
+    l_str(&l, "Scale:   ");
+    l_uint(&l, d->scale, 0, ' ');
+    l_str(&l, " % (console: 80x25 cells of ");
+    l_uint(&l, d->cell_w, 0, ' ');
+    l_char(&l, 'x');
+    l_uint(&l, d->cell_h, 0, ' ');
+    l_str(&l, " pixels)");
+    emit(o, &l, SHELL_TEXT);
+    return SHELL_OK;
+}
+
 static enum shell_result cmd_date(int argc, char **argv, const struct shell_context *c,
                                   const struct shell_output *o)
 {
@@ -1780,6 +1814,10 @@ static const struct command storage_commands[] = {
 
 #define STORAGE_COUNT (sizeof(storage_commands) / sizeof(storage_commands[0]))
 
+/* 1.2 stage 10b: offered only when the context has a display (see shell.h). */
+static const struct command display_command =
+    { "display", "display",      "Show the screen's mode and scale",        0, cmd_display, SECTION_SYSTEM };
+
 static const char *const section_names[SECTION_COUNT] = { "shell", "system", "programs", "files" };
 static const char *const section_titles[SECTION_COUNT] = {
     "The shell's own commands",
@@ -1806,7 +1844,7 @@ static const struct command *kill_of(const struct shell_context *c)
 
 /* Every command the context offers, in "help" order. Returns the count. */
 #define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT + FILES_COUNT + \
-                     STORAGE_COUNT)
+                     STORAGE_COUNT + 1)
 
 static uint32_t offered(const struct shell_context *c, const struct command **list)
 {
@@ -1834,6 +1872,8 @@ static uint32_t offered(const struct shell_context *c, const struct command **li
     if (c->files && c->storage)
         for (uint32_t i = 0; i < STORAGE_COUNT; i++)
             list[n++] = &storage_commands[i];
+    if (c->display)                         /* 1.2 stage 10b: "help" puts it after "reboot" */
+        list[n++] = &display_command;
     return n;
 }
 
@@ -1851,6 +1891,8 @@ static bool builtin_name(const char *name, const struct shell_context *c)
         for (uint32_t i = 0; i < STORAGE_COUNT; i++)
             if (str_eq(name, storage_commands[i].name))
                 return true;
+    if (c->display && str_eq(name, display_command.name))   /* 1.2 stage 10b, likewise */
+        return true;
     if (str_eq(name, ps_command.name) || str_eq(name, run_command.name) ||
         str_eq(name, kill_command.name))
         return true;
@@ -1900,6 +1942,8 @@ static const struct command *find_command(const char *name, const struct shell_c
         for (uint32_t i = 0; i < STORAGE_COUNT; i++)
             if (str_eq(name, storage_commands[i].name))
                 return &storage_commands[i];
+    if (c->display && str_eq(name, display_command.name))
+        return &display_command;
     return 0;
 }
 
