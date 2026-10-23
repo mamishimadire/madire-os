@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "drivers/keyboard/ps2kbd.h"
+#include "drivers/mouse/ps2mouse.h"
 #include "drivers/serial/serial.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/cpuid.h"
@@ -28,6 +29,7 @@
 #include "kernel/devtest.h"
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
+#include "kernel/display/pointer.h"
 #include "kernel/fs/dirtest.h"
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
@@ -528,6 +530,11 @@ static void run_diagnostics(void)
         display_fbpattern();
     } else if (cmdline_has("test=fbcon")) {                                     /* 1.2 stage 6 */
         fbcon_test();
+    } else if (cmdline_has("test=mousefail")) {                                 /* 1.2 stage 7 */
+        klogf("Mouse fault test: start-up step %u failed on purpose (the Mouse: lines above); "
+              "the keyboard and the console go on\n", mouse_fail_step());
+    } else if (cmdline_has("test=mouse")) {                                     /* 1.2 stage 7 */
+        mouse_test();
     } else if (cmdline_has("test=timer")) {
         devtest_timer();
     } else if (cmdline_has("test=keyboard")) {
@@ -754,6 +761,8 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
             }
         }
 
+        pointer_poll();                     /* 1.2 stage 7: nothing without a mouse */
+
         /* 1.1: the lights follow the lock keys; a change is logged only
          * with keylog (K8), a failure always. */
         struct kbd_lights lights;
@@ -915,6 +924,18 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     check_boot_modules(mbi);
 
     bool keyboard_ok = start_devices();
+    /* 1.2 stage 7: the mouse only on framebuffer boots and for test=mouse
+     * (decision 10), after the keyboard and its IRQ mask line; a missing
+     * or failing aux port is one log line, and the boot goes on. The
+     * substring "test=mouse" also matches test=mousefail=N (a test
+     * option): step N of the start fails, so the give-up path runs. */
+    if (display_active() || cmdline_has("test=mouse")) {
+        uint32_t mousefail;
+        if (cmdline_has("test=mousefail") && cmdline_u32("test=mousefail=", &mousefail))
+            mouse_fail_at(mousefail);
+        mouse_init();
+        pointer_start(cmdline_word("mouselog") || cmdline_has("test=mouse"));
+    }
     bootscreen_uptime(timer_uptime_seconds());
     bootscreen_last_key(NULL);
 

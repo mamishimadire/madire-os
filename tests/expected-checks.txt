@@ -69,6 +69,14 @@
 # without a refused draw or a FAILED line), the 1024x768 console scrolled
 # by dmesg (1), the crash screen (1) and the serial twins (2); 1 unit
 # suite (fbcon). The two 5b framebuffer boots' health checks also require
-# no FAILED status line now (reworded, not added).
-1.2 62
-unit-suites 74
+# no FAILED status line now (reworded, not added). Stage 7: 38 more, all
+# in part 1: test=mouse under -kernel (5), a mouselog session on the
+# 1024x768 framebuffer console (9: the start, the mask, the pointer line,
+# the 30 packets, 4 screens, the boot's health) and test=mouse at
+# 1024x768 and 2560x1440 (3 each), and the give-up path, test=mousefail=4,
+# =6 and =7 under -kernel (6 each: the line, the configuration, the
+# ownership, the mask, the boot's health, the keyboard); 2 unit suites
+# (mouse, pointer). The stress part's 2 mouse-burst checks are [stress],
+# counted apart.
+1.2 100
+unit-suites 76

@@ -5,6 +5,7 @@
 #include "drivers/vga/vga_text.h"
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon_core.h"
+#include "kernel/display/pointer.h"
 #include "kernel/kprintf.h"
 #include "kernel/panic.h"
 #include "kernel/proc/diagwait.h"
@@ -80,7 +81,10 @@ static bool draw_cell(const struct vga_shadow *v, uint32_t i)
 static void present_cell(uint32_t i)
 {
     struct rect r = fbcon_cell_rect(&lay, i / FBCON_COLS, i % FBCON_COLS);
+    bool hid = pointer_hide_over(r);    /* 1.2 stage 7: the pointer stays on top */
     surface_blit(display_front_buffer(), r.x, r.y, back, r.x, r.y, r.w, r.h);
+    if (hid)
+        pointer_unhide();
 }
 
 static void update_cell(uint32_t i)
@@ -101,7 +105,10 @@ static void redraw_all(void)
     }
     uint32_t c = cursor_index(v);
     cursor_at = c == NOT_DRAWN ? -1 : (int32_t)c;
+    bool hid = pointer_hide_over((struct rect){ 0, 0, (int32_t)back->width, (int32_t)back->height });
     display_present();
+    if (hid)
+        pointer_unhide();
 }
 
 void fbcon_start(void)

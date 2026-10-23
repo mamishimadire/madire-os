@@ -18,7 +18,13 @@
 # console at the end: test=fbcon in five modes (the 1024x768 boot also
 # scrolls the console) and the crash screen
 # against tests/fbcon_ref.py (tests/qmp_fbcon.py), and the serial twins
-# (tests/serial_twin.py).
+# (tests/serial_twin.py). Stage 7 adds the mouse at the end: test=mouse
+# under -kernel, a mouselog session on the 1024x768 framebuffer console
+# (the packets, the edges, the pointer and its save-under against
+# tests/pointer_ref.py), and test=mouse at 1024x768 and 2560x1440 (the
+# scale and the timing; tests/qmp_mouse.py), then the give-up path under
+# -kernel (test=mousefail=4, =6 and =7, the keyboard checked after it). The
+# crash case now waits for the halt line instead of "System ready.".
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1840,7 +1846,7 @@ fbcon_boot() {
     timeout 120 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
         -qmp unix:"$sock",server=on,wait=off -m "$mem" -cdrom "$iso" >/dev/null 2>&1 &
     qpid=$!
-    FBC_OUT=$(python3 "$QMPFBCON" "$sock" "$log" "$SHADOW_P" "$FONTDIR" "$@" --until "System ready." \
+    FBC_OUT=$(python3 "$QMPFBCON" "$sock" "$log" "$SHADOW_P" "$FONTDIR" "$@" --until "${FBC_UNTIL:-System ready.}" \
               --timeout 100 2>&1)
     sed 's/^/      /' <<< "$FBC_OUT"
     echo "$FBC_OUT" > "${log%.log}.fbcon.txt"
@@ -1921,7 +1927,10 @@ echo "== [1.2] The crash screen on the framebuffer (test=gpflimit)"
 LOG=$OUT/serial-fbcon-crash.log
 fbcon_iso crash "test=gpflimit"
 FBC_OUT=""
-if [ -n "$FBC_ISO" ]; then fbcon_boot "$LOG" "$FBC_ISO" 128M " System halted. Power off the machine."
+# 1.2 stage 7: --until the halt line (the marker itself), not "System
+# ready.", which a halted kernel never prints (the case took 100.5 s).
+if [ -n "$FBC_ISO" ]; then
+    FBC_UNTIL="System halted. Power off the machine." fbcon_boot "$LOG" "$FBC_ISO" 128M " System halted. Power off the machine."
 else : > "$LOG"; fi
 grep -E "^Display: console|CPU exception|System halted" "$LOG" | sed 's/^/      /'
 if grep -q "CPU exception 13: General Protection Fault (#GP)" "$LOG" && ! grep -q "FAILED" "$LOG" &&
@@ -1959,3 +1968,158 @@ if grep -qE "^TWIN_RESULT lines=[1-9][0-9]* .* other=0 MATCH$" <<< "$TWIN"; then
 else
     fail "[1.2] serial twins: $(grep '^TWIN_RESULT' <<< "$TWIN")"
 fi
+
+# ---- 1.2 stage 7: the PS/2 mouse and the pointer ----
+
+# The helpers (mouse_boot, mouse_done_ok, expect_line) are in tests/qemu-lib.sh.
+
+echo "== [1.2] The mouse: test=mouse under QEMU -kernel (no framebuffer: no pointer)"
+LOG=$OUT/serial-mouse-kernel.log
+MB_OUT=""
+mouse_boot "$LOG" 120 -kernel "$KERNEL" -append "test=mouse" -- "wait:$MOUSE_READY" \
+    move:10,5 move:-30,-20 move:127,-127 move:-127,127 btn:left:down btn:left:up btn:right:down \
+    btn:middle:down btn:right:up btn:middle:up move:3,0 --until "System ready."
+grep -E "^IRQ mask: |^Mouse|^Display: " "$LOG" | sed 's/^/      /'
+expect_line "$LOG" "$MOUSE_START" "[1.2] -kernel test=mouse: $MOUSE_START"
+expect_line "$LOG" "$MOUSE_MASK" "[1.2] -kernel test=mouse: $MOUSE_MASK"
+if grep -qxF "PACKETS sent=11 exact=11" <<< "$MB_OUT"; then
+    pass "[1.2] -kernel test=mouse: the 11 packets injected (moves both ways up to 127, each button pressed and released) decoded exactly, in order"
+else
+    fail "[1.2] -kernel test=mouse: not every injected packet decoded exactly ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+if mouse_done_ok "$LOG" 11 &&
+   grep -qxF "Mouse test: motion dx -17 dy -15; pressed L 1 M 1 R 1, released L 1 M 1 R 1" "$LOG"; then
+    pass "[1.2] -kernel test=mouse: IRQ12 delivered every byte (33 read, one interrupt each), no bad byte, overflow or drop; the motion and button totals as injected"
+else
+    fail "[1.2] -kernel test=mouse: the counts or the totals are not as injected (see $LOG)"
+fi
+if grep -q "^System ready\." "$LOG" && ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] -kernel test=mouse: System ready, no FAILED status line, no panic"
+else
+    fail "[1.2] -kernel test=mouse: no System ready, a FAILED status line, or a panic (see $LOG)"
+fi
+
+echo "== [1.2] The mouse on the framebuffer console: a mouselog session at 1024x768x32"
+# The idle loop's path (the boot option mouselog, no test=): the console is
+# opened, then 30 packets: a first move (screen 1), moves both ways and
+# every button, 5 past the top-left corner (screen 2 at (0, 0)), 10 past
+# the bottom-right one (screen 3 at (1023, 767), the sprite clipped to one
+# pixel), and 5 back near the centre (screen 4). Each screen must equal
+# the reference: the console's cells with the pointer at the logged place
+# and nowhere else, so every earlier place shows the console again exactly
+# (save-under).
+fbcon_iso mouse1024 "mouselog"
+LOG=$OUT/serial-mouse-1024.log
+MB_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    mouse_boot "$LOG" 150 -cdrom "$FBC_ISO" -- --screen 1024x768 --shadow "$SHADOW_P" --fontdir "$FONTDIR" \
+        "wait:$FB_READY" "type:{ret}" "wait:console: started" move:10,5 screen \
+        move:-30,-20 move:127,-127 move:-127,127 btn:left:down btn:left:up btn:right:down btn:middle:down \
+        btn:right:up btn:middle:up move:-120,-100 move:-120,-100 move:-120,-100 move:-120,-100 move:-120,-100 screen \
+        move:120,100 move:120,100 move:120,100 move:120,100 move:120,100 move:120,100 move:120,100 \
+        move:120,100 move:120,100 move:120,100 screen \
+        move:-102,-77 move:-102,-77 move:-102,-77 move:-102,-77 move:-102,-77 screen
+else : > "$LOG"; fi
+grep -E "^Mouse|^Display: console" "$LOG" | sed 's/^/      /'
+expect_line "$LOG" "$MOUSE_START" "[1.2] mouse at 1024x768: $MOUSE_START"
+expect_line "$LOG" "$MOUSE_MASK" "[1.2] mouse at 1024x768: $MOUSE_MASK"
+expect "$LOG" "^Mouse: pointer 12x18 pixels \(scale 100 %\), hidden until the first packet, then at \(512, 384\) moved by it$" \
+    "[1.2] mouse at 1024x768: Mouse: pointer 12x18 pixels (scale 100 %), hidden until the first packet, then at (512, 384) moved by it"
+if grep -qxF "PACKETS sent=30 exact=30" <<< "$MB_OUT" &&
+   grep -qE "^mouse: packet 15: .* at \(0, 0\)$" "$LOG" && grep -qE "^mouse: packet 25: .* at \(1023, 767\)$" "$LOG"; then
+    pass "[1.2] mouse at 1024x768: the 30 packets (moves both ways, every button, past the top-left and the bottom-right edges) decoded exactly, the position clamped to (0, 0) and (1023, 767)"
+else
+    fail "[1.2] mouse at 1024x768: not every packet decoded exactly with its clamped position ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+mouse_screen() {   # mouse_screen <n> <check text>
+    if grep -qE "^SCREEN $1 size=1024x768 differ=0 \(" <<< "$MB_OUT"; then pass "$2"
+    else fail "$2 ($(grep -E "^(SCREEN $1|qmp_mouse)" <<< "$MB_OUT" | tr '\n' ' '))"; fi
+}
+mouse_screen 1 "[1.2] mouse at 1024x768: screen 1, the pointer at (522, 389) on the console, equals the reference rendering pixel for pixel"
+mouse_screen 2 "[1.2] mouse at 1024x768: screen 2, the pointer clamped at (0, 0), equals the reference rendering pixel for pixel"
+mouse_screen 3 "[1.2] mouse at 1024x768: screen 3, the pointer clamped at (1023, 767) and clipped, equals the reference rendering pixel for pixel"
+mouse_screen 4 "[1.2] mouse at 1024x768: screen 4, the pointer moved away to (513, 382), equals the reference rendering pixel for pixel: every earlier place shows the console again (save-under exact)"
+if grep -qxF "$FB_READY" "$LOG" && grep -qxF "Mouse: packets logged on serial (boot option 'mouselog' or test=mouse)" "$LOG" &&
+   ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] mouse at 1024x768: mouselog on, System ready, no FAILED status line, no panic, no mismatch"
+else
+    fail "[1.2] mouse at 1024x768: no mouselog line or System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
+fi
+
+echo "== [1.2] The pointer's scale and timing: test=mouse at 1024x768x32 and 2560x1440x32"
+# mouse_scale <name> <mode WxH> <sprite WxH> <percent> <x> <y> [a limine.conf line]:
+# test=mouse on the framebuffer console; one move of (40, 30) from the
+# centre, a screen there, the report-only timing line.
+mouse_scale() {
+    local name=$1 wh=$2 sprite=$3 pct=$4 x=$5 y=$6 extra=${7:-} log=$OUT/serial-mouse-$1.log label="test=mouse at $2"
+    fbcon_iso "mouse$name" "test=mouse" "$extra"
+    MB_OUT=""
+    if [ -n "$FBC_ISO" ]; then
+        mouse_boot "$log" 150 -cdrom "$FBC_ISO" -- --screen "$wh" --shadow "$SHADOW_P" --fontdir "$FONTDIR" \
+            "wait:$MOUSE_READY" move:40,30 screen --until "System ready."
+    else : > "$log"; fi
+    grep -E "^Mouse|^Display: console" "$log" | sed 's/^/      /'
+    grep -E "^pointer timing: " "$log" | sed "s/^/      POINTER_TIMING $wh: /"
+    expect "$log" "^Mouse: pointer $sprite pixels \(scale $pct %\), hidden until the first packet, then at \($(( ${wh%x*} / 2 )), $(( ${wh#*x} / 2 ))\) moved by it$" \
+        "[1.2] $label: Mouse: pointer $sprite pixels (scale $pct %), hidden until the first packet, then at ($(( ${wh%x*} / 2 )), $(( ${wh#*x} / 2 ))) moved by it"
+    if grep -qE "^SCREEN 1 size=$wh differ=0 \(" <<< "$MB_OUT"; then
+        pass "[1.2] $label: the pointer at ($x, $y) on the boot screen equals the reference rendering pixel for pixel"
+    else
+        fail "[1.2] $label: the screen with the pointer differs from the reference ($(grep -E '^(SCREEN|PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+    fi
+    if grep -qxF "PACKETS sent=1 exact=1" <<< "$MB_OUT" && mouse_done_ok "$log" 1 &&
+       grep -qE "^pointer timing: one move \(${wh}x32, the $sprite sprite at $pct %: .*: [1-9][0-9]* in [0-9]+ ticks, about [0-9]+ us each$" "$log" &&
+       grep -q "^System ready\." "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: the packet decoded exactly, IRQ12 once per byte, the timing line logged; System ready, no FAILED status line, no panic"
+    else
+        fail "[1.2] $label: the packet, the counts, the timing line, System ready, a FAILED status line or a panic (see $log)"
+    fi
+}
+mouse_scale scale1024 1024x768 12x18 100 552 414
+mouse_scale scale2560 2560x1440 24x36 200 1320 750 "resolution: 2560x1440x32"
+
+echo "== [1.2] The mouse's give-up path: test=mousefail=N under QEMU -kernel"
+# What a machine without a PS/2 mouse goes through: start-up step N fails
+# as if no reply came (drivers/mouse/mouse_core.h: 4 is set defaults,
+# before port 2 is owned; 6 the configuration with IRQ12 on and 7 port 1
+# back on, after it).
+# The undo must leave the controller and the PIC as before the start, and
+# the keyboard must still work: a key session opens the console and types
+# "version".
+# mousefail_case <N> <the failed step, as the Mouse: none line gives it>
+mousefail_case() {
+    local log=$OUT/serial-mousefail-$1.log label="test=mousefail=$1"
+    local none="Mouse: none ($2); configuration 0x61 restored, port 2 not used; boot continues without a mouse"
+    local after
+    boot_text "$log" 90 "System ready." "x{wait:1}version{ret}echo end-of-mousefail-test{ret}" 0.05 \
+        $'\nend-of-mousefail-test\n' -kernel "$KERNEL" -append "test=mousefail=$1"
+    grep -E "^IRQ mask: |^Mouse|^madire> version|^Madire OS v" "$log" | sed 's/^/      /'
+    after=$(grep -E '^Mouse: after the undo: ' "$log" | head -n 1)
+    expect_line "$log" "$none" "[1.2] $label: $none"
+    if grep -qxF "$none" "$log" && grep -qE '^Mouse: after the undo: configuration 0x61, ' <<< "$after"; then
+        pass "[1.2] $label: the configuration read back after the undo is 0x61, the logged starting value"
+    else
+        fail "[1.2] $label: the configuration after the undo is not the starting value 0x61 (${after:-no after-the-undo line})"
+    fi
+    if grep -qE ', port 2 not owned, ' <<< "$after"; then
+        pass "[1.2] $label: port 2 not owned after the undo (IRQ1 reads its bytes again, as before the start)"
+    else
+        fail "[1.2] $label: port 2 ownership not given back (${after:-no after-the-undo line})"
+    fi
+    if grep -qE ', IRQ mask 0xfffc \(before the start: 0xfffc\)$' <<< "$after" && grep -qxF "IRQ mask: 0xfffc (expected 0xfffc)" "$log"; then
+        pass "[1.2] $label: the IRQ mask after the undo is 0xfffc, as before the start (IRQ12 and IRQ2 masked, IRQ1 unmasked)"
+    else
+        fail "[1.2] $label: the IRQ mask after the undo is not the one before the start (${after:-no after-the-undo line})"
+    fi
+    if grep -qxF "Mouse fault test: start-up step $1 failed on purpose (the Mouse: lines above); the keyboard and the console go on" "$log" &&
+       grep -q "^System ready\." "$log" && ! grep -q "^Mouse: IRQ12 " "$log" && ! grep -q "FAILED" "$log" && ! grep -qE "PANIC|MISMATCH" "$log"; then
+        pass "[1.2] $label: no mouse, System ready, no FAILED status line, no panic"
+    else
+        fail "[1.2] $label: no fault-test line or System ready, a mouse started, a FAILED status line, or a panic (see $log)"
+    fi
+    expect_next "$log" "[1.2] $label: the keyboard still works: the console opened and 'version' typed on it answered 'Madire OS v$VERSION (64-bit x86-64, Multiboot 1)'" \
+        "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$"
+}
+mousefail_case 4 "set defaults: no reply (test=mousefail=4)"
+mousefail_case 6 "the configuration with IRQ12 on: no reply (test=mousefail=6)"
+mousefail_case 7 "port 1 back on: no reply (test=mousefail=7)"

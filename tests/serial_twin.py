@@ -11,7 +11,9 @@ differences, each named in the output:
              "Display: console on the framebuffer: ...", and the paging
              walk-check's items for slot 506 (every "Paging check: display
              ..." line: the slot, the framebuffer, the back buffer and the
-             unmapped page after each);
+             unmapped page after each); since 1.2 stage 7 also every
+             "Mouse: ..." line (the mouse starts on framebuffer boots
+             only, decision 10);
   frames     the walk-check's free-frame items ("Paging check: PML4 frame
              (free RAM) ..." and "Paging check: page table frame (free
              RAM) ..."), one pair per page table: slot 506 adds page
@@ -47,7 +49,7 @@ it reports, the caller's check decides.
 import re
 import sys
 
-FB_ONLY = re.compile(r"^(Display: slot 506: |Display: console on the framebuffer: |Paging check: display )")
+FB_ONLY = re.compile(r"^(Display: slot 506: |Display: console on the framebuffer: |Paging check: display |Mouse: )")
 FRAMES = re.compile(r"^Paging check: (PML4 frame|page table frame) \(free RAM\) ")
 DISPLAY = re.compile(r"^Display: (framebuffer |VGA text )")
 FIGURES = re.compile(r"^(Paging|Kernel heap self-test: no page leak|Scheduler self-test: everything returned|"
