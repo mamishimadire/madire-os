@@ -294,6 +294,7 @@ padkernel:
 # A failed build is reported and leaves no kernel there.
 PROBE_BUILD := $(BUILD)/probe
 probe:
+	@mkdir -p $(BUILD)
 	@echo "PROBE_REFUSAL (make -n PROBE=1, the default BUILD; a dry run): $$($(MAKE) -n PROBE=1 BUILD=build all 2>&1 | grep -m1 'PROBE' || echo 'NOT REFUSED')"
 	@rm -rf $(PROBE_BUILD)
 	@start=$$(date +%s); \
