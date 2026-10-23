@@ -300,11 +300,15 @@ if [ -n "${UC4:-}" ] && [ $(( UC0 & 0x4 )) -ne 0 ] && [ $(( UC4 & (3 << 20) )) -
 else
     fail "[0.10] default CPU control registers: ${UCPU:-missing}"
 fi
-expect "$LOG" "^Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 \(6 entries\); every process shares them, a new one now panics$" \
-                                                      "[0.10] kernel half frozen at boot: slots 256, 507-511"
 
 LOG=$OUT/serial-clac.log
 boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=clac"
+# 1.2 stage 10b: the freeze check of a text boot reads this -kernel boot
+# (default CPU, VGA text): the real ISO's normal boot is a framebuffer boot
+# since the switch and freezes slot 506 too (7 entries, the [1.2] check),
+# and part 2 makes no Limine boot in text mode.
+expect "$LOG" "^Kernel half frozen: PML4 slots 256, 507, 508, 509, 510, 511 \(6 entries\); every process shares them, a new one now panics$" \
+                                                      "[0.10] kernel half frozen at boot: slots 256, 507-511 (a -kernel boot)"
 expect "$LOG" "^clac test: SMAP off; [0-9]+ interrupts taken with AC=1 in the interrupted code; AC=1 seen by the handler [0-9]+ times; clac executed 0 times$" \
                                                       "[0.10] default CPU: clac never executed (no #UD without SMAP)"
 expect "$LOG" "^clac test: PASS$"                     "[0.10] default CPU: clac test PASS"
