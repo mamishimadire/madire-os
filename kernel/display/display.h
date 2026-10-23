@@ -63,6 +63,14 @@ struct surface *display_front_buffer(void);
  * number (1 for the first). Only while display_active(). */
 uint32_t display_present(void);
 
+/* 1.2 stage 10, the early crash screen (fbcon.h): the framebuffer to draw
+ * the crash screen on directly, or NULL. Slot 506's mapping once it is
+ * live; before paging_init() loaded the kernel's tables, the boot tables'
+ * physical view (0-4 GiB) of a usable framebuffer that lies below 4 GiB
+ * and whose slot was not refused; otherwise NULL (the crash screen then
+ * stays on serial only). */
+struct surface *display_crash_screen(void);
+
 /* test=fbpattern (a test option): draws a fixed pattern (fills and blits,
  * clipped ones among them) on the back buffer, presents it, logs the CRC-32
  * of the back buffer's and of the framebuffer's pixels (read back), then

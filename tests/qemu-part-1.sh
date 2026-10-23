@@ -28,7 +28,12 @@
 # adds the splash at the end: test=splash still at 1024x768 and 1280x1024
 # (four screens each against scripts/make-wallpaper.py, tests/qmp_splash.py)
 # and its timing at 2560x1440, then Esc, the boot option verbose, a FAILED
-# status line (test=splashfail) and a panic (test=splashpanic).
+# status line (test=splashfail) and a panic (test=splashpanic). Stage 10:
+# the mouselog session gets the test option pointer (the console has no
+# pointer without it), and a session without it follows; the splash cases
+# take a fifth screen, the ready state at System ready, and the Esc case's
+# first screen is that state; at the end, the early crash screen
+# (test=earlypanic).
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -2011,8 +2016,9 @@ echo "== [1.2] The mouse on the framebuffer console: a mouselog session at 1024x
 # pixel), and 5 back near the centre (screen 4). Each screen must equal
 # the reference: the console's cells with the pointer at the logged place
 # and nowhere else, so every earlier place shows the console again exactly
-# (save-under).
-fbcon_iso mouse1024 "mouselog"
+# (save-under). 1.2 stage 10: with the test option pointer (the console
+# draws none without it; the next section).
+fbcon_iso mouse1024 "mouselog pointer"
 LOG=$OUT/serial-mouse-1024.log
 MB_OUT=""
 if [ -n "$FBC_ISO" ]; then
@@ -2048,6 +2054,38 @@ if grep -qxF "$FB_READY" "$LOG" && grep -qxF "Mouse: packets logged on serial (b
     pass "[1.2] mouse at 1024x768: mouselog on, System ready, no FAILED status line, no panic, no mismatch"
 else
     fail "[1.2] mouse at 1024x768: no mouselog line or System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
+fi
+
+echo "== [1.2] The console without a pointer: a mouselog session at 1024x768x32 (stage 10)"
+# The boot option mouselog alone: the mouse runs and logs, but the console
+# draws no pointer. The console is opened, then 4 packets (moves both ways,
+# the left button); each must be logged exactly, without a position, and
+# the screen (taken after the idle loop's next uptime line) must equal the
+# console's cells alone.
+NOPTR_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
+fbcon_iso mousenoptr "mouselog"
+LOG=$OUT/serial-mouse-nopointer.log
+MB_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    mouse_boot "$LOG" 150 -cdrom "$FBC_ISO" -- --shadow "$SHADOW_P" --fontdir "$FONTDIR" \
+        "wait:$FB_READY" "type:{ret}" "wait:console: started" move:10,5 move:-30,-20 btn:left:down btn:left:up console
+else : > "$LOG"; fi
+grep -E "^Mouse|^Display: console" "$LOG" | sed 's/^/      /'
+expect_line "$LOG" "$NOPTR_LINE" "[1.2] mouse without the pointer option: $NOPTR_LINE"
+if grep -qxF "PACKETS sent=4 exact=4" <<< "$MB_OUT" && ! grep -qE "^mouse: packet .* at \(" "$LOG"; then
+    pass "[1.2] mouse without the pointer option: the 4 packets (moves both ways, the left button) logged exactly, with no position"
+else
+    fail "[1.2] mouse without the pointer option: not every packet logged exactly without a position ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 differ=0 \(" <<< "$MB_OUT" && ! grep -q "^pointer: drawn" "$LOG"; then
+    pass "[1.2] mouse without the pointer option: after the packets the screen equals the reference rendering of the console's cell grid pixel for pixel (no pointer drawn, no pointer: drawn line)"
+else
+    fail "[1.2] mouse without the pointer option: a pointer drawn, or the screen differs from the cell grid's rendering ($(grep -E '^(SCREEN|qmp_mouse)' <<< "$MB_OUT" | head -n 2 | tr '\n' ' '))"
+fi
+if grep -qxF "$FB_READY" "$LOG" && ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] mouse without the pointer option: System ready, no FAILED status line, no panic, no mismatch"
+else
+    fail "[1.2] mouse without the pointer option: no System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
 fi
 
 echo "== [1.2] The pointer's scale and timing: test=mouse at 1024x768x32 and 2560x1440x32"
@@ -2181,7 +2219,7 @@ splash_case() {
     SPL_OUT=""
     if [ -n "$FBC_ISO" ]; then
         splash_boot "$log" "$FBC_ISO" "${w}x${h}" "screen:dots0:display: frame 1" "screen:dots1:display: frame 2" \
-            "screen:dots2:display: frame 3" "screen:dots3:display: frame 4"
+            "screen:dots2:display: frame 3" "screen:dots3:display: frame 4" "screen:ready:$FB_READY"
     else : > "$log"; fi
     grep -E "^Display: |^Splash|^splash test|^display: frame " "$log" | sed 's/^/      /'
     grep -E "^splash timing: " "$log" | sed "s/^/      SPLASH_TIMING $mode: /"
@@ -2194,8 +2232,15 @@ splash_case() {
             fail "[1.2] $label: screen $n differs from make-wallpaper.py's rendering, or was not held still ($(grep -E "^(MARKER $n|SCREEN $n|REFERENCE|qmp_splash)" <<< "$SPL_OUT" | tr '\n' ' '))"
         fi
     done
+    # 1.2 stage 10: screen 5, at System ready (drawn before that line).
+    if grep -qE "^SCREEN 5 size=${w}x${h} held=yes differ=0 \(" <<< "$SPL_OUT" && grep -qxF "$READY_LINE" "$log"; then
+        pass "[1.2] $label: screen 5 (at System ready the ready state: the dots stopped, \"Press any key to open the console\") equals make-wallpaper.py's rendering pixel for pixel"
+    else
+        fail "[1.2] $label: screen 5 differs from make-wallpaper.py's ready state, or no '$READY_LINE' line ($(grep -E "^(MARKER 5|SCREEN 5|qmp_splash)" <<< "$SPL_OUT" | tr '\n' ' '))"
+    fi
     splash_done "$log" "$label"
 }
+READY_LINE="Splash: ready: the dots stopped, \"Press any key to open the console\" shown"
 splash_case 1024 1024x768x32 100 "splash at 1024x768x32 (the header's mode)"
 splash_case 1280 1280x1024x32 125 "splash at 1280x1024x32" "resolution: 1280x1024x32"
 
@@ -2211,22 +2256,24 @@ splash_done "$LOG" "splash at 2560x1440x32"
 
 echo "== [1.2] The splash closed by Esc; the next key opens the console (1024x768x32, boot option still)"
 # No test= option: the boot a user sees, with "still" (the dots frozen, the
-# splash's lines logged). At System ready the splash (none lit); Esc shows
-# the text boot screen and opens nothing; then "x" opens the console.
+# splash's lines logged). At System ready the splash's ready state (1.2
+# stage 10; before it, the splash with none lit); Esc shows the text boot
+# screen and opens nothing; then "x" opens the console.
 ESC_LINE="Splash: closed (Esc): the text boot screen shown"
 fbcon_iso splashesc "still"
 LOG=$OUT/serial-splash-esc.log
 SPL_OUT=""
 if [ -n "$FBC_ISO" ]; then
-    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "screen:dots0:$FB_READY" "type:{esc}" \
+    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "screen:ready:$FB_READY" "type:{esc}" \
         "screen:console:$ESC_LINE" "type:{wait:1}x"
 else : > "$LOG"; fi
 grep -E "^Splash|^System ready|^console: started" "$LOG" | sed 's/^/      /'
 if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
-   grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots frozen (boot option 'still')" "$LOG"; then
-    pass "[1.2] still at 1024x768x32: at System ready the splash shows, its dots frozen with none lit, equal to make-wallpaper.py's rendering pixel for pixel"
+   grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots frozen (boot option 'still')" "$LOG" &&
+   grep -qxF "$READY_LINE" "$LOG"; then
+    pass "[1.2] still at 1024x768x32: at System ready the splash shows its ready state (the dots stopped, \"Press any key to open the console\"), equal to make-wallpaper.py's rendering pixel for pixel"
 else
-    fail "[1.2] still at 1024x768x32: no splash at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(MARKER 1|SCREEN 1|REFERENCE|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+    fail "[1.2] still at 1024x768x32: no splash in its ready state at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(MARKER 1|SCREEN 1|REFERENCE|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi
 if grep -qE "^SCREEN 2 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
    grep -qE "^ROWS 2 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
@@ -2304,4 +2351,32 @@ if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
     pass "[1.2] test=splashpanic: the crash screen equals the reference rendering of the console's cell grid pixel for pixel (the console took the screen back from the splash)"
 else
     fail "[1.2] test=splashpanic: the crash screen differs from the cell grid's rendering ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+
+echo "== [1.2] The early crash screen: a panic before the framebuffer console (test=earlypanic, 1024x768x32; stage 10)"
+# test=earlypanic panics just before memory_init(): still on the boot page
+# tables, before slot 506 and the console. The crash screen must be drawn
+# directly on the framebuffer (option A, decided at stage 8) and equal the
+# reference rendering of the console's cell grid, the panic message on it.
+EP_LINE=" Early panic test: a panic before the framebuffer console (on purpose)."
+EP_DIRECT="Display: the crash screen drawn directly on the framebuffer (the console was not on it yet)"
+fbcon_iso earlypanic "test=earlypanic"
+LOG=$OUT/serial-early-panic.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    SPL_UNTIL="System halted. Power off the machine." splash_boot "$LOG" "$FBC_ISO" "" \
+        "screen:console: System halted. Power off the machine." --rows
+else : > "$LOG"; fi
+grep -E "^Display|^Early panic|KERNEL PANIC|Early panic test:|System halted" "$LOG" | sed 's/^/      /'
+if grep -qE "^Display: framebuffer 1024x768x32 " "$LOG" && grep -qxF "$EP_DIRECT" "$LOG" && grep -qxF "$EP_LINE" "$LOG" &&
+   ! grep -q "^Display: console on the framebuffer" "$LOG" && ! grep -q "^Memory" "$LOG"; then
+    pass "[1.2] test=earlypanic: the panic before memory, paging and the console, on a 1024x768x32 framebuffer: $EP_DIRECT"
+else
+    fail "[1.2] test=earlypanic: no framebuffer, no early panic, the console already on the framebuffer, or no '$EP_DIRECT' line (see $LOG)"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qxF "ROW 1 3 '$EP_LINE'" <<< "$SPL_OUT"; then
+    pass "[1.2] test=earlypanic: the crash screen equals the reference rendering of the console's cell grid pixel for pixel, the panic message on row 3"
+else
+    fail "[1.2] test=earlypanic: the crash screen differs from the cell grid's rendering, or the message is not on row 3 ($(grep -E '^(MARKER 1|SCREEN 1|ROW 1 3|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi

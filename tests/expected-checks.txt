@@ -84,6 +84,16 @@
 # rendering in 5 modes); in part 1 23 (test=splash still at 1024x768x32 and
 # 1280x1024x32, 6 each: the Splash: line, 4 screens, done; at 2560x1440x32
 # 2: the Splash: line, done; Esc 3, verbose 2, test=splashfail 2,
-# test=splashpanic 2); 1 unit suite (wallpaper).
-1.2 131
+# test=splashpanic 2); 1 unit suite (wallpaper). Stage 10a: 10 more: in
+# part static 2 (the kernel's splash code with its ready state equal to
+# make-wallpaper.py's rendering at 800x600x24 and 1280x1024x32); in part 1
+# 8: the console without a pointer, a mouselog session without the test
+# option pointer (4: the line, the 4 packets without a position, the
+# screen, the boot's health), the ready state as screen 5 of test=splash
+# still at 1024x768x32 and 1280x1024x32 (1 each), and the early crash
+# screen, test=earlypanic (2: the lines, the screen). The Esc case's first
+# check now reads the ready state at System ready (reworded, not added);
+# the mouselog session's boot gets the test option pointer (its checks
+# unchanged).
+1.2 141
 unit-suites 77

@@ -9,6 +9,10 @@
  * Only thread 0 draws (decision 6). The sprite and its save-under are
  * kernel/display/pointer_core.h's.
  *
+ * 1.2 stage 10: the console has no use for a pointer, so it is drawn only
+ * with the test option `pointer` or during test=mouse; otherwise the mouse
+ * still runs and logs as below, without a position ("at").
+ *
  * The pointer starts at the screen's centre and is hidden until the first
  * packet; a panic hides it for good (the crash screen shows no pointer).
  * With the boot option "mouselog" (off by default) or during test=mouse,
@@ -25,8 +29,9 @@
 #include "kernel/display/surface_core.h"
 
 /* After the mouse started: the pointer on the framebuffer console, if it
- * is active, and the logging switch (logs the "Mouse: packets ..." line). */
-void pointer_start(bool log_packets);
+ * is active and `show`, and the logging switch (logs the "Mouse: packets
+ * ..." line, and "Mouse: no pointer ..." on a console without one). */
+void pointer_start(bool log_packets, bool show);
 
 /* Thread 0: every decoded packet moves the pointer (and is logged); the
  * pointer is then drawn once. Returns the number of packets taken. */

@@ -19,6 +19,7 @@
 
 static bool verbose, still, allowed, logging, failed;
 static bool showing;
+static bool ready;                      /* 1.2 stage 10: the ready state, no dots */
 static struct wallpaper wp;
 static struct splash_layout lay;
 static const struct font *font;
@@ -145,7 +146,7 @@ void splash_step(bool f)
 
 void splash_tick(void)
 {
-    if (!splash_showing() || still || !thread_screen_allowed())
+    if (!splash_showing() || still || ready || !thread_screen_allowed())
         return;
     uint64_t now = timer_ticks();
     if (now == 0)
@@ -163,6 +164,21 @@ void splash_tick(void)
 void splash_close_key(bool esc)
 {
     close_splash(esc ? "Esc" : "a key");
+}
+
+void splash_ready(bool console_offered)
+{
+    if (!splash_showing())
+        return;
+    if (!console_offered) {
+        close_splash("the console is not offered");
+        return;
+    }
+    ready = true;
+    splash_draw_ready(back, &lay, font, &wp);
+    present(lay.ready_box);
+    if (logging)
+        klogf("Splash: ready: the dots stopped, \"%s\" shown\n", SPLASH_READY_TEXT);
 }
 
 /* ---- test=splash ---- */

@@ -5,12 +5,16 @@
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/mmap.h"
+#include "kernel/memory/paging.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/vm_layout.h"
 
+/* boot/boot.asm's tables: the physical view covers 0-4 GiB. */
+#define BOOT_VIEW_END (4ull << 30)
+
 static struct fb_info info;
 static struct fb_plan plan;
-static bool planned, active;
+static bool planned, refused, active;
 static struct surface fb, back;
 static uint32_t frames;
 static uint32_t fail_step;              /* test=fbfail=N */
@@ -51,10 +55,12 @@ void display_plan_slot(const struct multiboot_info *mbi)
             overlap = &ram;
     }
     char line[FBINFO_LINE];
-    if (fbinfo_plan(&info, overlap, pmm_free_pages(), &plan, line) == FBPLAN_MAP)
+    if (fbinfo_plan(&info, overlap, pmm_free_pages(), &plan, line) == FBPLAN_MAP) {
         planned = true;
-    else
+    } else {
+        refused = true;
         klogf("%s\n", line);
+    }
 }
 
 const struct fb_plan *display_slot_plan(void)
@@ -101,6 +107,17 @@ uint32_t display_present(void)
 {
     surface_blit(&fb, 0, 0, &back, 0, 0, (int32_t)back.width, (int32_t)back.height);
     return ++frames;
+}
+
+struct surface *display_crash_screen(void)
+{
+    if (active)
+        return &fb;
+    if (info.kind != FB_USABLE || refused || paging_enabled() ||
+        info.addr + (uint64_t)info.pitch * info.height > BOOT_VIEW_END)
+        return 0;
+    return surface_init(&fb, phys_view(info.addr), info.width, info.height, info.pitch, info.bytes_per_pixel)
+           ? &fb : 0;
 }
 
 /* ---- test=fbpattern ---- */

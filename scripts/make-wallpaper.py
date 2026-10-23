@@ -491,6 +491,7 @@ def render(version):
 K = Fixed(8)
 WORDMARK = "MADIRE OS"
 SPLASH_TEXT = "Booting Madire OS"
+READY_TEXT = "Press any key to open the console"     # the ready state (1.2 stage 10)
 # The three curves: each a circle through (0, H yl / 1000) and (W, H yr /
 # 1000) with its centre at x = W cx / 1000 (far right, below the screen),
 # so it rises from the lower left and flattens towards the upper right.
@@ -621,6 +622,7 @@ def splash_layout(width, height):
     (fx0, cy), (lx, _) = lay["dots"][0], lay["dots"][2]
     lay["dots_box"] = ((fx0 - rd >> K.fb) - 2, (cy - rd >> K.fb) - 2,
                        (lx + rd >> K.fb) + 2, (cy + rd >> K.fb) + 2)
+    lay["ready_x"] = (width - len(READY_TEXT) * cw) // 2    # on the text line's row
     return lay
 
 
@@ -667,14 +669,28 @@ def splash_dots(scr, lay, phase, tok):
         scr.paint(cov, lambda x, c=lit if i < phase else dim: c)
 
 
+def text_line(scr, glyphs, fw, s, x, y, colour):
+    """A line in the console's font: the set pixels, opaque."""
+    for i, chr_ in enumerate(s):
+        rows = glyphs[ord(chr_)]
+        for gy, bits in enumerate(rows):
+            for gx in range(fw):
+                if (bits >> (fw - 1 - gx)) & 1:
+                    o = ((y + gy) * scr.w + x + i * fw + gx) * 3
+                    scr.pix[o:o + 3] = colour
+
+
 def splash(width, height, phase, fontdir=None, tok=None):
-    """The kernel's splash as RGB bytes, with `phase` dots lit (0-3)."""
+    """The kernel's splash as RGB bytes, with `phase` dots lit (0-3), or
+    its ready state (phase "ready")."""
     return splash_phases(width, height, [phase], fontdir, tok)[phase]
 
 
 def splash_phases(width, height, phases, fontdir=None, tok=None):
-    """{phase: the splash's RGB bytes}: the wallpaper, the logo, the
-    wordmark and the text drawn once, then the dots for each phase."""
+    """{phase: the splash's RGB bytes}: the wallpaper, the logo and the
+    wordmark drawn once; then for each phase 0-3 the text line and the
+    dots, that many lit; for the phase "ready" the ready line alone (1.2
+    stage 10: the dots stopped, "Press any key to open the console")."""
     tok = tok or read_tokens()
     lay = splash_layout(width, height)
     scr = Screen(width, height, wallpaper(width, height, tok))
@@ -704,18 +720,15 @@ def splash_phases(width, height, phases, fontdir=None, tok=None):
     glyphs, fw = read_bdf(os.path.join(fontdir or os.path.join(ROOT, "third_party/terminus"),
                                        FONT_FILES[lay["ch"]]))
     muted = bytes(tok["text.muted"])
-    for i, chr_ in enumerate(SPLASH_TEXT):
-        rows = glyphs[ord(chr_)]
-        for y, bits in enumerate(rows):
-            for x in range(fw):
-                if (bits >> (fw - 1 - x)) & 1:
-                    o = ((lay["text_y"] + y) * width + lay["text_x"] + i * fw + x) * 3
-                    scr.pix[o:o + 3] = muted
     out = {}
     for phase in phases:
-        dots = Screen(width, height, bytearray(scr.pix))
-        splash_dots(dots, lay, phase, tok)
-        out[phase] = bytes(dots.pix)
+        one = Screen(width, height, bytearray(scr.pix))
+        if phase == "ready":
+            text_line(one, glyphs, fw, READY_TEXT, lay["ready_x"], lay["text_y"], muted)
+        else:
+            text_line(one, glyphs, fw, SPLASH_TEXT, lay["text_x"], lay["text_y"], muted)
+            splash_dots(one, lay, phase, tok)
+        out[phase] = bytes(one.pix)
     return out
 
 
@@ -758,7 +771,8 @@ def main():
     ap.add_argument("--print-strokes", action="store_true", help="print the M's strokes and exit")
     ap.add_argument("--emit-c", metavar="OUT_H", help="write the splash's generated data and exit")
     ap.add_argument("--splash", metavar="WxH", help="render the kernel's splash (a PPM)")
-    ap.add_argument("--phase", type=int, default=0, choices=range(4), help="the splash's lit dots")
+    ap.add_argument("--phase", default="0", choices=["0", "1", "2", "3", "ready"],
+                    help="the splash's lit dots, or its ready state")
     ap.add_argument("--fontdir", help="the BDF files (default: third_party/terminus)")
     a = ap.parse_args()
     if a.print_strokes:
@@ -775,7 +789,7 @@ def main():
         w, h = int(m.group(1)), int(m.group(2))
         if scale_layout(w, h) is None:
             ap.error(f"--splash {a.splash}: smaller than the console's 80 x 25 cells")
-        pix = splash(w, h, a.phase, a.fontdir)
+        pix = splash(w, h, a.phase if a.phase == "ready" else int(a.phase), a.fontdir)
         with open(a.out, "wb") as f:
             f.write(b"P6\n%d %d\n255\n" % (w, h) + pix)
         return

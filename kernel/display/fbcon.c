@@ -27,6 +27,7 @@ static int32_t cursor_at = -1;          /* the cell the cursor is drawn on */
 static uint32_t refused;                /* draws refused off thread 0 */
 static bool busy, panic_retried;
 static bool held;                       /* 1.2 stage 8: the splash holds the screen */
+static bool direct;                     /* 1.2 stage 10: the early crash screen, drawn on the framebuffer */
 
 bool fbcon_active(void)
 {
@@ -81,6 +82,8 @@ static bool draw_cell(const struct vga_shadow *v, uint32_t i)
 
 static void present_cell(uint32_t i)
 {
+    if (direct)
+        return;
     struct rect r = fbcon_cell_rect(&lay, i / FBCON_COLS, i % FBCON_COLS);
     bool hid = pointer_hide_over(r);    /* 1.2 stage 7: the pointer stays on top */
     surface_blit(display_front_buffer(), r.x, r.y, back, r.x, r.y, r.w, r.h);
@@ -106,6 +109,8 @@ static void redraw_all(void)
     }
     uint32_t c = cursor_index(v);
     cursor_at = c == NOT_DRAWN ? -1 : (int32_t)c;
+    if (direct)
+        return;
     bool hid = pointer_hide_over((struct rect){ 0, 0, (int32_t)back->width, (int32_t)back->height });
     display_present();
     if (hid)
@@ -129,6 +134,20 @@ void fbcon_start(bool hold)
     active = true;
     klogf("Display: console on the framebuffer: 80x25 cells of %ux%u pixels at (%u, %u), scale %u %%\n",
           lay.cell_w, lay.cell_h, lay.x, lay.y, lay.scale * 25);
+}
+
+void fbcon_crash_early(void)
+{
+    if (active)
+        return;
+    const struct fb_info *fi = display_info();
+    struct surface *screen = display_crash_screen();
+    if (!screen || !fbcon_layout(fi->width, fi->height, fonts, &lay))
+        return;
+    back = screen;
+    direct = true;
+    active = true;
+    kserialf("Display: the crash screen drawn directly on the framebuffer (the console was not on it yet)\n");
 }
 
 bool fbcon_held(void)

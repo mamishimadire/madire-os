@@ -34,7 +34,10 @@
  * line "Booting Madire OS" in the console's font in `text.muted`, and
  * three dots (radius 1.5 dp): the first `phase` in `text`, the others in
  * `surface.active`. The block (logo, 28 dp, the wordmark's cap height,
- * 40 dp, the text line) is centred on the screen. Every shape is painted
+ * 40 dp, the text line) is centred on the screen. The ready state (1.2
+ * stage 10): the text line and the dots' box drawn over with the wallpaper,
+ * then "Press any key to open the console" in the console's font in
+ * `text.muted`, centred on the same row, no dots. Every shape is painted
  * by coverage: the pixel's bytes mixed towards the shape's colour, then
  * rounded back (a wordmark glyph's coverage is the largest over its
  * strokes).
@@ -60,6 +63,7 @@
 #define WP_CURVES   3
 #define SPLASH_DOTS 3
 #define SPLASH_TEXT "Booting Madire OS"
+#define SPLASH_READY_TEXT "Press any key to open the console"
 
 /* The generated data's types (splash_data.h, scripts/make-wallpaper.py
  * --emit-c). */
@@ -108,6 +112,8 @@ struct splash_layout {
     int32_t text_x, text_y;     /* "Booting Madire OS", whole pixels */
     int64_t dot_x[SPLASH_DOTS], dot_y, rd;
     struct rect dots_box;       /* what a dots update redraws */
+    int32_t ready_x;            /* the ready state's line (on text_y) */
+    struct rect ready_box;      /* what the ready state redraws: the text line, the dots and its line */
 };
 
 /* The splash's places on a width x height screen with the console's
@@ -127,5 +133,10 @@ bool splash_draw(struct surface *s, const struct splash_layout *l, const struct 
 
 /* Draws the three dots, the first `phase` lit, on what is under them. */
 void splash_draw_dots(struct surface *s, const struct splash_layout *l, uint32_t phase);
+
+/* The ready state on a drawn splash: the wallpaper `wp` again inside
+ * ready_box, then the ready line with the console's font `f`. */
+void splash_draw_ready(struct surface *s, const struct splash_layout *l, const struct font *f,
+                       const struct wallpaper *wp);
 
 #endif

@@ -21,7 +21,9 @@
  * The dots: none lit on the first frame; one more per boot step (a status
  * line) until the timer runs, then one more every 400 ms (40 ticks),
  * whenever thread 0 calls splash_tick(); after three, none again. The test
- * option `still` freezes them.
+ * option `still` freezes them. At System ready (1.2 stage 10) the splash
+ * goes to its ready state: the dots stop and "Booting Madire OS" gives way
+ * to "Press any key to open the console" (wallpaper_core.h).
  *
  * The serial log of a boot without `still` or a test=splash option is the
  * same as without the splash (nothing is logged). With them, the splash
@@ -55,6 +57,11 @@ void splash_tick(void);
 /* Closes the splash (Esc or another key): the text boot screen comes
  * back. Nothing if it is not showing. */
 void splash_close_key(bool esc);
+
+/* Just before "System ready." is logged: the ready state if the console is
+ * offered, else the splash closes (the text boot screen says why). Nothing
+ * if it is not showing. */
+void splash_ready(bool console_offered);
 
 /* test=splash (a test option): four screens for tests/qmp_splash.py, the
  * dots with 0, 1, 2 and 3 lit, each after "display: frame N" and held

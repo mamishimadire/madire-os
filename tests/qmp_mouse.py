@@ -19,6 +19,11 @@ The steps run in order:
     btn:B:down, btn:B:up   one input-send-event: button B (left, middle,
                    right) pressed or released;
     screen         take a screen (below) once the pointer is drawn;
+    console        (1.2 stage 10) take a screen of a console without a
+                   pointer: after the first "uptime: " line that follows
+                   the last packet's line (the idle loop prints it after
+                   the packets were taken, so any drawing for them is
+                   done), compared with the cell grid alone;
     burst:N        N packets as fast as the kernel takes them, never more
                    than 4 waiting (the PS/2 device's queue holds 5), each
                    a move (and every 25th also a left button change).
@@ -155,6 +160,17 @@ class Mouse:
         return self.n, want
 
 
+def grab(qmp, a, dump, mem):
+    """The screen and the kernel's vga_shadow, the guest stopped meanwhile."""
+    qmp.command("stop")
+    w, h, pix = qmp.screendump(dump)
+    if os.path.exists(mem):
+        os.remove(mem)
+    qmp.command("pmemsave", val=int(a.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
+    qmp.command("cont")
+    return w, h, pix, open(mem, "rb").read()
+
+
 def burst(m, count):
     """count packets, at most 4 waiting; returns the seconds taken."""
     t0 = time.monotonic()
@@ -220,18 +236,21 @@ def main():
                 drawn = "pointer: drawn at (%d, %d)" % (m.x, m.y)
                 if serial.wait(lambda l: l == drawn, PACKET_WAIT, m.last_line) is None:
                     raise RuntimeError("no line %r after packet %d" % (drawn, m.n))
-                qmp.command("stop")
-                w, h, pix = qmp.screendump(dump)
-                if os.path.exists(mem):
-                    os.remove(mem)
-                qmp.command("pmemsave", val=int(a.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
-                qmp.command("cont")
-                shadow = open(mem, "rb").read()
+                w, h, pix, shadow = grab(qmp, a, dump, mem)
                 cells, desc = fbcon_ref.render(a.fontdir, shadow, w, h)
                 want, pdesc = pointer_ref.paint(cells, w, h, m.x, m.y)
                 differ, first = fbcon_ref.compare(pix, want, w)
                 extra = "" if first is None else ", first at %d,%d: screen %s, reference %s" % first
                 print(f"SCREEN {shots} size={w}x{h} differ={differ} ({desc}; {pdesc}{extra})", flush=True)
+            elif step == "console":
+                shots += 1
+                if serial.wait(lambda l: l.startswith("uptime: "), PACKET_WAIT, m.last_line + 1) is None:
+                    raise RuntimeError("no uptime line after packet %d in %d s" % (m.n, PACKET_WAIT))
+                w, h, pix, shadow = grab(qmp, a, dump, mem)
+                want, desc = fbcon_ref.render(a.fontdir, shadow, w, h)
+                differ, first = fbcon_ref.compare(pix, want, w)
+                extra = "" if first is None else ", first at %d,%d: screen %s, reference %s" % first
+                print(f"SCREEN {shots} size={w}x{h} differ={differ} ({desc}; no pointer{extra})", flush=True)
             else:
                 raise ValueError("unknown step %r" % step)
         print(f"PACKETS sent={m.sent} exact={m.exact}", flush=True)

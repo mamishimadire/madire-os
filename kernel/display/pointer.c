@@ -29,7 +29,7 @@ static uint32_t reported_dropped;
 static int64_t sum_dx, sum_dy;
 static uint32_t presses[3], releases[3];
 
-void pointer_start(bool log_packets)
+void pointer_start(bool log_packets, bool show)
 {
     logging = log_packets;
     if (!mouse_present())
@@ -40,6 +40,10 @@ void pointer_start(bool log_packets)
         klogf("Mouse: packets not logged (the boot option 'mouselog' logs them on serial)\n");
     if (!fbcon_active())
         return;
+    if (!show) {                        /* 1.2 stage 10: the console has no pointer */
+        klogf("Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)\n");
+        return;
+    }
     const struct fb_info *fi = display_info();
     width = fi->width;
     height = fi->height;

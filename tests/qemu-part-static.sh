@@ -15,7 +15,8 @@
 # notices, the name) before the size report. 1.2 stage 8: after them, the
 # integer make-wallpaper.py against v1.1's wallpaper, the splash's
 # generated data, and the kernel's splash code (tests/splashdump.c) against
-# make-wallpaper.py in five modes.
+# make-wallpaper.py in five modes. 1.2 stage 10: the splash's ready state
+# in two more.
 
 echo "== Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -404,9 +405,12 @@ echo "== [1.2] The kernel's splash code against make-wallpaper.py (tests/splashd
 # wallpaper_core.c built as a host tool (build/splashdump, with the console
 # fonts) draws the splash as the kernel does; make-wallpaper.py --splash, the
 # reference, draws it from its own code and the BDF files. Four modes, the
-# four scales and both pixel formats, one dot phase each.
-splash_static() {   # splash_static <W> <H> <bytes per pixel> <phase> <scale %>
-    local a=$OUT/splash-c-$1x$2.ppm b=$OUT/splash-py-$1x$2.ppm t0 n
+# four scales and both pixel formats, one dot phase each. 1.2 stage 10: the
+# ready state in two modes (splashdump draws it over the splash as the
+# kernel does at System ready; make-wallpaper.py draws it whole).
+splash_static() {   # splash_static <W> <H> <bytes per pixel> <phase or ready> <scale %>
+    local a=$OUT/splash-c-$1x$2-$4.ppm b=$OUT/splash-py-$1x$2-$4.ppm t0 n what="$4 of the 3 dots lit"
+    [ "$4" != ready ] || what="the ready state drawn over it at System ready"
     rm -f "$a" "$b"
     "$OUT/splashdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
     t0=$(date +%s)
@@ -418,9 +422,9 @@ print("same" if a == b and len(a) > 100 else
       "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
 EOF
 )
-    echo "      $1x$2x$(($3 * 8)), $4 dots lit: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    echo "      $1x$2x$(($3 * 8)), $what: $n (the reference in $(( $(date +%s) - t0 )) s)"
     if [ "$n" = same ]; then
-        pass "[1.2] the kernel's splash code at $1x$2x$(($3 * 8)) (scale $5 %, $4 of the 3 dots lit) equals make-wallpaper.py's rendering pixel for pixel"
+        pass "[1.2] the kernel's splash code at $1x$2x$(($3 * 8)) (scale $5 %, $what) equals make-wallpaper.py's rendering pixel for pixel"
     else
         fail "[1.2] the kernel's splash code at $1x$2x$(($3 * 8)): $n"
     fi
@@ -430,6 +434,8 @@ splash_static 1024 768 4 2 100
 splash_static 1280 1024 4 3 125
 splash_static 1920 1080 4 1 150
 splash_static 2560 1440 4 0 200
+splash_static 800 600 3 ready 100
+splash_static 1280 1024 4 ready 125
 
 # ---- 1.2: the size report (decides no check) ----
 

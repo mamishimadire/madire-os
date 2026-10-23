@@ -11,6 +11,7 @@
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/cpuid.h"
 #include "kernel/arch/x86/pagefault.h"
+#include "kernel/display/fbcon.h"
 #include "kernel/kprintf.h"
 #include "kernel/panic.h"
 #include "kernel/proc/sched_core.h"
@@ -50,6 +51,7 @@ static void panic_begin(void)
 {
     __asm__ volatile ("cli");
     panic_active = true;            /* 0.9: exempt from the thread-0 screen rule */
+    fbcon_crash_early();            /* 1.2 stage 10: a framebuffer before the console was on it */
     vga_set_color(VGA_WHITE, VGA_RED);
     vga_clear();
     kputs("\n *** MADIRE OS - KERNEL PANIC ***\n\n");

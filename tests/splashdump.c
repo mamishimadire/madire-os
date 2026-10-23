@@ -8,9 +8,12 @@
  *     splashdump WIDTH HEIGHT BYTES_PER_PIXEL PHASE OUT.ppm
  *
  * BYTES_PER_PIXEL is 4 or 3 (the framebuffer formats); PHASE the number of
- * dots lit (0-3). Prints one line: the scale, the dots' box and the
- * coverage scratch it needed. Exit status 1 on any error.
+ * dots lit (0-3), or "ready" (1.2 stage 10): the ready state drawn as the
+ * kernel does at System ready, over the splash with no dot lit. Prints one
+ * line: the scale, the dots' box and the coverage scratch it needed. Exit
+ * status 1 on any error.
  */
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "kernel/display/surface_core.c"
@@ -24,7 +27,8 @@ int main(int argc, char **argv)
         return 1;
     }
     uint32_t w = (uint32_t)atoi(argv[1]), h = (uint32_t)atoi(argv[2]), bpp = (uint32_t)atoi(argv[3]);
-    uint32_t phase = (uint32_t)atoi(argv[4]);
+    int is_ready = strcmp(argv[4], "ready") == 0;
+    uint32_t phase = is_ready ? 0 : (uint32_t)atoi(argv[4]);
     static const struct font *const fonts[4] = { &font_8x16, &font_10x20, &font_12x24, &font_16x32 };
     struct fbcon_layout cl;
     struct splash_layout l;
@@ -45,6 +49,8 @@ int main(int argc, char **argv)
         return 1;
     }
     splash_draw_dots(&s, &l, phase);
+    if (is_ready)
+        splash_draw_ready(&s, &l, cl.font, &wp);
     FILE *f = fopen(argv[5], "wb");
     if (!f)
         return 1;
@@ -58,7 +64,10 @@ int main(int argc, char **argv)
         }
     if (fclose(f) != 0)
         return 1;
-    printf("SPLASHDUMP %ux%ux%u phase %u: scale %u %%, dots' box (%d, %d) %dx%d, scratch %zu entries\n", w, h,
-           bpp * 8, phase, cl.scale * 25, l.dots_box.x, l.dots_box.y, l.dots_box.w, l.dots_box.h, entries);
+    printf("SPLASHDUMP %ux%ux%u phase %s: scale %u %%, dots' box (%d, %d) %dx%d, scratch %zu entries", w, h,
+           bpp * 8, argv[4], cl.scale * 25, l.dots_box.x, l.dots_box.y, l.dots_box.w, l.dots_box.h, entries);
+    if (is_ready)
+        printf(", ready box (%d, %d) %dx%d", l.ready_box.x, l.ready_box.y, l.ready_box.w, l.ready_box.h);
+    printf("\n");
     return 0;
 }

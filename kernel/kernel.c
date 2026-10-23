@@ -884,6 +884,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     /* After the IDT, so a fault while reading boot data shows the crash
      * screen instead of resetting the machine. */
     static struct memory_stats mem;
+    /* 1.2 stage 10: test=earlypanic (a test option): a panic before
+     * paging and the framebuffer console, for the early crash screen. */
+    if (cmdline_has("test=earlypanic")) {
+        klogf("Early panic test: a panic before paging and the framebuffer console\n");
+        panic("Early panic test: a panic before the framebuffer console (on purpose).");
+    }
     memory_init(mbi_phys, &mem);
     uint32_t mem_checks = memtest_boot();
 
@@ -972,7 +978,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         if (cmdline_has("test=mousefail") && cmdline_u32("test=mousefail=", &mousefail))
             mouse_fail_at(mousefail);
         mouse_init();
-        pointer_start(cmdline_word("mouselog") || cmdline_has("test=mouse"));
+        /* 1.2 stage 10: no pointer on the console but with the test
+         * option `pointer` or test=mouse. */
+        pointer_start(cmdline_word("mouselog") || cmdline_has("test=mouse"),
+                      cmdline_word("pointer") || cmdline_has("test=mouse"));
     }
     bootscreen_uptime(timer_uptime_seconds());
     bootscreen_last_key(NULL);
@@ -1031,6 +1040,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
           FD_MAX, FILE_MAX, fd_open_files());
 
     bool console_offered = console_ok && keyboard_ok;
+    splash_ready(console_offered);          /* 1.2 stage 10: drawn before "System ready." is logged */
     bootscreen_ready(console_offered ? "Press any key to open the console."
                      : !keyboard_ok ? "Keyboard unavailable: console disabled."
                      : "Console self-test failed: console disabled.");

@@ -289,6 +289,17 @@ bool splash_layout(struct splash_layout *l, uint32_t width, uint32_t height, uin
     int64_t bx0 = ((l->dot_x[0] - l->rd) >> FB) - 2, by0 = ((l->dot_y - l->rd) >> FB) - 2;
     int64_t bx1 = ((l->dot_x[SPLASH_DOTS - 1] + l->rd) >> FB) + 2, by1 = ((l->dot_y + l->rd) >> FB) + 2;
     l->dots_box = (struct rect){ (int32_t)bx0, (int32_t)by0, (int32_t)(bx1 - bx0 + 1), (int32_t)(by1 - by0 + 1) };
+    /* The ready state: its line centred on the text line's row; its box
+     * covers the text line, the dots' box and the ready line. */
+    int64_t rw = (int64_t)(sizeof(SPLASH_READY_TEXT) - 1) * cell_w;
+    if (rw > (int64_t)width)
+        return false;
+    l->ready_x = (int32_t)(((int64_t)width - rw) / 2);
+    int64_t rx0 = l->text_x < l->ready_x ? l->text_x : l->ready_x;
+    int64_t rx1 = bx1 + 1 > l->ready_x + rw ? bx1 + 1 : l->ready_x + rw;
+    int64_t ry0 = l->text_y < by0 ? l->text_y : by0;
+    int64_t ry1 = l->text_y + (int64_t)cell_h > by1 + 1 ? l->text_y + (int64_t)cell_h : by1 + 1;
+    l->ready_box = (struct rect){ (int32_t)rx0, (int32_t)ry0, (int32_t)(rx1 - rx0), (int32_t)(ry1 - ry0) };
     return (int64_t)l->text_y + cell_h <= (int64_t)height;
 }
 
@@ -394,6 +405,20 @@ static void draw_logo(struct surface *s, const struct splash_layout *l)
     }
 }
 
+/* A text line at (x, y): the font's set pixels in text.muted, opaque. */
+static void draw_line(struct surface *s, const struct font *f, const char *t, int32_t x0, int32_t y0)
+{
+    uint32_t muted = WP_TEXT_MUTED;
+    for (uint32_t i = 0; t[i]; i++) {
+        const uint8_t *glyph = f->bits + (uint32_t)(uint8_t)t[i] * f->height * f->row_bytes;
+        for (uint32_t y = 0; y < f->height; y++)
+            for (uint32_t x = 0; x < f->width; x++)
+                if (glyph[y * f->row_bytes + (x >> 3)] & (0x80u >> (x & 7)))
+                    put(s, x0 + (int64_t)(i * f->width + x), y0 + (int64_t)y,
+                        (uint8_t)(muted >> 16), (uint8_t)(muted >> 8), (uint8_t)muted);
+    }
+}
+
 bool splash_draw(struct surface *s, const struct splash_layout *l, const struct font *f,
                  uint16_t *scratch, size_t entries)
 {
@@ -426,18 +451,15 @@ bool splash_draw(struct surface *s, const struct splash_layout *l, const struct 
             }
     }
 
-    /* The text line: the font's set pixels, opaque. */
-    const char *t = SPLASH_TEXT;
-    uint32_t muted = WP_TEXT_MUTED;
-    for (uint32_t i = 0; t[i]; i++) {
-        const uint8_t *glyph = f->bits + (uint32_t)(uint8_t)t[i] * f->height * f->row_bytes;
-        for (uint32_t y = 0; y < f->height; y++)
-            for (uint32_t x = 0; x < f->width; x++)
-                if (glyph[y * f->row_bytes + (x >> 3)] & (0x80u >> (x & 7)))
-                    put(s, l->text_x + (int64_t)(i * f->width + x), l->text_y + (int64_t)y,
-                        (uint8_t)(muted >> 16), (uint8_t)(muted >> 8), (uint8_t)muted);
-    }
+    draw_line(s, f, SPLASH_TEXT, l->text_x, l->text_y);
     return all;
+}
+
+void splash_draw_ready(struct surface *s, const struct splash_layout *l, const struct font *f,
+                       const struct wallpaper *wp)
+{
+    wallpaper_render(s, wp, l->ready_box);
+    draw_line(s, f, SPLASH_READY_TEXT, l->ready_x, l->text_y);
 }
 
 void splash_draw_dots(struct surface *s, const struct splash_layout *l, uint32_t phase)

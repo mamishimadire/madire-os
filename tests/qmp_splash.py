@@ -14,8 +14,9 @@ The steps run in order:
     screen:REF:LINE  wait until LINE is a whole line of the serial log, then
                      take a screen and compare it with REF: dots0 ... dots3
                      (the splash with that many dots lit, rendered by
-                     scripts/make-wallpaper.py, the one reference algorithm)
-                     or console (the framebuffer console's cell grid,
+                     scripts/make-wallpaper.py, the one reference algorithm),
+                     ready (1.2 stage 10: the splash's ready state, from
+                     the same) or console (the framebuffer console's cell grid,
                      rendered by tests/fbcon_ref.py from the kernel's
                      vga_shadow, read at physical SHADOW_PHYS);
     wait:LINE        wait until LINE is a whole line of the serial log;
@@ -29,6 +30,7 @@ on (cont). Prints
     MARKER <n> '<line>': seen after <s> s      (or: not seen in <t> s)
     SCREEN <n> size=<w>x<h> held=<yes|no> differ=<pixels> (<reference>)
     ROWS <n> top='<row 0>' bottom='<row 24>'   (console references only)
+    ROW <n> <r> '<row r>'                     (with --rows: each non-empty row)
 
 "held=yes" when the serial log, read while the guest was stopped, does not
 yet hold "splash test: hold <n> over" (test=splash draws nothing between
@@ -81,8 +83,9 @@ _splash = {}
 
 def splash_ref(w, h, phase, fontdir):
     if (w, h) not in _splash:
-        _splash[(w, h)] = make_wallpaper.splash_phases(w, h, range(4), fontdir)
-    return _splash[(w, h)][phase], f"the splash with {phase} of the 3 dots lit (scripts/make-wallpaper.py)"
+        _splash[(w, h)] = make_wallpaper.splash_phases(w, h, [0, 1, 2, 3, "ready"], fontdir)
+    what = "its ready state" if phase == "ready" else f"{phase} of the 3 dots lit"
+    return _splash[(w, h)][phase], f"the splash with {what} (scripts/make-wallpaper.py)"
 
 
 def main():
@@ -95,6 +98,7 @@ def main():
     ap.add_argument("--size")
     ap.add_argument("--until")
     ap.add_argument("--timeout", type=float, default=120)
+    ap.add_argument("--rows", action="store_true", help="also print every non-empty row (console references)")
     a = ap.parse_args()
     dump, mem = a.socket + ".ppm", os.path.abspath(a.socket + ".shadow")
     try:
@@ -102,7 +106,7 @@ def main():
             w, h = (int(v) for v in a.size.split("x"))
             t = time.monotonic()
             splash_ref(w, h, 0, a.fontdir)
-            print(f"REFERENCE {w}x{h}: the 4 splash screens rendered in {time.monotonic() - t:.1f} s", flush=True)
+            print(f"REFERENCE {w}x{h}: the 5 splash screens rendered in {time.monotonic() - t:.1f} s", flush=True)
         qmp = Qmp(a.socket)
         t0 = time.monotonic()
         qmp.command("cont")
@@ -144,6 +148,8 @@ def main():
                 desc = "the console's cell grid: " + desc
             elif ref in ("dots0", "dots1", "dots2", "dots3"):
                 want, desc = splash_ref(w, h, int(ref[4]), a.fontdir)
+            elif ref == "ready":
+                want, desc = splash_ref(w, h, "ready", a.fontdir)
             else:
                 raise ValueError(f"unknown reference {ref!r}")
             differ, first = fbcon_ref.compare(pix, want, w)
@@ -153,6 +159,9 @@ def main():
             if ref == "console":
                 shadow = open(mem, "rb").read()
                 print(f"ROWS {n} top={ascii(row_text(shadow, 0))} bottom={ascii(row_text(shadow, 24))}", flush=True)
+                for r in range(25) if a.rows else ():
+                    if row_text(shadow, r):
+                        print(f"ROW {n} {r} {ascii(row_text(shadow, r))}", flush=True)
         if a.until:
             left = max(a.timeout - (time.monotonic() - t0), 1)
             s = wait_serial(a.serial, a.until, left)

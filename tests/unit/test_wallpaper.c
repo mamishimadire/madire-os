@@ -191,6 +191,17 @@ static void test_layout(void)
         }
         CHECK(l.loy >= 0 && l.title_y > l.loy && (l.title_y >> FB) < l.text_y);
         CHECK(splash_scratch_entries(&l, w, h) > 0);
+        /* 1.2 stage 10: the ready line centred; its box covers the text
+         * line, the dots' box and the ready line, below the wordmark. */
+        int32_t rw = (int32_t)(33 * modes[i][3]), cw17 = (int32_t)(17 * modes[i][3]);
+        struct rect r = l.ready_box;
+        CHECK_EQ(l.ready_x, ((int32_t)w - rw) / 2);
+        CHECK(r.x <= l.text_x && r.x <= l.ready_x && r.x + r.w >= b.x + b.w && r.x + r.w >= l.ready_x + rw);
+        CHECK(r.x + r.w >= l.text_x + cw17);
+        CHECK(r.y <= l.text_y && r.y <= b.y && r.y + r.h >= b.y + b.h &&
+              r.y + r.h >= l.text_y + (int32_t)modes[i][4]);
+        CHECK(r.y > ((l.title_y + wp_mul(wp_fx(14, 1), l.ts)) >> FB) && r.x >= 0 && r.x + r.w <= (int32_t)w &&
+              r.y + r.h <= (int32_t)h);
     }
     struct splash_layout l;
     CHECK(!splash_layout(&l, 300, 200, 4, 8, 16));             /* too small */
@@ -240,6 +251,26 @@ static void test_draw(void)
             CHECK_EQ(surface_get(&s, (uint32_t)(l.dot_x[d] >> FB), (uint32_t)(l.dot_y >> FB)),
                      d < phase ? WP_TEXT : WP_SURFACE_ACTIVE);
     }
+
+    /* 1.2 stage 10, the ready state: inside its box only the wallpaper and
+     * the ready line's pixels (each character's top-left one in
+     * text.muted); the text line and the dots are gone. */
+    uint8_t *wmem = malloc((size_t)SW * SH * 4);
+    struct surface wall;
+    surface_init(&wall, wmem, SW, SH, SW * 4, 4);
+    wallpaper_render(&wall, &wp, (struct rect){ 0, 0, SW, SH });
+    splash_draw_ready(&s, &l, &corner, &wp);
+    struct rect rb = l.ready_box;
+    int same = 1;
+    for (int32_t y = rb.y; y < rb.y + rb.h; y++)
+        for (int32_t x = rb.x; x < rb.x + rb.w; x++) {
+            int glyph = y == l.text_y && x >= l.ready_x && x < l.ready_x + 33 * 8 && (x - l.ready_x) % 8 == 0;
+            if (surface_get(&s, (uint32_t)x, (uint32_t)y) !=
+                (glyph ? WP_TEXT_MUTED : surface_get(&wall, (uint32_t)x, (uint32_t)y)))
+                same = 0;
+        }
+    CHECK(same);
+    free(wmem);
     int guards = 1;
     for (uint32_t i = 0; i < PAD; i++)
         if (mem[i] != GUARD || mem[(size_t)SW * SH * 4 + 2 * PAD - 1 - i] != GUARD)
