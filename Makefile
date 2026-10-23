@@ -66,6 +66,18 @@ $(eval $(call font_rule,10x20,20))
 $(eval $(call font_rule,12x24,24))
 $(eval $(call font_rule,16x32,32))
 
+# 1.2 stage 8: the splash's generated data (kernel/logo.c's strokes and the
+# wordmark's polylines, in the kernel's fixed point) from
+# scripts/make-wallpaper.py, the one reference algorithm (never committed;
+# part static regenerates and compares it). Only wallpaper_core.c and the
+# host tools that include it read build/gen/.
+GEN := $(BUILD)/gen
+$(GEN)/splash_data.h: scripts/make-wallpaper.py
+	@mkdir -p $(dir $@)
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-wallpaper.py --emit-c $@
+$(BUILD)/kernel/display/wallpaper_core.o: $(GEN)/splash_data.h
+$(BUILD)/kernel/display/wallpaper_core.o: CFLAGS += -I$(GEN)
+
 # 1.0 stage 1 (D1): a test-only kernel padded past 2 MiB. KERNEL_PAD=<n>[K|M]
 # links one more object, a .bss pad of that size, so the image ends that
 # much higher. It is never the shipped kernel: it builds only into its own
@@ -106,7 +118,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump repro padkernel clean
 
 all: $(KERNEL)
 
@@ -253,9 +265,10 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
                  kernel/bootmod.h kernel/stackpeak.h kernel/rtc_time.h kernel/logbuf.h kernel/kprintf.c kernel/kprintf.h $(wildcard kernel/arch/x86/*.h) \
                  $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard drivers/mouse/*.h drivers/mouse/*_core.c) \
-                 $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c)
+                 $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c) \
+                 $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
-	$(UNIT_CC) $(UNIT_CFLAGS) $< $(UNIT_MODULES) -o $@
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< $(UNIT_MODULES) -o $@
 
 unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do $$t || exit 1; done
@@ -270,6 +283,18 @@ $(ELFCHECK): tests/elfcheck.c kernel/proc/elf_core.c kernel/proc/elf_core.h
 
 elfcheck: $(ELFCHECK)
 
+# 1.2 stage 8: the kernel's wallpaper and splash code (wallpaper_core.c,
+# with the console fonts) as a host tool that writes a splash as a PPM;
+# part static compares it with scripts/make-wallpaper.py's rendering.
+SPLASHDUMP := $(BUILD)/splashdump
+$(SPLASHDUMP): tests/splashdump.c kernel/display/wallpaper_core.c kernel/display/wallpaper_core.h \
+               kernel/display/surface_core.c kernel/display/fbcon_core.c $(GEN)/splash_data.h \
+               $(FONT_SIZES:%=$(BUILD)/font/font_%.c)
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/splashdump.c $(FONT_SIZES:%=$(BUILD)/font/font_%.c) -o $@
+
+splashdump: $(SPLASHDUMP)
+
 # Reproducible build (0.8): copy the sources into two fresh trees and build
 # each from clean. Tree b is built with a `find` that lists files in reverse
 # order, so a link order that followed the file system would show up as a
@@ -281,7 +306,8 @@ elfcheck: $(ELFCHECK)
 REPRO := $(BUILD)/repro
 repro: $(KERNEL)
 	rm -rf $(REPRO) && mkdir -p $(REPRO)/a $(REPRO)/b $(REPRO)/bin
-	find Makefile boot kernel drivers linker user scripts/user-images.sh scripts/make-font.py third_party/terminus \
+	find Makefile boot kernel drivers linker user scripts/user-images.sh scripts/make-font.py \
+	    scripts/make-wallpaper.py third_party/terminus \
 	    -type f | LC_ALL=C sort > $(REPRO)/files
 	tar -cf - -T $(REPRO)/files | tar -xf - -C $(REPRO)/a
 	tar -cf - -T $(REPRO)/files | tar -xf - -C $(REPRO)/b
@@ -310,7 +336,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+test: unit user elfcheck splashdump $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -319,7 +345,7 @@ test: unit user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repr
 # only with SHARD=static, so a sharded run runs them once; the padded test
 # kernel (1.0) is built only for part 4, which boots it.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump) \
             $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 

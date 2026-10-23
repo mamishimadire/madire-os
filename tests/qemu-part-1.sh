@@ -24,7 +24,11 @@
 # tests/pointer_ref.py), and test=mouse at 1024x768 and 2560x1440 (the
 # scale and the timing; tests/qmp_mouse.py), then the give-up path under
 # -kernel (test=mousefail=4, =6 and =7, the keyboard checked after it). The
-# crash case now waits for the halt line instead of "System ready.".
+# crash case now waits for the halt line instead of "System ready.". Stage 8
+# adds the splash at the end: test=splash still at 1024x768 and 1280x1024
+# (four screens each against scripts/make-wallpaper.py, tests/qmp_splash.py)
+# and its timing at 2560x1440, then Esc, the boot option verbose, a FAILED
+# status line (test=splashfail) and a panic (test=splashpanic).
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -2123,3 +2127,181 @@ mousefail_case() {
 mousefail_case 4 "set defaults: no reply (test=mousefail=4)"
 mousefail_case 6 "the configuration with IRQ12 on: no reply (test=mousefail=6)"
 mousefail_case 7 "port 1 back on: no reply (test=mousefail=7)"
+
+# ---- 1.2 stage 8: the splash ----
+
+echo "== [1.2] The splash: test=splash with the dots frozen (still), against make-wallpaper.py (tests/qmp_splash.py)"
+# Test ISOs with one entry, no "textmode" line and "cmdline: test=splash
+# still": the splash shows from the hand-off; test=splash then draws the
+# dots with 0, 1, 2 and 3 lit, each after "display: frame N" and held still
+# for 3 s, and logs the report-only timing lines. tests/qmp_splash.py stops
+# the guest at each marker, takes a screendump and compares it with the
+# splash scripts/make-wallpaper.py renders (the one reference algorithm,
+# rendered before the guest starts: --size). The expected scale of each
+# mode (decision 19) is written out below.
+QMPSPLASH=$(dirname "$0")/qmp_splash.py
+# splash_boot <log> <iso> <WxH to render first, or ""> <steps...>: boots <iso>
+# paused at -m 128M, runs qmp_splash.py with the steps, then stops QEMU.
+# SPL_OUT holds its output (also kept in <log>.splash.txt); SPL_UNTIL is the
+# line it waits for at the end (default "System ready.").
+splash_boot() {
+    local log=$1 iso=$2 size=$3 sock=$OUT/qmp-splash.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    SPL_OUT=$(python3 "$QMPSPLASH" "$sock" "$log" "$SHADOW_P" "$FONTDIR" "$@" ${size:+--size "$size"} \
+              --until "${SPL_UNTIL:-System ready.}" --timeout 180 2>&1)
+    sed 's/^/      /' <<< "$SPL_OUT"
+    echo "$SPL_OUT" > "${log%.log}.splash.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# splash_done <log> <label>: test=splash's last line, its 3 timing lines,
+# and the boot's health.
+splash_done() {
+    if grep -qxF "splash test: done: 4 screens held; the splash still shown" "$1" &&
+       [ "$(grep -cE '^splash timing: .*: [1-9][0-9]* in [0-9]+ ticks, about [0-9]+ us each$' "$1")" -eq 3 ] &&
+       grep -q "^System ready\." "$1" && ! grep -q "FAILED" "$1" && ! grep -qE "PANIC|MISMATCH" "$1"; then
+        pass "[1.2] $2: test=splash done (4 screens held, its 3 timing lines logged); System ready, no FAILED status line, no panic"
+    else
+        fail "[1.2] $2: test=splash not done, not 3 timing lines, no System ready, a FAILED status line, or a panic (see $1)"
+    fi
+}
+# splash_case <name> <mode WxHxD> <percent> <label> [a limine.conf line]
+splash_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log=$OUT/serial-splash-$1.log w h n
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    fbcon_iso "splash$name" "test=splash still" "$extra"
+    SPL_OUT=""
+    if [ -n "$FBC_ISO" ]; then
+        splash_boot "$log" "$FBC_ISO" "${w}x${h}" "screen:dots0:display: frame 1" "screen:dots1:display: frame 2" \
+            "screen:dots2:display: frame 3" "screen:dots3:display: frame 4"
+    else : > "$log"; fi
+    grep -E "^Display: |^Splash|^splash test|^display: frame " "$log" | sed 's/^/      /'
+    grep -E "^splash timing: " "$log" | sed "s/^/      SPLASH_TIMING $mode: /"
+    expect "$log" "^Splash: shown on $mode \(scale $pct %, frame 1\); the dots frozen \(boot option 'still'\)$" \
+        "[1.2] $label: Splash: shown on $mode (scale $pct %, frame 1); the dots frozen (boot option 'still')"
+    for n in 1 2 3 4; do
+        if grep -qE "^SCREEN $n size=${w}x${h} held=yes differ=0 \(" <<< "$SPL_OUT"; then
+            pass "[1.2] $label: screen $n (the splash with $((n - 1)) of the 3 dots lit, held still) equals make-wallpaper.py's rendering pixel for pixel"
+        else
+            fail "[1.2] $label: screen $n differs from make-wallpaper.py's rendering, or was not held still ($(grep -E "^(MARKER $n|SCREEN $n|REFERENCE|qmp_splash)" <<< "$SPL_OUT" | tr '\n' ' '))"
+        fi
+    done
+    splash_done "$log" "$label"
+}
+splash_case 1024 1024x768x32 100 "splash at 1024x768x32 (the header's mode)"
+splash_case 1280 1280x1024x32 125 "splash at 1280x1024x32" "resolution: 1280x1024x32"
+
+echo "== [1.2] The splash's timing at 2560x1440x32 (test=splash still; no screens compared)"
+fbcon_iso splash2560 "test=splash still" "resolution: 2560x1440x32"
+LOG=$OUT/serial-splash-2560.log
+if [ -n "$FBC_ISO" ]; then boot_until "$LOG" 150 "$FB_READY" -m 128M -cdrom "$FBC_ISO"; else : > "$LOG"; fi
+grep -E "^Display: |^Splash|^splash test" "$LOG" | sed 's/^/      /'
+grep -E "^splash timing: " "$LOG" | sed "s/^/      SPLASH_TIMING 2560x1440x32: /"
+expect "$LOG" "^Splash: shown on 2560x1440x32 \(scale 200 %, frame 1\); the dots frozen \(boot option 'still'\)$" \
+    "[1.2] splash at 2560x1440x32: Splash: shown on 2560x1440x32 (scale 200 %, frame 1); the dots frozen (boot option 'still')"
+splash_done "$LOG" "splash at 2560x1440x32"
+
+echo "== [1.2] The splash closed by Esc; the next key opens the console (1024x768x32, boot option still)"
+# No test= option: the boot a user sees, with "still" (the dots frozen, the
+# splash's lines logged). At System ready the splash (none lit); Esc shows
+# the text boot screen and opens nothing; then "x" opens the console.
+ESC_LINE="Splash: closed (Esc): the text boot screen shown"
+fbcon_iso splashesc "still"
+LOG=$OUT/serial-splash-esc.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "screen:dots0:$FB_READY" "type:{esc}" \
+        "screen:console:$ESC_LINE" "type:{wait:1}x"
+else : > "$LOG"; fi
+grep -E "^Splash|^System ready|^console: started" "$LOG" | sed 's/^/      /'
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots frozen (boot option 'still')" "$LOG"; then
+    pass "[1.2] still at 1024x768x32: at System ready the splash shows, its dots frozen with none lit, equal to make-wallpaper.py's rendering pixel for pixel"
+else
+    fail "[1.2] still at 1024x768x32: no splash at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(MARKER 1|SCREEN 1|REFERENCE|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+if grep -qE "^SCREEN 2 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 2 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
+    pass "[1.2] Esc closes the splash: $ESC_LINE, and the screen equals the reference rendering of the console's cell grid (the boot screen at System ready) pixel for pixel"
+else
+    fail "[1.2] Esc: no closed line, the screen differs from the cell grid's rendering, or the grid is not the boot screen at System ready ($(grep -E '^(MARKER 2|SCREEN 2|ROWS 2|WAIT|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+ESC_AT=$(grep -nxF "$ESC_LINE" "$LOG" | head -n 1 | cut -d: -f1)
+CON_AT=$(grep -nxF "console: started" "$LOG" | head -n 1 | cut -d: -f1)
+if [ -n "$ESC_AT" ] && [ -n "$CON_AT" ] && [ "$CON_AT" -gt "$ESC_AT" ] && [ "$(grep -cxF "console: started" "$LOG")" -eq 1 ] &&
+   ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] Esc opened no console; the next key ('x') opened it (console: started once, after the Esc line); no FAILED status line, no panic"
+else
+    fail "[1.2] Esc: the console started before or without the next key, or a FAILED status line or a panic (see $LOG)"
+fi
+
+echo "== [1.2] The boot option verbose: the text boot screen, no splash (1024x768x32)"
+fbcon_iso splashverbose "verbose"
+LOG=$OUT/serial-splash-verbose.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:console:$FB_READY"; else : > "$LOG"; fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 1 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
+    pass "[1.2] verbose at 1024x768x32: no splash: at System ready the screen equals the reference rendering of the console's cell grid (the boot screen) pixel for pixel"
+else
+    fail "[1.2] verbose at 1024x768x32: the screen at System ready is not the boot screen's rendering ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+if grep -qxF "$FB_READY" "$LOG" && ! grep -q "^Splash" "$LOG" && ! grep -q "FAILED" "$LOG" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] verbose: System ready, no Splash: line, no FAILED status line, no panic"
+else
+    fail "[1.2] verbose: no System ready, a Splash: line, a FAILED status line, or a panic (see $LOG)"
+fi
+
+echo "== [1.2] A FAILED status line closes the splash (test=splashfail, 1024x768x32)"
+# test=splashfail reports the Console & shell line FAILED on purpose: the
+# splash must close there, and the console is disabled as for a real one.
+FAIL_READY="System ready. Console self-test failed: console disabled."
+fbcon_iso splashfail "test=splashfail"
+LOG=$OUT/serial-splash-fail.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:console:$FAIL_READY"; else : > "$LOG"; fi
+grep -E "^Splash|^Console & shell|^System ready" "$LOG" | sed 's/^/      /'
+CS_AT=$(grep -nE "^Console & shell: +FAILED" "$LOG" | head -n 1 | cut -d: -f1)
+CL_AT=$(grep -nxF "Splash: closed (a FAILED status line): the text boot screen shown" "$LOG" | head -n 1 | cut -d: -f1)
+if grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots move with the boot" "$LOG" &&
+   [ -n "$CS_AT" ] && [ -n "$CL_AT" ] && [ "$CL_AT" -gt "$CS_AT" ]; then
+    pass "[1.2] test=splashfail: the splash shown, then closed by the FAILED status line: Splash: closed (a FAILED status line): the text boot screen shown"
+else
+    fail "[1.2] test=splashfail: no splash, or not closed after the Console & shell FAILED line (see $LOG)"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 1 top='.*' bottom='  $FAIL_READY'$" <<< "$SPL_OUT" && ! grep -qE "PANIC|MISMATCH" "$LOG"; then
+    pass "[1.2] test=splashfail: at System ready the screen equals the reference rendering of the console's cell grid (the boot screen with the FAILED line) pixel for pixel; no panic"
+else
+    fail "[1.2] test=splashfail: the screen at System ready is not the boot screen's rendering, or a panic ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+
+echo "== [1.2] A panic while the splash shows: the crash screen (test=splashpanic, 1024x768x32)"
+fbcon_iso splashpanic "test=splashpanic"
+LOG=$OUT/serial-splash-panic.log
+SPL_OUT=""
+if [ -n "$FBC_ISO" ]; then
+    SPL_UNTIL="System halted. Power off the machine." splash_boot "$LOG" "$FBC_ISO" "" \
+        "screen:console: System halted. Power off the machine."
+else : > "$LOG"; fi
+grep -E "^Splash|KERNEL PANIC|Splash test:|System halted" "$LOG" | sed 's/^/      /'
+if grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots move with the boot" "$LOG" &&
+   grep -qxF " Splash test: a panic while the splash is shown (on purpose)." "$LOG"; then
+    pass "[1.2] test=splashpanic: the splash shown, then the panic: Splash test: a panic while the splash is shown (on purpose)."
+else
+    fail "[1.2] test=splashpanic: no splash, or no panic line (see $LOG)"
+fi
+if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   grep -qE "^ROWS 1 top='' bottom='.*'$" <<< "$SPL_OUT"; then
+    pass "[1.2] test=splashpanic: the crash screen equals the reference rendering of the console's cell grid pixel for pixel (the console took the screen back from the splash)"
+else
+    fail "[1.2] test=splashpanic: the crash screen differs from the cell grid's rendering ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi

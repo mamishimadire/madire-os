@@ -26,6 +26,7 @@ static uint32_t drawn[CELLS];           /* what each cell shows: entry | WITH_CU
 static int32_t cursor_at = -1;          /* the cell the cursor is drawn on */
 static uint32_t refused;                /* draws refused off thread 0 */
 static bool busy, panic_retried;
+static bool held;                       /* 1.2 stage 8: the splash holds the screen */
 
 bool fbcon_active(void)
 {
@@ -111,7 +112,7 @@ static void redraw_all(void)
         pointer_unhide();
 }
 
-void fbcon_start(void)
+void fbcon_start(bool hold)
 {
     const struct fb_info *fi = display_info();
     back = display_back_buffer();
@@ -119,17 +120,49 @@ void fbcon_start(void)
         klogf("Display: console kept in VGA text memory (no layout for %ux%u)\n", fi->width, fi->height);
         return;
     }
-    busy = true;
-    redraw_all();
-    busy = false;
+    held = hold;
+    if (!held) {
+        busy = true;
+        redraw_all();
+        busy = false;
+    }
     active = true;
     klogf("Display: console on the framebuffer: 80x25 cells of %ux%u pixels at (%u, %u), scale %u %%\n",
           lay.cell_w, lay.cell_h, lay.x, lay.y, lay.scale * 25);
 }
 
+bool fbcon_held(void)
+{
+    return active && held;
+}
+
+const struct fbcon_layout *fbcon_current_layout(void)
+{
+    return active ? &lay : 0;
+}
+
+void fbcon_release(void)
+{
+    if (!held)
+        return;
+    held = false;
+    fbcon_redraw();
+}
+
+/* While held, the grid changes only in vga_shadow; a panic releases the
+ * screen (the crash screen), drawn whole. True if the caller is done. */
+static bool still_held(void)
+{
+    if (!held)
+        return false;
+    if (panic_active)
+        fbcon_release();
+    return true;
+}
+
 void fbcon_cell(uint32_t i)
 {
-    if (!begin_draw())
+    if (still_held() || !begin_draw())
         return;
     update_cell(i);
     end_draw();
@@ -137,6 +170,9 @@ void fbcon_cell(uint32_t i)
 
 void fbcon_redraw(void)
 {
+    if (held && !panic_active)
+        return;
+    held = false;
     if (!begin_draw())
         return;
     redraw_all();
@@ -151,7 +187,7 @@ void fbcon_palette(uint8_t slot)
 
 void fbcon_cursor(void)
 {
-    if (!begin_draw())
+    if (still_held() || !begin_draw())
         return;
     uint32_t c = cursor_index(vga_text_shadow());
     int32_t now = c == NOT_DRAWN ? -1 : (int32_t)c;

@@ -15,11 +15,11 @@
  * Each cell is drawn on the back buffer and copied to the framebuffer at
  * once; a cell already showing what the grid holds is not drawn again.
  *
- * Known gap (follow-up for stage 8/10): before fbcon_start(), a
- * framebuffer screen shows nothing the kernel writes (the grid goes to
- * vga_shadow and to video memory the graphics mode does not show), so a
- * panic before paging_init(), or boot.asm's halt message, is on serial
- * only.
+ * Known gap (follow-up for stage 8/10; 1.2 stage 8 proposes an early panic
+ * screen, not decided): before fbcon_start(), a framebuffer screen shows
+ * nothing the kernel writes (the grid goes to vga_shadow and to video
+ * memory the graphics mode does not show), so a panic before
+ * paging_init(), or boot.asm's halt message, is on serial only.
  */
 
 #include <stdbool.h>
@@ -27,10 +27,20 @@
 
 /* After paging_init(), on a boot with display_active(): lays out the grid,
  * draws the whole screen from the shadow and logs the "Display: console
- * on the framebuffer" line. From then on fbcon_active(). */
-void fbcon_start(void);
+ * on the framebuffer" line. From then on fbcon_active(). 1.2 stage 8: with
+ * `hold` (the splash, splash.h) nothing is drawn: the grid changes only in
+ * the shadow until fbcon_release(), or a panic, draws the whole screen. */
+void fbcon_start(bool hold);
 
 bool fbcon_active(void);
+
+/* 1.2 stage 8: whether the splash holds the screen; the console's layout
+ * (its scale and font; NULL if not active); and the screen back to the
+ * console, drawn whole from the shadow. */
+bool fbcon_held(void);
+struct fbcon_layout;
+const struct fbcon_layout *fbcon_current_layout(void);
+void fbcon_release(void);
 
 /* Called by vga_text.c (only while active): cell i (row x 80 + col) of the
  * shadow changed; the whole shadow changed; colour slot `slot` changed;

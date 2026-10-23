@@ -77,6 +77,13 @@
 # =6 and =7 under -kernel (6 each: the line, the configuration, the
 # ownership, the mask, the boot's health, the keyboard); 2 unit suites
 # (mouse, pointer). The stress part's 2 mouse-burst checks are [stress],
-# counted apart.
-1.2 100
-unit-suites 76
+# counted apart. Stage 8: 31 more: in part static 8 (make-wallpaper.py in
+# integer maths renders v1.1's wallpaper pixel for pixel; the splash's
+# generated data regenerated and its M equal to kernel/logo.c's; the
+# kernel's splash code, tests/splashdump.c, equal to make-wallpaper.py's
+# rendering in 5 modes); in part 1 23 (test=splash still at 1024x768x32 and
+# 1280x1024x32, 6 each: the Splash: line, 4 screens, done; at 2560x1440x32
+# 2: the Splash: line, done; Esc 3, verbose 2, test=splashfail 2,
+# test=splashpanic 2); 1 unit suite (wallpaper).
+1.2 131
+unit-suites 77
