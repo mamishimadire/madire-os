@@ -56,8 +56,10 @@ fi
 
 echo "== [0.13] scripts/check-multiboot.py: the real kernel, and each refusal"
 MBOUT=$(python3 "$MBCHECK" "$KERNEL")
-if [ $? -eq 0 ] && grep -qE '^MULTIBOOT OK: header at offset [0-9]+, flags 0x00010003, a\.out kludge: load 0x00100000-0x[0-9a-f]{8}, bss end 0x[0-9a-f]{8}, entry 0x[0-9a-f]{8}$' <<< "$MBOUT"; then
-    pass "[0.13] check-multiboot.py accepts the real kernel (flags 0x00010003, a.out kludge, loaded at 1 MiB)"
+# 1.2 stage 5 (docs/plans/1.2.md, D1): flags 0x00010003 -> 0x00010007, the
+# video request (bit 2) added; the mode fields are checked by [1.2] below.
+if [ $? -eq 0 ] && grep -qE '^MULTIBOOT OK: header at offset [0-9]+, flags 0x00010007, a\.out kludge: load 0x00100000-0x[0-9a-f]{8}, bss end 0x[0-9a-f]{8}, entry 0x[0-9a-f]{8}$' <<< "$MBOUT"; then
+    pass "[0.13] check-multiboot.py accepts the real kernel (flags 0x00010007, a.out kludge, video mode requested, loaded at 1 MiB)"
 else
     fail "[0.13] check-multiboot.py on the real kernel: $MBOUT"
 fi
@@ -223,6 +225,51 @@ if [ "$(printf '%s\n' "$SLOGO" | grep -c .)" -eq 4 ] && [ "$SLOGO" = "$SWP" ]; t
     pass "[1.1] make-wallpaper.py: the M's four strokes equal kernel/logo.c's"
 else
     fail "[1.1] make-wallpaper.py: the M's strokes differ from kernel/logo.c's"
+fi
+
+# ---- 1.2: the video request, and text mode until the switch stage ----
+
+echo "== [1.2] The Multiboot header's video request (stage 5)"
+# The mode fields after the a.out kludge's (header offsets 32-44): a linear
+# framebuffer (mode_type 0) of 1024x768x32 (docs/plans/1.2.md, decision 2).
+MBMODE=$(python3 - "$KERNEL" <<'EOF' 2>&1
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+for off in range(0, min(len(d), 8192) - 48 + 1, 4):
+    magic, flags, checksum = struct.unpack_from("<III", d, off)
+    if magic == 0x1BADB002 and (magic + flags + checksum) & 0xFFFFFFFF == 0:
+        print("MODE flags 0x%08x mode_type %d width %d height %d depth %d" % ((flags,) + struct.unpack_from("<IIII", d, off + 32)))
+        break
+else:
+    print("MODE no header")
+EOF
+)
+echo "      $MBMODE"
+if [ "$MBMODE" = "MODE flags 0x00010007 mode_type 0 width 1024 height 768 depth 32" ]; then
+    pass "[1.2] the Multiboot header asks for a 1024x768x32 linear framebuffer (flag bit 2; mode_type 0, width 1024, height 768, depth 32)"
+else
+    fail "[1.2] the Multiboot header's video request: $MBMODE"
+fi
+
+echo "== [1.2] limine.conf: every entry boots in text mode (stage 5, decision 3)"
+# Until the switch stage, every entry (a line starting "/" with a
+# "protocol:" line) holds exactly one "    textmode: yes" and no other
+# textmode line; no textmode line outside an entry.
+TM=$(awk 'function done() { if (blk == "") return
+                            if (proto) { ent++; if (tm != 1 || other) bad = bad blk " (" tm " textmode: yes, " other " other); " }
+                            else if (tm || other) bad = bad blk " (a textmode line, no protocol); " }
+          /^\// { done(); blk = $0; proto = 0; tm = 0; other = 0; next }
+          /^[ \t]*textmode:/ { if (blk == "") bad = bad "a textmode line before the first entry; "
+                               else if ($0 == "    textmode: yes") tm++; else other++; next }
+          /^[ \t]*protocol:/ { proto = 1 }
+          END { done(); printf "%d|%s\n", ent, bad }' "$OUT/limine.conf")
+TMN=${TM%%|*}
+TMBAD=${TM#*|}
+echo "      $TMN entries"
+if [ -z "$TMBAD" ] && [ "$TMN" -gt 0 ]; then
+    pass "[1.2] limine.conf: every entry boots in text mode (one 'textmode: yes' in each of its $TMN entries)"
+else
+    fail "[1.2] limine.conf: text mode: ${TMBAD:-no entries}"
 fi
 
 # ---- 1.2: the size report (decides no check) ----

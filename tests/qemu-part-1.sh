@@ -9,8 +9,9 @@
 # adds the [1.0] filesystem checks of the normal boot at the end; stage 2
 # the data budget and the self-test's data step after them. 1.1 stage 5
 # adds a report-only trace probe at the end. 1.2 stage 3 added the probes
-# (report only) at the end; stage 4 removed them again (make probe,
-# tests/probe-iso.sh and tests/probe_fb.py are kept for a rerun on request).
+# (report only) at the end; stage 4 removed them again, and stage 5 removed
+# the probe build and its tools (rerun them from 287b355, docs/testing.md).
+# 1.2 stage 5 adds the [1.2] Display checks of the text boots at the end.
 
 echo "== Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -124,11 +125,14 @@ echo "== [0.7] Boot module through the boot menu (ISO with a module entry; 0.13:
 LOG=$OUT/serial-bootmenu-module.log
 limine_tree "$OUT/isomod"
 cp "$OUT/test-module.bin" "$OUT/isomod/boot/test-module.bin"
+# 1.2 stage 5: "textmode: yes", as in every entry of the real limine.conf,
+# keeps text mode now that the kernel's header asks for a framebuffer.
 cat > "$OUT/isomod/boot/limine/limine.conf" <<'CFG'
 timeout: 0
 
 /Madire OS (module test)
     protocol: multiboot1
+    textmode: yes
     path: boot():/boot/madire.kernel
     module_path: boot():/boot/test-module.bin
     module_string: test-module
@@ -1569,3 +1573,15 @@ expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
     '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
 reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
     "[1.1] console keys boot: no panic, nothing dropped, no light failure"
+
+# ---- 1.2: the Display line of the text boots (stage 5) ----
+
+echo "== [1.2] Display: the text boots (QEMU -kernel; the real ISO with textmode: yes)"
+# The logs of two boots made above (no new boot): QEMU's -kernel gives no
+# framebuffer fields (flag bit 12 clear); the real ISO's default entry,
+# with "textmode: yes", gets Limine's text mode (type 2, 80x25 at 0xB8000).
+# Both keep VGA text, as before 1.2 (docs/plans/1.2.md, decision 4).
+expect "$OUT/serial-mem-32M.log" "^Display: VGA text 80x25 \(no framebuffer\)$" \
+    "[1.2] -kernel boot: Display: VGA text 80x25 (no framebuffer)"
+expect "$OUT/serial-boot.log" "^Display: VGA text 80x25 \(the boot loader's text mode, 80x25 at 0xb8000\)$" \
+    "[1.2] real ISO, default entry (textmode: yes): Display: VGA text 80x25 (the boot loader's text mode, 80x25 at 0xb8000)"

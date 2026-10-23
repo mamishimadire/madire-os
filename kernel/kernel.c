@@ -26,6 +26,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/display/display.h"
 #include "kernel/fs/dirtest.h"
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
@@ -817,6 +818,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
      * the string before anything reads it. */
     if (mbi->flags & MULTIBOOT_INFO_CMDLINE)
         cmdline = phys_view(mbi->cmdline);
+    /* 1.2: what the loader gave for the display (the "Display:" line);
+     * before memory_init(), see kernel/display/display.h. */
+    display_probe(mb_info);
 
     bootscreen_draw_header();
 
