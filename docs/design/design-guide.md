@@ -46,7 +46,7 @@ Each token was **sampled** from the mockup (the average of a flat area, or the b
 
 **Contrast (approximate):** `text` on `bg.deep` about 17:1; `text.muted` on `surface` about 6.3:1; `accent` on `surface.bar` about 5.3:1. **Rule:** body text needs at least 4.5:1 against its background; large text (at least 18 dp, or 14 dp bold) at least 3:1.
 
-**Limine's backdrop:** the splash's first fill always equals Limine's `backdrop:`. Limine's `backdrop: 0B1220` and the 1.1 boot-menu wallpaper keep their colours until stage 8 chooses: the splash starts from `#0B1220`, or the backdrop becomes `bg.deep` (a listed changed check) ([plan](../plans/1.2.md), section D3).
+**The hand-off and Limine's backdrop:** after Limine's mode set the screen is black (`000000`); the splash starts from it and cuts to its first frame ([plan](../plans/1.2.md), section D3, reworded in stage 8). Limine's `backdrop: 0B1220` (behind a shown menu) and the 1.1 boot-menu wallpaper keep their colours.
 
 **No translucency in 1.2:** every surface is opaque; alpha is used only for anti-aliased edges (coverage).
 
