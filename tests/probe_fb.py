@@ -32,6 +32,9 @@ import struct
 import sys
 import time
 
+# No __pycache__ in the source tree: the run's file guard (the snapshot
+# hashed before and after) must see the tree unchanged.
+sys.dont_write_bytecode = True
 from qmp_menu import Qmp, png_rgb, serial_text
 
 MAGIC = 0x1BADB002

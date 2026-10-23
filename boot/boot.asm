@@ -483,6 +483,19 @@ probe_report:
     call probe_hex
     PROBE_SAY 10
 .fb:
+    ; The raw bytes 108-119 (bpp, type, then the colour fields), whatever
+    ; the flags say: where the colour fields start is read from these.
+    PROBE_SAY "probe: raw information bytes 108-119:"
+    xor edi, edi
+.raw:
+    PROBE_SAY " "
+    movzx eax, byte [ebx + 108 + edi]
+    mov ecx, 2
+    call probe_digits
+    inc edi
+    cmp edi, 12
+    jb .raw
+    PROBE_SAY 10
     test dword [ebx], 1 << 12       ; the framebuffer fields
     jnz .fb_fields
     PROBE_SAY "probe: framebuffer fields: none (flags bit 12 clear)", 10
@@ -513,25 +526,14 @@ probe_report:
     PROBE_SAY 10
     cmp byte [ebx + 109], 1         ; direct RGB: the colour fields
     jne .palette
-    PROBE_SAY "probe: colour fields: red at bit "
-    movzx eax, byte [ebx + 110]
-    call probe_dec
-    PROBE_SAY " size "
-    movzx eax, byte [ebx + 111]
-    call probe_dec
-    PROBE_SAY ", green at bit "
-    movzx eax, byte [ebx + 112]
-    call probe_dec
-    PROBE_SAY " size "
-    movzx eax, byte [ebx + 113]
-    call probe_dec
-    PROBE_SAY ", blue at bit "
-    movzx eax, byte [ebx + 114]
-    call probe_dec
-    PROBE_SAY " size "
-    movzx eax, byte [ebx + 115]
-    call probe_dec
-    PROBE_SAY 10
+    ; Both readings: at byte 110 (the Multiboot 1 spec's table) and at
+    ; byte 112 (the C structure's union aligned to 4 bytes).
+    PROBE_SAY "probe: colour fields read at byte 110 (the spec's table): "
+    mov edi, 110
+    call probe_colours
+    PROBE_SAY "probe: colour fields read at byte 112 (aligned to 4): "
+    mov edi, 112
+    call probe_colours
     jmp .aux
 .palette:
     cmp byte [ebx + 109], 0         ; indexed: the palette
@@ -547,6 +549,32 @@ probe_report:
 .aux:
     call probe_aux
     PROBE_SAY "probe: done", 10
+    popad
+    ret
+
+; ebx = the Multiboot information, edi = the offset read: "red at bit R
+; size S, green at bit ..., blue at bit ..." and a newline.
+probe_colours:
+    pushad
+    PROBE_SAY "red at bit "
+    movzx eax, byte [ebx + edi]
+    call probe_dec
+    PROBE_SAY " size "
+    movzx eax, byte [ebx + edi + 1]
+    call probe_dec
+    PROBE_SAY ", green at bit "
+    movzx eax, byte [ebx + edi + 2]
+    call probe_dec
+    PROBE_SAY " size "
+    movzx eax, byte [ebx + edi + 3]
+    call probe_dec
+    PROBE_SAY ", blue at bit "
+    movzx eax, byte [ebx + edi + 4]
+    call probe_dec
+    PROBE_SAY " size "
+    movzx eax, byte [ebx + edi + 5]
+    call probe_dec
+    PROBE_SAY 10
     popad
     ret
 
