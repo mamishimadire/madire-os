@@ -4,7 +4,7 @@
 # --shard final). Apart from this header, every line was moved unchanged
 # from the single script. 1.0 stage 1 adds the [1.0] filesystem check.
 
-echo "== [0.10] The user-mode boot self-test (every boot)"
+section "[0.10] The user-mode boot self-test (every boot)"
 LOG=$OUT/serial-boot.log
 grep -E "^(User-mode self-test: |\[pid [1-3]\] )" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^User-mode self-test: hello \(one line through write\): process 1 exited, status 0 \(expected 0\): OK$" \
@@ -36,7 +36,7 @@ if [ "$nb" -gt 0 ] && [ "$nm" -eq 0 ]; then pass "[0.10] boot self-test: PASS in
 else fail "[0.10] boot self-test: missing in $nm of $nb boots that reached System ready"; fi
 
 
-echo "== [0.12] Bounded diagnostic waits (every boot)"
+section "[0.12] Bounded diagnostic waits (every boot)"
 # 0.12 stage 3: every boot that ran the scheduler self-test calibrated the
 # waits' stall bound first (logged), and no wait stalled or missed its limit
 # in any boot except test=waitstall, which stops the timer on purpose.
@@ -65,7 +65,7 @@ if [ "$nw" -eq 0 ]; then pass "[0.12] no diagnostic wait stalled or missed its l
 else fail "[0.12] a diagnostic wait stalled or missed its limit (or calibration failed) in $nw of $nl boot logs"; fi
 
 
-echo "== [1.0] The filesystem boot self-test (every boot)"
+section "[1.0] The filesystem boot self-test (every boot)"
 # 1.0 stage 1: every boot that reached System ready ran the filesystem's
 # self-test and passed it. The padded test kernel's boots (part 4) keep
 # their logs outside serial-*.log, so this check and the ones above count

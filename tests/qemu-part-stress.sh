@@ -28,7 +28,7 @@
 # without a live process; the stall capture records the tables if a boot
 # goes silent.
 
-echo "== [stress] Kill race: 400 processes killed at 8 points of their start (test=killrace, 3 boots)"
+section "[stress] Kill race: 400 processes killed at 8 points of their start (test=killrace, 3 boots)"
 # tests/killrace_watch.py judges each boot by guest time (the kernel's tick
 # count, read over QMP): progress lines stopping while the ticks advance
 # 3000 past the last one is STUCK (a real failure; the stall watch records
@@ -107,7 +107,7 @@ for b in 1 2 3; do
 done
 echo "STRESS_INCONCLUSIVE killrace=$inconclusive"
 
-echo "== [stress] Console kills: 6 boots, 42 kills each, every kill path"
+section "[stress] Console kills: 6 boots, 42 kills each, every kill path"
 PM="$OUT/user/spin.elf,$OUT/user/sleep.elf,$OUT/user/lines.elf,$OUT/test-user/flood.elf"
 for b in 1 2 3 4 5 6; do
     LOG=$OUT/serial-stress-$b.log
@@ -161,7 +161,7 @@ for b in 1 2 3 4 5 6; do
     fi
 done
 
-echo "== [stress] Key pace: the same long key session at 30 ms, at 50 ms and at 50 ms with a 20 ms hold (report only)"
+section "[stress] Key pace: the same long key session at 30 ms, at 50 ms and at 50 ms with a 20 ms hold (report only)"
 # 0.12 stage 3: stage 1 found key releases lost from about the 360th key of
 # a long session at 30 ms (gap and hold), found in the Codespace. Both paces
 # run here, in the same job, so they compare on the same machine: 861 single
@@ -201,7 +201,7 @@ else
     pass "[stress] key pace: the kernel reported no dropped key event at 30 ms or 50 ms"
 fi
 
-echo "== [stress] The VFS lock: test=klock, 30 boots (1.0 stage 3, plan C2)"
+section "[stress] The VFS lock: test=klock, 30 boots (1.0 stage 3, plan C2)"
 # Each boot is part 2's test=klock boot (tests/qemu-lib.sh klock_boot: -m
 # 64M, keys typed during the test at a 50 ms gap and a 20 ms hold). One
 # check per boot: all ten result lines OK (the same regexes as part 2's
@@ -239,7 +239,7 @@ for b in $(seq -w 1 30); do
 done
 echo "KLOCK_SPREAD boots=30 iterations=$(printf '%s' "$KL_ITERS" | spread) hold=$(printf '%s' "$KL_HOLD" | spread) turn=$(printf '%s' "$KL_TURN" | spread) turn_max=$(printf '%s' "$KL_TURN" | sort -n | tail -n 1) wait0=$(printf '%s' "$KL_WAIT0" | spread) takes_per_thread_min=$(printf '%s' "$KL_TMIN" | sort -n | head -n 1) takes_per_thread_max=$(printf '%s' "$KL_TMAX" | sort -n | tail -n 1) seconds=$(printf '%s' "$KL_SECS" | spread)"
 
-echo "== [stress] The VFS lock under ring-3 load: test=filecontend, 10 boots (1.0 stage 5)"
+section "[stress] The VFS lock under ring-3 load: test=filecontend, 10 boots (1.0 stage 5)"
 # Each boot is part 2's test=filecontend boot (-m 64M). One check per boot:
 # the same result lines as part 2's checks 37-44 (the regexes and the
 # bounds recomputed from the waits line are repeated here from
@@ -304,7 +304,7 @@ for n in "${FC_NAMES[@]}"; do
 done
 echo "$row"
 
-echo "== [stress] The mouse burst: 1000 packets under test=mouse (1.2 stage 7)"
+section "[stress] The mouse burst: 1000 packets under test=mouse (1.2 stage 7)"
 # tests/qmp_mouse.py's burst: 1000 moves (every 25th also a left button
 # change), sent as fast as the kernel decodes them with never more than 4
 # waiting (the PS/2 device's own queue holds 5, so it never merges two);

@@ -18,7 +18,7 @@
 # make-wallpaper.py in five modes. 1.2 stage 10: the splash's ready state
 # in two more.
 
-echo "== Multiboot header"
+section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
 # grub-file --is-x86-multiboot, which it replaced in 0.13).
 MBCHECK=$(dirname "$0")/../scripts/check-multiboot.py
@@ -31,7 +31,7 @@ else fail "kernel has no valid Multiboot header"; fi
 # `make repro` (run by `make test` before this script) built the kernel
 # twice from clean, in two trees created in opposite file orders, and
 # recorded the sha256 sums in build/repro/sha256.txt.
-echo "== [0.8] Reproducible build (make repro)"
+section "[0.8] Reproducible build (make repro)"
 SUMS=$OUT/repro/sha256.txt
 cat "$SUMS" 2>/dev/null | sed 's/^/      /'
 sum_of() { F="$1" awk '$2 == ENVIRON["F"] { print $1 }' "$SUMS" 2>/dev/null; }
@@ -45,7 +45,7 @@ same_sum "[0.8] madire.elf byte-identical in two clean builds" a/build/madire.el
 same_sum "[0.8] madire.kernel byte-identical in two clean builds" a/build/madire.kernel b/build/madire.kernel
 same_sum "[0.8] the kernel under test is the reproducible one" a/build/madire.kernel ../madire.kernel
 
-echo "== [0.10] Version read once by the test harness"
+section "[0.10] Version read once by the test harness"
 if [ -n "$VERSION" ]; then pass "[0.10] version read from kernel/kernel.h: $VERSION (every version check uses it)"
 else fail "[0.10] no version read from kernel/kernel.h"; fi
 # 0.13: the boot menu is limine.conf; its first entry (the first line starting
@@ -60,7 +60,7 @@ fi
 
 # ---- 0.13: the Limine ISO (checks that boot nothing) ----
 
-echo "== [0.13] scripts/check-multiboot.py: the real kernel, and each refusal"
+section "[0.13] scripts/check-multiboot.py: the real kernel, and each refusal"
 MBOUT=$(python3 "$MBCHECK" "$KERNEL")
 # 1.2 stage 5 (docs/plans/1.2.md, D1): flags 0x00010003 -> 0x00010007, the
 # video request (bit 2) added; the mode fields are checked by [1.2] below.
@@ -79,7 +79,7 @@ mb_refuses magic "no Multiboot magic" "a wrong magic"
 mb_refuses checksum "checksum 0x[0-9a-f]{8} at offset [0-9]+" "a wrong checksum"
 mb_refuses aout-outside "load_end_addr 0x[0-9a-f]{8} is beyond the file" "a.out fields outside the file"
 
-echo "== [0.13] The ISO: Limine's files, the notices, no file of the previous boot loader"
+section "[0.13] The ISO: Limine's files, the notices, no file of the previous boot loader"
 # The files that stay byte-identical to the pinned v12.9.3 package (0.13
 # stage 1: bios-install changes only the ISO's system area; xorriso's
 # -boot-info-table changes limine-bios-cd.bin, so it is not compared).
@@ -104,7 +104,7 @@ else
     fail "[0.13] ISO: notices missing or a file of the previous boot loader present ($(grep -ci grub <<< "$ISOLIST") paths)"
 fi
 
-echo "== [1.0] The ISO: Madire's licence files at its root"
+section "[1.0] The ISO: Madire's licence files at its root"
 # 1.0 stage 0a (Apache 2.0, section 4): each file extracted from the ISO root
 # must have the SHA-256 of the repository's copy.
 REPO=$(dirname "$0")/..
@@ -120,7 +120,7 @@ done
 if [ -z "$RBAD" ]; then pass "[1.0] ISO: /LICENSE, /NOTICE and /THIRD_PARTY_NOTICES present and byte-identical to the repository's"
 else fail "[1.0] ISO: missing or different from the repository's:$RBAD"; fi
 
-echo "== [1.0] docs: every .md file valid UTF-8"
+section "[1.0] docs: every .md file valid UTF-8"
 # 1.0 stage 10: two Windows-1252 bytes reached docs/commands.md in stage 8
 # (5cd7daf); every Markdown file under docs/ must decode as UTF-8 (the
 # images are not text and are left out).
@@ -133,7 +133,7 @@ echo "      $UN files"
 if [ "$UN" -gt 0 ] && [ -z "$UBAD" ]; then pass "[1.0] docs: every .md file under docs/ is valid UTF-8"
 else fail "[1.0] docs: not valid UTF-8:${UBAD:- no .md file found}"; fi
 
-echo "== [0.13] limine.conf: every program module names itself"
+section "[0.13] limine.conf: every program module names itself"
 # Limine passes only module_string to the kernel, so every program module of
 # the default entry needs "module_string: <its file name without .elf>".
 MSBAD=$(awk '/^\// { n++ } n == 1 && /^ *module_path: / { if (p != "") print "no string for " p; p = $2; sub(/.*\//, "", p); sub(/\.elf$/, "", p); next }
@@ -144,7 +144,7 @@ else fail "[0.13] limine.conf: ${MSBAD//$'\n'/; }"; fi
 
 # ---- 1.1: the boot menu hidden behind a key, on Madire's wallpaper ----
 
-echo "== [1.1] limine.conf: the global options (docs/plans/1.1.md, section E)"
+section "[1.1] limine.conf: the global options (docs/plans/1.1.md, section E)"
 # S1: the lines before the first entry, without comments and blank lines,
 # must be exactly this list, and no default_entry line may exist (the first
 # entry is the default one).
@@ -173,7 +173,7 @@ else
     fail "[1.1] boot menu: the global options differ from the plan's list, or $GDEF default_entry line(s)"
 fi
 
-echo "== [1.1] The ISO: the boot menu's wallpaper"
+section "[1.1] The ISO: the boot menu's wallpaper"
 # S2a: the ISO's file (extracted with /boot/limine above) must be the bytes
 # that scripts/make-wallpaper.py makes again here with the harness's version
 # (read once from kernel/kernel.h): the proof that the version shown is the
@@ -219,7 +219,7 @@ else
     fail "[1.1] ISO: wallpaper.png: $WPINFO (expected a 1024x768 PNG of at most 262144 bytes, Madire-Version $VERSION)"
 fi
 
-echo "== [1.1] make-wallpaper.py: the M of kernel/logo.c"
+section "[1.1] make-wallpaper.py: the M of kernel/logo.c"
 # S3: the stroke table of kernel/logo.c (x1, y1, x2, y2 per stroke, in its
 # order) must equal the one the wallpaper draws (--print-strokes).
 SLOGO=$(awk '/strokes\[\] = \{/ { on = 1; next } on && /^\};/ { exit }
@@ -235,7 +235,7 @@ fi
 
 # ---- 1.2: the video request, and text mode until the switch stage ----
 
-echo "== [1.2] The Multiboot header's video request (stage 5)"
+section "[1.2] The Multiboot header's video request (stage 5)"
 # The mode fields after the a.out kludge's (header offsets 32-44): a linear
 # framebuffer (mode_type 0) of 1024x768x32 (docs/plans/1.2.md, decision 2).
 MBMODE=$(python3 - "$KERNEL" <<'EOF' 2>&1
@@ -257,7 +257,7 @@ else
     fail "[1.2] the Multiboot header's video request: $MBMODE"
 fi
 
-echo "== [1.2] limine.conf: the default entry in graphics, every other entry in text mode (stage 10b, decision 3)"
+section "[1.2] limine.conf: the default entry in graphics, every other entry in text mode (stage 10b, decision 3)"
 # Since the switch (stage 10b): the first entry (the default one, "/Boot
 # Madire OS") holds no textmode line; every other entry (a line starting
 # "/" with a "protocol:" line: the Diagnostics) holds exactly one
@@ -285,7 +285,7 @@ fi
 
 # ---- 1.2 stage 6: the console font (decision 8) ----
 
-echo "== [1.2] third_party/terminus: the pinned font files (stage 6)"
+section "[1.2] third_party/terminus: the pinned font files (stage 6)"
 # The hashes are written here (as the Limine package's are above), not read
 # from the repository's SHA256SUMS: the BDF files are the release package's
 # (terminus-font-4.49.1.tar.gz, SHA-256 d961c1b7...ef79), OFL.txt its
@@ -308,7 +308,7 @@ done <<< "$TPIN"
 if [ -z "$TBAD" ]; then pass "[1.2] third_party/terminus: the 8 BDF files and OFL.txt have their pinned SHA-256 (Terminus 4.49.1)"
 else fail "[1.2] third_party/terminus: not the pinned file:$TBAD"; fi
 
-echo "== [1.2] scripts/make-font.py: the font C files regenerate byte-identically (stage 6)"
+section "[1.2] scripts/make-font.py: the font C files regenerate byte-identically (stage 6)"
 # The build converted all 8 files (build/font/); converted again here into
 # a fresh folder, each must be byte-identical.
 rm -rf "$OUT/font-regen" && mkdir -p "$OUT/font-regen"
@@ -326,7 +326,7 @@ done
 if [ "$FN" -eq 8 ] && [ -z "$FBAD" ]; then pass "[1.2] scripts/make-font.py regenerates the 8 font C files byte-identically from the pinned BDF files"
 else fail "[1.2] font C files not regenerated byte-identically:${FBAD:- none made}"; fi
 
-echo "== [1.2] The ISO: the font's notices; the font never named in the interface (stage 6)"
+section "[1.2] The ISO: the font's notices; the font never named in the interface (stage 6)"
 rm -rf "$OUT/iso-assets" && mkdir -p "$OUT/iso-assets"
 ABAD=""
 for f in THIRD_PARTY_ASSETS.md third_party/terminus/OFL.txt; do
@@ -350,7 +350,7 @@ fi
 
 # ---- 1.2 stage 8: the wallpaper's integer maths and the splash ----
 
-echo "== [1.2] make-wallpaper.py in integer maths: v1.1's boot-menu wallpaper, pixel for pixel (stage 8)"
+section "[1.2] make-wallpaper.py in integer maths: v1.1's boot-menu wallpaper, pixel for pixel (stage 8)"
 # The script has no floating point since stage 8. Run with --version 1.1,
 # its pixels must be those of the wallpaper.png v1.1's ISO shipped (made by
 # the 1.1 floating-point script; run 39836152722, kernel a21b0cd6): the
@@ -385,7 +385,7 @@ else
     fail "[1.2] make-wallpaper.py --version 1.1: the pixels are not v1.1's ($WP11RGB)"
 fi
 
-echo "== [1.2] The splash's generated data (stage 8)"
+section "[1.2] The splash's generated data (stage 8)"
 # build/gen/splash_data.h: made by the build, made again here; and its copy
 # of the M against kernel/logo.c's stroke table (SLOGO, read for S3 above).
 SDGEN=$OUT/splash_data-regenerated.h
@@ -406,7 +406,7 @@ else
     fail "[1.2] the splash's copy of the M differs from kernel/logo.c's strokes"
 fi
 
-echo "== [1.2] The kernel's splash code against make-wallpaper.py (tests/splashdump.c, stage 8)"
+section "[1.2] The kernel's splash code against make-wallpaper.py (tests/splashdump.c, stage 8)"
 # wallpaper_core.c built as a host tool (build/splashdump, with the console
 # fonts) draws the splash as the kernel does; make-wallpaper.py --splash, the
 # reference, draws it from its own code and the BDF files. Four modes, the
@@ -444,7 +444,7 @@ splash_static 1280 1024 4 ready 125
 
 # ---- 1.2: the size report (decides no check) ----
 
-echo "== Size report (1.2 stage 2; report only)"
+section "Size report (1.2 stage 2; report only)"
 # Stage 2 (docs/plans/1.2.md, decision 13): `size` of the kernel and of every
 # program ELF, and the kernel margin below 4 MiB (computed as the workflow
 # does) against the 524,288-byte trigger for a size-gate stage. Every line

@@ -255,13 +255,39 @@ if [ "${3:-}" = "--shard" ]; then
     *) echo "FATAL: unknown part '$SHARD' (parts: $PARTS; on request: $EXTRA_PARTS)"; exit 1 ;;
     esac
 fi
+# 1.3 stage 1: section timings, report only (they decide no check and add
+# none to the counts). A part opens each section with section <title>, which
+# prints "== <title>" exactly as the parts' echo lines did. When the next
+# section opens, or the part ends, the time since the section opened is
+# printed as "SECTION_SECONDS <part> <n> <s>": the part's n-th "== " line
+# (0: from the part's start to its first section), in seconds with one
+# decimal; at the part's end "SECTION_SECONDS <part> total <s>". The line
+# holds no title, so no grep of the log for a word of a title (FAILED, ...)
+# finds it; tests/section-times.sh pairs the numbers with the titles.
+section_close() {
+    local ms=$(( ($(date +%s%N) - SECTION_T0) / 1000000 ))
+    echo "SECTION_SECONDS $qt_part $SECTION_N $((ms / 1000)).$((ms % 1000 / 100))"
+}
+section() {
+    section_close
+    SECTION_N=$((SECTION_N + 1))
+    echo "== $1"
+    SECTION_T0=$(date +%s%N)
+}
+
 . "$(dirname "$0")/qemu-lib.sh"
 for qt_part in $PARTS $EXTRA_PARTS; do
     # 0.12 stage 2b: a part in EXTRA_PARTS runs only when asked for by name.
     case " $EXTRA_PARTS " in *" $qt_part "*) [ "$SHARD" = "$qt_part" ] || continue ;; esac
     [ "$SHARD" = all ] || [ "$SHARD" = "$qt_part" ] || continue
     echo "SHARD_PART_BEGIN $qt_part"
+    SECTION_N=0
+    SECTION_T0=$(date +%s%N)
+    qt_part_t0=$SECTION_T0
     . "$(dirname "$0")/qemu-part-$qt_part.sh"
+    section_close
+    qt_ms=$(( ($(date +%s%N) - qt_part_t0) / 1000000 ))
+    echo "SECTION_SECONDS $qt_part total $((qt_ms / 1000)).$((qt_ms % 1000 / 100))"
     echo "SHARD_PART_END $qt_part"
 done
 

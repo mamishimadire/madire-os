@@ -11,7 +11,7 @@ fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below
 # ---- 0.9.1: shell commands ----
 
 
-echo "== [0.9.1] Console: help <command>, --help, uname, hostname, date, dmesg, history, reboot"
+section "[0.9.1] Console: help <command>, --help, uname, hostname, date, dmesg, history, reboot"
 LOG=$OUT/serial-cmds091.log
 A45=$(printf 'a%.0s' $(seq 1 45))
 S="x{wait:1}"
@@ -105,7 +105,7 @@ fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[0.9.1] no panic, dropped key or screen-rule violation"
 
-echo "== [0.9.1] reboot, then 'yes': restart through the keyboard controller"
+section "[0.9.1] reboot, then 'yes': restart through the keyboard controller"
 LOG=$OUT/serial-reboot.log
 T0=$(date +%s)
 boot_keys "$LOG" 40 "System ready." "x,r,e,b,o,o,t,ret,y,e,s,ret" 0.15 -m 32M -kernel "$KERNEL"
@@ -121,7 +121,7 @@ if [ $((T1 - T0)) -lt 35 ]; then pass "[0.9.1] reboot: the machine reset (QEMU -
 else fail "[0.9.1] reboot: QEMU still running at the timeout ($((T1 - T0)) s)"; fi
 reject "$LOG" "PANIC"                                 "[0.9.1] reboot: no panic"
 
-echo "== [0.9.1] Restart fallback: triple fault (test=reboottriple, QEMU only)"
+section "[0.9.1] Restart fallback: triple fault (test=reboottriple, QEMU only)"
 LOG=$OUT/serial-reboottriple.log
 T0=$(date +%s)
 boot "$LOG" 20 -m 32M -kernel "$KERNEL" -append "test=reboottriple"
@@ -135,7 +135,7 @@ else fail "[0.9.1] reboottriple: QEMU still running at the timeout ($((T1 - T0))
 count_lines "$LOG" "^boot32: start$" 1                "[0.9.1] reboottriple: booted once"
 reject "$LOG" "KERNEL PANIC|System ready"             "[0.9.1] reboottriple: no crash screen, never reached System ready"
 
-echo "== [0.9.2] Console scrollback: Shift+PgUp / Shift+PgDn, the indicator on the VGA screen"
+section "[0.9.2] Console scrollback: Shift+PgUp / Shift+PgDn, the indicator on the VGA screen"
 LOG=$OUT/serial-scroll.log
 SOCK=$OUT/qmp.sock
 rm -f "$LOG" "$SOCK" "$OUT"/screen-*.bin
@@ -248,7 +248,7 @@ reject "$LOG" "PANIC|events dropped|Screen output from thread|^key: " \
 # The descriptor checks decode the logged values here, independently of the
 # kernel's own decoding (bit 47 present, 45-46 DPL, 44 S, 43 code, 41 R/W,
 # 53 L, 54 D).
-echo "== [0.10] GDT, IDT and TSS for user mode (normal boot)"
+section "[0.10] GDT, IDT and TSS for user mode (normal boot)"
 LOG=$OUT/serial-boot.log
 GDTL=$(grep -m1 -E '^GDT: [0-9]+ entries' "$LOG")
 echo "      ${GDTL:-no GDT line}"
@@ -289,7 +289,7 @@ else
     fail "[0.10] TSS RSP0 ${R0:-missing}, boot stack top ${STOP:-missing}"
 fi
 
-echo "== [0.10] SMEP, SMAP, CR0.EM and the freeze (default QEMU CPU: no SMEP/SMAP)"
+section "[0.10] SMEP, SMAP, CR0.EM and the freeze (default QEMU CPU: no SMEP/SMAP)"
 expect "$LOG" "^SMEP: NOT APPLICABLE \(not supported by this CPU\)$" "[0.10] default CPU: SMEP not applicable"
 expect "$LOG" "^SMAP: NOT APPLICABLE \(not supported by this CPU\)$" "[0.10] default CPU: SMAP not applicable"
 expect "$LOG" "^CR0.EM: set: x87, MMX and SSE instructions fault \(the kernel uses none\)$" "[0.10] CR0.EM reported set"
@@ -314,7 +314,7 @@ expect "$LOG" "^clac test: SMAP off; [0-9]+ interrupts taken with AC=1 in the in
 expect "$LOG" "^clac test: PASS$"                     "[0.10] default CPU: clac test PASS"
 reject "$LOG" "PANIC|Invalid Opcode"                  "[0.10] default CPU: clac test without a panic or #UD"
 
-echo "== [0.10] SMEP and SMAP on (-cpu qemu64,+smep,+smap)"
+section "[0.10] SMEP and SMAP on (-cpu qemu64,+smep,+smap)"
 LOG=$OUT/serial-smap.log
 boot "$LOG" 15 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL"
 expect "$LOG" "^SMEP: enabled \(CR4.SMEP=1\): the kernel cannot execute user pages$" "[0.10] SMEP CPU: SMEP enabled"
@@ -340,7 +340,7 @@ else
 fi
 expect "$LOG" "^clac test: PASS$"                     "[0.10] SMAP CPU: clac test PASS"
 
-echo "== [0.10] SMEP and SMAP enforced: the kernel touches a user page (test=smep, test=smap)"
+section "[0.10] SMEP and SMAP enforced: the kernel touches a user page (test=smep, test=smap)"
 UVA=0x0000000000400000
 LOG=$OUT/serial-smep.log
 boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smep"
@@ -397,7 +397,7 @@ for t in smep smap; do
     reject "$LOG" "PANIC|$T test: user page"          "[0.10] $t on the default CPU: no access tried, no panic"
 done
 
-echo "== [0.10] RSP0 follows every thread switch (test=rsp0)"
+section "[0.10] RSP0 follows every thread switch (test=rsp0)"
 thread_diag rsp0 15
 RL=$(grep -m1 -E '^RSP0 test: [0-9]+ checks' "$LOG")
 echo "      ${RL:-no RSP0 line}"
@@ -406,7 +406,7 @@ expect "$LOG" "^RSP0 test: [1-9][0-9]* checks in 4 threads after [0-9]+ switches
 expect "$LOG" "^RSP0 test: PASS$"                     "[0.10] rsp0: PASS (preempted and yielding threads)"
 reject "$LOG" "PANIC"                                 "[0.10] rsp0: no panic"
 
-echo "== [0.10] GDT selector past the end (test=gpflimit)"
+section "[0.10] GDT selector past the end (test=gpflimit)"
 LOG=$OUT/serial-gpflimit.log
 boot "$LOG" 8 -kernel "$KERNEL" -append "test=gpflimit"
 expect "$LOG" "KERNEL PANIC"                          "[0.10] gpflimit: crash screen shown"
@@ -421,7 +421,7 @@ else
     fail "[0.10] gpflimit: crash screen line of $w characters (limit 79), or no crash screen"
 fi
 
-echo "== [0.10] The freeze: a new kernel-half PML4 entry panics (test=freezeviolation)"
+section "[0.10] The freeze: a new kernel-half PML4 entry panics (test=freezeviolation)"
 LOG=$OUT/serial-freezeviolation.log
 boot "$LOG" 8 -kernel "$KERNEL" -append "test=freezeviolation"
 expect "$LOG" "KERNEL PANIC"                          "[0.10] freezeviolation: crash screen shown"
@@ -429,7 +429,7 @@ expect "$LOG" "Kernel-half PML4 entry created after the freeze: 0xffff8080000000
                                                       "[0.10] freezeviolation: reported with the address and slot"
 reject "$LOG" "Freeze test: FAIL|System ready"        "[0.10] freezeviolation: the entry was not created, halted"
 
-echo "== [0.10] Address spaces: build, switch, check, tear down (test=uaspace)"
+section "[0.10] Address spaces: build, switch, check, tear down (test=uaspace)"
 thread_diag uaspace 30
 grep -E "^Address-space test: " "$LOG" | grep -vE ': (PASS|FAIL)|built, entered and torn down\.\.\.' | sed 's/^/      /'
 expect "$LOG" "^Address-space test: heap grew by [1-9][0-9]* KiB and [1-9][0-9]* page table\(s\) under a process CR3; the block read back under the kernel CR3 with 0 wrong bytes; kernel PML4 entries changed: 0: OK$" \
@@ -461,7 +461,7 @@ boot "$LOG" 30 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=ua
 expect "$LOG" "^Address-space test: PASS$"            "[0.10] uaspace with SMEP and SMAP on: PASS (the kernel never touches a user page directly)"
 reject "$LOG" "PANIC"                                 "[0.10] uaspace with SMEP and SMAP on: no panic"
 
-echo "== [0.10] The first program in ring 3: spin, preempted by the timer (test=userspin)"
+section "[0.10] The first program in ring 3: spin, preempted by the timer (test=userspin)"
 thread_diag userspin 30
 grep -E "^User-mode test: " "$LOG" | grep -vE ': (PASS|FAIL)$' | sed 's/^/      /'
 expect "$LOG" "^User-mode test: [1-9][0-9]* built-in images checked: ok; 'spin': [1-9][0-9]* bytes of code at 0x0000000000400000, entry 0x00000000004[0-9a-f]{5}, [0-9]+ bytes of data and bss: OK$" \
@@ -499,7 +499,7 @@ expect "$LOG" "^SMEP: enabled"                        "[0.10] userspin with SMEP
 expect "$LOG" "^User-mode test: PASS$"                "[0.10] userspin with SMEP and SMAP on: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userspin with SMEP and SMAP on: no panic"
 
-echo "== [0.10] The first process teardown: kill at the next return to ring 3 (test=userkill)"
+section "[0.10] The first process teardown: kill at the next return to ring 3 (test=userkill)"
 thread_diag userkill 60
 grep -E "^User kill test: " "$LOG" | grep -vE ': (PASS|FAIL)$|started and killed\.\.\.$' | sed 's/^/      /'
 expect "$LOG" "^User kill test: 20 rounds of two spin processes: 60 started \(PIDs 4-63, one more each time, none reused\), 40 had returned to ring 3 before the kill; ended at a return to ring 3: 40 results 'killed' \(code 0\), 0 wrong: OK$" \
@@ -529,7 +529,7 @@ boot "$LOG" 60 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=us
 expect "$LOG" "^User kill test: PASS$"                "[0.10] userkill with SMEP and SMAP on: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userkill with SMEP and SMAP on: no panic"
 
-echo "== [0.10] Fault containment, part 1: programs that make a mistake end alone (test=userfault)"
+section "[0.10] Fault containment, part 1: programs that make a mistake end alone (test=userfault)"
 # Booted with the console session afterwards: version, then an end marker.
 LOG=$OUT/serial-userfault.log
 boot_text "$LOG" 60 "System ready." "x{ret}version{ret}echo end-of-fault-test{ret}" 0.05 \
@@ -575,7 +575,7 @@ expect "$LOG" "^User fault test: PASS$"               "[0.10] userfault with SME
 reject "$LOG" "PANIC"                                 "[0.10] userfault with SMEP and SMAP on: no crash screen, no panic"
 expect "$LOG" "System ready\."                        "[0.10] userfault with SMEP and SMAP on: System ready afterwards"
 
-echo "== [0.10] Fault containment, part 2: programs that try what ring 3 may not (test=userpriv)"
+section "[0.10] Fault containment, part 2: programs that try what ring 3 may not (test=userpriv)"
 LOG=$OUT/serial-userpriv.log
 boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-priv-test{ret}" 0.05 \
     $'\nend-of-priv-test\n' -m 32M -kernel "$KERNEL" -append "test=userpriv"
@@ -626,7 +626,7 @@ expect "$LOG" "^User privilege test: PASS$"           "[0.10] userpriv with SMEP
 reject "$LOG" "PANIC"                                 "[0.10] userpriv with SMEP and SMAP on: no crash screen, no panic"
 expect "$LOG" "System ready\."                        "[0.10] userpriv with SMEP and SMAP on: System ready afterwards"
 
-echo "== [0.10] Fault containment, part 3: sti, int 0x0e and kernel memory (test=userkmem)"
+section "[0.10] Fault containment, part 3: sti, int 0x0e and kernel memory (test=userkmem)"
 LOG=$OUT/serial-userkmem.log
 boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-kmem-test{ret}" 0.05 \
     $'\nend-of-kmem-test\n' -m 32M -kernel "$KERNEL" -append "test=userkmem"
@@ -677,7 +677,7 @@ expect "$LOG" "System ready\."                        "[0.10] userkmem with SMEP
 
 # ---- 0.12 (stage 1): help sections, Did you mean, prompt, alias ----
 
-echo "== [0.12] Console: help sections, Did you mean, prompt, alias and unalias"
+section "[0.12] Console: help sections, Did you mean, prompt, alias and unalias"
 # The harness never waits for the prompt: it waits for "System ready.",
 # types the keys at a fixed pace and waits for the final echo's output; the
 # checks find each typed line by the prompt the console logs in front of it.
@@ -963,7 +963,7 @@ fs_closing() {
     fi
 }
 
-echo "== [1.0] test=fslimits: every B5 limit hit once (-m 128M)"
+section "[1.0] test=fslimits: every B5 limit hit once (-m 128M)"
 LOG=$OUT/serial-fslimits.log
 boot_until "$LOG" 240 "$READY_LINE" -m 128M -kernel "$KERNEL" -append "test=fslimits"
 grep -E "^Filesystem limits test: " "$LOG" | sed 's/^/      /'
@@ -990,7 +990,7 @@ fi
 # fsfill_test <-m size>: files filled to the budget at that RAM size.
 fsfill_test() {
     local mem=$1 log=$OUT/serial-fsfill-$1.log l b f bwant
-    echo "== [1.0] test=fsfill at -m $mem"
+    section "[1.0] test=fsfill at -m $mem"
     boot_until "$log" 240 "$READY_LINE" -m "$mem" -kernel "$KERNEL" -append "test=fsfill"
     grep -E "^Filesystem (fill test|: budget): " "$log" | sed 's/^/      /'
     l=$(grep -m1 -E '^Filesystem fill test: budget ' "$log")
@@ -1025,7 +1025,7 @@ fsfill_test 64M
 
 # ---- 1.0 stage 3: the VFS lock (D10, plan B2 and C2) ----
 
-echo "== [1.0] test=klock: 6 threads and thread 0 contend for the VFS lock for 3000 ticks (-m 64M, keys typed meanwhile)"
+section "[1.0] test=klock: 6 threads and thread 0 contend for the VFS lock for 3000 ticks (-m 64M, keys typed meanwhile)"
 # Deviations (approved): C2's 4 processes are kernel threads (no filesystem
 # system call before stage 4); the longest turn is at most 6 ticks (B2,
 # policy (b)), not C2's 5; the stage 3 fix (a FIFO ticket lock) bounds
@@ -1075,12 +1075,12 @@ fi
 # is added to B7's diagnostics; check 24's read is 48 KiB, not 2 MiB (a
 # built-in program holds at most 64 KiB of data).
 
-echo "== [1.0] Descriptors at boot"
+section "[1.0] Descriptors at boot"
 expect_next "$OUT/serial-boot.log" \
     "[1.0] boot: descriptor limits logged (16 per process, 256 open files); 0 open files at System ready" \
     "^Descriptors: 16 per process, 256 open files system-wide; 0 open files now$" "^System ready\. "
 
-echo "== [1.0] test=fdsys: read, write, close, dup, dup2 from fdops (-m 32M; files given at start)"
+section "[1.0] test=fdsys: read, write, close, dup, dup2 from fdops (-m 32M; files given at start)"
 LOG=$OUT/serial-fdsys.log
 boot_text "$LOG" 120 "System ready." "x{ret}version{ret}echo end-of-fd-test{ret}" 0.05 \
     $'\nend-of-fd-test\n' -m 32M -kernel "$KERNEL" -append "test=fdsys"
@@ -1132,7 +1132,7 @@ LOG=$OUT/serial-fdsys-smap.log
 boot "$LOG" 90 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=fdsys"
 expect "$LOG" "^Descriptor test: PASS$"              "[1.0] fdsys with SMEP and SMAP on: PASS (copy_to_user's stac/clac)"
 
-echo "== [1.0] test=fdkill: programs ending with descriptors open (-m 32M)"
+section "[1.0] test=fdkill: programs ending with descriptors open (-m 32M)"
 LOG=$OUT/serial-fdkill.log
 boot_until "$LOG" 180 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=fdkill"
 grep -E "^Descriptor kill test: " "$LOG" | sed 's/^/      /'
@@ -1171,11 +1171,11 @@ reject "$LOG" "PANIC"                                 "[1.0] fdkill: no crash sc
 # hand-off gap (a design error found before coding: the klock wait
 # formula assumed every runnable thread uses the lock).
 
-echo "== [1.0] The filesystem's clock at boot"
+section "[1.0] The filesystem's clock at boot"
 expect "$OUT/serial-boot.log" "^Filesystem: clock: the RTC read [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} at boot \(epoch [0-9]+, uptime [0-9]+ s\); file times are that plus uptime, no time zone$" \
     "[1.0] boot: the filesystem's clock logged: the RTC date and time at boot (file times are that plus uptime, no time zone)"
 
-echo "== [1.0] test=fileio: open, stat, lseek, ftruncate, openat, newfstatat from fileio and fileerr (-m 32M)"
+section "[1.0] test=fileio: open, stat, lseek, ftruncate, openat, newfstatat from fileio and fileerr (-m 32M)"
 LOG=$OUT/serial-fileio.log
 boot_until "$LOG" 240 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=fileio"
 grep -E "^File test: " "$LOG" | sed 's/^/      /'
@@ -1228,7 +1228,7 @@ expect "$LOG" "^File test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) ->
 expect "$LOG" "^File test: PASS$"                    "[1.0] fileio: PASS"
 reject "$LOG" "PANIC"                                 "[1.0] fileio: no crash screen, no panic"
 
-echo "== [1.0] test=bigio: large reads and writes through the chunk loop (-m 32M)"
+section "[1.0] test=bigio: large reads and writes through the chunk loop (-m 32M)"
 LOG=$OUT/serial-bigio.log
 boot_until "$LOG" 300 "$READY_LINE" -m 32M -kernel "$KERNEL" -append "test=bigio"
 grep -E "^Big I/O test: " "$LOG" | sed 's/^/      /'
@@ -1260,7 +1260,7 @@ expect "$LOG" "^Big I/O test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+)
 expect "$LOG" "^Big I/O test: PASS$"                 "[1.0] bigio: PASS"
 reject "$LOG" "PANIC"                                 "[1.0] bigio: no crash screen, no panic"
 
-echo "== [1.0] test=filecontend: the busy mark with 4 sharers; the VFS lock under ring-3 load (-m 64M)"
+section "[1.0] test=filecontend: the busy mark with 4 sharers; the VFS lock under ring-3 load (-m 64M)"
 # The regexes and fc_bounds_ok are repeated in tests/qemu-part-stress.sh
 # (filecontend x 10): change both together.
 LOG=$OUT/serial-filecontend.log

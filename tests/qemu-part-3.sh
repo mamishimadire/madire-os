@@ -11,7 +11,7 @@ fixture_log "$OUT/serial-preemptoff.log" 10 -m 32M -kernel "$KERNEL" -append "te
 fixture_log "$OUT/serial-heapthreads.log" 12 -m 32M -kernel "$KERNEL" -append "test=heapthreads"
 fixture_log "$OUT/serial-framethreads.log" 12 -m 32M -kernel "$KERNEL" -append "test=framethreads"
 
-echo "== [0.10] The first system calls: exit, exit_group, getpid, sched_yield, -ENOSYS (test=usersys)"
+section "[0.10] The first system calls: exit, exit_group, getpid, sched_yield, -ENOSYS (test=usersys)"
 # The MSRs, read back at every boot (here the normal boot of the first group).
 SC=$(grep -m1 -E '^SYSCALL: ' "$OUT/serial-boot.log")
 echo "      $SC"
@@ -68,7 +68,7 @@ expect "$LOG" "^User syscall test: PASS$"             "[0.10] usersys with SMEP 
 reject "$LOG" "PANIC"                                 "[0.10] usersys with SMEP and SMAP on: no crash screen, no panic"
 expect "$LOG" "System ready\."                        "[0.10] usersys with SMEP and SMAP on: System ready afterwards"
 
-echo "== [0.10] System calls with pointer arguments: write, nanosleep, bad pointers (test=userio)"
+section "[0.10] System calls with pointer arguments: write, nanosleep, bad pointers (test=userio)"
 LOG=$OUT/serial-userio.log
 boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-io-test{ret}" 0.05 \
     $'\nend-of-io-test\n' -m 32M -kernel "$KERNEL" -append "test=userio"
@@ -137,7 +137,7 @@ expect "$LOG" "^User I/O test: PASS$"                 "[0.10] userio with SMEP a
 reject "$LOG" "PANIC"                                 "[0.10] userio with SMEP and SMAP on: no crash screen, no panic"
 expect "$LOG" "System ready\."                        "[0.10] userio with SMEP and SMAP on: System ready afterwards"
 
-echo "== [0.10] User processes under preemption: per-process longest turn (test=userpreempt)"
+section "[0.10] User processes under preemption: per-process longest turn (test=userpreempt)"
 thread_diag userpreempt 40
 grep -E "^User preemption test: " "$LOG" | grep -vE ': (PASS|FAIL)$|for 3 seconds\.\.\.$' | sed 's/^/      /'
 n=$(grep -cE "^User preemption test: spin [0-3] \(.*\): process [0-9]+, thread [0-9]+: longest turn [0-6] ticks \(at most 6\), [0-9]+ ticks run, preempted [0-9]+ times, back in ring 3 [1-9][0-9]* times: OK$" "$LOG")
@@ -156,7 +156,7 @@ expect "$LOG" "^User preemption test: PASS$"          "[0.10] userpreempt: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userpreempt: no panic"
 expect "$LOG" "System ready\."                        "[0.10] userpreempt: System ready afterwards"
 
-echo "== [0.10] Process churn: 1000 processes (test=userchurn)"
+section "[0.10] Process churn: 1000 processes (test=userchurn)"
 thread_diag userchurn 180
 grep -E "^User churn test: " "$LOG" | grep -vE ': (PASS|FAIL)$|started and ended\.\.\.$' | sed 's/^/      /'
 expect "$LOG" "^User churn test: 500 hello processes one after another: 500 exited with status 0: OK$" \
@@ -178,7 +178,7 @@ expect "$LOG" "^User churn test: PASS$"               "[0.10] userchurn: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userchurn: no panic"
 expect "$LOG" "System ready\."                        "[0.10] userchurn: System ready afterwards"
 
-echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
+section "[0.11] ELF checks on the host: the built programs and the malformed fixtures"
 # The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
 # 28 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
 # added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio,
@@ -218,7 +218,7 @@ while IFS=$'\t' read -r name want; do
     else fail "[0.11] elfcheck fixture $name: got '${got}', expected '${want}'"; fi
 done < "$FIX/manifest.txt"
 
-echo "== [0.11] Program modules found at boot (QEMU -initrd; nothing loaded yet)"
+section "[0.11] Program modules found at boot (QEMU -initrd; nothing loaded yet)"
 # Every boot module that is not a test module is a program candidate: named
 # from its command line, checked by elf_core, kept (at most 8) or refused,
 # one line each on serial and in dmesg, never on the screen.
@@ -357,7 +357,7 @@ else
     fail "[0.11] most modules: 14 modules did not stop at the reservation limit"
 fi
 
-echo "== [0.11] The default boot entry loads 7 programs (the real ISO)"
+section "[0.11] The default boot entry loads 7 programs (the real ISO)"
 # The default entry's program modules (0.13: limine.conf's "module_path:
 # boot():/boot/prog/<name>.elf" lines, each with "module_string: <name>");
 # make iso copies exactly those files. The normal-boot logs (the real ISO
@@ -438,7 +438,7 @@ else
 fi
 kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
 
-echo "== [0.11] ELF programs loaded into processes (test=elfrun)"
+section "[0.11] ELF programs loaded into processes (test=elfrun)"
 # One loading path: built-in images and ELF modules both become load plans.
 # Each module program with a built-in twin must give the twin's result; two
 # isolate instances run at once; no user page is a module page; the modules
@@ -515,7 +515,7 @@ for batch in 0 1 2; do
     reject "$LOG" "PANIC"                    "[0.11] elfrun fixtures, boot $((batch + 1)) of 3: no panic"
 done
 
-echo "== [0.11] Policy (b): preempt_enable switches at once, turns stay within 6 ticks"
+section "[0.11] Policy (b): preempt_enable switches at once, turns stay within 6 ticks"
 # turn_bound <label> <log> <line prefix>: the "longest turn taken by" line
 # names the thread, and its turn is at most 6 ticks (a slice of 5 plus the
 # rest of one guarded section). Policy (b) rule: a turn over 6 ticks is a
@@ -574,7 +574,7 @@ else
     fail "[0.11] preemptoff holder: the longest turn is not the holder's 20-tick hold (${ow:-none})"
 fi
 
-echo "== [0.11] Threads that live in guarded sections (test=preemptlong)"
+section "[0.11] Threads that live in guarded sections (test=preemptlong)"
 thread_diag preemptlong 15
 grep -E "^Preemptlong test: " "$LOG" | grep -vE ': (PASS|FAIL)$|for 3 seconds\.\.\.$' | sed 's/^/      /'
 expect "$LOG" "^Preemptlong test: create: 4 threads that keep preemption disabled until each next tick: OK$" \
@@ -590,7 +590,7 @@ expect "$LOG" "^Preemptlong test: PASS \("   "[0.11] preemptlong: PASS"
 reject "$LOG" "PANIC|MISMATCH"               "[0.11] preemptlong: no panic, no mismatch"
 expect "$LOG" "System ready\."               "[0.11] preemptlong: System ready afterwards"
 
-echo "== [0.11] Console: run, run -b and ps (a console session through QMP)"
+section "[0.11] Console: run, run -b and ps (a console session through QMP)"
 # Four program modules; the console waits for a foreground program (keys
 # are ignored meanwhile, hence the pauses) and collects it, then prompts.
 LOG=$OUT/serial-run.log
@@ -646,7 +646,7 @@ else fail "[0.11] run session: a line of $w characters (limit 79), or the sessio
 reject "$LOG" "^key: "                             "[0.11] run session: no key events logged (keylog off)"
 reject "$LOG" "PANIC|Screen output from thread"    "[0.11] run session: no panic, no screen-rule violation"
 
-echo "== [0.11] Console: kill (asks first) and Ctrl+C (a console session through QMP)"
+section "[0.11] Console: kill (asks first) and Ctrl+C (a console session through QMP)"
 # The boot self-test uses process IDs 1-3, so the first program is 4.
 LOG=$OUT/serial-kill.log
 PM=""
@@ -709,7 +709,7 @@ else fail "[0.11] kill session: a line of $w characters (limit 79), or the sessi
 reject "$LOG" "^key: "                             "[0.11] kill session: no key events logged (keylog off; Ctrl+C never logged as a key)"
 reject "$LOG" "PANIC|Screen output from thread"    "[0.11] kill session: no panic, no screen-rule violation"
 
-echo "== [0.11] Foreground program output on screen, scrollback and Q8 back-pressure"
+section "[0.11] Foreground program output on screen, scrollback and Q8 back-pressure"
 LOG=$OUT/serial-program-output.log
 SOCK=$OUT/qmp-program-output.sock
 PM="$OUT/user/hello.elf,$OUT/user/lines.elf,$OUT/test-user/flood.elf"

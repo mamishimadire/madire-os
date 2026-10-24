@@ -12,6 +12,8 @@
 #     static checks (symbols, libgcc/libc, SSE/x87, the kernel margin:
 #     1.0 stage 1, below 4 MiB, computed here from KERNEL_END_VIRTUAL);
 #   - sums the counts and compares them with tests/expected-checks.txt;
+#   - reports every job's make-step seconds and every section's seconds
+#     (tests/section-times.sh; report only, 1.3 stage 1);
 #   - replays every pattern-helper call under mawk and gawk
 #     (tests/helper-replay.sh; evidence only, decides no check);
 #   - writes <dir>/regression.log (every job's log, then the summary).
@@ -136,6 +138,14 @@ main() {
         echo "no size report in shard-static's log"
     if [ -n "$km" ] && [ "$km" -ge 524288 ]; then echo "KERNEL_MARGIN_TRIGGER (combined) $km, trigger 524288: at or above the trigger: no gate stage"
     else echo "KERNEL_MARGIN_TRIGGER (combined) ${km:-missing}, trigger 524288: BELOW the trigger or missing: STOP for a gate stage"; fi
+
+    # 1.3 stage 1: every section's seconds, per part (tests/section-times.sh).
+    # Report only: decides nothing.
+    echo "== Section timings (report only)"
+    for s in $shards; do
+        echo "job shard-$s: make step $(cat "$dir/shard-$s/duration.txt" 2>/dev/null || echo "seconds: missing")"
+    done
+    bash "$here/section-times.sh" $(for s in $shards; do echo "$dir/shard-$s/regression.log"; done) "$dir/combined/final.log"
 
     echo "== Counts"
     counts=$( { cat "$dir"/shard-*/regression.log; cat "$dir/combined/final.log"; } | grep '^SHARD_COUNTS ')

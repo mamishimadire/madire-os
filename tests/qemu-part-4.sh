@@ -13,7 +13,7 @@
 # and du (one console session). 1.1 stage 2 adds the hidden boot menu's
 # [1.1] checks at the end (tests/qmp_menu.py).
 
-echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
+section "[0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
 # "//<title>" sub-entries, each with "cmdline: test=<option>".
 CFG="$OUT/limine.conf"
@@ -140,7 +140,7 @@ else
     fail "[1.2] boot menu Diagnostics: not in text mode: ${DT_BAD:-?} ($DT_N boots)"
 fi
 
-echo "== [0.12] Self-check (stage 2b): each forbidden state panics, naming it"
+section "[0.12] Self-check (stage 2b): each forbidden state panics, naming it"
 # The always-on self-check: a destroyed address space loaded (thread_set_cr3)
 # or switched to (switch_threads), a thread taken off the run queue while not
 # ready, and a return to ring 3 by a thread whose process has ended or without
@@ -150,7 +150,7 @@ echo "== [0.12] Self-check (stage 2b): each forbidden state panics, naming it"
 selfcheck_panic() {   # selfcheck_panic <test> <description> <line regex>...
     local name=$1 desc=$2
     shift 2
-    echo "== [0.12] self-check: $desc (test=$name)"
+    section "[0.12] self-check: $desc (test=$name)"
     LOG=$OUT/serial-$name.log
     # Ends at the crash screen's last line; at the limit (10 s) if it never comes.
     boot_until "$LOG" 10 " System halted. Power off the machine." -m 32M -kernel "$KERNEL" \
@@ -176,7 +176,7 @@ selfcheck_panic selfcheckring3cr3 "ring 3 without a live address space" \
     "process_return_to_user: thread [0-9]+ returns to ring 3 at$" \
     "^ RIP 0x00000000004[0-9a-f]{5} without a live address space$" "^ \(CR3 0x[0-9a-f]{16}\)\.$"
 
-echo "== [1.0] self-check (stage 4): a user copy while holding the VFS lock (test=selfcheckcopylock)"
+section "[1.0] self-check (stage 4): a user copy while holding the VFS lock (test=selfcheckcopylock)"
 # kernel/memory/usercopy.h: user memory is never touched under the VFS lock.
 # Thread 0 takes the lock and calls copy_to_user; "(WRONG)" means it returned.
 LOG=$OUT/serial-selfcheckcopylock.log
@@ -191,7 +191,7 @@ else
     fail "[1.0] self-check: no halt, a reset, a returned copy or System ready in $LOG"
 fi
 
-echo "== [1.0] self-check (stage 7b): a yield while holding the VFS lock (test=selfcheckyieldlock)"
+section "[1.0] self-check (stage 7b): a yield while holding the VFS lock (test=selfcheckyieldlock)"
 # kernel/proc/klock.h: a holder runs with preemption off and never yields,
 # sleeps, joins or exits. Thread 0 takes the lock and calls thread_yield;
 # "(WRONG)" means it returned.
@@ -207,7 +207,7 @@ else
     fail "[1.0] self-check: no halt, a reset, a returned yield or System ready in $LOG"
 fi
 
-echo "== [0.12] Bounded diagnostic waits: the timer stopped on purpose (test=waitstall)"
+section "[0.12] Bounded diagnostic waits: the timer stopped on purpose (test=waitstall)"
 # 0.12 stage 3: with interrupts off on thread 0 the tick count cannot move;
 # a bounded wait and thread 0's bounded sleep must each end as a stall
 # after 100 x the boot calibration polls, logging one line that names the
@@ -230,7 +230,7 @@ else
 fi
 reject "$LOG" "KERNEL PANIC|\(WRONG\)"                "[0.12] waitstall: no panic (the test ended normally)"
 
-echo "== [0.13] A program module without module_string (Limine passes an empty string)"
+section "[0.13] A program module without module_string (Limine passes an empty string)"
 # The default entry of limine.conf, with one more module after the 7: hello.elf
 # again, without "module_string:". Limine then passes "" as its string; the
 # kernel must refuse it by name (progmod_name: an empty string is "bad name";
@@ -258,7 +258,7 @@ fi
 
 # ---- 1.0 stage 1 (D1): a kernel past 2 MiB boots; the ISO holds the real kernel ----
 
-echo "== [1.0] The padded test kernel (make padkernel: KERNEL_PAD=2M in build/pad), under QEMU -kernel"
+section "[1.0] The padded test kernel (make padkernel: KERNEL_PAD=2M in build/pad), under QEMU -kernel"
 # The same boot twice (-m 64M -kernel, no module), with the kernel under test
 # and with the padded one. tests/pagetables.py recomputes each boot's page
 # tables from its log (the kernel's end, the reserve: lines, the window and
@@ -327,7 +327,7 @@ fi
 # rename-over, a last close and a teardown (S6-6); test=dirops added to
 # B7 (S6-8); getdents64's count read as 32 bits (recorded with F17).
 
-echo "== [1.0] test=dirops: getcwd, chdir, mkdir, mkdirat, rmdir, unlink, unlinkat, rename, getdents64 (-m 32M)"
+section "[1.0] test=dirops: getcwd, chdir, mkdir, mkdirat, rmdir, unlink, unlinkat, rename, getdents64 (-m 32M)"
 LOG=$OUT/serial-dirops.log
 DREADY="System ready. Press any key to open the console."
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -append "test=dirops"
@@ -382,7 +382,7 @@ expect "$LOG" "^Dir test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> 
 expect "$LOG" "^Dir test: PASS$"                     "[1.0] dirops: PASS"
 reject "$LOG" "PANIC"                                 "[1.0] dirops: no crash screen, no panic"
 
-echo "== [1.0] test=fsunlink: open files and folders unlinked, renamed over, removed (-m 32M)"
+section "[1.0] test=fsunlink: open files and folders unlinked, renamed over, removed (-m 32M)"
 LOG=$OUT/serial-fsunlink.log
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -append "test=fsunlink"
 grep -E "^Unlink test: |^\[pid [0-9]+\] dirops: polls" "$LOG" | sed 's/^/      /'
@@ -416,7 +416,7 @@ reject "$LOG" "PANIC"                                 "[1.0] fsunlink: no crash 
 # (S7-6, recorded with F17). args is a built-in image and, here, a module
 # (QEMU -initrd); it is not in limine.conf.
 
-echo "== [1.0] Built-in images: entry points from the ELF header (report only, no check)"
+section "[1.0] Built-in images: entry points from the ELF header (report only, no check)"
 # scripts/user-images.sh takes each image's entry from e_entry since stage
 # 7 (it took nm's _start before): the two agree for every program but args.
 same=0 total=0
@@ -452,7 +452,7 @@ st_join() {
         END { for (p in held) print held[p] }' "$1" > "$2"
 }
 
-echo "== [1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
+section "[1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
 LOG=$OUT/serial-startup.log
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -initrd "$OUT/user/args.elf" -append "test=startup"
 st_join "$LOG" "$OUT/startup-joined.txt"
@@ -538,7 +538,7 @@ else
     fail "[1.0] startup: no PASS line, or a panic"
 fi
 
-echo "== [1.0] run with arguments and exported variables (a console session through QMP)"
+section "[1.0] run with arguments and exported variables (a console session through QMP)"
 LOG=$OUT/serial-startup-run.log
 S="x{ret}run args a b{ret}{wait:1}set X=1{ret}set Y=2{ret}export X{ret}run args{ret}{wait:1}"
 S+="echo end-of-startup-test{ret}"
@@ -554,7 +554,7 @@ expect_in_order "$LOG" "[1.0] run args with X exported (set, export): envp holds
 
 # ---- 1.0 stage 8: the console's file commands and the Live label ----
 
-echo "== [1.0] Console: the file commands (pwd, cd, ls, mkdir, rmdir, touch, stat, cat) and the Live label"
+section "[1.0] Console: the file commands (pwd, cd, ls, mkdir, rmdir, touch, stat, cat) and the Live label"
 # One console session through QMP at the pace proven in stage 0d (a 50 ms
 # gap and a 20 ms hold). The test program fsmake (user/prog/fsmake.c) is a
 # module given with -initrd (not in limine.conf): it makes files with known
@@ -814,7 +814,7 @@ reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
 
 # ---- 1.0 stage 9: redirection, rm, cp, mv, df and du ----
 
-echo "== [1.0] Console: output redirection (> and >>), rm, cp, mv, df and du"
+section "[1.0] Console: output redirection (> and >>), rm, cp, mv, df and du"
 # One console session through QMP, as stage 8's (a 50 ms gap and a 20 ms
 # hold), at -m 32M so that the file budget (about 5,400 pages) can be
 # filled for the copy that runs out of it. fsmake (-initrd, as in stage 8)
@@ -1096,7 +1096,7 @@ ck $? "[1.0] stage 9 file session: every console line at most 79 characters"
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[1.0] stage 9 file session: no panic, dropped key, screen-rule violation or self-check"
 
-echo "== [1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"
+section "[1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"
 # 1.1 stage 2 (docs/plans/1.1.md, D1 Q1-Q6): the real ISO's boot menu
 # (limine.conf: quiet, timeout 2, term_margin 240), driven by
 # tests/qmp_menu.py, never together with qmp_keys.py. QEMU starts paused,
