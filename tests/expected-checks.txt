@@ -111,4 +111,11 @@
 # and [0.12] lines of names, [0.12] help system, the 39 -> 40 counts of
 # [0.12] help sections and [1.0] help, the [1.0] purpose rows).
 1.2 149
-unit-suites 78
+# 1.3 stage 2: 19 checks in part static: tokens.h against the Design
+# Guide's colour tables and the 1.2 colour constants (1); the toolkit's
+# objects compiled with the kernel's flags: undefined symbols, libgcc/libc
+# helpers, SSE/x87 (3); tests/desktopdump.c against tests/desktop_ref.py,
+# three scenes in five modes (15); 5 unit suites (coverage, ui_rect,
+# ui_draw, ui_icon, ui_widget).
+1.3 19
+unit-suites 83

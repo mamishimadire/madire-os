@@ -39,8 +39,12 @@ ISO    := $(BUILD)/madire-os.iso
 # first only for readability; the linker script places the Multiboot header.
 # The lists are sorted (0.8): the link order, and so the binary, must not
 # depend on the order in which the file system happens to list the files.
+# 1.3 stage 2: except the desktop toolkit (TOOLKIT_SRCS), pure code that is
+# not linked into the kernel yet; it is compiled with the kernel's flags
+# (make toolkit) and checked, and built into the host tools.
+TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c kernel/display/coverage_core.c
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
-C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
+C_SRCS   := $(filter-out $(TOOLKIT_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # 1.2 stage 6: the console fonts, converted at build time from the pinned
@@ -77,6 +81,14 @@ $(GEN)/splash_data.h: scripts/make-wallpaper.py
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/make-wallpaper.py --emit-c $@
 $(BUILD)/kernel/display/wallpaper_core.o: $(GEN)/splash_data.h
 $(BUILD)/kernel/display/wallpaper_core.o: CFLAGS += -I$(GEN)
+$(BUILD)/kernel/display/ui_icon.o: $(GEN)/splash_data.h
+$(BUILD)/kernel/display/ui_icon.o: CFLAGS += -I$(GEN)
+
+# 1.3 stage 2: the toolkit's objects, compiled with the kernel's own flags
+# but not linked (OBJS leaves them out), and the bold fonts they use; part
+# static checks their undefined symbols against madire.elf's and the bold
+# fonts', and that they use no libgcc/libc helper and no SSE/x87 register.
+TOOLKIT_OBJS := $(TOOLKIT_SRCS:%.c=$(BUILD)/%.o) $(FONT_SIZES:%=$(BUILD)/font/font_%_bold.o)
 
 # 1.0 stage 1 (D1): a test-only kernel padded past 2 MiB. KERNEL_PAD=<n>[K|M]
 # links one more object, a .bss pad of that size, so the image ends that
@@ -118,7 +130,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck splashdump repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit repro padkernel clean
 
 all: $(KERNEL)
 
@@ -266,9 +278,17 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
                  $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard drivers/mouse/*.h drivers/mouse/*_core.c) \
                  $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c) \
-                 $(GEN)/splash_data.h
+                 $(TOOLKIT_SRCS) $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< $(UNIT_MODULES) -o $@
+
+# 1.3 stage 2: the toolkit's suites include the toolkit's modules but link
+# wallpaper_core.c and surface_core.c as separate files (their statics
+# would clash with the toolkit's, and splash_data.h has no include guard).
+$(BUILD)/unit/test_ui_%: tests/unit/test_ui_%.c tests/unit/unit.h $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) \
+                         kernel/display/wallpaper_core.c kernel/display/surface_core.c $(GEN)/splash_data.h
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< kernel/display/wallpaper_core.c kernel/display/surface_core.c -o $@
 
 unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do $$t || exit 1; done
@@ -294,6 +314,20 @@ $(SPLASHDUMP): tests/splashdump.c kernel/display/wallpaper_core.c kernel/display
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/splashdump.c $(FONT_SIZES:%=$(BUILD)/font/font_%.c) -o $@
 
 splashdump: $(SPLASHDUMP)
+
+# 1.3 stage 2: the desktop toolkit (kernel/display/ui_*, icons.c and
+# coverage_core.c, with the fonts) as a host tool that draws the stage's
+# scenes as a PPM; part static compares them with tests/desktop_ref.py.
+DESKTOPDUMP := $(BUILD)/desktopdump
+$(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) kernel/display/wallpaper_core.c \
+                kernel/display/surface_core.c kernel/display/fbcon_core.c $(GEN)/splash_data.h $(FONT_C)
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/desktopdump.c $(TOOLKIT_SRCS) kernel/display/wallpaper_core.c \
+	    kernel/display/surface_core.c kernel/display/fbcon_core.c $(FONT_C) -o $@
+
+desktopdump: $(DESKTOPDUMP)
+
+toolkit: $(TOOLKIT_OBJS)
 
 # Reproducible build (0.8): copy the sources into two fresh trees and build
 # each from clean. Tree b is built with a `find` that lists files in reverse
@@ -336,7 +370,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck splashdump $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+test: unit user elfcheck splashdump desktopdump toolkit $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -345,7 +379,7 @@ test: unit user elfcheck splashdump $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpap
 # only with SHARD=static, so a sharded run runs them once; the padded test
 # kernel (1.0) is built only for part 4, which boots it.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit) \
             $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
@@ -355,4 +389,4 @@ run: $(ISO)
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d)
+-include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d)

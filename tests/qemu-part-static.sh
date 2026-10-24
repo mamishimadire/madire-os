@@ -16,7 +16,10 @@
 # integer make-wallpaper.py against v1.1's wallpaper, the splash's
 # generated data, and the kernel's splash code (tests/splashdump.c) against
 # make-wallpaper.py in five modes. 1.2 stage 10: the splash's ready state
-# in two more.
+# in two more. 1.3 stage 2: before the size report, the [1.3] checks of
+# the desktop toolkit (tokens.h against the Design Guide, the toolkit's
+# objects compiled with the kernel's flags, tests/desktopdump.c against
+# tests/desktop_ref.py in five modes).
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -441,6 +444,103 @@ splash_static 1920 1080 4 1 150
 splash_static 2560 1440 4 0 200
 splash_static 800 600 3 ready 100
 splash_static 1280 1024 4 ready 125
+
+# ---- 1.3 stage 2: the desktop toolkit (pure, not linked into the kernel) ----
+
+section "[1.3] kernel/display/tokens.h against the Design Guide (stage 2)"
+# tests/desktop_ref.py --tokens: every adopted token of the guide's two
+# colour tables (section 2, v0.1 and v0.2) is a UI_* define of tokens.h with
+# the same value and tokens.h has no other; the colour constants that
+# predate it (wallpaper_core.h's WP_*, pointer_core.h's POINTER_*) each
+# equal their token (the list is desktop_ref.py's TOKEN_TWINS).
+DREF=$(dirname "$0")/desktop_ref.py
+TOK=$(python3 "$DREF" --tokens 2>&1)
+printf '%s\n' "$TOK" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$TOK" | tail -n 1)" = "TOKENS result: PASS" ] &&
+   printf '%s\n' "$TOK" | grep -q '^TOKENS guide: 24 tokens in 2 tables .*; tokens.h: 24 defines$' &&
+   [ "$(printf '%s\n' "$TOK" | grep -c '^TOKENS twin .* equal$')" -eq 12 ]; then
+    pass "[1.3] kernel/display/tokens.h equals the Design Guide's two colour tables (24 tokens), and the 12 colour constants of wallpaper_core.h and pointer_core.h equal their tokens"
+else
+    fail "[1.3] kernel/display/tokens.h or a 1.2 colour constant differs from the Design Guide's colour tables"
+fi
+
+section "[1.3] The toolkit compiled with the kernel's flags, not linked (stage 2)"
+# make toolkit built the toolkit (kernel/display/ui_*.c, icons.c,
+# coverage_core.c) with the kernel's own CFLAGS, and the bold fonts it uses,
+# none of them in madire.elf. Linked together (ld -r), every symbol they
+# leave undefined must be one madire.elf defines, so linking them into the
+# kernel (stage 3) needs nothing else; they must call no libgcc or libc
+# helper and use no SSE/x87 register (the workflow's patterns).
+TKOBJS=""
+TKROOT=$(dirname "$0")/..
+for f in "$TKROOT"/kernel/display/ui_*.c "$TKROOT"/kernel/display/icons.c "$TKROOT"/kernel/display/coverage_core.c; do
+    f=${f#"$TKROOT"/}
+    TKOBJS="$TKOBJS $OUT/${f%.c}.o"
+done
+for s in 8x16 10x20 12x24 16x32; do TKOBJS="$TKOBJS $OUT/font/font_${s}_bold.o"; done
+TKLINK=$OUT/toolkit-linked.o
+rm -f "$TKLINK"
+# shellcheck disable=SC2086
+ld -m elf_x86_64 -r -o "$TKLINK" $TKOBJS 2>&1 | sed 's/^/      /'
+TKUNDEF=$(nm -u "$TKLINK" 2>/dev/null | awk '{ print $2 }' | LC_ALL=C sort -u)
+ELFDEF=$(nm --defined-only "$OUT/madire.elf" 2>/dev/null | awk '{ print $3 }' | LC_ALL=C sort -u)
+TKMISSING=$(LC_ALL=C comm -23 <(printf '%s\n' "$TKUNDEF" | grep .) <(printf '%s\n' "$ELFDEF"))
+echo "      $(echo $TKOBJS | wc -w) objects; undefined after ld -r: $(printf '%s\n' "$TKUNDEF" | grep -c .) ($(echo $TKUNDEF)); not in madire.elf: $(printf '%s\n' "$TKMISSING" | grep -c .)"
+if [ -s "$TKLINK" ] && [ -z "$TKMISSING" ]; then
+    pass "[1.3] the toolkit's objects (kernel flags, linked together with the bold fonts) leave only symbols that madire.elf defines undefined"
+else
+    fail "[1.3] the toolkit's objects need symbols madire.elf does not define: $(echo $TKMISSING)"
+fi
+# shellcheck disable=SC2086
+TKHELP=$(for o in $TKOBJS; do nm -u "$o"; done 2>&1 | grep -cE '__(udiv|div|mod|umod|mul|popcount|stack_chk)|^ *U (memset|memcpy|memmove|memcmp|strlen)$')
+echo "      libgcc/libc helpers: $TKHELP"
+if [ -s "$TKLINK" ] && [ "$TKHELP" -eq 0 ]; then
+    pass "[1.3] the toolkit's objects call no libgcc or libc helper"
+else
+    fail "[1.3] the toolkit's objects call $TKHELP libgcc/libc helper(s)"
+fi
+TKSSE=$(objdump -d "$TKLINK" 2>/dev/null | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]')
+echo "      SSE/x87 register uses: $TKSSE"
+if [ -s "$TKLINK" ] && [ "$TKSSE" -eq 0 ]; then
+    pass "[1.3] the toolkit's objects use no SSE/x87 register"
+else
+    fail "[1.3] the toolkit's objects use SSE/x87 registers ($TKSSE)"
+fi
+
+section "[1.3] The toolkit against tests/desktop_ref.py (tests/desktopdump.c, stage 2)"
+# The pure toolkit built as a host tool (build/desktopdump, with the
+# console fonts) draws each scene as the kernel will; desktop_ref.py, the
+# reference, draws it from the rules, the Design Guide's tables and the
+# BDF files. Three scenes (primitives with clipping and the damage list;
+# every icon at every scale; labels and buttons in each state the guide
+# defines) in five modes: the scales 100 %, 150 % and 200 % (the icons
+# and buttons also at 125 %) and both pixel formats.
+desktop_static() {   # desktop_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the toolkit's $4 scene at $1x$2x$(($3 * 8)) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the toolkit's $4 scene at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in prims icons widgets; do
+        # shellcheck disable=SC2086
+        desktop_static $mode $scene
+    done
+done
 
 # ---- 1.2: the size report (decides no check) ----
 
