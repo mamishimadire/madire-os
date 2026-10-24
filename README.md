@@ -138,7 +138,7 @@ It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written 
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
-**Tested at v1.2:** 1677 QEMU checks and 78 unit-test suites pass in the official regression on GitHub Actions (the full run 40015866525 and the sharded run 40015842544 on the last code change), together with the reproducible-build check, and the stress part's 127 checks (40005957778) on the same kernel; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 645 of its rows on that run's ISO, with the new `graphics` group comparing the splash and the console with their reference renderings pixel for pixel, and 30 more normal boots all reached System ready. The runs from `main` on the milestone commit are recorded in [docs/PROGRESS.md](docs/PROGRESS.md).
+**Tested at v1.2:** 1677 QEMU checks and 78 unit-test suites pass in the official regression on GitHub Actions (the full run 40015866525 and the sharded run 40015842544 on the last code change), together with the reproducible-build check, and the stress part's 127 checks (40005957778) on the same kernel; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 645 of its rows on that run's ISO, with the new `graphics` group comparing the splash and the console with their reference renderings pixel for pixel, and 30 more normal boots all reached System ready. From `main`, the milestone commit passed a full run (40036808466), a sharded run (40036822525, with the 4 MiB kernel gate) and the stress part's 127 checks (40036836216) on the same kernel, before the tag `v1.2`.
 
 ## Roadmap
 
