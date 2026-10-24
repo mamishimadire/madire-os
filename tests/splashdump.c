@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include "kernel/display/surface_core.c"
 #include "kernel/display/fbcon_core.c"
+#include "kernel/display/coverage_core.c"
 #include "kernel/display/wallpaper_core.c"
 
 int main(int argc, char **argv)

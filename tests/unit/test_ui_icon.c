@@ -7,14 +7,13 @@
  * at 4 and 3 bytes per pixel; a clipped icon equal to the unclipped one
  * inside the clip; the M from the splash's copy of kernel/logo.c's
  * strokes. The pixel-exact comparison with tests/desktop_ref.py is part
- * static's. The modules are included directly, except surface_core.c and
- * wallpaper_core.c, linked as separate files (the Makefile), so they
- * never share a translation unit with the toolkit (their statics, and
- * splash_data.h, which has no include guard). */
+ * static's. The modules are included directly, except surface_core.c,
+ * wallpaper_core.c and coverage_core.c (since 1.3 stage 3), linked as
+ * separate files (the Makefile), so they never share a translation unit
+ * with the toolkit (their statics). */
 #include <stdint.h>
 #include <string.h>
 #include "tests/unit/unit.h"
-#include "kernel/display/coverage_core.c"
 #include "kernel/display/ui_rect.c"
 #include "kernel/display/ui_draw.c"
 #include "kernel/display/icons.c"

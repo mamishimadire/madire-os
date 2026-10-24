@@ -467,9 +467,11 @@ fi
 section "[1.3] The toolkit compiled with the kernel's flags, not linked (stage 2)"
 # make toolkit built the toolkit (kernel/display/ui_*.c, icons.c,
 # coverage_core.c) with the kernel's own CFLAGS, and the bold fonts it uses,
-# none of them in madire.elf. Linked together (ld -r), every symbol they
-# leave undefined must be one madire.elf defines, so linking them into the
-# kernel (stage 3) needs nothing else; they must call no libgcc or libc
+# none of them in madire.elf (1.3 stage 3: except coverage_core.c, now linked
+# and built by the kernel's build; still checked here with the toolkit).
+# Linked together (ld -r), every symbol they leave undefined must be one
+# madire.elf defines, so linking them into the kernel (stage 3) needs
+# nothing else; they must call no libgcc or libc
 # helper and use no SSE/x87 register (the workflow's patterns).
 TKOBJS=""
 TKROOT=$(dirname "$0")/..

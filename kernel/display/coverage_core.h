@@ -9,10 +9,10 @@
  * Guide, section 6), the pixel (x, y) has its centre at
  * (x * 256 + 128, y * 256 + 128).
  *
- * The rule (wallpaper_core.c's splash follows the same one with its own
- * copy, until stage 3 moves it here; test_coverage.c checks that the two
- * agree): a pixel's coverage, 0 to 256, is the radius plus half a pixel
- * minus the distance from the pixel's centre to the segment, clamped. The
+ * The rule (the splash's in wallpaper_core.c uses it too, since stage 3;
+ * test_coverage.c checks it against tests/desktop_ref.py's): a pixel's
+ * coverage, 0 to 256, is the radius plus half a pixel minus the distance
+ * from the pixel's centre to the segment, clamped. The
  * nearest point of the segment is at t = d * 256 / l2 (rounded down)
  * along it, where d is the dot product with the segment and l2 its
  * squared length (t is 0 for d <= 0 and 256 for d >= l2); the distance is

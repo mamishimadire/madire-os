@@ -7,15 +7,14 @@
  * pressed key; the focus ring 2 dp outside with its 2 dp gap untouched;
  * bold labels from the bold font; refusals. Made-up fonts. The
  * pixel-exact comparison with tests/desktop_ref.py is part static's. The
- * modules are included directly, except surface_core.c and
- * wallpaper_core.c, linked as separate files (the Makefile), so they
- * never share a translation unit with the toolkit (their statics, and
- * splash_data.h, which has no include guard). */
+ * modules are included directly, except surface_core.c,
+ * wallpaper_core.c and coverage_core.c (since 1.3 stage 3), linked as
+ * separate files (the Makefile), so they never share a translation unit
+ * with the toolkit (their statics). */
 #include <stdint.h>
 #include <string.h>
 #include "tests/unit/unit.h"
 #include "kernel/display/tokens.h"
-#include "kernel/display/coverage_core.c"
 #include "kernel/display/ui_rect.c"
 #include "kernel/display/ui_draw.c"
 #include "kernel/display/icons.c"

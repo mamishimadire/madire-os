@@ -5,6 +5,7 @@
  * same roundings.
  */
 #include "kernel/display/wallpaper_core.h"
+#include "kernel/display/coverage_core.h"
 #include "splash_data.h"            /* generated: build/gen/ (the Makefile) */
 
 #define FB    8
@@ -205,52 +206,10 @@ void wallpaper_render(struct surface *s, const struct wallpaper *wp, struct rect
     }
 }
 
-/* ---- Capsules ---- */
-
-struct capsule {
-    int64_t x1, y1, dx, dy, l2, r;
-    int64_t bx0, by0, bx1, by1;     /* the pixels it may cover, clipped */
-};
-
-static bool capsule_setup(struct capsule *c, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t r,
-                          uint32_t width, uint32_t height)
-{
-    c->x1 = x1;
-    c->y1 = y1;
-    c->dx = x2 - x1;
-    c->dy = y2 - y1;
-    c->l2 = c->dx * c->dx + c->dy * c->dy;
-    c->r = r;
-    c->bx0 = ((x1 < x2 ? x1 : x2) - r - 2 * ONE) >> FB;
-    c->bx1 = ((x1 > x2 ? x1 : x2) + r + 2 * ONE) >> FB;
-    c->by0 = ((y1 < y2 ? y1 : y2) - r - 2 * ONE) >> FB;
-    c->by1 = ((y1 > y2 ? y1 : y2) + r + 2 * ONE) >> FB;
-    if (c->bx0 < 0)
-        c->bx0 = 0;
-    if (c->by0 < 0)
-        c->by0 = 0;
-    if (c->bx1 > (int64_t)width - 1)
-        c->bx1 = (int64_t)width - 1;
-    if (c->by1 > (int64_t)height - 1)
-        c->by1 = (int64_t)height - 1;
-    return c->bx0 <= c->bx1 && c->by0 <= c->by1;
-}
-
-/* The coverage of pixel (x, y), 0 to 256: the radius plus half a pixel
- * minus the distance from the pixel's centre to the segment. */
-static int64_t capsule_cov(const struct capsule *c, int64_t x, int64_t y)
-{
-    int64_t cx = (x << FB) + HALF - c->x1, cy = (y << FB) + HALF - c->y1, t = 0;
-    if (c->l2 != 0) {
-        int64_t d = cx * c->dx + cy * c->dy;
-        t = d <= 0 ? 0 : d >= c->l2 ? ONE : (d << FB) / c->l2;
-    }
-    int64_t ex = cx - wp_mul(t, c->dx), ey = cy - wp_mul(t, c->dy);
-    int64_t a = c->r + HALF - (int64_t)wp_isqrt((uint64_t)(ex * ex + ey * ey));
-    return a <= 0 ? 0 : a > ONE ? ONE : a;
-}
-
 /* ---- The splash ---- */
+
+/* The capsules (strokes and dots) are covered by coverage_core.c's rule
+ * (1.3 stage 3; until then this file had its own copy of it). */
 
 bool splash_layout(struct splash_layout *l, uint32_t width, uint32_t height, uint32_t scale,
                    uint32_t cell_w, uint32_t cell_h)
@@ -306,7 +265,7 @@ bool splash_layout(struct splash_layout *l, uint32_t width, uint32_t height, uin
 /* Glyph g of the wordmark at pen x: its segments' capsules, each through
  * `fn` (from its first to its last point; a one-point polyline is a dot). */
 static void glyph_segments(const struct splash_layout *l, size_t g, int64_t pen, int64_t r, uint32_t width,
-                           uint32_t height, void (*fn)(const struct capsule *, void *), void *arg)
+                           uint32_t height, void (*fn)(const struct cov_capsule *, void *), void *arg)
 {
     const struct wp_glyph *gl = &splash_wm_glyphs[g];
     for (uint32_t p = 0; p < gl->polys; p++) {
@@ -314,8 +273,8 @@ static void glyph_segments(const struct splash_layout *l, size_t g, int64_t pen,
         for (uint32_t k = 0; k + 1 < poly->count || (k == 0 && poly->count == 1); k++) {
             const int16_t *a = splash_wm_points[poly->first + k];
             const int16_t *b = splash_wm_points[poly->first + (poly->count == 1 ? k : k + 1)];
-            struct capsule c;
-            if (capsule_setup(&c, pen + wp_mul(a[0], l->ts), l->title_y + wp_mul(a[1], l->ts),
+            struct cov_capsule c;
+            if (cov_capsule_setup(&c, pen + wp_mul(a[0], l->ts), l->title_y + wp_mul(a[1], l->ts),
                               pen + wp_mul(b[0], l->ts), l->title_y + wp_mul(b[1], l->ts), r, width, height))
                 fn(&c, arg);
         }
@@ -327,7 +286,7 @@ struct box {
     bool any;
 };
 
-static void grow_box(const struct capsule *c, void *arg)
+static void grow_box(const struct cov_capsule *c, void *arg)
 {
     struct box *b = arg;
     if (!b->any || c->bx0 < b->x0)
@@ -346,13 +305,13 @@ struct cover {
     uint16_t *cov;
 };
 
-static void add_cover(const struct capsule *c, void *arg)
+static void add_cover(const struct cov_capsule *c, void *arg)
 {
     struct cover *cv = arg;
     int64_t bw = cv->box.x1 - cv->box.x0 + 1;
     for (int64_t y = c->by0; y <= c->by1; y++)
         for (int64_t x = c->bx0; x <= c->bx1; x++) {
-            int64_t a = capsule_cov(c, x, y);
+            int64_t a = cov_capsule_at(c, x, y);
             uint16_t *e = &cv->cov[(y - cv->box.y0) * bw + (x - cv->box.x0)];
             if (a > *e)
                 *e = (uint16_t)a;
@@ -384,8 +343,8 @@ static void draw_logo(struct surface *s, const struct splash_layout *l)
     int64_t ls = l->ls, back_t = wp_fx(35, 100);
     for (int i = 0; i < 4; i++) {
         const int32_t *st = splash_logo_strokes[i];
-        struct capsule c;
-        if (!capsule_setup(&c, l->lox + st[0] * ls,
+        struct cov_capsule c;
+        if (!cov_capsule_setup(&c, l->lox + st[0] * ls,
                            l->loy + wp_mul(wp_fx(st[1] * SPLASH_LOGO_RX, SPLASH_LOGO_RY), ls),
                            l->lox + st[2] * ls,
                            l->loy + wp_mul(wp_fx(st[3] * SPLASH_LOGO_RX, SPLASH_LOGO_RY), ls),
@@ -393,7 +352,7 @@ static void draw_logo(struct surface *s, const struct splash_layout *l)
             continue;
         for (int64_t y = c.by0; y <= c.by1; y++)
             for (int64_t x = c.bx0; x <= c.bx1; x++) {
-                int64_t a = capsule_cov(&c, x, y);
+                int64_t a = cov_capsule_at(&c, x, y);
                 if (!a)
                     continue;
                 int64_t t = wp_div((x << FB) - (l->lox + LX0 * ls), (LX1 - LX0) * ls);
@@ -466,12 +425,12 @@ void splash_draw_dots(struct surface *s, const struct splash_layout *l, uint32_t
 {
     struct wp_rgb lit = rgb(WP_TEXT), dim = rgb(WP_SURFACE_ACTIVE);
     for (uint32_t i = 0; i < SPLASH_DOTS; i++) {
-        struct capsule c;
-        if (!capsule_setup(&c, l->dot_x[i], l->dot_y, l->dot_x[i], l->dot_y, l->rd, s->width, s->height))
+        struct cov_capsule c;
+        if (!cov_capsule_setup(&c, l->dot_x[i], l->dot_y, l->dot_x[i], l->dot_y, l->rd, s->width, s->height))
             continue;
         for (int64_t y = c.by0; y <= c.by1; y++)
             for (int64_t x = c.bx0; x <= c.bx1; x++) {
-                int64_t a = capsule_cov(&c, x, y);
+                int64_t a = cov_capsule_at(&c, x, y);
                 if (a)
                     paint(s, x, y, i < phase ? lit : dim, a);
             }

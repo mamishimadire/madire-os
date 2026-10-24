@@ -7,7 +7,7 @@
  * 0xRRGGBB (1.3 stage 2). One define per token: `a.b.c` is UI_A_B_C. Part
  * static checks that this file equals the guide's tables exactly, and that
  * every colour constant of wallpaper_core.h and pointer_core.h equals its
- * token. Only the toolkit (ui_*) uses it so far.
+ * token (since stage 3 they are defined from it).
  */
 
 /* v0.1 */

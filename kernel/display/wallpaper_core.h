@@ -48,17 +48,18 @@
 #include <stdint.h>
 #include "kernel/display/font.h"
 #include "kernel/display/surface_core.h"
+#include "kernel/display/tokens.h"
 
-/* The Design Guide's tokens (section 2). */
-#define WP_BG_DEEP        0x011239u
-#define WP_BG_BASE        0x012060u
-#define WP_BG_LOW         0x011A4Cu
-#define WP_SURFACE_ACTIVE 0x112447u
-#define WP_ACCENT_GLOW    0x029FF8u
-#define WP_ACCENT_LIGHT   0x64F2F9u
-#define WP_ACCENT_DEEP    0x023CA1u
-#define WP_TEXT           0xFAF9FEu
-#define WP_TEXT_MUTED     0x8B9BB4u
+/* The Design Guide's tokens (section 2), from tokens.h (1.3 stage 3). */
+#define WP_BG_DEEP        UI_BG_DEEP
+#define WP_BG_BASE        UI_BG_BASE
+#define WP_BG_LOW         UI_BG_LOW
+#define WP_SURFACE_ACTIVE UI_SURFACE_ACTIVE
+#define WP_ACCENT_GLOW    UI_ACCENT_GLOW
+#define WP_ACCENT_LIGHT   UI_ACCENT_LIGHT
+#define WP_ACCENT_DEEP    UI_ACCENT_DEEP
+#define WP_TEXT           UI_TEXT
+#define WP_TEXT_MUTED     UI_TEXT_MUTED
 
 #define WP_CURVES   3
 #define SPLASH_DOTS 3

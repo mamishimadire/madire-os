@@ -15,12 +15,18 @@ code page 437 table. It never calls or translates the C toolkit.
 
     desktop_ref.py WIDTH HEIGHT SCENE OUT.ppm   the scene as a PPM (P6)
     desktop_ref.py --tokens                     the token check (part static)
+    desktop_ref.py --coverage-table OUT.h       test_coverage's reference table
 
 SCENE is prims, icons or widgets (tests/desktopdump.c describes them).
 --tokens compares kernel/display/tokens.h with both of the guide's colour
 tables, and the colour constants of kernel/display/wallpaper_core.h and
 pointer_core.h with their tokens (TOKEN_TWINS), printing "TOKENS ..." lines
-and exiting 1 on any difference.
+and exiting 1 on any difference. --coverage-table (1.3 stage 3) writes the
+capsule coverage that tests/unit/test_coverage.c compares
+kernel/display/coverage_core.c with: its fixed-seed capsules, each one's
+pixel box and the coverage of every pixel of the box and a 2-pixel margin
+around it, from make-wallpaper.py's capsule rule (build/gen/coverage_ref.h,
+never committed).
 """
 import importlib.util
 import math
@@ -92,6 +98,18 @@ def c_defines(path):
     return {n: int(v, 16) for n, v in re.findall(r"^#define\s+(\w+)\s+0x([0-9A-Fa-f]{6})u\b", src, re.M)}
 
 
+def twin_defines(path, ui):
+    """{name: (value, token define or None)} of a header's colour constants:
+    `#define NAME 0xRRGGBBu`, or `#define NAME UI_TOKEN` (1.3 stage 3: the
+    1.2 constants taken from tokens.h) with its value from tokens.h's
+    defines `ui` (None for a name tokens.h does not define)."""
+    src = open(os.path.join(ROOT, path), encoding="ascii").read()
+    out = {n: (v, None) for n, v in c_defines(path).items()}
+    for n, ref in re.findall(r"^#define\s+(\w+)\s+(UI_\w+)\s*(?:/\*.*\*/)?$", src, re.M):
+        out[n] = (ui.get(ref), ref)
+    return out
+
+
 def tokens_check():
     rows = guide_tokens()
     bad = 0
@@ -114,14 +132,16 @@ def tokens_check():
           (len(tok), len(tables), ", ".join("%d in table %d" % (sum(1 for r in rows if r[2] == n), n)
                                              for n in tables), len(defs)))
     for path, twins in TOKEN_TWINS.items():
-        got = c_defines(path)
+        got = twin_defines(path, defs)
         for name in sorted(set(got) - set(twins)):
             print("TOKENS FAIL: %s in %s has no token assigned (TOKEN_TWINS)" % (name, path))
             bad += 1
         for name, t in twins.items():
-            ok = got.get(name) == tok.get(t)
+            v, ref = got.get(name, (None, None))
+            # A constant named by a token must name its own token's define.
+            ok = v is not None and v == tok.get(t) and ref in (None, "UI_" + t.upper().replace(".", "_"))
             print("TOKENS twin %s %s = %s -> %s %s" % (path.split("/")[-1], name,
-                  "0x%06X" % got[name] if name in got else "missing", t, "equal" if ok else "DIFFERENT"))
+                  "0x%06X" % v if v is not None else "missing", t, "equal" if ok else "DIFFERENT"))
             bad += not ok
     print("TOKENS result: %s" % ("PASS" if bad == 0 else "FAIL (%d)" % bad))
     return 0 if bad == 0 else 1
@@ -585,9 +605,145 @@ def render(w, h, scene):
     return bytes(scr.pix), "scale %d %%, %s" % (s * 25, desc)
 
 
+# ---- The capsule coverage table (tests/unit/test_coverage.c, 1.3 stage 3) ----
+
+def coverage_capsules():
+    """test_coverage.c's capsules (x1, y1, x2, y2, r, w, h), in its order:
+    the same generator (its 64-bit LCG and seed), each argument drawn in
+    the order the suite draws it."""
+    st = [0x13C0FFEE2026]
+
+    def rnd():
+        st[0] = (st[0] * 6364136223846793005 + 1442695040888963407) & (2 ** 64 - 1)
+        return st[0] >> 17
+
+    def between(lo, hi):
+        return lo + rnd() % (hi - lo + 1)
+
+    def radius(k):
+        s = SCALES[k % 4]
+        p = ((16, 24, 32, 48)[(k // 4) % 4] * s + 2) // 4
+        kind = (k // 16) % 4
+        if kind == 0:
+            return K.fx(8 * p, 192)                     # an icon's stroke
+        if kind == 1:
+            return MW.RX * K.fx(22 * p, 24 * 210)       # the M icon's
+        if kind == 2:
+            return K.fx(25 * s, 40)                     # the wordmark's
+        return between(1, 6 * 256)                      # anything up to 6 px
+
+    caps = []
+    for i in range(400):                                # general
+        x1 = between(-2000, 30000)
+        y1 = between(-2000, 30000)
+        r = radius(i)
+        dy = between(-10000, 10000)
+        dx = between(-10000, 10000)
+        caps.append((x1, y1, x1 + dx, y1 + dy, r, 120, 120))
+    for i in range(200):                                # dots
+        x = between(-1000, 30000)
+        y = between(-1000, 30000)
+        caps.append((x, y, x, y, radius(i), 120, 120))
+    for i in range(300):                                # short
+        x = between(0, 25000)
+        y = between(0, 25000)
+        r = radius(i)
+        dy = between(-255, 255)
+        dx = between(-255, 255)
+        caps.append((x, y, x + dx, y + dy, r, 120, 120))
+    for i in range(24):                                 # long
+        x = between(0, 2000)
+        y = between(0, 2000)
+        ln = between(300 * 256, 1500 * 256)
+        off = between(-3 * 256, 3 * 256)
+        r = radius(i)
+        if i % 3 == 0:
+            caps.append((x, y, x + ln, y + off, r, 2048, 2048))
+        elif i % 3 == 1:
+            caps.append((x, y, x + off, y + ln, r, 2048, 2048))
+        else:
+            caps.append((x, y, x + ln // 3, y + ln // 4, r, 2048, 2048))
+    for i in range(300):                                # near the axes
+        x = between(0, 25000)
+        y = between(0, 25000)
+        ln = between(256, 60 * 256)
+        off = between(-3, 3)
+        r = radius(i)
+        if i % 2:
+            caps.append((x, y, x + off, y + (ln if i % 4 == 1 else -ln), r, 160, 160))
+        else:
+            caps.append((x, y, x + (ln if i % 4 == 0 else -ln), y + off, r, 160, 160))
+    for i in range(300):                                # clipped
+        x1 = between(-4000, 20000)
+        y1 = between(-4000, 16000)
+        h = between(1, 48)
+        w = between(1, 64)
+        r = radius(i)
+        dy = between(-6000, 6000)
+        dx = between(-6000, 6000)
+        caps.append((x1, y1, x1 + dx, y1 + dy, r, w, h))
+    return caps
+
+
+def coverage_of(cap):
+    """(ok, (bx0, by0, bx1, by1), samples) of one capsule: its pixel box
+    (make-wallpaper.py's capsule() box, clipped to the w x h surface), and
+    if the box is not empty the coverage of every pixel of the box and a
+    2-pixel margin, row by row. The margin may lie off the surface, where
+    make-wallpaper.py's capsule() computes nothing, so it is run on the
+    capsule and the surface moved SHIFT whole pixels right and down: the
+    same distances, so the same coverage, at every pixel that is asked."""
+    x1, y1, x2, y2, r, w, h = cap
+    one = K.one
+    bx0, bx1 = max(0, (min(x1, x2) - r - 2 * one) >> K.fb), min(w - 1, (max(x1, x2) + r + 2 * one) >> K.fb)
+    by0, by1 = max(0, (min(y1, y2) - r - 2 * one) >> K.fb), min(h - 1, (max(y1, y2) + r + 2 * one) >> K.fb)
+    ok = bx0 <= bx1 and by0 <= by1
+    if not ok:
+        return ok, (bx0, by0, bx1, by1), []
+    shift, d = 4, 4 << K.fb
+    cov = {}
+    MW.capsule(K, cov, x1 + d, y1 + d, x2 + d, y2 + d, r, bx1 + 3 + shift, by1 + 3 + shift)
+    samples = [cov.get((x + shift, y + shift), 0)
+               for y in range(by0 - 2, by1 + 3) for x in range(bx0 - 2, bx1 + 3)]
+    return ok, (bx0, by0, bx1, by1), samples
+
+
+def coverage_table(path):
+    caps = coverage_capsules()
+    rows, samples = [], []
+    for cap in caps:
+        ok, b, s = coverage_of(cap)
+        rows.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d }," % (cap + (int(ok),) + b))
+        samples += s
+    lines = ["/* Generated by tests/desktop_ref.py --coverage-table (1.3 stage 3): never",
+             " * edited, never committed. test_coverage.c's capsules, each one's pixel box",
+             " * and the coverage of every pixel of the box and a 2-pixel margin around",
+             " * it (row by row, in the capsules' order), from scripts/make-wallpaper.py's",
+             " * capsule rule. */",
+             "#ifndef MADIRE_GEN_COVERAGE_REF_H", "#define MADIRE_GEN_COVERAGE_REF_H",
+             "#define COV_REF_CAPSULES %d" % len(caps), "#define COV_REF_SAMPLES %d" % len(samples),
+             "struct cov_ref {",
+             "    int64_t x1, y1, x2, y2, r;",
+             "    uint32_t w, h;",
+             "    int32_t ok;",
+             "    int64_t bx0, by0, bx1, by1;",
+             "};",
+             "static const struct cov_ref cov_ref_caps[COV_REF_CAPSULES] = {"] + rows + ["};",
+             "static const uint16_t cov_ref_samples[COV_REF_SAMPLES] = {"]
+    for i in range(0, len(samples), 24):
+        lines.append("    " + ",".join(str(v) for v in samples[i:i + 24]) + ",")
+    lines += ["};", "#endif"]
+    with open(path, "w", encoding="ascii", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    print("REF coverage table: %d capsules, %d samples" % (len(caps), len(samples)))
+    return 0
+
+
 def main():
     if sys.argv[1:] == ["--tokens"]:
         return tokens_check()
+    if len(sys.argv) == 3 and sys.argv[1] == "--coverage-table":
+        return coverage_table(sys.argv[2])
     if len(sys.argv) != 5:
         print(__doc__)
         return 1

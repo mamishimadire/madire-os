@@ -41,8 +41,9 @@ ISO    := $(BUILD)/madire-os.iso
 # depend on the order in which the file system happens to list the files.
 # 1.3 stage 2: except the desktop toolkit (TOOLKIT_SRCS), pure code that is
 # not linked into the kernel yet; it is compiled with the kernel's flags
-# (make toolkit) and checked, and built into the host tools.
-TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c kernel/display/coverage_core.c
+# (make toolkit) and checked, and built into the host tools. 1.3 stage 3:
+# coverage_core.c is linked (the splash uses it), so it is no longer here.
+TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
 C_SRCS   := $(filter-out $(TOOLKIT_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
@@ -284,11 +285,21 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
 
 # 1.3 stage 2: the toolkit's suites include the toolkit's modules but link
 # wallpaper_core.c and surface_core.c as separate files (their statics
-# would clash with the toolkit's, and splash_data.h has no include guard).
+# would clash with the toolkit's). 1.3 stage 3: and coverage_core.c, which
+# wallpaper_core.c now calls.
 $(BUILD)/unit/test_ui_%: tests/unit/test_ui_%.c tests/unit/unit.h $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) \
-                         kernel/display/wallpaper_core.c kernel/display/surface_core.c $(GEN)/splash_data.h
+                         kernel/display/wallpaper_core.c kernel/display/surface_core.c kernel/display/coverage_core.c \
+                         $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
-	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< kernel/display/wallpaper_core.c kernel/display/surface_core.c -o $@
+	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< kernel/display/wallpaper_core.c kernel/display/surface_core.c \
+	    kernel/display/coverage_core.c -o $@
+
+# 1.3 stage 3: test_coverage checks coverage_core.c against a table of
+# tests/desktop_ref.py's capsule coverage (generated, never committed).
+$(GEN)/coverage_ref.h: tests/desktop_ref.py scripts/make-wallpaper.py tests/fbcon_ref.py
+	@mkdir -p $(dir $@)
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/desktop_ref.py --coverage-table $@
+$(BUILD)/unit/test_coverage: $(GEN)/coverage_ref.h
 
 unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do $$t || exit 1; done
@@ -308,7 +319,8 @@ elfcheck: $(ELFCHECK)
 # part static compares it with scripts/make-wallpaper.py's rendering.
 SPLASHDUMP := $(BUILD)/splashdump
 $(SPLASHDUMP): tests/splashdump.c kernel/display/wallpaper_core.c kernel/display/wallpaper_core.h \
-               kernel/display/surface_core.c kernel/display/fbcon_core.c $(GEN)/splash_data.h \
+               kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
+               $(wildcard kernel/display/*.h) $(GEN)/splash_data.h \
                $(FONT_SIZES:%=$(BUILD)/font/font_%.c)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/splashdump.c $(FONT_SIZES:%=$(BUILD)/font/font_%.c) -o $@
@@ -320,10 +332,11 @@ splashdump: $(SPLASHDUMP)
 # scenes as a PPM; part static compares them with tests/desktop_ref.py.
 DESKTOPDUMP := $(BUILD)/desktopdump
 $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) kernel/display/wallpaper_core.c \
-                kernel/display/surface_core.c kernel/display/fbcon_core.c $(GEN)/splash_data.h $(FONT_C)
+                kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
+                $(GEN)/splash_data.h $(FONT_C)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/desktopdump.c $(TOOLKIT_SRCS) kernel/display/wallpaper_core.c \
-	    kernel/display/surface_core.c kernel/display/fbcon_core.c $(FONT_C) -o $@
+	    kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c $(FONT_C) -o $@
 
 desktopdump: $(DESKTOPDUMP)
 
