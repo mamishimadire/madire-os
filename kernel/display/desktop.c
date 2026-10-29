@@ -2,6 +2,8 @@
  * The desktop, the kernel side (1.3 stage 3); see desktop.h.
  */
 #include "kernel/display/desktop.h"
+#include "drivers/mouse/ps2mouse.h"
+#include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/cmos.h"
 #include "kernel/display/compositor.h"
 #include "kernel/display/desktop_core.h"
@@ -10,6 +12,7 @@
 #include "kernel/display/fbcon_core.h"
 #include "kernel/display/pointer.h"
 #include "kernel/display/ui_about.h"
+#include "kernel/display/ui_console.h"
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_window.h"
 #include "kernel/kernel.h"
@@ -20,6 +23,7 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/fd.h"
 #include "kernel/proc/thread.h"
 #include "kernel/rtc_time.h"
 #include "kernel/timer.h"
@@ -46,6 +50,7 @@ struct desk_window {
 };
 
 static bool nosurface, about_at_start;
+static bool desk_panic;                 /* 1.3 stage 4b: the test option desktoppanic */
 static struct ui_wm wm;
 static struct ui_fonts fonts;
 static uint32_t scale;
@@ -56,13 +61,29 @@ static char loader_name[UI_ABOUT_VALUE_MAX] = "-";
 static char about_display[24], about_memory[24];
 static uint32_t usable_mb;
 
-void desktop_options(bool w, bool l, bool n, bool ns, bool about_opt)
+/* 1.3 stage 4b: the frame log, throttled (desktop.h): the last frame
+ * composed, whether its marker is still to be logged, the frames composed
+ * since the last marker and the longest composition among them (TSC
+ * cycles, turned into microseconds by the TSC's rate since the desktop
+ * started), and the mouse bytes last seen (desk_settled). */
+static uint32_t desk_frame, desk_burst_frames, desk_burst_first;
+static bool desk_unlogged;
+/* ... and the frames composed since a drag began, until the first settled
+ * frame after it ended (desktoplog: one report-only line then). */
+static uint32_t desk_drag_frames;
+static uint64_t desk_drag_longest;
+static bool desk_in_drag;
+static uint64_t desk_burst_longest, desk_tsc0, desk_tick0, desk_bytes_tick;
+static uint32_t desk_bytes_seen;
+
+void desktop_options(bool w, bool l, bool n, bool ns, bool about_opt, bool panic_opt)
 {
     wanted = w;
     logging = l;
     nocache = n;
     nosurface = ns;
     about_at_start = about_opt;
+    desk_panic = panic_opt;
 }
 
 void desktop_about_info(const char *loader, uint32_t mb)
@@ -158,19 +179,91 @@ static void refresh_surfaces(void)
     }
 }
 
+/* 1.3 stage 4b: no mouse byte waiting: every byte queued is in a decoded
+ * packet or was a bad byte (the queue empty, no packet begun); or no byte
+ * has come for half a second (a dropped byte may leave a packet begun). */
+static bool desk_settled(void)
+{
+    if (!mouse_present())
+        return true;
+    struct mouse_counts c;
+    mouse_counts(&c);
+    uint64_t now = timer_ticks();
+    if (c.irq_bytes != desk_bytes_seen) {
+        desk_bytes_seen = c.irq_bytes;
+        desk_bytes_tick = now;
+    }
+    return c.queued == 3u * c.packets + c.bad_bytes || now - desk_bytes_tick >= 50;
+}
+
+/* The marker of the last frame composed (test=desktop boots only, stage
+ * 3) and the clock it shows; with desktoplog, first the burst's line when
+ * more than one frame was composed since the last marker (report only). */
+static void desk_log_frame(void)
+{
+    if (logging && desk_burst_frames > 1) {
+        uint64_t ticks = timer_ticks() - desk_tick0;
+        uint64_t per = ticks ? (fd_tsc() - desk_tsc0) / ticks : 0;
+        kserialf("desktop: burst: %u frames composed (frames %u to %u), the longest composition %llu us (%llu "
+                 "TSC cycles; %llu cycles per tick over %llu ticks)\n", desk_burst_frames, desk_burst_first,
+                 desk_frame, (ull)fd_cycles_us(desk_burst_longest, per), (ull)desk_burst_longest, (ull)per,
+                 (ull)ticks);
+    }
+    if (desk_in_drag && !wm.drag) {
+        if (logging) {
+            uint64_t ticks = timer_ticks() - desk_tick0;
+            uint64_t per = ticks ? (fd_tsc() - desk_tsc0) / ticks : 0;
+            kserialf("desktop: frames during the drag: %u composed, the longest composition %llu us (%llu TSC "
+                     "cycles)\n", desk_drag_frames, (ull)fd_cycles_us(desk_drag_longest, per),
+                     (ull)desk_drag_longest);
+        }
+        desk_in_drag = false;
+        desk_drag_frames = 0;
+        desk_drag_longest = 0;
+    }
+    desk_burst_frames = 0;
+    desk_burst_longest = 0;
+    desk_unlogged = false;
+    klogf("display: frame %u\n", desk_frame);
+    kserialf("desktop: clock %s\n", clock);
+    /* 1.3 stage 4b: desktoppanic, once the Console window's frame is shown. */
+    if (desk_panic && console_win.w.open) {
+        klogf("Desktop fault test: a panic with the Console window open (test option desktoppanic)\n");
+        panic("Desktop test: a panic with the Console window open (on purpose).");
+    }
+}
+
+/* One composition of whatever is damaged; its frame is logged only once
+ * settled (1.3 stage 4b): frames composed while mouse bytes wait are
+ * counted, and the marker comes with the first settled pass. */
 static void compose(void)
 {
     refresh_surfaces();
-    if (!comp_pending(&comp))
-        return;
-    struct rect first = comp.damage.r[0];
-    uint32_t n = comp_compose(&comp);
-    uint32_t frame = display_frame_done();
-    if (logging)
-        kserialf("desktop: composed %u rectangle%s, the first at (%d, %d) %dx%d\n", n, n == 1 ? "" : "s",
-                 first.x, first.y, first.w, first.h);
-    klogf("display: frame %u\n", frame);        /* test=desktop boots only (stage 3) */
-    kserialf("desktop: clock %s\n", clock);
+    if (comp_pending(&comp)) {
+        struct rect first = comp.damage.r[0];
+        uint64_t t0 = fd_tsc();
+        uint32_t n = comp_compose(&comp);
+        uint64_t took = fd_tsc() - t0;
+        desk_frame = display_frame_done();
+        if (!desk_burst_frames)
+            desk_burst_first = desk_frame;
+        desk_burst_frames++;
+        if (took > desk_burst_longest)
+            desk_burst_longest = took;
+        if (wm.drag)
+            desk_in_drag = true;
+        if (desk_in_drag) {
+            desk_drag_frames++;
+            if (took > desk_drag_longest)
+                desk_drag_longest = took;
+        }
+        desk_unlogged = true;
+        if (logging)
+            kserialf("desktop: composed %u rectangle%s, the first at (%d, %d) %dx%d\n", n, n == 1 ? "" : "s",
+                     first.x, first.y, first.w, first.h);
+    }
+    if (desk_unlogged && desk_settled())
+        desk_log_frame();
 }
 
 /* ---- The window events (desktoplog) ---- */
@@ -344,11 +437,34 @@ static void plan_surfaces(uint32_t free_pages)
 
 /* ---- The windows ---- */
 
+/* 1.3 stage 4b: the Console window's client, the grid as vga_shadow holds
+ * it (ui_console.h): on its surface when painted whole or its edges
+ * again, and on the back buffer when it has no surface (A1). */
+static void desk_console_paint(const struct ui_canvas *c, struct rect r, void *ctx)
+{
+    (void)ctx;
+    const struct vga_shadow *v = vga_text_shadow();
+    struct ui_console_grid g = { v->cells, v->palette, v->cursor_visible, v->cursor_row, v->cursor_col };
+    ui_console_paint(c, r, scale, fonts.regular, &g);
+}
+
+/* 1.3 stage 4b: fbcon's changed cells (fbcon_window), in the window's
+ * coordinates; nothing while the window is hidden (its surface keeps
+ * them, and opening it damages it whole). */
+static void desk_console_damage(struct rect r)
+{
+    if (!console_win.w.open)
+        return;
+    r.x += console_win.w.r.x;
+    r.y += console_win.w.r.y;
+    comp_damage(&comp, r);
+}
+
 static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *cl)
 {
     int32_t w, h;
     ui_fonts_for_scale(scale, &fonts);
-    ui_window_size_for_client(scale, 80 * (int32_t)cl->font->width, 25 * (int32_t)cl->font->height, &w, &h);
+    ui_console_size(scale, cl->font, &w, &h);
     /* Field by field (the structs are static, zero already): no struct
      * copy the compiler could turn into a library call. */
     console_win.w.name = "Console";
@@ -356,6 +472,7 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
     console_win.w.icon = UI_ICON_CONSOLE;
     console_win.w.w = w;
     console_win.w.h = h;
+    console_win.w.paint = desk_console_paint;   /* 1.3 stage 4b */
     ksnprintf(about_display, sizeof(about_display), "%ux%ux%u", fi->width, fi->height, fi->bpp);
     ksnprintf(about_memory, sizeof(about_memory), "%u MB", usable_mb);
     ui_about_setup(&about, scale, &fonts, MADIRE_OS_VERSION, loader_name, about_display, about_memory,
@@ -410,14 +527,12 @@ bool desktop_start(bool console_offered)
         return refuse("the console is not on the framebuffer");
     if (!desktop_layout(&lay, fi->width, fi->height, cl->scale, cl->font))
         return refuse("no layout for this screen");
-    if (!fbcon_hold())
-        return refuse("the console could not be held");
     wallpaper_setup(&wp, fi->width, fi->height, cl->scale);
     read_clock(clock);
     clock_second = timer_uptime_seconds();
     klogf("Desktop: shown on %ux%ux%u (scale %u %%): the wallpaper with the M, the taskbar, the clock %s; "
-          "a key hands the screen back to the console (test=desktop, 1.3 stage 3)\n", fi->width, fi->height,
-          fi->bpp, cl->scale * 25, clock);
+          "a key opens the Console window (test=desktop, 1.3 stage 4b)\n", fi->width, fi->height, fi->bpp,
+          cl->scale * 25, clock);
     scale = cl->scale;
     setup_windows(fi, cl);
     uint32_t free_pages = pmm_free_pages();
@@ -426,6 +541,12 @@ bool desktop_start(bool console_offered)
     paging_slot_figures(VM_DISPLAY_INDEX, &tables, &pages);
     klogf("Desktop: slot 506 now: %u page tables, %u pages mapped (walked)\n", tables, pages);
     plan_surfaces(free_pages);
+    /* 1.3 stage 4b: from here the console draws into its window (C2). */
+    if (!fbcon_window(console_win.has_surface ? &console_win.surf : 0, console_win.w.w, console_win.w.h,
+                      desk_console_damage))
+        return refuse("the console could not move into its window");
+    desk_tsc0 = fd_tsc();
+    desk_tick0 = timer_ticks();
     comp_init(&comp, back, present, 0);
     comp_add_layer(&comp, background_layer, 0);
     comp_add_layer(&comp, windows_layer, 0);
@@ -476,20 +597,14 @@ void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up)
     log_events();
 }
 
-bool desktop_key(bool esc)
-{
-    if (!showing || !wm.focus)
-        return false;
-    if (esc && ui_wm_esc(&wm))
-        log_events();
-    return true;
-}
-
-void desktop_close_key(void)
+enum desktop_key_route desktop_key(bool pressed, bool esc)
 {
     if (!showing)
-        return;
-    showing = false;
-    klogf("Desktop: closed (a key): the screen handed back to the console; the key is not typed\n");
-    fbcon_release();
+        return DESKTOP_KEY_TAKEN;
+    enum ui_key_route r = ui_wm_key(&wm, &console_win.w, pressed, esc);
+    if (r == UI_KEY_OPENED)
+        klogf("Desktop: a key opened the Console window (the key is not typed)\n");
+    log_events();
+    return r == UI_KEY_OPENED ? DESKTOP_KEY_OPENED : r == UI_KEY_TO_CONSOLE ? DESKTOP_KEY_CONSOLE
+                                                                            : DESKTOP_KEY_TAKEN;
 }

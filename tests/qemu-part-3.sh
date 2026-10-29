@@ -874,3 +874,7 @@ desktop_case 800 800x600x24 100 "desktop at 800x600x24" "resolution: 800x600x24"
 section "[1.3] Windows at 800x600x24: the About window (test=desktop desktopabout), drag, clamp, close, desktopnosurface (stage 4a)"
 # desktop_about_case (tests/qemu-lib.sh): 13 checks, two boots.
 desktop_about_case 800 800x600x24 100 "windows at 800x600x24" "resolution: 800x600x24"
+
+section "[1.3] The Console window at 800x600x24: a key opens it, commands, Shift+PgUp, hide and show, focus, desktopnosurface (stage 4b)"
+# desktop_console_case (tests/qemu-lib.sh): 7 checks, two boots.
+desktop_console_case 800 800x600x24 100 "Console window at 800x600x24" "resolution: 800x600x24"

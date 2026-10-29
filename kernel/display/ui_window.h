@@ -153,6 +153,18 @@ void ui_wm_pointer(struct ui_wm *m, int32_t x, int32_t y, bool down, bool up);
 /* Esc: closes the focused window if it closes on Esc; true if it did. */
 bool ui_wm_esc(struct ui_wm *m);
 
+/* 1.3 stage 4b: where a key goes (decision 7, as amended in stage 3b; the
+ * Design Guide, section 8), for one key event, pressed or released:
+ *   - no window focused: a press opens the Console window `console` (or
+ *     raises it) and focuses it, and is not typed: UI_KEY_OPENED; a
+ *     release does nothing (UI_KEY_TAKEN);
+ *   - `console` focused: the console takes the key, Esc included (Esc
+ *     does not close the Console window): UI_KEY_TO_CONSOLE;
+ *   - another window focused: Esc pressed closes it if it closes on Esc
+ *     (ui_wm_esc); every key: UI_KEY_TAKEN (nothing else happens). */
+enum ui_key_route { UI_KEY_TAKEN, UI_KEY_OPENED, UI_KEY_TO_CONSOLE };
+enum ui_key_route ui_wm_key(struct ui_wm *m, struct ui_window *console, bool pressed, bool esc);
+
 /* The close button's state for w now (the rules above). */
 enum ui_button_state ui_wm_close_state(const struct ui_wm *m, const struct ui_window *w);
 

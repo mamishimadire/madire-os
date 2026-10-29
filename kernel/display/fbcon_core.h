@@ -65,4 +65,18 @@ void fbcon_draw_cell(struct surface *s, const struct fbcon_layout *l, uint32_t r
 /* The cell's rectangle on the screen. */
 struct rect fbcon_cell_rect(const struct fbcon_layout *l, uint32_t row, uint32_t col);
 
+/* 1.3 stage 4b (docs/plans/1.3.md, C2): the grid at a given scale step
+ * (4, 5, 6 or 8; `fonts` as for fbcon_layout) with its top-left pixel at
+ * (x, y) of its surface, not centred: the Console window's grid, whose
+ * scale is the screen's (a window's height would give another). False
+ * (and *out unchanged) for any other scale. */
+bool fbcon_layout_at(uint32_t scale, const struct font *const fonts[4], uint32_t x, uint32_t y,
+                     struct fbcon_layout *out);
+
+/* 1.3 stage 4b: draws a cell as fbcon_draw_cell does, with its top-left
+ * pixel at (x, y) (either may be negative), writing only the pixels
+ * inside `clip` and inside the surface. */
+void fbcon_draw_cell_at(struct surface *s, const struct font *f, int32_t x, int32_t y, uint8_t ch, uint32_t fg,
+                        uint32_t bg, bool cursor, struct rect clip);
+
 #endif

@@ -6,6 +6,8 @@
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon_core.h"
 #include "kernel/display/pointer.h"
+#include "kernel/display/ui_console.h"
+#include "kernel/display/ui_window.h"
 #include "kernel/kprintf.h"
 #include "kernel/panic.h"
 #include "kernel/proc/diagwait.h"
@@ -28,6 +30,12 @@ static uint32_t refused;                /* draws refused off thread 0 */
 static bool busy, panic_retried;
 static bool held;                       /* 1.2 stage 8: the splash holds the screen */
 static bool direct;                     /* 1.2 stage 10: the early crash screen, drawn on the framebuffer */
+/* 1.3 stage 4b: the console in the Console window (fbcon_window). */
+static bool windowed;
+static struct fbcon_layout fbc_full;    /* the full-screen layout, for a panic */
+static struct surface *fbc_surf;        /* the window's surface, or none (painted on exposure) */
+static int32_t fbc_w, fbc_h;            /* the window's size */
+static void (*fbc_damage)(struct rect r);
 
 bool fbcon_active(void)
 {
@@ -74,14 +82,26 @@ static bool draw_cell(const struct vga_shadow *v, uint32_t i)
     if (drawn[i] == want)
         return false;
     uint8_t attr = (uint8_t)(v->cells[i] >> 8);
-    fbcon_draw_cell(back, &lay, i / FBCON_COLS, i % FBCON_COLS, (uint8_t)(v->cells[i] & 0xFF),
-                    colour[attr & 0x0F], colour[attr >> 4], want & WITH_CURSOR);
+    if (!windowed) {
+        fbcon_draw_cell(back, &lay, i / FBCON_COLS, i % FBCON_COLS, (uint8_t)(v->cells[i] & 0xFF),
+                        colour[attr & 0x0F], colour[attr >> 4], want & WITH_CURSOR);
+    } else if (fbc_surf) {
+        struct ui_canvas c;
+        ui_canvas_init(&c, fbc_surf);
+        ui_console_cell(&c, (struct rect){ 0, 0, fbc_w, fbc_h }, lay.scale, lay.font, i / FBCON_COLS,
+                        i % FBCON_COLS, (uint8_t)(v->cells[i] & 0xFF), colour[attr & 0x0F], colour[attr >> 4],
+                        want & WITH_CURSOR);
+    }
     drawn[i] = want;
     return true;
 }
 
 static void present_cell(uint32_t i)
 {
+    if (windowed) {
+        fbc_damage(fbcon_cell_rect(&lay, i / FBCON_COLS, i % FBCON_COLS));
+        return;
+    }
     if (direct)
         return;
     struct rect r = fbcon_cell_rect(&lay, i / FBCON_COLS, i % FBCON_COLS);
@@ -102,13 +122,19 @@ static void redraw_all(void)
     const struct vga_shadow *v = vga_text_shadow();
     for (uint32_t s = 0; s < 16; s++)
         colour[s] = fbcon_rgb6(v->palette[s]);
-    surface_fill(back, (struct rect){ 0, 0, (int32_t)back->width, (int32_t)back->height }, 0);
+    if (!windowed)
+        surface_fill(back, (struct rect){ 0, 0, (int32_t)back->width, (int32_t)back->height }, 0);
     for (uint32_t i = 0; i < CELLS; i++) {
         drawn[i] = NOT_DRAWN;
         draw_cell(v, i);
     }
     uint32_t c = cursor_index(v);
     cursor_at = c == NOT_DRAWN ? -1 : (int32_t)c;
+    if (windowed) {
+        fbc_damage((struct rect){ (int32_t)lay.x, (int32_t)lay.y, (int32_t)(FBCON_COLS * lay.cell_w),
+                                  (int32_t)(FBCON_ROWS * lay.cell_h) });
+        return;
+    }
     if (direct)
         return;
     bool hid = pointer_hide_over((struct rect){ 0, 0, (int32_t)back->width, (int32_t)back->height });
@@ -176,6 +202,38 @@ void fbcon_release(void)
     fbcon_redraw();
 }
 
+bool fbcon_window(struct surface *surf, int32_t w, int32_t h, void (*damage)(struct rect r))
+{
+    struct fbcon_layout wl;
+    if (!active || direct || held || windowed || panic_active ||
+        !fbcon_layout_at(lay.scale, fonts, (uint32_t)ui_window_edge(lay.scale),
+                         (uint32_t)ui_window_title_h(lay.scale), &wl) ||
+        !begin_draw())
+        return false;
+    fbc_full = lay;
+    lay = wl;
+    fbc_surf = surf;
+    fbc_w = w;
+    fbc_h = h;
+    fbc_damage = damage;
+    windowed = true;
+    redraw_all();
+    end_draw();
+    return true;
+}
+
+/* 1.3 stage 4b: a panic takes the console out of its window: the crash
+ * screen is 1.2's full-screen grid on the framebuffer (docs/plans/1.3.md,
+ * C3). True if it did; the caller then draws the whole screen. */
+static bool fbc_unwindow(void)
+{
+    if (!windowed || !panic_active)
+        return false;
+    windowed = false;
+    lay = fbc_full;
+    return true;
+}
+
 /* While held, the grid changes only in vga_shadow; a panic releases the
  * screen (the crash screen), drawn whole. True if the caller is done. */
 static bool still_held(void)
@@ -191,7 +249,10 @@ void fbcon_cell(uint32_t i)
 {
     if (still_held() || !begin_draw())
         return;
-    update_cell(i);
+    if (fbc_unwindow())
+        redraw_all();
+    else
+        update_cell(i);
     end_draw();
 }
 
@@ -202,6 +263,7 @@ void fbcon_redraw(void)
     held = false;
     if (!begin_draw())
         return;
+    fbc_unwindow();
     redraw_all();
     end_draw();
 }
@@ -216,6 +278,11 @@ void fbcon_cursor(void)
 {
     if (still_held() || !begin_draw())
         return;
+    if (fbc_unwindow()) {
+        redraw_all();
+        end_draw();
+        return;
+    }
     uint32_t c = cursor_index(vga_text_shadow());
     int32_t now = c == NOT_DRAWN ? -1 : (int32_t)c;
     if (cursor_at >= 0 && cursor_at != now)

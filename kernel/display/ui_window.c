@@ -350,3 +350,17 @@ bool ui_wm_esc(struct ui_wm *m)
     update_close_states(m);
     return true;
 }
+
+enum ui_key_route ui_wm_key(struct ui_wm *m, struct ui_window *console, bool pressed, bool esc)
+{
+    if (!m->focus) {
+        if (!pressed || !ui_wm_open(m, console))
+            return UI_KEY_TAKEN;
+        return UI_KEY_OPENED;
+    }
+    if (m->focus == console)
+        return UI_KEY_TO_CONSOLE;
+    if (pressed && esc)
+        ui_wm_esc(m);
+    return UI_KEY_TAKEN;
+}

@@ -116,6 +116,11 @@ static bool round_row(struct rect r, int32_t R, uint32_t corners, int64_t y, int
     return true;
 }
 
+bool ui_round_span(struct rect r, int32_t radius, uint32_t corners, int64_t y, int64_t *x0, int64_t *x1)
+{
+    return round_row(r, clamp_radius(r, radius), corners, y, x0, x1);
+}
+
 void ui_fill_round(const struct ui_canvas *c, struct rect r, int32_t radius, uint32_t corners, uint32_t rgb)
 {
     if (ui_rect_empty(r))

@@ -72,6 +72,11 @@ void ui_frame_round(const struct ui_canvas *c, struct rect r, int32_t radius, in
 void ui_blit_round(const struct ui_canvas *c, struct rect r, const struct surface *src, int32_t radius,
                    uint32_t corners);
 
+/* 1.3 stage 4b: the pixels [*x0, *x1) of row y inside the rounded
+ * rectangle (r, radius, corners) (the fill's rule above); false if row y
+ * is outside it. */
+bool ui_round_span(struct rect r, int32_t radius, uint32_t corners, int64_t y, int64_t *x0, int64_t *x1);
+
 /* Blends pixel (x, y) towards rgb by coverage a (0 to 256), if inside the clip. */
 void ui_blend(const struct ui_canvas *c, int64_t x, int64_t y, uint32_t rgb, int64_t a);
 

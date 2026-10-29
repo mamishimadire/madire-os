@@ -26,6 +26,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "kernel/display/surface_core.h"
 
 /* After paging_init(), on a boot with display_active(): lays out the grid,
  * draws the whole screen from the shadow and logs the "Display: console
@@ -56,6 +57,20 @@ void fbcon_release(void);
  * panic, draws the whole screen. False (nothing held) if the console is
  * not active on the back buffer. */
 bool fbcon_hold(void);
+
+/* 1.3 stage 4b: the console in the Console window (desktop.h;
+ * docs/plans/1.3.md, C2). From now on the grid is laid out window-relative
+ * (fbcon_layout_at: at the screen's scale, its top-left pixel at the
+ * window's client, ui_console.h) and each changed cell is drawn on the
+ * window's surface `surf` (a w x h window at (0, 0) of it), or, with no
+ * surface, not drawn at all (the compositor paints the window from
+ * vga_shadow when it composes); either way the changed rectangle, in the
+ * window's coordinates, goes to `damage`, and nothing is copied to the
+ * framebuffer. The console keeps writing vga_shadow exactly as before. A
+ * panic takes the console out of the window: the crash screen is 1.2's
+ * full-screen grid on the framebuffer (C3). False (nothing changed) if
+ * the console is not active on the back buffer, is held, or a panic runs. */
+bool fbcon_window(struct surface *surf, int32_t w, int32_t h, void (*damage)(struct rect r));
 
 /* Called by vga_text.c (only while active): cell i (row x 80 + col) of the
  * shadow changed; the whole shadow changed; colour slot `slot` changed;

@@ -30,6 +30,13 @@ last is the first scene, drawn by the C side through the exposure path);
 WM, the window manager's rules written again (tests/qmp_desktop.py
 predicts the kernel's desktoplog lines and its windows with it);
 desktop_windows(w, h, clock, windows), the desktop with windows on it.
+1.3 stage 4b: the Console window's scenes console, console_inactive,
+console_about and console_exposed (kernel/display/ui_console.h's rules: the
+grid in tests/fbcon_ref.py's way, drawn only inside the window's inner
+rounded shape; a fixed grid, DUMP_GRID; the last scene is console_about,
+drawn by the C side through the exposure path); desktop_windows also
+draws Console windows (a window with a "grid": the cells, the palette and
+the cursor, as shadow_grid reads them from a saved vga_shadow).
 --contrast reads the colour pairs tests/desktopdump.c recorded and checks
 each against the Design Guide's section 12 table, recomputing the ratios
 from tokens.h (CONTRAST lines; exit 1 on any failure).
@@ -47,6 +54,7 @@ import importlib.util
 import math
 import os
 import re
+import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -781,6 +789,89 @@ def about_window(scr, tok, s, r, active, close, values):
            lambda scr_, r_: about_client(scr_, tok, s, r_, values))
 
 
+# ---- The Console window (1.3 stage 4b; kernel/display/ui_console.h) ----
+
+CONSOLE_TITLE = b"Console"
+# The VGA's 16 default colours as 6-bit DAC values (tests/desktopdump.c's grid).
+VGA_PALETTE = [(0, 0, 0), (0, 0, 42), (0, 42, 0), (0, 42, 42), (42, 0, 0), (42, 0, 42), (42, 21, 0),
+               (42, 42, 42), (21, 21, 21), (21, 21, 63), (21, 63, 21), (21, 63, 63), (63, 21, 21),
+               (63, 21, 63), (63, 63, 21), (63, 63, 63)]
+
+
+def console_size(s):
+    """The Console window: the 80 x 25 grid, the edge at both sides and
+    the bottom, the title bar above."""
+    f = font(s, False)
+    return 80 * f[1] + 2 * px(1, s), px(32, s) + 25 * f[2] + px(1, s)
+
+
+def dump_grid():
+    """tests/desktopdump.c's grid: cell i (row r, column c) holds character
+    (7i + r) mod 256 in colour slot (r + c) mod 16 on slot (r div 5) mod 8;
+    both bottom corner cells a full block (0xDB), white on blue; the cursor
+    in the bottom-left one."""
+    cells = []
+    for i in range(2000):
+        row, col = divmod(i, 80)
+        cells.append(((i * 7 + row) & 0xFF) | ((row + col) % 16) << 8 | ((row // 5) % 8) << 12)
+    cells[24 * 80] = cells[24 * 80 + 79] = 0x1FDB
+    return cells, VGA_PALETTE, (True, 24, 0)
+
+
+def shadow_grid(shadow):
+    """The grid of a saved vga_shadow (tests/fbcon_ref.py's layout)."""
+    cells = list(struct.unpack_from("<2000H", shadow, 0))
+    pal = [tuple(shadow[4000 + 3 * k + c] for c in range(3)) for k in range(16)]
+    return cells, pal, (bool(shadow[4048]), shadow[4049], shadow[4050])
+
+
+def console_client(scr, s, r, grid):
+    """The grid in the Console window at r: each cell as tests/fbcon_ref.py
+    draws it, its top-left at (r.x + edge, r.y + title bar); a pixel only
+    inside the window's inner rounded shape (r shrunk by the edge, radius
+    6 dp - edge) and the clip."""
+    cells, pal, (cur_on, cur_row, cur_col) = grid
+    glyphs, cw, ch = font(s, False)
+    e = px(1, s)
+    inner = inflate(r, -e)
+    Ri = radius_of(inner, px(6, s) - e)
+    gx0, gy0 = r[0] + e, r[1] + px(32, s)
+    colours = [bytes(fbcon_ref.widen(v) for v in p) for p in pal]
+    first, end = ch * 13 // 16, ch * 15 // 16
+    k = scr.clip
+    if k is None:
+        return
+    rows = {}
+    for i, ent in enumerate(cells):
+        row, col = divmod(i, 80)
+        code = fbcon_ref.code_point(ent & 0xFF)
+        fgi, bgi = (ent >> 8) & 0x0F, ent >> 12
+        cursor = cur_on and row == cur_row and col == cur_col
+        x0 = gx0 + col * cw
+        for y in range(ch):
+            py = gy0 + row * ch + y
+            if not k[1] <= py < k[1] + k[3]:
+                continue
+            sp = row_of(inner, Ri, 15, py)
+            if not sp:
+                continue
+            a, b = max(x0, sp[0], k[0]), min(x0 + cw, sp[1], k[0] + k[2])
+            if b <= a:
+                continue
+            under = cursor and first <= y < end
+            key = (code, y, fgi, bgi, under)
+            if key not in rows:
+                bits, fg, bg = glyphs[code][y], colours[fgi], colours[bgi]
+                rows[key] = b"".join(fg if under or (bits >> (cw - 1 - x)) & 1 else bg for x in range(cw))
+            o = (py * scr.w + a) * 3
+            scr.pix[o:o + (b - a) * 3] = rows[key][(a - x0) * 3:(b - x0) * 3]
+
+
+def console_window(scr, tok, s, r, active, close, grid):
+    window(scr, tok, s, r, CONSOLE_TITLE, "console", active, close,
+           lambda scr_, r_: console_client(scr_, s, r_, grid))
+
+
 class WM:
     """The window manager's rules (ui_window.h), written here again: where
     windows open, the clamp, hit testing, focus and z-order, the drag, the
@@ -918,6 +1009,29 @@ class WM:
         self.states()
         return True
 
+    def key(self, console_size, pressed=True, esc=False):
+        """1.3 stage 4b (ui_wm_key): one key event; "opened" (no window
+        focused, a press: the Console window opened, or raised, and focused;
+        not typed), "console" (the Console window focused: the console's) or
+        "taken" (nothing more; Esc pressed closes a focused window that
+        closes on Esc)."""
+        if self.focus is None:
+            if not pressed:
+                return "taken"
+            con = next((w for w in self.z if w["name"] == "Console"), None)
+            if con is None:
+                self.open("Console", console_size[0], console_size[1], False)
+            else:
+                self.raise_(con)
+                self.set_focus(con)
+                self.states()
+            return "opened"
+        if self.focus["name"] == "Console":
+            return "console"
+        if pressed and esc:
+            self.esc()
+        return "taken"
+
 
 def scene_windows(scr, tok, s, close="normal"):
     """tests/desktopdump.c's window scenes: two About windows on bg.deep,
@@ -936,14 +1050,39 @@ def scene_windows(scr, tok, s, close="normal"):
 
 def desktop_windows(w, h, clock, windows):
     """The desktop (desktop()) with windows on it, bottom to top: each a
-    dict r, active, close, values (the About window, the only one in 4a)."""
+    dict r, active, close, values (the About window, the only one in 4a);
+    1.3 stage 4b: a dict with a "grid" (shadow_grid's) is a Console window."""
     tok = colours()
     s = scale_of(w, h)
     scr = Screen(w, h, tok["bg.deep"])
     scr.pix = bytearray(desktop(w, h, clock))
     for win in windows:
-        about_window(scr, tok, s, win["r"], win["active"], win["close"], win["values"])
+        if win.get("grid") is not None:
+            console_window(scr, tok, s, win["r"], win["active"], win["close"], win["grid"])
+        else:
+            about_window(scr, tok, s, win["r"], win["active"], win["close"], win["values"])
     return bytes(scr.pix)
+
+
+def scene_console(scr, tok, s, kind):
+    """tests/desktopdump.c's Console window scenes on bg.deep, the window
+    placed by the rules with DUMP_GRID in it: console (active), console_inactive,
+    console_about (the Console window, then an About window opened over it:
+    the Console window inactive, the About window active, overlapping it)."""
+    wm = WM(scr.w, scr.h, s)
+    cw, chh = console_size(s)
+    c = wm.open("Console", cw, chh, False)
+    grid = dump_grid()
+    if kind != "about":
+        console_window(scr, tok, s, c["r"], kind == "active", "normal", grid)
+        return "%s; the window at (%d, %d), %dx%d" % (kind, c["r"][0], c["r"][1], cw, chh)
+    aw, ah = about_size(s)
+    a = wm.open("About", aw, ah, True)
+    values = about_values(s, b"1.3", DUMP_LOADER, DUMP_DISPLAY, b"127 MB")
+    console_window(scr, tok, s, c["r"], False, "normal", grid)
+    about_window(scr, tok, s, a["r"], True, "normal", values)
+    return "the Console window at (%d, %d), %dx%d, under the About window at (%d, %d)" % (
+        c["r"][0], c["r"][1], cw, chh, a["r"][0], a["r"][1])
 
 
 # ---- The contrast check (1.3 stage 4a; the Design Guide, section 12) ----
@@ -1049,7 +1188,10 @@ def contrast_check(path):
 SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
           "taskbar": scene_taskbar, "windows": scene_windows, "windows_exposed": scene_windows,
           "windows_hover": lambda scr, tok, s: scene_windows(scr, tok, s, "hover"),
-          "windows_pressed": lambda scr, tok, s: scene_windows(scr, tok, s, "pressed")}
+          "windows_pressed": lambda scr, tok, s: scene_windows(scr, tok, s, "pressed"),
+          "console": lambda scr, tok, s: scene_console(scr, tok, s, "active"),
+          "console_inactive": lambda scr, tok, s: scene_console(scr, tok, s, "inactive"),
+          "console_about": lambda scr, tok, s: scene_console(scr, tok, s, "about")}
 
 
 def scale_of(w, h):

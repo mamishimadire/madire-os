@@ -23,6 +23,10 @@
 #    summary report the holds, the hand-off gaps, the waits and the turns.
 # 6. The mouse burst (1.2 stage 7): test=mouse, 1000 packets over QMP,
 #    every one decoded exactly; two checks.
+# 7. The drag burst (1.3 stage 4b): test=desktop desktopabout, 1000 packets
+#    dragging the About window by its title bar; three checks (exact
+#    packets, the final rectangle, the longest composition and the screen),
+#    and a report-only burst over the Console window with keys typed.
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -324,3 +328,75 @@ if mouse_done_ok "$LOG" 1000 && grep -q "^System ready\." "$LOG" && ! grep -qE "
 else
     fail "[stress] mouse burst: the counts are not 1000 packets from 3000 bytes through IRQ12, or no System ready, or a panic (see $LOG)"
 fi
+
+section "[stress] The drag burst: 1000 packets dragging the About window (test=desktop desktopabout, 1024x768x32; 1.3 stage 4b)"
+# docs/plans/1.3.md, section G. tests/qmp_desktop.py presses the left button
+# on the About window's title bar and sends 1000 moves with it held (each at
+# most 20 px, never more than 4 packets waiting; every packet's line
+# checked), then releases it; its model (tests/desktop_ref.py's WM) gives
+# where the rules put the window: its start plus the pointer's own movement,
+# clamped. Checks: no byte dropped and every packet exact; the logged final
+# rectangle equal to the model's and to the clamp of the asked place; the
+# longest composition reported (desktoplog's "frames during the drag"
+# line) and the screen after the burst equal to the reference. Report only
+# (the checkpoint's key-latency question): a second burst drags the Console
+# window (focused) while "echo burstkeys-0123456789" is typed into it; the
+# line must arrive complete and in order.
+DB_W=1024; DB_H=768; DB_S=4
+DB_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+DB_SHP=$(printf '0x%x' $(( 0x${DB_SHV:-0} - 0xffffffff80000000 )))
+LOG=$OUT/serial-desktop-dragburst.log
+desktop_iso "dragburst" "test=desktop desktopabout desktoplog mouselog"
+DB_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DB_SOCK=$OUT/qmp-dragburst.sock
+    rm -f "$LOG" "$DB_SOCK"
+    DB_T0=$(date +%s%N)
+    timeout 660 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$LOG" \
+        -qmp unix:"$DB_SOCK",server=on,wait=off -m 128M -cdrom "$DT_ISO" >/dev/null 2>&1 &
+    DB_QPID=$!
+    DB_OUT=$(python3 "$QMPDESKTOP" "$DB_SOCK" "$LOG" rel:-1000,-1000 to:title dragburst:1000 wshot \
+             to:desktop press release "type:x" to:title "dragburst:1000:echo burstkeys-0123456789{ret}" \
+             --about --shadow "$DB_SHP" --size "${DB_W}x${DB_H}" --until "burstkeys-0123456789" --timeout 600 2>&1)
+    grep -v '^MISMATCH ' <<< "$DB_OUT" | sed 's/^/      /'
+    grep '^MISMATCH ' <<< "$DB_OUT" | head -n 5 | sed 's/^/      /'
+    echo "$DB_OUT" > "${LOG%.log}.desktop.txt"
+    sleep 0.5
+    kill "$DB_QPID" 2>/dev/null
+    wait "$DB_QPID" 2>/dev/null
+    [ -f "$LOG" ] || : > "$LOG"
+    boot_seconds "$LOG" "$DB_T0"
+else : > "$LOG"; fi
+grep -E "^desktop: (drag|frames during|burst)|^Mouse: .*dropped" "$LOG" | head -n 12 | sed 's/^/      /'
+if grep -qE "^DRAGBURST sent=1000 exact=1000 " <<< "$DB_OUT" && ! grep -qE "bytes dropped|events dropped|PANIC|FAILED" "$LOG"; then
+    pass "[stress] drag burst: 1000 packets with the left button held over the About window's title bar, every one decoded exactly; no byte or key dropped, no panic or FAILED line"
+else
+    fail "[stress] drag burst: a packet not decoded exactly, a byte dropped, or a panic ($(grep -E '^(DRAGBURST|PACKETS|qmp_desktop)' <<< "$DB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+DB_ASK=$(sed -nE 's/^DRAG 1 asked \((-?[0-9]+), (-?[0-9]+)\) got \((-?[0-9]+), (-?[0-9]+)\) ([0-9]+)x([0-9]+) bar ([0-9]+) left (-?[0-9]+)$/\1 \2 \3 \4 \5 \6 \7 \8/p' <<< "$DB_OUT")
+DB_OK=0
+if [ -n "$DB_ASK" ]; then
+    read -r ax ay gx gy ww wh bar left <<< "$DB_ASK"
+    cx=$ax; [ "$cx" -lt "$left" ] && cx=$left; [ "$cx" -gt $((DB_W - (48 * DB_S + 2) / 4)) ] && cx=$((DB_W - (48 * DB_S + 2) / 4))
+    cy=$ay; [ "$cy" -gt $((bar - wh)) ] && cy=$((bar - wh)); [ "$cy" -lt 0 ] && cy=0
+    echo "      the burst asked ($ax, $ay); clamped ($cx, $cy); the model ($gx, $gy)"
+    if [ "$cx" -eq "$gx" ] && [ "$cy" -eq "$gy" ] && grep -qxF "desktop: drag About to ($gx, $gy) ${ww}x${wh}" "$LOG"; then
+        DB_OK=1
+    fi
+fi
+if [ "$DB_OK" = 1 ]; then
+    pass "[stress] drag burst: the About window's final rectangle ($gx, $gy) ${ww}x${wh}, as logged, is its start plus the sum of the moves, clamped"
+else
+    fail "[stress] drag burst: the final rectangle is not the sum of the moves clamped ($(grep -E '^(DRAG 1|qmp_desktop)' <<< "$DB_OUT" | tr '\n' ' '))"
+fi
+DB_LONG=$(grep -m1 -E "^desktop: frames during the drag: [0-9]+ composed, the longest composition [0-9]+ us " "$LOG")
+if [ -n "$DB_LONG" ] && grep -qE "^WSCREEN 1 size=${DB_W}x${DB_H} differ=0 " <<< "$DB_OUT"; then
+    pass "[stress] drag burst: the longest composition reported (${DB_LONG#desktop: frames during the drag: }); the screen after the burst equals the reference pixel for pixel"
+else
+    fail "[stress] drag burst: no 'frames during the drag' line, or the screen after the burst differs ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DB_OUT" | tr '\n' ' '))"
+fi
+# Report only: keys typed into the Console window during a burst.
+DB_KEYS=no
+grep -qxF "madire> echo burstkeys-0123456789" "$LOG" && grep -qxF "burstkeys-0123456789" "$LOG" && DB_KEYS=yes
+echo "DRAGBURST_KEYS (report only) $(grep -E '^DRAGBURST ' <<< "$DB_OUT" | sed -n 2p); the line typed during the Console window's burst complete and in order: $DB_KEYS; the drag lines: $(grep -cE '^desktop: frames during the drag: ' "$LOG"), the burst lines: $(grep -cE '^desktop: burst: ' "$LOG")"
+grep -E "^desktop: frames during the drag: " "$LOG" | sed 's/^/DRAGBURST_FRAMES /'

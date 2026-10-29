@@ -7,15 +7,16 @@
  * stage 3 only on a boot with the test option test=desktop (test ISOs; the
  * real ISO and every other boot are as in 1.2): at System ready, if the
  * console is offered and is on the framebuffer, the desktop takes the
- * screen from the console (fbcon_hold) and the compositor owns the back
+ * screen from the console (since stage 4b: the console moves into the
+ * Console window, fbcon_window) and the compositor owns the back
  * buffer: the background (the wallpaper with the M logo alone, at the
  * splash's place: the owner's decision in stage 3b), the taskbar with the M button
  * (drawn, its normal state only) and the clock, and the pointer from the
  * first mouse packet on (the 1.2 save-under overlay on the framebuffer).
  *
- * Any key hands the screen back to 1.2's full-screen console, and the
- * console opens; the key is not typed (as since 0.5). Stage 4's Console
- * window replaces this. A panic draws 1.2's crash screen (fbcon).
+ * In stage 3 any key handed the screen back to 1.2's full-screen console;
+ * stage 4b's Console window replaces this (below). A panic draws 1.2's
+ * full-screen crash screen (fbcon, docs/plans/1.3.md, C3).
  *
  * The background cache: slot 506's third area (VM_DESKTOP_BASE), planned
  * and mapped once when the desktop starts, never freed; when it does not
@@ -41,20 +42,44 @@
  * back buffer during composition, clipped to the damaged rectangle
  * (docs/plans/1.3.md, C4, A1). The About window (ui_about.h) opens only
  * with the test option desktopabout, at the start (stage 5's menus will
- * open it). A key with no window focused hands the screen back to the
- * console as in stage 3; with the About window focused, Esc closes it and
- * every other key does nothing. With desktoplog, also "desktop: ..." lines
+ * open it). With the About window focused, Esc closes it and every other
+ * key does nothing. With desktoplog, also "desktop: ..." lines
  * for each window opened (with its rectangle), raised, focused (or none),
  * dragged (its rectangle when the button is released), closed and each
  * close button state, and the About window's values in full.
+ *
+ * 1.3 stage 4b: the Console window (docs/plans/1.3.md, C2; decision 5;
+ * ui_console.h): the console's 80 x 25 grid at the screen's scale, titled
+ * "Console". With no window focused any key opens it (or shows it again)
+ * and focuses it, and is not typed (decision 7, as amended in 3b); the
+ * first such key starts the console, as at System ready in 1.2 ("Desktop:
+ * a key opened the Console window (the key is not typed)" each time). With
+ * it focused every key goes to the console unchanged, Esc included. Its
+ * close button hides it: the shell session goes on, its surface keeps the
+ * grid, and opening it again shows the same content and cursor (the window
+ * placed as any window that opens). Without a surface (desktopnosurface,
+ * or no room in the share) the compositor paints it from vga_shadow.
+ *
+ * 1.3 stage 4b, the frame log: a frame's marker and clock line are logged
+ * only once settled, when no mouse byte waits after the composition (the
+ * driver's counts: every byte queued decoded into a packet or counted
+ * bad); frames composed meanwhile are counted, so N may jump, and the
+ * marker of the last one comes with the first settled pass of the idle
+ * loop. With desktoplog, when more than one frame was composed since the
+ * last marker, one report-only line before it: "desktop: burst: <n>
+ * frames composed (frames <a> to <b>), the longest composition <us> us
+ * (...)".
  */
 
 #include <stdbool.h>
 #include <stdint.h>
 
 /* The boot options: test=desktop (`wanted`), desktoplog, desktopnocache;
- * 1.3 stage 4a: desktopnosurface, desktopabout. */
-void desktop_options(bool wanted, bool log, bool nocache, bool nosurface, bool about);
+ * 1.3 stage 4a: desktopnosurface, desktopabout; 1.3 stage 4b: desktoppanic
+ * (test-only: once a key has opened the Console window and its frame is
+ * logged, "Desktop fault test: ..." and a deliberate panic through the
+ * normal panic path; the crash screen is 1.2's full-screen one, C3). */
+void desktop_options(bool wanted, bool log, bool nocache, bool nosurface, bool about, bool panic_test);
 
 /* 1.3 stage 4a: the About window's values the desktop cannot read itself:
  * the boot loader's name (Multiboot's, or none) and the usable memory in
@@ -75,12 +100,13 @@ void desktop_poll(void);
  * hot spot, the left button pressed or released in it. */
 void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up);
 
-/* 1.3 stage 4a: a key pressed while the desktop shows: true if a window has
- * the focus and took it (Esc closes the About window; other keys do
- * nothing); false otherwise (desktop_close_key then). */
-bool desktop_key(bool esc);
-
-/* A key while the desktop shows: the screen goes back to the console. */
-void desktop_close_key(void);
+/* 1.3 stage 4b (replacing stage 4a's desktop_key and stage 3's
+ * desktop_close_key): every key event while the desktop shows, pressed or
+ * released, Esc or not (ui_wm_key): DESKTOP_KEY_OPENED: the Console window
+ * opened or shown (start the console if it is not running; the key is not
+ * typed); DESKTOP_KEY_CONSOLE: the console takes the key; DESKTOP_KEY_TAKEN:
+ * nothing more to do. */
+enum desktop_key_route { DESKTOP_KEY_TAKEN, DESKTOP_KEY_OPENED, DESKTOP_KEY_CONSOLE };
+enum desktop_key_route desktop_key(bool pressed, bool esc);
 
 #endif

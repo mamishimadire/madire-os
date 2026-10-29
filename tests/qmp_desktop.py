@@ -68,12 +68,40 @@ boot has desktopabout (the About window opens at the start). More steps
 At the end (with --about or any of these steps): the kernel's window lines
 ("desktop: open|raise|focus|drag|close ...") against the model's, in order:
     EVENTS predicted=<n> logged=<n> same=<yes|no>[ first difference <i>: want '...' got '...']
+
+1.3 stage 4b: the Console window. The model also follows every key the
+type: step sends (desktop_ref.WM.key: with no window focused a key opens
+the Console window and is not typed; with it focused the console takes
+the key; with the About window focused Esc closes it), and waits for the
+kernel's window lines of what it changed. --shadow PHYS (vga_shadow's
+physical address): each wshot with a Console window also saves the
+kernel's cell grid while the guest is stopped and draws the window from
+it (desktop_ref.console_window), and prints
+    GRID <n> crc=<crc32 of the 4051 bytes> row0='...' row24='...'
+(the rows' characters as bytes, trailing spaces cut). More steps:
+    to:WHERE@NAME a point of window NAME's title bar (title) or body (body)
+                  that the hit test gives to it (no window above it there);
+    wait:LINE     (in window mode) also the point after which wshot waits
+                  for a frame;
+    dragburst:N[:TEXT]  press on the top window's title bar (the pointer
+                  must be there), N moves with the left button held (each
+                  at most 20 px, never more than 4 packets waiting, every
+                  packet's line checked), release; with TEXT, its keys
+                  spread over the burst (tests/qmp_keys.py's syntax);
+                  prints the DRAG line and
+    DRAGBURST sent=<n> exact=<n> seconds=<s> keys=<k>
+    crash:LINE    (with --shadow) wait for LINE (spaces around it ignored),
+                  then the crash screen against tests/fbcon_ref.py's
+                  full-screen rendering of the saved grid, the screen taken
+                  again 1 s later (held: unchanged); prints
+    CRASH size=<w>x<h> differ=<pixels> held=<yes|no> (<description>)
 """
 import argparse
 import os
 import re
 import sys
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -154,12 +182,14 @@ class Windows:
     """The model (desktop_ref.WM) and what follows it: the last serial line
     that showed a change, the About window's logged values."""
 
-    def __init__(self, size, about):
+    def __init__(self, size, about, shadow=None):
         self.w, self.h = size
         self.s = desktop_ref.scale_of(self.w, self.h)
         self.wm = desktop_ref.WM(self.w, self.h, self.s)
         self.sync = 0                   # the serial line after which the next frame shows the model
         self.drags = 0
+        self.shadow = shadow            # 1.3 stage 4b: vga_shadow's physical address (hex), or None
+        self.console_size = desktop_ref.console_size(self.s)
         if about:
             aw, ah = desktop_ref.about_size(self.s)
             self.wm.open("About", aw, ah, True)
@@ -173,6 +203,18 @@ class Windows:
 
     def target(self, where):
         d = lambda n: desktop_ref.px(n, self.s)  # noqa: E731
+        if "@" in where:                # 1.3 stage 4b: a named window's own visible point
+            part, name = where.split("@")
+            win = next((w for w in self.wm.z if w["name"] == name), None)
+            if win is None:
+                raise RuntimeError("no open window %s (model)" % name)
+            r, tb = win["r"], d(32)
+            ys = [r[1] + d(16)] if part == "title" else range(r[1] + tb + d(8), r[1] + r[3] - d(8), d(8))
+            for y in ys:
+                for x in range(r[0] + d(8), r[0] + r[2] - tb - d(8), d(8)):
+                    if 0 <= x < self.w and 0 <= y < self.wm.bar and self.wm.hit(x, y) == (part, win):
+                        return x, y
+            raise RuntimeError("no visible point of %s's %s (model)" % (name, part))
         if where == "desktop":
             for x, y in ((d(8), d(8)), (self.w - d(8), d(8)), (d(8), self.wm.bar - d(8)),
                          (self.w - d(8), self.wm.bar - d(8))):
@@ -190,6 +232,9 @@ class Windows:
         if where == "body":
             return r[0] + d(40), r[1] + d(250)
         raise ValueError("unknown place %r" % where)
+
+    def key(self, pressed, esc):
+        return self.wm.key(self.console_size, pressed, esc)
 
     def values(self, serial):
         serial.poll()
@@ -228,16 +273,30 @@ def rel(m, win, serial, dx, dy):
 def wtake(qmp, serial, dump, win, pointer_at):
     qmp.command("stop")
     w, h, pix = qmp.screendump(dump)
+    shadow = None
+    if win.shadow and any(x["name"] == "Console" for x in win.wm.z):     # 1.3 stage 4b
+        mem = os.path.abspath(dump + ".shadow")
+        if os.path.exists(mem):
+            os.remove(mem)
+        qmp.command("pmemsave", val=int(win.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
     frame, clock = last_clock(serial)
     seen = markers(serial)
     qmp.command("cont")
+    if win.shadow and any(x["name"] == "Console" for x in win.wm.z):
+        shadow = open(mem, "rb").read()
+        os.remove(mem)
+    win.last_shadow = shadow
     if clock is None:
         return w, h, -1, None, "no 'desktop: clock' line after a frame marker", seen
     shown = []
-    if win.wm.z:
-        values = win.values(serial)
-        shown = [{"r": x["r"], "active": x is win.wm.focus, "close": x["close"], "values": values}
-                 for x in win.wm.z]
+    values = win.values(serial) if any(x["name"] == "About" for x in win.wm.z) else None
+    for x in win.wm.z:
+        one = {"r": x["r"], "active": x is win.wm.focus, "close": x["close"], "values": values}
+        if x["name"] == "Console":
+            if shadow is None:
+                raise RuntimeError("a Console window to draw but no --shadow")
+            one["grid"] = desktop_ref.shadow_grid(shadow)
+        shown.append(one)
     want = desktop_ref.desktop_windows(w, h, clock.encode("ascii"), shown)
     desc = "the desktop with the clock %s (frame %d)" % (clock, frame)
     for x in win.wm.z:
@@ -273,6 +332,99 @@ def wshot(qmp, serial, dump, win, m, n):
             break
     print("WSCREEN %d size=%dx%d differ=%d clock=%s tries=%d (%s)" % (n, w, h, differ, clock, tries, desc),
           flush=True)
+    if win.last_shadow is not None:         # 1.3 stage 4b
+        g = win.last_shadow
+        rows = [bytes(g[2 * (80 * r + c)] for c in range(80)).rstrip(b" ") for r in (0, 24)]
+        print("GRID %d crc=%08x row0=%r row24=%r" % (n, zlib.crc32(g[:fbcon_ref.SHADOW_SIZE]),
+                                                   rows[0].decode("latin-1"), rows[1].decode("latin-1")), flush=True)
+
+
+def crash_screen(qmp, a, dump):
+    """1.3 stage 4b: the crash screen after a panic (the guest halted): the
+    screen and vga_shadow, then the screen again 1 s later; against
+    tests/fbcon_ref.py's full-screen rendering of the cell grid (no window,
+    no taskbar, no pointer)."""
+    if not a.shadow:
+        raise RuntimeError("crash: needs --shadow")
+    time.sleep(1)
+    mem = os.path.abspath(dump + ".shadow")
+    if os.path.exists(mem):
+        os.remove(mem)
+    qmp.command("stop")
+    w, h, pix = qmp.screendump(dump)
+    qmp.command("pmemsave", val=int(a.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
+    qmp.command("cont")
+    shadow = open(mem, "rb").read()
+    os.remove(mem)
+    time.sleep(1)
+    _, _, again = qmp.screendump(dump)
+    want, desc = fbcon_ref.render(desktop_ref.FONTDIR, shadow, w, h)
+    differ, first = fbcon_ref.compare(pix, want, w)
+    if first is not None:
+        desc += ", first at %d,%d: screen %s, reference %s" % first
+    print("CRASH size=%dx%d differ=%d held=%s (the console's cell grid full-screen, no pointer: %s)" % (
+        w, h, differ, "yes" if again == pix else "no", desc), flush=True)
+
+
+def model_keys(win, actions):
+    """1.3 stage 4b: what the keys of one send-key do in the model (each
+    pressed in order, then released)."""
+    for k in actions:
+        win.key(True, k == "esc")
+    for k in actions:
+        win.key(False, k == "esc")
+
+
+def wait_events(serial, win, before):
+    """The kernel's lines of the model's events since `before` (their
+    number then); the sync point moves to the last one."""
+    for want in win.wm.events[before:]:
+        i = serial.wait(lambda l, w=want: l == w, 20, win.sync)
+        if i is None:
+            raise RuntimeError("no line %r" % want)
+        win.sync = i
+
+
+def drag_burst(qmp, serial, win, m, count, keys):
+    """1.3 stage 4b: press on the top window's title bar, `count` moves with
+    the left button held, release; `keys` spread over the moves."""
+    packet(m, win, serial, 0, 0, True)
+    if win.wm.drag is None:
+        raise RuntimeError("dragburst: the press was not on a title bar (model)")
+    target, start, x0, y0 = win.wm.drag, win.wm.drag["r"], m.x, m.y
+    actions = [a for a in text_to_actions(keys) if a[0] != "wait"] if keys else []
+    every = max(count // (len(actions) + 1), 1)
+    t0 = time.monotonic()
+    first = m.n + 1                     # the burst's first packet
+    pending, sent_keys = [], 0
+    for i in range(count):
+        while len(pending) >= 4:
+            m.check(*pending.pop(0))
+        dx = (i * 37) % 41 - 20 or 3
+        dy = (i * 53) % 31 - 15 or -2
+        pending.append(m.move(dx, dy))
+        win.wm.pointer(m.x, m.y)
+        if sent_keys < len(actions) and i % every == every - 1:
+            value = actions[sent_keys][1]
+            sent_keys += 1
+            qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value], **{"hold-time": 20})
+            model_keys(win, value)
+    for n, want in pending:
+        m.check(n, want)
+    seconds = time.monotonic() - t0
+    packet(m, win, serial, 0, 0, False)
+    for _, value in actions[sent_keys:]:
+        qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value], **{"hold-time": 20})
+        model_keys(win, value)
+        sent_keys += 1
+        time.sleep(0.05)
+    win.drags += 1
+    asked = (start[0] + m.x - x0, start[1] + m.y - y0)
+    print("DRAG %d asked (%d, %d) got (%d, %d) %dx%d bar %d left %d" % (
+        win.drags, asked[0], asked[1], target["r"][0], target["r"][1], target["r"][2], target["r"][3],
+        win.wm.bar, desktop_ref.px(48, win.s) - target["r"][2]), flush=True)
+    bad = sum(1 for n, _, _ in m.mismatches if first <= n < first + count)
+    print("DRAGBURST sent=%d exact=%d seconds=%.1f keys=%d" % (count, count - bad, seconds, sent_keys), flush=True)
 
 
 def window_step(step, qmp, serial, dump, win, m, shots):
@@ -301,6 +453,9 @@ def window_step(step, qmp, serial, dump, win, m, shots):
         print("DRAG %d asked (%d, %d) got (%d, %d) %dx%d bar %d left %d" % (
             win.drags, asked[0], asked[1], target["r"][0], target["r"][1], target["r"][2], target["r"][3],
             win.wm.bar, desktop_ref.px(48, win.s) - target["r"][2]), flush=True)
+    elif step.startswith("dragburst:"):                          # 1.3 stage 4b
+        parts = step.split(":", 2)
+        drag_burst(qmp, serial, win, m, int(parts[1]), parts[2] if len(parts) > 2 else "")
     elif step.startswith("key:"):
         qmp.command("send-key", keys=[{"type": "qcode", "data": step[4:]}], **{"hold-time": 20})
         time.sleep(1.5)
@@ -348,6 +503,7 @@ def main():
     ap.add_argument("--until")
     ap.add_argument("--timeout", type=float, default=150)
     ap.add_argument("--about", action="store_true")         # 1.3 stage 4a
+    ap.add_argument("--shadow")                                 # 1.3 stage 4b
     a = ap.parse_args()
     dump = a.socket + ".ppm"
     try:
@@ -361,7 +517,9 @@ def main():
         qmp = Qmp(a.socket)
         serial = Serial(a.serial)
         m = Mouse(qmp, serial, size)
-        win = Windows(size, a.about) if size else None
+        win = Windows(size, a.about, a.shadow) if size else None
+        if win:
+            win.last_shadow = None
         windowed = a.about
         t0 = time.monotonic()
         qmp.command("cont")
@@ -370,7 +528,7 @@ def main():
         for step in a.steps:
             left = max(a.timeout - (time.monotonic() - t0), 1)
             if win and (step in ("wshot", "press", "release", "esc") or step.split(":")[0] in
-                        ("to", "rel", "drag", "key")):
+                        ("to", "rel", "drag", "key", "dragburst")):
                 windowed = True
                 wshots = window_step(step, qmp, serial, dump, win, m, wshots)
             elif step == "screen":
@@ -392,17 +550,31 @@ def main():
                 dx, dy = (int(v) for v in step[5:].split(","))
                 m.check(*m.move(dx, dy))
             elif step.startswith("wait:"):
-                if serial.wait(lambda l, s=step[5:]: l == s, left) is None:
+                i = serial.wait(lambda l, s=step[5:]: l == s, left, win.sync if windowed else 0)
+                if i is None:
                     print(f"WAIT {step[5:]!r}: not seen in {left:.0f} s", flush=True)
                     return 0
+                if windowed:
+                    win.sync = max(win.sync, i)         # 1.3 stage 4b
+            elif step.startswith("crash:"):                     # 1.3 stage 4b
+                i = serial.wait(lambda l, s=step[6:]: l.strip() == s.strip(), left)
+                if i is None:
+                    print(f"CRASH {step[6:]!r}: not seen in {left:.0f} s", flush=True)
+                    return 0
+                crash_screen(qmp, a, dump)
             elif step.startswith("type:"):
+                before = len(win.wm.events) if win else 0
                 for kind, value in text_to_actions(step[5:]):
                     if kind == "wait":
                         time.sleep(value)
                         continue
                     qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value],
                                 **{"hold-time": 20})
+                    if win:
+                        model_keys(win, value)          # 1.3 stage 4b
                     time.sleep(0.05)
+                if windowed and len(win.wm.events) > before:
+                    wait_events(serial, win, before)
             else:
                 raise ValueError("unknown step %r" % step)
         print(f"PACKETS sent={m.sent} exact={m.exact}", flush=True)

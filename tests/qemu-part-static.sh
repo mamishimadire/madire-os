@@ -21,6 +21,8 @@
 # objects compiled with the kernel's flags, tests/desktopdump.c against
 # tests/desktop_ref.py in five modes). 1.3 stage 3b: after them, the
 # desktop's background and taskbar against desktop_ref.py in five modes.
+# 1.3 stage 4a: the windows and the contrast check; stage 4b: the Console
+# window's scenes and their contrast check.
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -641,6 +643,62 @@ if [ "$(printf '%s\n' "$CONTRAST" | tail -n 1)" = "CONTRAST result: PASS" ] &&
     pass "[1.3] contrast: every colour pair the toolkit draws in the window scenes and the taskbar (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h"
 else
     fail "[1.3] contrast: a colour pair drawn is not in the Design Guide's section 12 table, or its ratio does not pass (see the CONTRAST lines)"
+fi
+
+# ---- 1.3 stage 4b: the Console window ----
+
+section "[1.3] The Console window against tests/desktop_ref.py, and its contrast check (stage 4b)"
+# kernel/display/ui_console.c (with ui_window.c and fbcon_core.c) built into
+# the host tool (build/desktopdump) draws the Console window with a fixed
+# grid (every character, colours by row and column, a full block in both
+# bottom corners, the cursor in the bottom-left one), active (console) and
+# inactive (console_inactive), and under an About window opened over it
+# (console_about), each painted on its own surface and composed through
+# its rounded shape; console_exposed is console_about painted in tiles
+# without surfaces (docs/plans/1.3.md, C4, A1) and must equal the same
+# reference. desktop_ref.py draws them from ui_console.h's rules (the grid
+# in tests/fbcon_ref.py's way, only inside the window's inner rounded
+# shape). Five modes, both pixel formats, every scale but 125 %. The
+# colour pairs these scenes draw are checked against the Design Guide's
+# section 12 table as in stage 4a (their own pairs file); the grid keeps
+# 1.2's VGA palette, outside the table (section 12), and records no pair.
+PAIRS4B=$OUT/desktop-pairs-console.txt
+rm -f "$PAIRS4B"
+desktop4b_static() {   # desktop4b_static <W> <H> <bytes per pixel> <scene> [reference scene]
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS4B "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "${5:-$4}" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the Console window scene $4 at $1x$2x$(($3 * 8)) (ui_console.c, ui_window.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the Console window scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in console console_inactive console_about; do
+        # shellcheck disable=SC2086
+        desktop4b_static $mode $scene
+    done
+    # shellcheck disable=SC2086
+    desktop4b_static $mode console_exposed console_about
+done
+CONTRAST4B=$(python3 "$DREF" --contrast "$PAIRS4B" 2>&1)
+printf '%s\n' "$CONTRAST4B" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST4B" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST4B" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 4 scenes \(console console_about console_exposed console_inactive\)$'; then
+    pass "[1.3] contrast: every colour pair the Console window scenes draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; the grid's VGA colours record none"
+else
+    fail "[1.3] contrast: a colour pair the Console window scenes draw is not in the Design Guide's section 12 table, or its ratio does not pass (see the CONTRAST lines)"
 fi
 
 # ---- 1.2: the size report (decides no check) ----

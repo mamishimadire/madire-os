@@ -1313,3 +1313,46 @@ desktop_case 1024 1024x768x32 100 "desktop at 1024x768x32"
 section "[1.3] Windows at 1024x768x32: the About window (test=desktop desktopabout), drag, clamp, close, desktopnosurface (stage 4a)"
 # desktop_about_case (tests/qemu-lib.sh): 13 checks, two boots.
 desktop_about_case 1024 1024x768x32 100 "windows at 1024x768x32"
+
+section "[1.3] The Console window at 1024x768x32: a key opens it, commands, Shift+PgUp, hide and show, focus, desktopnosurface (stage 4b)"
+# desktop_console_case (tests/qemu-lib.sh): 7 checks, two boots.
+desktop_console_case 1024 1024x768x32 100 "Console window at 1024x768x32"
+
+section "[1.3] A panic with the Console window open: 1.2's full-screen crash screen (test=desktop desktoppanic, 1024x768x32; stage 4b)"
+# docs/plans/1.3.md, C3. The pointer is moved (drawn), a key opens the
+# Console window; once its frame is logged the kernel panics on purpose
+# (the test option desktoppanic, through the normal panic path). The crash
+# screen must be 1.2's: the console's cell grid full-screen
+# (tests/fbcon_ref.py's rendering of the vga_shadow saved over QMP), no
+# window, no taskbar, no pointer, held; and the compositor draws nothing
+# after the panic.
+DP_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+DP_SHP=$(printf '0x%x' $(( 0x${DP_SHV:-0} - 0xffffffff80000000 )))
+LOG=$OUT/serial-desktop-panic.log
+desktop_iso "panic" "test=desktop desktoppanic desktoplog mouselog"
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$LOG" "$DT_ISO" "1024x768" rel:-1000,-1000 rel:300,200 "type:x" \
+        "crash:System halted. Power off the machine." --shadow "$DP_SHP"
+else : > "$LOG"; fi
+grep -E "^Desktop|^desktop: (open|focus)|KERNEL PANIC|Desktop test:|System halted" "$LOG" | sed 's/^/      /'
+if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$LOG" &&
+   grep -qxF "Desktop fault test: a panic with the Console window open (test option desktoppanic)" "$LOG" &&
+   grep -q "KERNEL PANIC" "$LOG" && grep -qxF " Desktop test: a panic with the Console window open (on purpose)." "$LOG" &&
+   grep -qxF " System halted. Power off the machine." "$LOG"; then
+    pass "[1.3] test=desktop desktoppanic: a key opened the Console window, then the panic: Desktop test: a panic with the Console window open (on purpose); System halted"
+else
+    fail "[1.3] test=desktop desktoppanic: no Console window, no fault test line, or no panic lines (see $LOG)"
+fi
+if grep -qE "^CRASH size=1024x768 differ=0 held=yes " <<< "$DT_OUT"; then
+    pass "[1.3] test=desktop desktoppanic: the crash screen equals 1.2's full-screen reference (the console's cell grid, no window, no taskbar, no pointer) pixel for pixel, held"
+else
+    fail "[1.3] test=desktop desktoppanic: the crash screen differs from the full-screen reference, or not held ($(grep -E '^(CRASH|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+fi
+if sed -n '1,/^Desktop fault test: /p' "$LOG" | grep -qE "^display: frame [0-9]+$" &&
+   sed -n '1,/^Desktop fault test: /p' "$LOG" | grep -qE "^pointer: drawn at \(" &&
+   ! sed -n '/^Desktop fault test: /,$p' "$LOG" | grep -qE "^(display: frame|desktop: (composed|clock|burst|frames)|pointer: drawn)"; then
+    pass "[1.3] test=desktop desktoppanic: the Console window's frame and the pointer drawn before the panic; after it nothing composed, presented or drawn by the desktop (no frame, composition, clock or pointer line)"
+else
+    fail "[1.3] test=desktop desktoppanic: no frame or pointer before the panic, or the desktop drew after it (see $LOG)"
+fi

@@ -43,6 +43,18 @@
  * appends to it the colour pairs it drew (kernel/display/ui_trace.h), one
  * line each: PAIR <text|icon|state> <foreground RRGGBB> <background
  * RRGGBB> <pixels>.
+ *
+ * 1.3 stage 4b: the Console window's scenes (kernel/display/ui_console.h):
+ * on bg.deep, the Console window placed by the window manager with a fixed
+ * grid in it (desktop_ref.py's DUMP_GRID: cell i, row r, column c, holds
+ * character (7i + r) mod 256 in colour slot (r + c) mod 16 on slot (r div
+ * 5) mod 8, the VGA's default palette; both bottom corner cells a full
+ * block, white on blue; the cursor in the bottom-left one), active
+ * (console) or inactive (console_inactive); console_about: the Console
+ * window, then an About window opened over it (the Console window
+ * inactive, the About window active), each painted on its own surface and
+ * composed through ui_blit_round; console_exposed: console_about painted
+ * directly in tiles of 97 x 61 pixels from (-7, -13) (the exposure path).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +63,7 @@
 #include "kernel/display/fbcon_core.h"
 #include "kernel/display/tokens.h"
 #include "kernel/display/ui_about.h"
+#include "kernel/display/ui_console.h"
 #include "kernel/display/ui_draw.h"
 #include "kernel/display/ui_font.h"
 #include "kernel/display/ui_icon.h"
@@ -444,6 +457,93 @@ static int scene_windows(struct surface *s, const struct fbcon_layout *cl, enum 
     return rc;
 }
 
+/* ---- 1.3 stage 4b: the Console window ---- */
+
+static uint16_t dump_cells[UI_CONSOLE_COLS * UI_CONSOLE_ROWS];
+static const uint8_t dump_palette[16][3] = {      /* the VGA's 16 default colours, 6-bit */
+    { 0, 0, 0 }, { 0, 0, 42 }, { 0, 42, 0 }, { 0, 42, 42 }, { 42, 0, 0 }, { 42, 0, 42 }, { 42, 21, 0 },
+    { 42, 42, 42 }, { 21, 21, 21 }, { 21, 21, 63 }, { 21, 63, 21 }, { 21, 63, 63 }, { 63, 21, 21 },
+    { 63, 21, 63 }, { 63, 63, 21 }, { 63, 63, 63 },
+};
+
+static void dump_console_paint(const struct ui_canvas *c, struct rect r, void *ctx)
+{
+    const struct ui_fonts *f = ctx;
+    struct ui_console_grid g = { dump_cells, dump_palette, true, 24, 0 };
+    ui_console_paint(c, r, S, f->regular, &g);
+}
+
+/* kind 0: console (active), 1: console_inactive, 2: console_about. */
+static int scene_console(struct surface *s, const struct fbcon_layout *cl, int kind, bool exposed)
+{
+    struct desktop_layout l;
+    struct ui_fonts f;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font) || !ui_fonts_for_scale(cl->scale, &f))
+        return 1;
+    uint32_t sc = cl->scale;
+    for (uint32_t i = 0; i < UI_CONSOLE_COLS * UI_CONSOLE_ROWS; i++) {
+        uint32_t row = i / UI_CONSOLE_COLS, col = i % UI_CONSOLE_COLS;
+        dump_cells[i] = (uint16_t)(((i * 7 + row) & 0xFF) | ((row + col) % 16) << 8 | ((row / 5) % 8) << 12);
+    }
+    dump_cells[24 * 80] = 0x1FDB;
+    dump_cells[24 * 80 + 79] = 0x1FDB;
+    static const char display[] = "2560x1440x32";
+    struct ui_about about = { 0 };
+    struct ui_window win[2];
+    struct ui_wm wm;
+    int32_t w, h;
+    ui_wm_init(&wm, (int32_t)s->width, (int32_t)s->height, l.bar.y, sc, 0);
+    ui_console_size(sc, f.regular, &w, &h);
+    win[0] = (struct ui_window){ .name = "Console", .title = "Console", .icon = UI_ICON_CONSOLE, .w = w, .h = h,
+                                 .paint = dump_console_paint, .ctx = &f };
+    if (!ui_wm_open(&wm, &win[0]))
+        return 1;
+    int n = kind == 2 ? 2 : 1;
+    if (n == 2) {
+        ui_about_setup(&about, sc, &f, "1.3", dump_loader, display, "127 MB", about_scratch[0], UI_ABOUT_SCRATCH);
+        ui_about_size(sc, &w, &h);
+        win[1] = (struct ui_window){ .name = "About", .title = UI_ABOUT_TITLE, .icon = UI_ICON_ABOUT, .w = w,
+                                     .h = h, .esc_closes = true, .paint = ui_about_paint, .ctx = &about };
+        if (!ui_wm_open(&wm, &win[1]))
+            return 1;
+    }
+    bool active[2] = { kind == 0, true };
+    if (exposed) {
+        for (int32_t y = -13; y < (int32_t)s->height; y += 61)
+            for (int32_t x = -7; x < (int32_t)s->width; x += 97)
+                for (int i = 0; i < n; i++) {
+                    struct ui_canvas c;
+                    ui_canvas_init(&c, s);
+                    ui_canvas_clip(&c, ui_rect_intersect((struct rect){ x, y, 97, 61 }, win[i].r));
+                    if (!ui_rect_empty(c.clip))
+                        ui_window_draw(&c, &win[i], win[i].r, active[i], UI_BUTTON_NORMAL, sc, &f);
+                }
+    } else {
+        for (int i = 0; i < n; i++) {
+            uint8_t *px = calloc((size_t)win[i].w * win[i].h, s->bytes_per_pixel);
+            struct surface ws;
+            struct ui_canvas c;
+            if (!px || !surface_init(&ws, px, (uint32_t)win[i].w, (uint32_t)win[i].h,
+                                     (uint32_t)win[i].w * s->bytes_per_pixel, s->bytes_per_pixel))
+                return 1;
+            ui_canvas_init(&c, &ws);
+            ui_window_draw(&c, &win[i], (struct rect){ 0, 0, win[i].w, win[i].h }, active[i], UI_BUTTON_NORMAL, sc,
+                           &f);
+            ui_canvas_init(&c, s);
+            ui_blit_round(&c, win[i].r, &ws, ui_window_radius(sc), UI_CORNERS_ALL);
+            free(px);
+        }
+    }
+    printf("SCENE console: scale %u %%, %s, %s; the Console window at (%d, %d), %dx%d", sc * 25,
+           exposed ? "painted in tiles" : "composed from surfaces",
+           kind == 0 ? "active" : kind == 1 ? "inactive" : "under an About window", win[0].r.x, win[0].r.y,
+           win[0].w, win[0].h);
+    if (n == 2)
+        printf(", the About window at (%d, %d)", win[1].r.x, win[1].r.y);
+    printf("\n");
+    return n == 2 && about.short_scratch ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -482,6 +582,14 @@ int main(int argc, char **argv)
         rc = scene_windows(&s, &cl, UI_BUTTON_PRESSED, false);
     } else if (strcmp(argv[4], "windows_exposed") == 0) {
         rc = scene_windows(&s, &cl, UI_BUTTON_NORMAL, true);
+    } else if (strcmp(argv[4], "console") == 0) {                 /* 1.3 stage 4b */
+        rc = scene_console(&s, &cl, 0, false);
+    } else if (strcmp(argv[4], "console_inactive") == 0) {
+        rc = scene_console(&s, &cl, 1, false);
+    } else if (strcmp(argv[4], "console_about") == 0) {
+        rc = scene_console(&s, &cl, 2, false);
+    } else if (strcmp(argv[4], "console_exposed") == 0) {
+        rc = scene_console(&s, &cl, 2, true);
     } else {
         fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
         return 1;
