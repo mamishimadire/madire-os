@@ -355,7 +355,7 @@ if [ -n "$DT_ISO" ]; then
     timeout 660 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$LOG" \
         -qmp unix:"$DB_SOCK",server=on,wait=off -m 128M -cdrom "$DT_ISO" >/dev/null 2>&1 &
     DB_QPID=$!
-    DB_OUT=$(python3 "$QMPDESKTOP" "$DB_SOCK" "$LOG" rel:-1000,-1000 to:title dragburst:1000 wshot \
+    DB_OUT=$(python3 "$QMPDESKTOP" "$DB_SOCK" "$LOG" ready rel:-1000,-1000 to:title dragburst:1000 wshot \
              to:desktop press release "type:x" to:title "dragburst:1000:echo burstkeys-0123456789{ret}" \
              --about --shadow "$DB_SHP" --size "${DB_W}x${DB_H}" --until "burstkeys-0123456789" --timeout 600 2>&1)
     grep -v '^MISMATCH ' <<< "$DB_OUT" | sed 's/^/      /'

@@ -1332,7 +1332,7 @@ LOG=$OUT/serial-desktop-panic.log
 desktop_iso "panic" "test=desktop desktoppanic desktoplog mouselog"
 DT_OUT=""
 if [ -n "$DT_ISO" ]; then
-    DT_UNTIL="" desktop_boot "$LOG" "$DT_ISO" "1024x768" rel:-1000,-1000 rel:300,200 "type:x" \
+    DT_UNTIL="" desktop_boot "$LOG" "$DT_ISO" "1024x768" ready rel:-1000,-1000 rel:300,200 "type:x" \
         "crash:System halted. Power off the machine." --shadow "$DP_SHP"
 else : > "$LOG"; fi
 grep -E "^Desktop|^desktop: (open|focus)|KERNEL PANIC|Desktop test:|System halted" "$LOG" | sed 's/^/      /'

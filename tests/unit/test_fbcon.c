@@ -209,7 +209,7 @@ static void test_layout_at(void)
 {
     static const uint32_t scales[4] = { 4, 5, 6, 8 };
     for (uint32_t i = 0; i < 4; i++) {
-        struct fbcon_layout l;
+        struct fbcon_layout l = { 0, 0, 0, 0, 0, 0 };
         CHECK(fbcon_layout_at(scales[i], fonts, 2 + i, 32 + 8 * i, &l));
         CHECK(l.font == fonts[i] && l.scale == scales[i]);
         CHECK_EQ(l.cell_w, fonts[i]->width);

@@ -90,6 +90,9 @@ it (desktop_ref.console_window), and prints
                   spread over the burst (tests/qmp_keys.py's syntax);
                   prints the DRAG line and
     DRAGBURST sent=<n> exact=<n> seconds=<s> keys=<k>
+    ready         wait for the desktop's first frame marker (the mouse is
+                  started before it), taking no screen: the first step of
+                  a boot that sends input before its first wshot;
     crash:LINE    (with --shadow) wait for LINE (spaces around it ignored),
                   then the crash screen against tests/fbcon_ref.py's
                   full-screen rendering of the saved grid, the screen taken
@@ -556,6 +559,10 @@ def main():
                     return 0
                 if windowed:
                     win.sync = max(win.sync, i)         # 1.3 stage 4b
+            elif step == "ready":                               # 1.3 stage 4b
+                if serial.wait(lambda l: MARKER.match(l) is not None, left) is None:
+                    print("MARKER not seen in %.0f s" % left, flush=True)
+                    return 0
             elif step.startswith("crash:"):                     # 1.3 stage 4b
                 i = serial.wait(lambda l, s=step[6:]: l.strip() == s.strip(), left)
                 if i is None:

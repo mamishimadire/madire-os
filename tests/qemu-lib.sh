@@ -596,7 +596,7 @@ desktop_console_case() {
     desktop_iso "console-$name" "test=desktop desktopabout desktoplog mouselog" "$extra"
     DT_OUT=""
     if [ -n "$DT_ISO" ]; then
-        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" rel:-1000,-1000 to:desktop press release "type:x" wshot \
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" ready rel:-1000,-1000 to:desktop press release "type:x" wshot \
             "type:version{ret}uname -a{ret}echo console-window-ok{ret}" "wait:console-window-ok" wshot \
             "type:help{ret}echo help-done{ret}" "wait:help-done" "type:{shift+pgup}{wait:2}" wshot \
             to:close press release wshot to:desktop press release "type:y" wshot \
@@ -654,7 +654,7 @@ desktop_console_case() {
     desktop_iso "console-$name-nosurface" "test=desktop desktopabout desktopnosurface desktoplog mouselog" "$extra"
     DT_OUT=""
     if [ -n "$DT_ISO" ]; then
-        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" rel:-1000,-1000 to:desktop press release "type:x" wshot \
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" ready rel:-1000,-1000 to:desktop press release "type:x" wshot \
             "type:version{ret}echo console-window-ok{ret}" "wait:console-window-ok" wshot \
             to:close press release wshot to:desktop press release "type:y" wshot \
             to:title drag:400,0 to:title@About press release "type:a{wait:1}" wshot \
