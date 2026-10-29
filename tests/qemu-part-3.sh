@@ -870,3 +870,7 @@ wait "$QPID" 2>/dev/null
 section "[1.3] The desktop at 800x600x24: test=desktop (tests/qmp_desktop.py), desktopnocache, slot 506 (stage 3b)"
 # The smallest mode, at 3 bytes per pixel. desktop_case: 8 checks, two boots.
 desktop_case 800 800x600x24 100 "desktop at 800x600x24" "resolution: 800x600x24"
+
+section "[1.3] Windows at 800x600x24: the About window (test=desktop desktopabout), drag, clamp, close, desktopnosurface (stage 4a)"
+# desktop_about_case (tests/qemu-lib.sh): 13 checks, two boots.
+desktop_about_case 800 800x600x24 100 "windows at 800x600x24" "resolution: 800x600x24"

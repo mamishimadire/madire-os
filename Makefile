@@ -334,13 +334,15 @@ splashdump: $(SPLASHDUMP)
 # 1.3 stage 2: the desktop toolkit (kernel/display/ui_*, icons.c and
 # coverage_core.c, with the fonts) as a host tool that draws the stage's
 # scenes as a PPM; part static compares them with tests/desktop_ref.py.
-# 1.3 stage 3b: with the desktop's pictures (desktop_core.c).
+# 1.3 stage 3b: with the desktop's pictures (desktop_core.c). 1.3 stage 4a:
+# built with -DUI_TRACE, so it records the colour pairs it draws
+# (kernel/display/ui_trace.h) for part static's contrast check.
 DESKTOPDUMP := $(BUILD)/desktopdump
 $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) kernel/display/wallpaper_core.c \
                 kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
                 kernel/display/desktop_core.c $(GEN)/splash_data.h $(FONT_C)
 	@mkdir -p $(dir $@)
-	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/desktopdump.c $(TOOLKIT_SRCS) kernel/display/wallpaper_core.c \
+	$(UNIT_CC) $(UNIT_CFLAGS) -DUI_TRACE -I$(GEN) tests/desktopdump.c $(TOOLKIT_SRCS) kernel/display/wallpaper_core.c \
 	    kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
 	    kernel/display/desktop_core.c $(FONT_C) -o $@
 

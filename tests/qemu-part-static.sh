@@ -583,6 +583,66 @@ for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; d
     done
 done
 
+# ---- 1.3 stage 4a: windows ----
+
+section "[1.3] Windows against tests/desktop_ref.py, and the contrast check (stage 4a)"
+# kernel/display/ui_window.c and ui_about.c built into the host tool
+# (build/desktopdump) draw two About windows placed by the window manager
+# (the second where the first's place was taken), the first inactive, the
+# second active with its close button normal, on hover or pressed, each
+# painted on its own surface and composed through its rounded shape (the
+# compositor's way); windows_exposed is the first scene painted in tiles
+# without surfaces (docs/plans/1.3.md, C4, A1) and must equal the same
+# reference. desktop_ref.py draws them from ui_window.h's and ui_about.h's
+# rules (the boot loader's value longer than its column: cut with "...").
+# Five modes, both pixel formats, every scale but 125 %. Every run records
+# the colour pairs it draws (desktopdump is built with -DUI_TRACE); with
+# the taskbar's in the five modes, desktop_ref.py --contrast checks each
+# against the Design Guide's section 12 table: a row for it whose result
+# is pass, its ratio recomputed from tokens.h equal to the table's and at
+# or above its rule's minimum; a pair that is no row fails.
+PAIRS=$OUT/desktop-pairs.txt
+rm -f "$PAIRS"
+desktop4_static() {   # desktop4_static <W> <H> <bytes per pixel> <scene> [reference scene]
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "${5:-$4}" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the window scene $4 at $1x$2x$(($3 * 8)) (ui_window.c, ui_about.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the window scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in windows windows_hover windows_pressed; do
+        # shellcheck disable=SC2086
+        desktop4_static $mode $scene
+    done
+    # shellcheck disable=SC2086
+    desktop4_static $mode windows_exposed windows
+    read -r mw mh mb <<< "$mode"
+    DESKTOP_PAIRS=$PAIRS "$OUT/desktopdump" "$mw" "$mh" "$mb" taskbar "$OUT/desktop-pairs-taskbar.ppm" > /dev/null 2>&1 ||
+        echo "PAIRS LOST taskbar-run-failed ${mw}x${mh}" >> "$PAIRS"
+done
+CONTRAST=$(python3 "$DREF" --contrast "$PAIRS" 2>&1)
+printf '%s\n' "$CONTRAST" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 5 scenes \(taskbar windows windows_exposed windows_hover windows_pressed\)$'; then
+    pass "[1.3] contrast: every colour pair the toolkit draws in the window scenes and the taskbar (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h"
+else
+    fail "[1.3] contrast: a colour pair drawn is not in the Design Guide's section 12 table, or its ratio does not pass (see the CONTRAST lines)"
+fi
+
 # ---- 1.2: the size report (decides no check) ----
 
 section "Size report (1.2 stage 2; report only)"

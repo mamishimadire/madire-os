@@ -5,6 +5,7 @@
 #include "kernel/display/tokens.h"
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_rect.h"
+#include "kernel/display/ui_trace.h"
 
 /* Hover and pressed colours are set only where the Design Guide gives
  * them (section 8: the close button; the Calculator's pressed key). */
@@ -62,6 +63,13 @@ bool ui_button_draw(const struct ui_canvas *c, const struct ui_button *b, const 
         radius = r.h / 2;
     if (radius < 0)
         radius = 0;
+#ifdef UI_TRACE
+    /* 1.3 stage 4a: a hover or pressed fill is a state mark (ui_trace.h). */
+    int64_t cx = (int64_t)r.x + r.w / 2, cy = (int64_t)r.y + r.h / 2;
+    if (st != UI_BUTTON_NORMAL && style->fill[st] != UI_COLOUR_NONE && cx >= 0 && cy >= 0 &&
+        cx < c->s->width && cy < c->s->height)
+        UI_TRACE_PAIR(UI_TRACE_STATE, style->fill[st], surface_get(c->s, (uint32_t)cx, (uint32_t)cy));
+#endif
     if (style->fill[st] != UI_COLOUR_NONE)
         ui_fill_round(c, r, radius, style->corners, style->fill[st]);
     if (b->icon != UI_ICON_NONE) {

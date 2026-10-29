@@ -6,6 +6,7 @@
  */
 #include "kernel/display/wallpaper_core.h"
 #include "kernel/display/coverage_core.h"
+#include "kernel/display/ui_trace.h"
 #include "splash_data.h"            /* generated: build/gen/ (the Makefile) */
 
 #define FB    8
@@ -447,8 +448,11 @@ bool wp_line_draw(struct surface *s, struct rect clip, const struct wp_line *l, 
         for (int64_t y = cv.box.y0; y <= cv.box.y1; y++)
             for (int64_t x = cv.box.x0; x <= cv.box.x1; x++) {
                 uint16_t a = scratch[(size_t)(y - cv.box.y0) * bw + (size_t)(x - cv.box.x0)];
-                if (a)
+                if (a) {
+                    /* 1.3 stage 4a: a host tool's contrast record (ui_trace.h). */
+                    UI_TRACE_PAIR(UI_TRACE_TEXT, rgb_colour, surface_get(s, (uint32_t)x, (uint32_t)y));
                     paint(s, x, y, text, a);
+                }
             }
     }
     return all;

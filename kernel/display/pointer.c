@@ -3,6 +3,7 @@
  */
 #include "kernel/display/pointer.h"
 #include "drivers/mouse/ps2mouse.h"
+#include "kernel/display/desktop.h"
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
 #include "kernel/display/fbcon_core.h"
@@ -175,6 +176,9 @@ uint32_t pointer_poll(void)
             mouse_counts(&c);
             log_packet(c.packets, &e);
         }
+        /* 1.3 stage 4a: the desktop's windows (after the packet's line). */
+        if (on_screen)
+            desktop_pointer(px, py, e.pressed & MOUSE_B0_LEFT, e.released & MOUSE_B0_LEFT);
     }
     if (taken && on_screen && thread_screen_allowed() && !panic_active) {
         draw_at(px, py);

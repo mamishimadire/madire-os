@@ -123,6 +123,17 @@
 # 800x600x24 in part 3, 8 each (the Desktop: lines, the first frame, the
 # pointer twice, the key back to the console, slot 506 modelled, and with
 # desktopnocache the same screen and slot 506 modelled); 3 unit suites
-# (rtc13, compositor, ui_desktop).
-1.3 45
-unit-suites 86
+# (rtc13, compositor, ui_desktop). Stage 4a: 47 more: in part static 21
+# (two About windows, inactive and active, the close button normal, on
+# hover and pressed, composed from surfaces, and painted on exposure in
+# tiles: tests/desktopdump.c against tests/desktop_ref.py, four scenes in
+# five modes; the contrast check of every colour pair drawn against the
+# Design Guide's section 12 table); the About window with test=desktop
+# desktopabout at 1024x768x32 in part 2 and at 800x600x24 in part 3, 13
+# each (its values, the window surfaces in slot 506 modelled, the first
+# frame, a drag, a clamped drag, the close button's hover, pressed and
+# close; with desktopnosurface the first frame and slot 506, a drag,
+# focus by clicks, a key that does nothing and Esc, a key back to the
+# console); 3 unit suites (ui_window, ui_about, ui_plan).
+1.3 92
+unit-suites 89

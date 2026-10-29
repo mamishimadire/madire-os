@@ -27,6 +27,22 @@
  *     tallest box; a break starts a new row likewise.
  * Prints one line (SCENE ...: the scale, the flow's last row's bottom and
  * the damage lists). Exit status 1 on any error.
+ *
+ * 1.3 stage 4a: the window scenes (kernel/display/ui_window.h, ui_about.h):
+ * on bg.deep, two About windows placed by the window manager (the first
+ * centred above the taskbar, the second 24 dp further: the place taken),
+ * the first inactive, the second active with its close button normal
+ * (windows), on hover (windows_hover) or pressed (windows_pressed), each
+ * window painted on its own surface and composed through ui_blit_round,
+ * the first then the second, as the compositor does; windows_exposed is
+ * the windows scene painted directly in tiles of 97 x 61 pixels from
+ * (-7, -13) (the exposure path without surfaces, docs/plans/1.3.md, C4,
+ * A1). The values: Version 1.3, a boot loader's name longer than the
+ * column (cut, ui_about.h), 2560x1440x32, 127 MB. Built with -DUI_TRACE: with
+ * the environment variable DESKTOP_PAIRS set to a file, every scene
+ * appends to it the colour pairs it drew (kernel/display/ui_trace.h), one
+ * line each: PAIR <text|icon|state> <foreground RRGGBB> <background
+ * RRGGBB> <pixels>.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,11 +50,54 @@
 #include "kernel/display/desktop_core.h"
 #include "kernel/display/fbcon_core.h"
 #include "kernel/display/tokens.h"
+#include "kernel/display/ui_about.h"
 #include "kernel/display/ui_draw.h"
 #include "kernel/display/ui_font.h"
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_rect.h"
+#include "kernel/display/ui_trace.h"
 #include "kernel/display/ui_widget.h"
+#include "kernel/display/ui_window.h"
+
+/* ---- The colour pairs drawn (ui_trace.h) ---- */
+
+struct pair {
+    int kind;
+    uint32_t fg, bg;
+    unsigned long n;
+};
+static struct pair pairs[512];
+static int n_pairs, pairs_lost;
+
+void ui_trace(int kind, uint32_t fg, uint32_t bg)
+{
+    for (int i = 0; i < n_pairs; i++)
+        if (pairs[i].kind == kind && pairs[i].fg == fg && pairs[i].bg == bg) {
+            pairs[i].n++;
+            return;
+        }
+    if (n_pairs == (int)(sizeof(pairs) / sizeof(pairs[0]))) {
+        pairs_lost++;
+        return;
+    }
+    pairs[n_pairs++] = (struct pair){ kind, fg, bg, 1 };
+}
+
+static int write_pairs(const char *scene)
+{
+    const char *path = getenv("DESKTOP_PAIRS");
+    static const char *const kinds[3] = { "text", "icon", "state" };
+    if (!path)
+        return 0;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return 1;
+    for (int i = 0; i < n_pairs; i++)
+        fprintf(f, "PAIR %s %06X %06X %lu %s\n", kinds[pairs[i].kind], pairs[i].fg, pairs[i].bg, pairs[i].n, scene);
+    if (pairs_lost)
+        fprintf(f, "PAIRS LOST %d %s\n", pairs_lost, scene);
+    return fclose(f) != 0 || pairs_lost;
+}
 
 struct flow {
     int32_t w, margin, gap;
@@ -322,6 +381,69 @@ static int scene_taskbar(struct surface *s, const struct fbcon_layout *cl)
     return 0;
 }
 
+/* ---- 1.3 stage 4a: the windows ---- */
+
+static const char dump_loader[] = "Limine 12.9.3 (a boot loader name much longer than the column)";
+static uint16_t about_scratch[2][UI_ABOUT_SCRATCH];
+
+static int scene_windows(struct surface *s, const struct fbcon_layout *cl, enum ui_button_state close,
+                         bool exposed)
+{
+    struct desktop_layout l;
+    struct ui_fonts f;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font) || !ui_fonts_for_scale(cl->scale, &f))
+        return 1;
+    uint32_t sc = cl->scale;
+    static const char display[] = "2560x1440x32";      /* a fixed value (desktop_ref.py's DUMP_DISPLAY) */
+    struct ui_about about[2];
+    struct ui_window win[2];
+    struct ui_wm wm;
+    ui_wm_init(&wm, (int32_t)s->width, (int32_t)s->height, l.bar.y, sc, 0);
+    for (int i = 0; i < 2; i++) {
+        int32_t w, h;
+        ui_about_setup(&about[i], sc, &f, "1.3", dump_loader, display, "127 MB", about_scratch[i], UI_ABOUT_SCRATCH);
+        ui_about_size(sc, &w, &h);
+        win[i] = (struct ui_window){ .name = "About", .title = UI_ABOUT_TITLE, .icon = UI_ICON_ABOUT, .w = w, .h = h,
+                                     .esc_closes = true, .paint = ui_about_paint, .ctx = &about[i] };
+        if (!ui_wm_open(&wm, &win[i]))
+            return 1;
+    }
+    enum ui_button_state st[2] = { UI_BUTTON_NORMAL, close };
+    int rc = 0;
+    if (exposed) {
+        for (int32_t y = -13; y < (int32_t)s->height; y += 61)
+            for (int32_t x = -7; x < (int32_t)s->width; x += 97)
+                for (int i = 0; i < 2; i++) {
+                    struct ui_canvas c;
+                    ui_canvas_init(&c, s);
+                    ui_canvas_clip(&c, ui_rect_intersect((struct rect){ x, y, 97, 61 }, win[i].r));
+                    if (!ui_rect_empty(c.clip))
+                        ui_window_draw(&c, &win[i], win[i].r, i == 1, st[i], sc, &f);
+                }
+    } else {
+        for (int i = 0; i < 2; i++) {
+            uint8_t *px = calloc((size_t)win[i].w * win[i].h, s->bytes_per_pixel);
+            struct surface ws;
+            struct ui_canvas c;
+            if (!px || !surface_init(&ws, px, (uint32_t)win[i].w, (uint32_t)win[i].h,
+                                     (uint32_t)win[i].w * s->bytes_per_pixel, s->bytes_per_pixel))
+                return 1;
+            ui_canvas_init(&c, &ws);
+            ui_window_draw(&c, &win[i], (struct rect){ 0, 0, win[i].w, win[i].h }, i == 1, st[i], sc, &f);
+            ui_canvas_init(&c, s);
+            ui_blit_round(&c, win[i].r, &ws, ui_window_radius(sc), UI_CORNERS_ALL);
+            free(px);
+        }
+    }
+    for (int i = 0; i < 2; i++)
+        rc |= about[i].short_scratch;
+    printf("SCENE windows: scale %u %%, %s, close %s; the windows at (%d, %d) and (%d, %d), %dx%d; the boot "
+           "loader's value '%s'\n", sc * 25, exposed ? "painted in tiles" : "composed from surfaces",
+           close == UI_BUTTON_HOVER ? "hover" : close == UI_BUTTON_PRESSED ? "pressed" : "normal", win[0].r.x,
+           win[0].r.y, win[1].r.x, win[1].r.y, win[0].w, win[0].h, about[0].values[1]);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -352,6 +474,14 @@ int main(int argc, char **argv)
         rc = scene_background(&s, &cl);
     } else if (strcmp(argv[4], "taskbar") == 0) {
         rc = scene_taskbar(&s, &cl);
+    } else if (strcmp(argv[4], "windows") == 0) {
+        rc = scene_windows(&s, &cl, UI_BUTTON_NORMAL, false);
+    } else if (strcmp(argv[4], "windows_hover") == 0) {
+        rc = scene_windows(&s, &cl, UI_BUTTON_HOVER, false);
+    } else if (strcmp(argv[4], "windows_pressed") == 0) {
+        rc = scene_windows(&s, &cl, UI_BUTTON_PRESSED, false);
+    } else if (strcmp(argv[4], "windows_exposed") == 0) {
+        rc = scene_windows(&s, &cl, UI_BUTTON_NORMAL, true);
     } else {
         fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
         return 1;
@@ -369,5 +499,5 @@ int main(int argc, char **argv)
         }
     if (fclose(f) != 0)
         return 1;
-    return rc;
+    return write_pairs(argv[4]) ? 1 : rc;
 }

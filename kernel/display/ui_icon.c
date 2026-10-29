@@ -5,6 +5,7 @@
 #include "kernel/display/coverage_core.h"
 #include "kernel/display/icons.h"
 #include "kernel/display/ui_rect.h"
+#include "kernel/display/ui_trace.h"
 #include "kernel/display/wallpaper_core.h"
 #include "splash_data.h"            /* generated: build/gen/ (the Makefile) */
 
@@ -96,8 +97,10 @@ bool ui_icon_draw(const struct ui_canvas *c, int icon, int32_t x, int32_t y, int
             }
         }
         for (int32_t i = 0; i < box.w; i++)
-            if (row[i])
+            if (row[i]) {
+                UI_TRACE_PAIR(UI_TRACE_ICON, rgb, surface_get(c->s, (uint32_t)(box.x + i), (uint32_t)py));
                 ui_blend(c, (int64_t)box.x + i, py, rgb, row[i]);
+            }
     }
     return true;
 }

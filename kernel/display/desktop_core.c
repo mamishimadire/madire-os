@@ -82,3 +82,41 @@ bool desktop_plan_cache(uint32_t width, uint32_t height, uint32_t bytes_per_pixe
     p->over = p->fits ? 0 : p->display - p->share;
     return p->fits;
 }
+
+/* The area's tables with `pages` pages mapped from its page 0. */
+static uint64_t area_tables(uint64_t pages)
+{
+    return pages ? 1 + (pages + 511) / 512 : 0;
+}
+
+void desktop_area_init(struct desktop_area *a, uint32_t taken, uint32_t free_pages)
+{
+    a->taken = taken;
+    a->free_pages = free_pages;
+    a->share = free_pages / FBPLAN_SHARE;
+    a->pages = 0;
+}
+
+uint32_t desktop_surface_pages(uint32_t width, uint32_t height, uint32_t bytes_per_pixel)
+{
+    uint64_t bytes = (uint64_t)width * bytes_per_pixel * height;
+    return (uint32_t)((bytes + PAGE - 1) / PAGE);
+}
+
+bool desktop_area_plan(const struct desktop_area *a, uint32_t pages, struct desktop_area_item *it)
+{
+    uint64_t after = (uint64_t)a->pages + pages, display = (uint64_t)a->taken + after + area_tables(after);
+    it->pages = pages;
+    it->first = a->pages;
+    it->tables = (uint32_t)(area_tables(after) - area_tables(a->pages));
+    it->display = display > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)display;
+    it->fits = pages > 0 && display <= a->share;
+    it->over = display > a->share ? it->display - a->share : 0;
+    return it->fits;
+}
+
+void desktop_area_take(struct desktop_area *a, const struct desktop_area_item *it)
+{
+    if (it->fits)
+        a->pages += it->pages;
+}

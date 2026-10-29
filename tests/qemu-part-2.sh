@@ -1309,3 +1309,7 @@ reject "$LOG" "PANIC"                                 "[1.0] filecontend: no cra
 section "[1.3] The desktop at 1024x768x32: test=desktop (tests/qmp_desktop.py), desktopnocache, slot 506 (stage 3b)"
 # The header's mode (Limine's default). desktop_case: 8 checks, two boots.
 desktop_case 1024 1024x768x32 100 "desktop at 1024x768x32"
+
+section "[1.3] Windows at 1024x768x32: the About window (test=desktop desktopabout), drag, clamp, close, desktopnosurface (stage 4a)"
+# desktop_about_case (tests/qemu-lib.sh): 13 checks, two boots.
+desktop_about_case 1024 1024x768x32 100 "windows at 1024x768x32"

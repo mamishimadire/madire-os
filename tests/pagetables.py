@@ -20,7 +20,9 @@ distinct 512 GiB, 1 GiB or 2 MiB region holding a mapped page (the recursive
 slot 510 is not a table). The count is compared with the kernel's
 "Paging tables: N page tables + PML4" line. 1.3 stage 3b: on a desktop
 boot, slot 506 is also modelled with the background cache's area
-(desktop_slot below; its own PAGETABLES_DESKTOP line).
+(desktop_slot below; its own PAGETABLES_DESKTOP line). 1.3 stage 4a: and
+again with the window surfaces after the cache (desktop_surfaces below;
+its own PAGETABLES_SURFACES line).
 
     python3 tests/pagetables.py <serial log> --label <name>
 
@@ -117,6 +119,7 @@ def main():
         a.label, total, got, kernel_slot, kend,
         "none" if not disp else "%d/%s" % (display_slot, disp.group(5)), "MATCH" if ok else "DIFFER"))
     desktop_slot(text, disp, say, a.label)
+    desktop_surfaces(text, disp, say, a.label)
     return 0 if ok else 1
 
 
@@ -156,6 +159,59 @@ def desktop_slot(text, disp, say, label):
     ok = cache_ok and (tables, len(vas)) == logged
     print("PAGETABLES_DESKTOP label=%s cache=%s computed=%d/%d logged=%d/%d %s" % (
         label, "present" if cache else "absent", tables, len(vas), logged[0], logged[1], "MATCH" if ok else "DIFFER"))
+
+
+def desktop_surfaces(text, disp, say, label):
+    """1.3 stage 4a: on a desktop boot that planned the window surfaces
+    (its "Desktop: slot 506 with the window surfaces: ..." line, the
+    kernel's walk after them), slot 506 is modelled once more: the
+    framebuffer, the back buffer and the background cache (if mapped), as in
+    desktop_slot, plus every "Desktop: slot 506: window surface NAME at VA
+    (N pages ...), T page tables" line's pages in the order logged. Each
+    surface must lie in the cache's area, right after the pages mapped
+    before it (the cache's, then each surface's: VM_DESKTOP_BASE + those
+    pages), overlap nothing, and its own T must be the page directory and
+    page tables it adds to the area. The modelled tables and pages must
+    equal the walk's. One PAGETABLES_SURFACES line; it decides nothing
+    about PAGETABLES_RESULT or the exit status."""
+    walk = re.search(r"^Desktop: slot 506 with the window surfaces: (\d+) page tables, (\d+) pages mapped "
+                     r"\(walked\)$", text, re.M)
+    if not walk:
+        return
+    if not disp:
+        print("PAGETABLES_SURFACES label=%s no display slot 506 line MISSING" % label)
+        return
+    area = 0xFFFFFD0080000000
+    vas = ({int(disp.group(1), 16) + i * PAGE for i in range(int(disp.group(2)))} |
+           {int(disp.group(3), 16) + i * PAGE for i in range(int(disp.group(4)))})
+    cache = re.search(r"^Desktop: slot 506: background cache at 0x([0-9a-f]{16}) \((\d+) pages of free RAM, ",
+                      text, re.M)
+    mapped = set()                      # the area's pages so far
+    if cache:
+        mapped = {int(cache.group(1), 16) + i * PAGE for i in range(int(cache.group(2)))}
+    ok, names = True, []
+    for name, va, n, tables in re.findall(r"^Desktop: slot 506: window surface (\S+) at 0x([0-9a-f]{16}) "
+                                          r"\((\d+) pages of free RAM, \d+x\d+, pitch \d+\), (\d+) page tables; ",
+                                          text, re.M):
+        va, n, tables = int(va, 16), int(n), int(tables)
+        own = {va + i * PAGE for i in range(n)}
+        before = (len({p >> 30 for p in mapped}), len({p >> 21 for p in mapped}))
+        after = (len({p >> 30 for p in mapped | own}), len({p >> 21 for p in mapped | own}))
+        adds = after[0] - before[0] + after[1] - before[1]
+        placed = va == area + len(mapped) * PAGE and not (own & (mapped | vas))
+        say("desktop: window surface %s, %d pages at 0x%016x (%s), %d tables modelled, %d logged" % (
+            name, n, va, "right after the area's pages" if placed else "NOT right after the area's pages",
+            adds, tables))
+        ok = ok and placed and adds == tables
+        mapped |= own
+        names.append(name)
+    vas |= mapped
+    tables = len({va >> 39 for va in vas}) + len({va >> 30 for va in vas}) + len({va >> 21 for va in vas})
+    logged = (int(walk.group(1)), int(walk.group(2)))
+    ok = ok and (tables, len(vas)) == logged
+    print("PAGETABLES_SURFACES label=%s cache=%s surfaces=%s computed=%d/%d logged=%d/%d %s" % (
+        label, "present" if cache else "absent", ",".join(names) if names else "none", tables, len(vas),
+        logged[0], logged[1], "MATCH" if ok else "DIFFER"))
 
 
 if __name__ == "__main__":

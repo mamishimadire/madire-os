@@ -416,3 +416,144 @@ desktop_case() {
         fail "[1.3] $label, desktopnocache: tests/pagetables.py: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$pt" | tr '\n' ' ')"
     fi
 }
+
+# ---- 1.3 stage 4a: windows: the About window behind test=desktop desktopabout ----
+
+# desktop_about_case <name> <mode WxHxD> <percent> <label> [a limine.conf
+# line]: the window manager's 13 checks in one mode (two boots, both with
+# desktoplog and mouselog). tests/qmp_desktop.py follows every packet and
+# key with tests/desktop_ref.py's model of the window manager's rules (WM):
+# its WSCREEN lines compare each screen with the desktop, the model's
+# windows (with their logged About values, cut as ui_about.h says) and the
+# pointer; its EVENTS line compares the kernel's window lines ("desktop:
+# open|raise|focus|drag|close ...") with the model's, in order; its DRAG
+# lines give where each drag asked to go and where the rules put it.
+# Boot 1, the window surfaces (slot 506, after the cache): the first frame,
+# a drag by the title bar, a drag that asks to go under the taskbar and
+# past the left edge (clamped), hover, press and release on the close
+# button. Boot 2, desktopnosurface (every window painted on exposure): the
+# first frame, a drag, a click on the desktop (no window focused) and on
+# the window (focused again), a key that does nothing, Esc, then a key
+# back to the console.
+desktop_about_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h s mb ok d1 d2 pt
+    local ax ay gx gy ww wh bar left
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; s=$((pct / 25))
+    # Boot 1: surfaces.
+    log=$OUT/serial-desktop-about-$name.log
+    desktop_iso "about-$name" "test=desktop desktopabout desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" wshot rel:-1000,-1000 to:title drag:-120,-60 wshot \
+            to:title-right drag:-2000,1000 wshot to:close wshot press wshot release wshot --about
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (about|open|drag|close|focus)" "$log" | head -n 24 | sed 's/^/      /'
+    mb=$(sed -nE 's/^Memory: [0-9]+ MB detected, ([0-9]+) MB usable below 4 GiB, .*/\1/p' "$log" | head -n 1)
+    if grep -qxF "Desktop: the About window opened at start (test option desktopabout; stage 5's menus open it)" "$log" &&
+       grep -qxF "desktop: about Version: $VERSION" "$log" && grep -qE "^desktop: about Boot loader: Limine" "$log" &&
+       grep -qxF "desktop: about Display: $mode" "$log" && [ -n "$mb" ] && grep -qxF "desktop: about Memory: $mb MB" "$log" &&
+       grep -qxF "desktop: about Mode: Live (memory only)" "$log"; then
+        pass "[1.3] $label: the About window opened at start (desktopabout); its values logged in full: Version $VERSION, Boot loader Limine's name, Display $mode, Memory $mb MB (the boot's usable MB), Mode Live (memory only)"
+    else
+        fail "[1.3] $label: no 'About window opened at start' line, or an About value not as expected (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-about-$name")
+    grep -E "window surface|PAGETABLES_SURFACES" <<< "$pt" | sed 's/^/      /'
+    if grep -qE "^Desktop: slot 506: window surface Console at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, [0-9]+x[0-9]+, pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^Desktop: slot 506: window surface About at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, $(( (352 * s + 2) / 4 ))x$(( (377 * s + 2) / 4 )), pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^PAGETABLES_SURFACES label=desktop-about-$name cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
+        pass "[1.3] $label: the window surfaces (Console, then About, 352x377 dp) in slot 506 right after the background cache, under the share; tests/pagetables.py models them: tables and pages equal the kernel's walk"
+    else
+        fail "[1.3] $label: window surface lines or tests/pagetables.py's model: $(grep -E '^PAGETABLES_SURFACES' <<< "$pt")"
+    fi
+    if grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the About window's first frame (active, centred above the taskbar, from its surface) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: the About window's first frame differs ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    d1=$(sed -nE 's/^DRAG 1 asked \((-?[0-9]+), (-?[0-9]+)\) got \(\1, \2\) ([0-9]+x[0-9]+) .*/\1, \2) \3/p' <<< "$DT_OUT")
+    if [ -n "$d1" ] && grep -qxF "desktop: drag About to ($d1" "$log" && grep -qE "^WSCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: a drag by the title bar moves the window 1:1 (logged as predicted: to ($d1); the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: the drag by the title bar: $(grep -E '^(DRAG 1|WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    d2=$(sed -nE 's/^DRAG 2 asked \((-?[0-9]+), (-?[0-9]+)\) got \((-?[0-9]+), (-?[0-9]+)\) ([0-9]+)x([0-9]+) bar ([0-9]+) left (-?[0-9]+)$/\1 \2 \3 \4 \5 \6 \7 \8/p' <<< "$DT_OUT")
+    ok=0
+    if [ -n "$d2" ]; then
+        read -r ax ay gx gy ww wh bar left <<< "$d2"
+        if [ $((ay + wh)) -gt "$bar" ] && [ $((gy + wh)) -eq "$bar" ] && [ "$ax" -lt "$left" ] && [ "$gx" -eq "$left" ] &&
+           [ "$left" -eq $(( (48 * s + 2) / 4 - ww )) ] && grep -qxF "desktop: drag About to ($gx, $gy) ${ww}x${wh}" "$log" &&
+           grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+            ok=1
+        fi
+    fi
+    if [ "$ok" = 1 ]; then
+        pass "[1.3] $label: a drag that asks to go under the taskbar and past the left edge is clamped (its bottom on the taskbar's top, 48 dp left on the screen; logged as predicted: ($gx, $gy)); the screen equals the reference"
+    else
+        fail "[1.3] $label: the clamped drag: $(grep -E '^(DRAG 2|WSCREEN 3|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close button of About: hover" "$log" && grep -qE "^WSCREEN 4 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the pointer on the close button: hover (logged), filled in danger; the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: the close button's hover: $(grep -E '^(WSCREEN 4|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close button of About: pressed" "$log" && grep -qE "^WSCREEN 5 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the left button pressed on the close button: pressed (logged), filled in danger.pressed; the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: the close button pressed: $(grep -E '^(WSCREEN 5|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close About (the close button)" "$log" && grep -qE "^WSCREEN 6 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" && grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|MISMATCH" "$log"; then
+        pass "[1.3] $label: released on the close button: the window closes (logged), the screen back to the plain desktop with the pointer, pixel for pixel; every window line as the model predicts, every packet exact; no panic, FAILED line or drop"
+    else
+        fail "[1.3] $label: the close: $(grep -E '^(WSCREEN 6|EVENTS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    # Boot 2: desktopnosurface: every window painted on exposure (A1).
+    log=$OUT/serial-desktop-about-$name-nosurface.log
+    desktop_iso "about-$name-nosurface" "test=desktop desktopabout desktopnosurface desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="desktop-about-ok" desktop_boot "$log" "$DT_ISO" "${w}x${h}" wshot rel:-1000,-1000 to:title \
+            drag:-100,-50 wshot to:desktop press release wshot to:body press release wshot key:a esc wshot \
+            "type:x{wait:1}echo desktop-about-ok{ret}" --about
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (open|drag|close|focus)" "$log" | head -n 20 | sed 's/^/      /'
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-about-$name-nosurface")
+    grep -E "PAGETABLES_SURFACES" <<< "$pt" | sed 's/^/      /'
+    if grep -qxF "Desktop: window Console drawn on exposure (test option desktopnosurface)" "$log" &&
+       grep -qxF "Desktop: window About drawn on exposure (test option desktopnosurface)" "$log" &&
+       grep -qE "^PAGETABLES_SURFACES label=desktop-about-$name-nosurface cache=present surfaces=none computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt" &&
+       grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: no window surface (slot 506 modelled without them); the About window painted on exposure: its first frame equals the reference pixel for pixel (as with its surface)"
+    else
+        fail "[1.3] $label, desktopnosurface: no 'drawn on exposure' lines, slot 506 not as modelled, or the first frame differs ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') $(grep -E '^PAGETABLES_SURFACES' <<< "$pt"))"
+    fi
+    d1=$(sed -nE 's/^DRAG 1 asked \((-?[0-9]+), (-?[0-9]+)\) got \(\1, \2\) ([0-9]+x[0-9]+) .*/\1, \2) \3/p' <<< "$DT_OUT")
+    if [ -n "$d1" ] && grep -qxF "desktop: drag About to ($d1" "$log" && grep -qE "^WSCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: a drag by the title bar (the damaged rectangles painted on exposure; logged as predicted: to ($d1); the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label, desktopnosurface: the drag: $(grep -E '^(DRAG 1|WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: focus none" "$log" && grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       [ "$(grep -cxF "desktop: focus About" "$log")" -ge 2 ] && grep -qE "^WSCREEN 4 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: a click on the desktop leaves no window focused (the window inactive: its edge and title), a click on the window focuses it again (active); both screens equal the reference pixel for pixel"
+    else
+        fail "[1.3] $label, desktopnosurface: focus by clicks: $(grep -E '^(WSCREEN 3|WSCREEN 4|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close About (Esc)" "$log" &&
+       ! sed -n '1,/^desktop: close About (Esc)$/p' "$log" | grep -qE "^Desktop: closed \(a key\)" &&
+       grep -qE "^WSCREEN 5 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: with the About window focused a key (a) does nothing and Esc closes it (logged); the screen back to the plain desktop, pixel for pixel; every window line as the model predicts"
+    else
+        fail "[1.3] $label, desktopnosurface: the keys with the window focused: $(grep -E '^(WSCREEN 5|EVENTS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "Desktop: closed (a key): the screen handed back to the console; the key is not typed" "$log" &&
+       grep -qxF "madire> echo desktop-about-ok" "$log" && grep -qxF "desktop-about-ok" "$log" &&
+       ! grep -qE "^madire> (a|x)|PANIC|FAILED|events dropped|bytes dropped|MISMATCH" "$log" &&
+       grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: with no window focused a key hands the screen back to the console, not typed (as in stage 3); no panic, FAILED line or drop; every packet exact"
+    else
+        fail "[1.3] $label, desktopnosurface: the key back to the console, or a panic, FAILED line or drop (see $log)"
+    fi
+}

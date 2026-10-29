@@ -106,6 +106,29 @@ static int cmdline_has(const char *word)
 }
 
 /*
+ * 1.3 stage 4a: the boot loader's name (Multiboot's boot_loader_name,
+ * flags bit 9), at most 63 bytes, every byte outside printable ASCII
+ * shown as '?'; "-" if the loader gave none. For the About window only.
+ */
+#define MB_INFO_BOOT_LOADER_NAME (1u << 9)
+static char loader_name[64] = "-";
+
+static void copy_loader_name(const struct multiboot_info *mbi)
+{
+    if (!(mbi->flags & MB_INFO_BOOT_LOADER_NAME) || !mbi->boot_loader_name)
+        return;
+    const char *src = phys_view(mbi->boot_loader_name);
+    size_t n = 0;
+    for (; n < sizeof(loader_name) - 1 && src[n]; n++)
+        loader_name[n] = src[n] >= 0x20 && src[n] < 0x7F ? src[n] : '?';
+    loader_name[n] = 0;
+    if (!n) {
+        loader_name[0] = '-';
+        loader_name[1] = 0;
+    }
+}
+
+/*
  * 0.9.2: true if `word` is a whole word of the command line (separated by
  * spaces or tabs), so "nokeylog" or "keylog2" don't count. Used for the
  * security switch "keylog"; cmdline_has() keeps its substring match for
@@ -766,6 +789,10 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
             if (console_active()) {
                 console_handle_key(&e);
             } else if (e.flags & KEY_PRESSED) {
+                /* 1.3 stage 4a: a window with the focus takes the key (Esc
+                 * closes the About window; other keys do nothing). */
+                if (desktop_key(e.keycode == KEY_ESC))
+                    continue;
                 BOOTSCREEN_SAFE(bootscreen_last_key(&e));
                 /* 1.3 stage 3: on a test=desktop boot a key hands the
                  * screen back to the console, which opens (not typed). */
@@ -863,8 +890,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bool splash_opt = cmdline_has("test=splash");
     splash_options(cmdline_word("verbose"), cmdline_word("still"), !cmdline_has("test=") || splash_opt,
                    cmdline_word("still") || splash_opt);
-    /* 1.3 stage 3: the desktop, on test=desktop boots only (desktop.h). */
-    desktop_options(cmdline_has("test=desktop"), cmdline_word("desktoplog"), cmdline_word("desktopnocache"));
+    /* 1.3 stage 3: the desktop, on test=desktop boots only (desktop.h).
+     * Stage 4a: desktopnosurface and desktopabout too. */
+    desktop_options(cmdline_has("test=desktop"), cmdline_word("desktoplog"), cmdline_word("desktopnocache"),
+                    cmdline_word("desktopnosurface"), cmdline_word("desktopabout"));
 
     bootscreen_draw_header();
 
@@ -897,7 +926,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         klogf("Early panic test: a panic before paging and the framebuffer console\n");
         panic("Early panic test: a panic before the framebuffer console (on purpose).");
     }
+    /* 1.3 stage 4a: the boot loader's name for the About window, copied
+     * now: memory_init() does not reserve it, and only the boot tables map
+     * it (after the IDT, as the other boot data). */
+    copy_loader_name(mbi);
     memory_init(mbi_phys, &mem);
+    desktop_about_info(loader_name, memory_bytes_to_mb(mem.usable_bytes));     /* 1.3 stage 4a */
     uint32_t mem_checks = memtest_boot();
 
     /* Only reached if the map was parsed, usable memory identified, the

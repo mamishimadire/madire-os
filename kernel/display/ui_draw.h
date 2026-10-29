@@ -63,6 +63,15 @@ void ui_fill_round(const struct ui_canvas *c, struct rect r, int32_t radius, uin
 void ui_frame_round(const struct ui_canvas *c, struct rect r, int32_t radius, int32_t width,
                     uint32_t corners, uint32_t rgb);
 
+/* 1.3 stage 4a: copies src's pixels onto the canvas where the rounded
+ * rectangle (r, radius, corners) lies (the fill's rule above): the pixel
+ * at (x, y) of r comes from (x - r.x, y - r.y) of src; pixels outside src
+ * are not copied. A window's surface is composed through it, so the
+ * pixels outside its corners show what is under the window. src must be
+ * another surface than the canvas's, in its format. */
+void ui_blit_round(const struct ui_canvas *c, struct rect r, const struct surface *src, int32_t radius,
+                   uint32_t corners);
+
 /* Blends pixel (x, y) towards rgb by coverage a (0 to 256), if inside the clip. */
 void ui_blend(const struct ui_canvas *c, int64_t x, int64_t y, uint32_t rgb, int64_t a);
 

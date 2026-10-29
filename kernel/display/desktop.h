@@ -29,12 +29,37 @@
  * stage 3) each composed frame is followed by the marker "display: frame
  * N" and "desktop: clock HH:MM" (the clock it shows). With the test option
  * desktoplog, also "desktop: composed ..." per frame (serial only).
+ *
+ * 1.3 stage 4a: windows (ui_window.h): the window manager (z-order, focus,
+ * the drag by the title bar, the close button, Esc), composed between the
+ * background and the taskbar. Each window's surface lies in slot 506's
+ * third area after the background cache, in the fixed order Console,
+ * About, planned when the desktop starts and mapped only if it still fits
+ * the share (desktop_core.h); the Console window's surface is planned and
+ * mapped already, though only stage 4b draws that window. A window with no
+ * surface (or with the test option desktopnosurface) is painted into the
+ * back buffer during composition, clipped to the damaged rectangle
+ * (docs/plans/1.3.md, C4, A1). The About window (ui_about.h) opens only
+ * with the test option desktopabout, at the start (stage 5's menus will
+ * open it). A key with no window focused hands the screen back to the
+ * console as in stage 3; with the About window focused, Esc closes it and
+ * every other key does nothing. With desktoplog, also "desktop: ..." lines
+ * for each window opened (with its rectangle), raised, focused (or none),
+ * dragged (its rectangle when the button is released), closed and each
+ * close button state, and the About window's values in full.
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
-/* The boot options: test=desktop (`wanted`), desktoplog, desktopnocache. */
-void desktop_options(bool wanted, bool log, bool nocache);
+/* The boot options: test=desktop (`wanted`), desktoplog, desktopnocache;
+ * 1.3 stage 4a: desktopnosurface, desktopabout. */
+void desktop_options(bool wanted, bool log, bool nocache, bool nosurface, bool about);
+
+/* 1.3 stage 4a: the About window's values the desktop cannot read itself:
+ * the boot loader's name (Multiboot's, or none) and the usable memory in
+ * MB (the boot's "Memory: ... MB usable" figure). */
+void desktop_about_info(const char *loader, uint32_t usable_mb);
 
 /* At System ready, after its line: starts the desktop if wanted (above).
  * True if it shows. */
@@ -45,6 +70,15 @@ bool desktop_showing(void);
 /* Thread 0's idle loop, after pointer_poll(): the clock, then one
  * composition of whatever is damaged. */
 void desktop_poll(void);
+
+/* 1.3 stage 4a: each mouse packet, after its move: the pointer's (clamped)
+ * hot spot, the left button pressed or released in it. */
+void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up);
+
+/* 1.3 stage 4a: a key pressed while the desktop shows: true if a window has
+ * the focus and took it (Esc closes the About window; other keys do
+ * nothing); false otherwise (desktop_close_key then). */
+bool desktop_key(bool esc);
 
 /* A key while the desktop shows: the screen goes back to the console. */
 void desktop_close_key(void);

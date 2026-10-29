@@ -86,4 +86,45 @@ struct desktop_cache_plan {
 bool desktop_plan_cache(uint32_t width, uint32_t height, uint32_t bytes_per_pixel, uint32_t display_pages,
                         uint32_t free_pages, struct desktop_cache_plan *plan);
 
+/*
+ * 1.3 stage 4a: slot 506's third area holds, in a fixed order, the
+ * background cache, the Console window's surface and the About window's
+ * (docs/plans/1.3.md, C4), each planned when the desktop starts and mapped
+ * only if it still fits: the items mapped so far lie one after the other
+ * from VM_DESKTOP_BASE (page 0 of the area), a refused item takes no place,
+ * and the area's tables are one page directory and one page table per 512
+ * pages mapped (from page 0). An item fits if the display's pages in all
+ * (the back buffer's and slot 506's first tables, already taken, plus every
+ * page and table of the area with it) stay at or below a quarter of the
+ * free pages counted when the desktop starts (FBPLAN_SHARE). For the cache
+ * alone this is desktop_plan_cache's rule.
+ */
+struct desktop_area {
+    uint32_t taken;             /* the back buffer's pages and slot 506's tables */
+    uint32_t free_pages;        /* counted when the desktop starts */
+    uint32_t share;             /* free_pages / FBPLAN_SHARE */
+    uint32_t pages;             /* the area's pages mapped so far */
+};
+
+struct desktop_area_item {
+    uint32_t pages;             /* asked */
+    uint32_t first;             /* its first page in the area (if it fits) */
+    uint32_t tables;            /* the area's tables it adds (if it fits) */
+    uint32_t display;           /* the display's pages in all with it */
+    uint32_t over;              /* display - share if it does not fit, else 0 */
+    bool fits;
+};
+
+/* An empty area with `taken` pages taken and `free_pages` free. */
+void desktop_area_init(struct desktop_area *a, uint32_t taken, uint32_t free_pages);
+
+/* The pages of a surface: width x bytes per pixel x height bytes, in whole pages. */
+uint32_t desktop_surface_pages(uint32_t width, uint32_t height, uint32_t bytes_per_pixel);
+
+/* Plans an item of `pages` pages after the ones mapped; returns it->fits. */
+bool desktop_area_plan(const struct desktop_area *a, uint32_t pages, struct desktop_area_item *it);
+
+/* The item (planned and fitting) is mapped: the area grows by its pages. */
+void desktop_area_take(struct desktop_area *a, const struct desktop_area_item *it);
+
 #endif

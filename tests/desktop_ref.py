@@ -16,13 +16,23 @@ code page 437 table. It never calls or translates the C toolkit.
     desktop_ref.py WIDTH HEIGHT SCENE OUT.ppm   the scene as a PPM (P6)
     desktop_ref.py --tokens                     the token check (part static)
     desktop_ref.py --coverage-table OUT.h       test_coverage's reference table
+    desktop_ref.py --contrast PAIRS             the contrast check (part static, 1.3 stage 4a)
 
 SCENE is prims, icons or widgets (tests/desktopdump.c describes them),
 or (1.3 stage 3b) background or taskbar, the desktop's own pictures from
 the rules of kernel/display/desktop_core.h (the wallpaper and the M at the
 splash's place, from make-wallpaper.py, as the splash's reference does;
 no text lies on the desktop's wallpaper). desktop(w, h, clock) is the
-whole desktop for tests/qmp_desktop.py.
+whole desktop for tests/qmp_desktop.py. 1.3 stage 4a: the window scenes
+windows, windows_hover, windows_pressed and windows_exposed (two About
+windows, from kernel/display/ui_window.h's and ui_about.h's rules; the
+last is the first scene, drawn by the C side through the exposure path);
+WM, the window manager's rules written again (tests/qmp_desktop.py
+predicts the kernel's desktoplog lines and its windows with it);
+desktop_windows(w, h, clock, windows), the desktop with windows on it.
+--contrast reads the colour pairs tests/desktopdump.c recorded and checks
+each against the Design Guide's section 12 table, recomputing the ratios
+from tokens.h (CONTRAST lines; exit 1 on any failure).
 --tokens compares kernel/display/tokens.h with both of the guide's colour
 tables, and the colour constants of kernel/display/wallpaper_core.h and
 pointer_core.h with their tokens (TOKEN_TWINS), printing "TOKENS ..." lines
@@ -670,8 +680,376 @@ def desktop(w, h, clock):
     return bytes(scr.pix)
 
 
+# ---- Windows and the About window (1.3 stage 4a; kernel/display/ui_window.h, ui_about.h) ----
+
+ABOUT_TITLE = b"About Madire OS"
+ABOUT_LABELS = [b"Version", b"Boot loader", b"Display", b"Memory", b"Mode"]
+ABOUT_MODE = b"Live (memory only)"
+ABOUT_FOOTER = b"SIMPLE \xfa SECURE \xfa FURTHER TOGETHER"
+VALUE_MAX = 64                              # a value's buffer, its NUL included (ui_about.h)
+DUMP_LOADER = b"Limine 12.9.3 (a boot loader name much longer than the column)"   # tests/desktopdump.c
+DUMP_DISPLAY = b"2560x1440x32"
+
+
+def about_size(s):
+    return px(352, s), px(377, s)
+
+
+def fit(f, s, max_px, size=VALUE_MAX):
+    """ui_text_fit: s unchanged if it fits (and its buffer), else its
+    longest beginning that leaves room for "..." and the dots."""
+    w = f[1]
+    held = s[:size - 1]
+    if len(s) <= size - 1 and len(s) * w <= max_px:
+        return s
+    keep = min(max(max_px // w - 3, 0), len(held))
+    if keep + 3 > size - 1:
+        keep = max(size - 1 - 3, 0)
+    return held[:keep] + b"..."
+
+
+def about_values(s, version, loader, display, memory):
+    f = font(s, False)
+    col = px(328, s) - px(136, s)
+    return [fit(f, v, col) for v in (version, loader, display, memory, ABOUT_MODE)]
+
+
+def logo(scr, tok, lox, loy, ls):
+    """The M in the splash's gradient, its origin and px per unit given."""
+    adeep, alight, deep = K.rgb(rgb3(tok["accent.deep"])), K.rgb(rgb3(tok["accent.light"])), K.rgb(rgb3(tok["bg.deep"]))
+    for i, (x1, y1, x2, y2) in enumerate(MW.STROKES):
+        cov = {}
+        MW.capsule(K, cov, lox + x1 * ls, loy + K.mul(K.fx(y1 * MW.RX, MW.RY), ls),
+                   lox + x2 * ls, loy + K.mul(K.fx(y2 * MW.RX, MW.RY), ls), MW.RX * ls, scr.w, scr.h)
+
+        def col(x, back=i < 2):
+            t = max(0, min(K.one, K.div((x << 8) - (lox + MW.LX0 * ls), (MW.LX1 - MW.LX0) * ls)))
+            c = K.mix(adeep, alight, t)
+            return K.mix(c, deep, K.fx(35, 100)) if back else c
+        paint_k(scr, cov, col)
+
+
+def about_client(scr, tok, s, r, values):
+    """The About window's content inside the window at r (ui_about.h)."""
+    P = px(64, s)
+    bx, by = r[0] + (r[2] - P) // 2, r[1] + px(56, s)
+    m = K.fx(56 * P, 64 * 210)
+    logo(scr, tok, (bx << 8) + K.fx(P, 2) - 144 * m, (by << 8) + K.fx(P, 2) - K.mul(K.fx(167, 2), m), m)
+    ts, track = K.fx(4 * s, 14), K.fx(6)
+    adv = sum(MW.kernel_glyph(ch)[0] + track for ch in MW.WORDMARK)
+    pen = (r[0] << 8) + K.fx(r[2], 2) - (K.mul(adv, ts) - K.mul(track, ts)) // 2
+    top = (r[1] + px(136, s)) << 8
+    text_c = K.rgb(rgb3(tok["text"]))
+    for i, ch in enumerate(MW.WORDMARK):
+        a, polys = MW.kernel_glyph(ch)
+        cov = {}
+        placed = [[(pen + K.mul(qx, ts), top + K.mul(qy, ts)) for qx, qy in poly] for poly in polys]
+        MW.polys_coverage(K, cov, placed, K.fx(50 * s, 161) if i < 6 else K.fx(25 * s, 161), scr.w, scr.h)
+        paint_k(scr, cov, lambda x: text_c)
+        pen += K.mul(a + track, ts)
+    f = font(s, False)
+    for i in range(5):
+        y = r[1] + px(176 + 28 * i, s)
+        text(scr, f, r[0] + px(24, s), y, ABOUT_LABELS[i], tok["text.muted"])
+        text(scr, f, r[0] + px(136, s), y, values[i], tok["text"])
+    fill(scr, (r[0] + px(24, s), r[1] + px(320, s), px(328, s) - px(24, s), px(1, s)), tok["border"])
+    text(scr, f, r[0] + (r[2] - len(ABOUT_FOOTER) * f[1]) // 2, r[1] + px(337, s), ABOUT_FOOTER, tok["text.muted"])
+
+
+def window(scr, tok, s, r, title, icon_name, active, close, client):
+    """A window at r (ui_window.h): the frame, the client, the title bar,
+    the close button in state `close` (normal, hover, pressed)."""
+    R, tb = px(6, s), px(32, s)
+    fill_round(scr, r, R, 15, tok["surface.window"])
+    frame_round(scr, r, R, px(1, s), 15, tok["border.window" if active else "border.inactive"])
+    client(scr, r)
+    ip = px(16, s)
+    icon(scr, icon_name, r[0] + px(8, s), r[1] + (tb - ip) // 2, ip, tok["text"])
+    cr = (r[0] + r[2] - tb, r[1], tb, tb)
+    tx = r[0] + px(32, s)
+    keep = scr.clip
+    scr.clip = meet(keep, (tx, r[1], cr[0] - px(8, s) - tx, tb))
+    if scr.clip is not None:
+        text(scr, font(s, True), tx, r[1] + (tb - FONT_PX[s]) // 2, title, tok["text" if active else "text.muted"])
+    scr.clip = keep
+    style = ([NONE, tok["danger"], tok["danger.pressed"]], [tok["text"]] * 3, False, 6, TR)
+    button(scr, tok, cr, style, close, False, s, ic="close", icon_dp=16)
+
+
+def about_window(scr, tok, s, r, active, close, values):
+    window(scr, tok, s, r, ABOUT_TITLE, "about", active, close,
+           lambda scr_, r_: about_client(scr_, tok, s, r_, values))
+
+
+class WM:
+    """The window manager's rules (ui_window.h), written here again: where
+    windows open, the clamp, hit testing, focus and z-order, the drag, the
+    close button, Esc. Each change is kept as the kernel's desktoplog line
+    would say it (desktop: ...), in the kernel's order."""
+
+    def __init__(self, w, h, s):
+        self.w, self.h, self.s = w, h, s
+        self.bar = h - px(40, s)
+        self.z, self.focus = [], None           # windows: dicts name, w, h, r, esc, close
+        self.x, self.y = w // 2, h // 2
+        self.left, self.drag, self.pressed = False, None, None
+        self.events = []
+
+    def clamp(self, r):
+        keep = px(48, self.s)
+        x = min(max(r[0], keep - r[2]), self.w - keep)
+        y = min(max(r[1], 0), max(self.bar - r[3], 0))
+        return (x, y, r[2], r[3])
+
+    def place(self, w, h):
+        step = px(24, self.s)
+        x, y = int((self.w - w) / 2), max(int((self.bar - h) / 2), 0)
+        for _ in range(4):
+            if not any(o["r"][0] == x and o["r"][1] == y for o in self.z):
+                break
+            x, y = x + step, y + step
+        return self.clamp((x, y, w, h))
+
+    def close_rect(self, r):
+        tb = px(32, self.s)
+        return (r[0] + r[2] - tb, r[1], tb, tb)
+
+    @staticmethod
+    def inside(r, x, y):
+        return r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
+
+    def hit(self, x, y):
+        for win in reversed(self.z):
+            if self.inside(win["r"], x, y):
+                if self.inside(self.close_rect(win["r"]), x, y):
+                    return "close", win
+                return ("title" if y < win["r"][1] + px(32, self.s) else "body"), win
+        return ("taskbar" if y >= self.bar else "desktop"), None
+
+    def ev(self, line):
+        self.events.append("desktop: " + line)
+
+    def set_focus(self, win):
+        if self.focus is win:
+            return
+        self.focus = win
+        self.ev("focus %s" % win["name"] if win else "focus none")
+
+    def raise_(self, win):
+        if self.z[-1] is not win:
+            self.z.remove(win)
+            self.z.append(win)
+            self.ev("raise %s" % win["name"])
+
+    def state(self, win):
+        if self.drag:
+            return "normal"
+        part, at = self.hit(self.x, self.y)
+        over = part == "close" and at is win
+        if self.pressed:
+            return "pressed" if self.pressed is win and over else "normal"
+        return "hover" if over and not self.left else "normal"
+
+    def states(self):
+        for win in self.z:
+            st = self.state(win)
+            if st != win["close"]:
+                win["close"] = st
+                self.ev("close button of %s: %s" % (win["name"], st))
+
+    def open(self, name, w, h, esc):
+        win = {"name": name, "w": w, "h": h, "esc": esc, "close": "normal"}
+        win["r"] = self.place(w, h)
+        self.z.append(win)
+        self.ev("open %s at (%d, %d) %dx%d" % ((name,) + win["r"]))
+        self.set_focus(win)
+        self.states()
+        return win
+
+    def close(self, win, why):
+        self.z.remove(win)
+        if self.pressed is win:
+            self.pressed = None
+        if self.drag is win:
+            self.drag = None
+        self.ev("close %s (%s)" % (win["name"], why))
+        if self.focus is win:
+            self.focus = None
+            if self.z:
+                self.set_focus(self.z[-1])
+            else:
+                self.ev("focus none")
+
+    def pointer(self, x, y, down=False, up=False):
+        self.x, self.y = x, y
+        if self.drag:
+            win, (gx, gy, gr) = self.drag, self.grab
+            win["r"] = self.clamp((gr[0] + x - gx, gr[1] + y - gy, gr[2], gr[3]))
+        if down and not self.left:
+            self.left = True
+            part, win = self.hit(x, y)
+            if part == "desktop":
+                self.set_focus(None)
+            elif part != "taskbar":
+                self.raise_(win)
+                self.set_focus(win)
+                if part == "close":
+                    self.pressed = win
+                elif part == "title":
+                    self.drag, self.grab = win, (x, y, win["r"])
+        if up and self.left:
+            self.left = False
+            if self.drag:
+                win, self.drag = self.drag, None
+                if win["r"][:2] != self.grab[2][:2]:
+                    self.ev("drag %s to (%d, %d) %dx%d" % ((win["name"],) + win["r"]))
+            if self.pressed:
+                win, self.pressed = self.pressed, None
+                part, at = self.hit(x, y)
+                if part == "close" and at is win:
+                    self.close(win, "the close button")
+        self.states()
+
+    def esc(self):
+        win = self.focus
+        if not win or not win["esc"]:
+            return False
+        self.close(win, "Esc")
+        self.states()
+        return True
+
+
+def scene_windows(scr, tok, s, close="normal"):
+    """tests/desktopdump.c's window scenes: two About windows on bg.deep,
+    placed by the rules (the second where the first's place was taken),
+    the first inactive, the second active with its close button in state
+    `close`."""
+    wm = WM(scr.w, scr.h, s)
+    w, h = about_size(s)
+    a, b = wm.open("About", w, h, True), wm.open("About", w, h, True)
+    values = about_values(s, b"1.3", DUMP_LOADER, DUMP_DISPLAY, b"127 MB")
+    about_window(scr, tok, s, a["r"], False, "normal", values)
+    about_window(scr, tok, s, b["r"], True, close, values)
+    return "close %s; the windows at (%d, %d) and (%d, %d), %dx%d; the boot loader's value %r" % (
+        close, a["r"][0], a["r"][1], b["r"][0], b["r"][1], w, h, values[1].decode("latin-1"))
+
+
+def desktop_windows(w, h, clock, windows):
+    """The desktop (desktop()) with windows on it, bottom to top: each a
+    dict r, active, close, values (the About window, the only one in 4a)."""
+    tok = colours()
+    s = scale_of(w, h)
+    scr = Screen(w, h, tok["bg.deep"])
+    scr.pix = bytearray(desktop(w, h, clock))
+    for win in windows:
+        about_window(scr, tok, s, win["r"], win["active"], win["close"], win["values"])
+    return bytes(scr.pix)
+
+
+# ---- The contrast check (1.3 stage 4a; the Design Guide, section 12) ----
+
+RULES = {"T": 4.5, "L": 3.0, "N": 3.0}
+
+
+def luminance(v):
+    def ch(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * ch(v >> 16 & 255) + 0.7152 * ch(v >> 8 & 255) + 0.0722 * ch(v & 255)
+
+
+def contrast(a, b):
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def contrast_tables(root=ROOT):
+    """{"Text": [...], "Icons": [...]}: section 12's two tables, each row
+    (foreground, [backgrounds], [stated ratios], rule, result, where)."""
+    tables, cur, in12 = {}, None, False
+    for line in open(os.path.join(root, "docs/design/design-guide.md"), encoding="utf-8"):
+        s = line.strip()
+        if s.startswith("## "):
+            in12 = s.startswith("## 12.")
+            continue
+        if not in12:
+            continue
+        if s == "**Text**":
+            cur = tables.setdefault("Text", [])
+        elif s == "**Icons and non-text parts**":
+            cur = tables.setdefault("Icons", [])
+        elif cur is not None and s.startswith("|"):
+            cols = [c.strip() for c in s.strip("|").split("|")]
+            if len(cols) != 6 or cols[0] == "Foreground" or set(cols[0]) <= set("-"):
+                continue
+            fg = re.findall(r"`([a-z.]+)`", cols[0])
+            bgs = re.findall(r"`([a-z.]+)`", cols[1])
+            ratios = [float(v) for v in re.findall(r"(\d+\.\d\d)", cols[3])]
+            if len(fg) == 1 and bgs and len(ratios) == len(bgs):
+                cur.append((fg[0], bgs, ratios, cols[4], cols[5], cols[2]))
+    return tables
+
+
+def contrast_check(path):
+    """Every pair recorded by tests/desktopdump.c (PAIR lines) must be a row
+    of section 12's table (Text for text, Icons for icons and state marks)
+    whose result is pass, with its stated ratio equal to the ratio
+    recomputed here from tokens.h's values (WCAG 2.x, two decimals), at or
+    above its rule's minimum."""
+    defs = c_defines("kernel/display/tokens.h")
+    names = {}
+    for t, _, _ in guide_tokens():
+        v = defs.get("UI_" + t.upper().replace(".", "_"))
+        if v is not None:
+            names.setdefault(v, []).append(t)
+    tables = contrast_tables()
+    pairs, scenes, lost = {}, set(), 0
+    for line in open(path, encoding="ascii"):
+        w = line.split()
+        if w[:2] == ["PAIRS", "LOST"]:
+            lost += 1
+        if len(w) != 6 or w[0] != "PAIR":
+            continue
+        key = (w[1], int(w[2], 16), int(w[3], 16))
+        pairs[key] = pairs.get(key, 0) + int(w[4])
+        scenes.add(w[5])
+    bad = lost
+    print("CONTRAST tables: %s; %d distinct pairs from %d scenes (%s)" % (
+        ", ".join("%s %d rows" % (k, len(v)) for k, v in sorted(tables.items())), len(pairs), len(scenes),
+        " ".join(sorted(scenes))))
+    for (kind, fg, bg), n in sorted(pairs.items()):
+        table = tables.get("Text" if kind == "text" else "Icons", [])
+        found = None
+        for fname in names.get(fg, []):
+            for bname in names.get(bg, []):
+                for row in table:
+                    if row[0] == fname and bname in row[1]:
+                        found = (fname, bname, row)
+        desc = "%s %06X on %06X (%d pixels)" % (kind, fg, bg, n)
+        if not found:
+            print("CONTRAST FAIL %s: %s on %s is no row of the %s table" % (
+                desc, "/".join(names.get(fg, ["no token"])), "/".join(names.get(bg, ["no token"])),
+                "Text" if kind == "text" else "Icons"))
+            bad += 1
+            continue
+        fname, bname, (_, bgs, ratios, rule, result, where) = found
+        got = contrast(fg, bg)
+        stated = ratios[bgs.index(bname)]
+        ok = (rule in RULES and result.startswith("pass") and round(got, 2) == stated and got >= RULES[rule])
+        print("CONTRAST %s %s: %s on %s, rule %s, ratio %.2f (the table: %.2f, %s): %s" % (
+            "pass" if ok else "FAIL", desc, fname, bname, rule, got, stated, result, where))
+        bad += not ok
+    if not pairs:
+        print("CONTRAST FAIL: no pair recorded")
+        bad += 1
+    print("CONTRAST result: %s" % ("PASS" if bad == 0 else "FAIL (%d)" % bad))
+    return 0 if bad == 0 else 1
+
+
 SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
-          "taskbar": scene_taskbar}
+          "taskbar": scene_taskbar, "windows": scene_windows, "windows_exposed": scene_windows,
+          "windows_hover": lambda scr, tok, s: scene_windows(scr, tok, s, "hover"),
+          "windows_pressed": lambda scr, tok, s: scene_windows(scr, tok, s, "pressed")}
 
 
 def scale_of(w, h):
@@ -832,6 +1210,8 @@ def main():
         return tokens_check()
     if len(sys.argv) == 3 and sys.argv[1] == "--coverage-table":
         return coverage_table(sys.argv[2])
+    if len(sys.argv) == 3 and sys.argv[1] == "--contrast":
+        return contrast_check(sys.argv[2])
     if len(sys.argv) != 5:
         print(__doc__)
         return 1
