@@ -17,7 +17,12 @@ code page 437 table. It never calls or translates the C toolkit.
     desktop_ref.py --tokens                     the token check (part static)
     desktop_ref.py --coverage-table OUT.h       test_coverage's reference table
 
-SCENE is prims, icons or widgets (tests/desktopdump.c describes them).
+SCENE is prims, icons or widgets (tests/desktopdump.c describes them),
+or (1.3 stage 3b) background or taskbar, the desktop's own pictures from
+the rules of kernel/display/desktop_core.h (the wallpaper and the M at the
+splash's place, from make-wallpaper.py, as the splash's reference does;
+no text lies on the desktop's wallpaper). desktop(w, h, clock) is the
+whole desktop for tests/qmp_desktop.py.
 --tokens compares kernel/display/tokens.h with both of the guide's colour
 tables, and the colour constants of kernel/display/wallpaper_core.h and
 pointer_core.h with their tokens (TOKEN_TWINS), printing "TOKENS ..." lines
@@ -583,7 +588,90 @@ def scene_widgets(scr, tok, s):
     return "%d buttons drawn, bottom %d" % (drawn, f.bottom())
 
 
-SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets}
+# ---- The desktop (1.3 stage 3b; kernel/display/desktop_core.h's rules) ----
+
+FIXED_CLOCK = b"09:41"                      # the taskbar scene's time (tests/desktopdump.c)
+
+
+def layout(w, h):
+    """The taskbar's places; the M is the splash's (make-wallpaper.py's
+    splash_layout)."""
+    s = scale_of(w, h)
+    f = font(s, False)
+    bar = px(40, s)
+    return {
+        "s": s, "font": f, "splash": MW.splash_layout(w, h),
+        "bar": (0, h - bar, w, bar), "edge": (0, h - bar, w, px(1, s)),
+        "m": ((bar - px(24, s)) // 2, h - bar + (bar - px(24, s)) // 2, px(24, s)),
+        "clock": (w - px(16, s) - 5 * f[1], h - bar + (bar - f[2]) // 2),
+    }
+
+
+def paint_k(scr, cov, colour_at):
+    """Coverage painted with a colour in 24.8 (the logo's gradient)."""
+    for (x, y), a in cov.items():
+        if a > 0:
+            o = (y * scr.w + x) * 3
+            v = K.mix(K.rgb(scr.pix[o:o + 3]), colour_at(x), a)
+            scr.pix[o:o + 3] = bytes(K.byte(t) for t in v)
+
+
+def scene_background(scr, tok, s):
+    """The wallpaper with the M alone, at the splash's place and size, in
+    the splash's gradient (the owner's decision in stage 3b: no wordmark,
+    tagline or hint on the desktop)."""
+    W, H = scr.w, scr.h
+    lay = MW.splash_layout(W, H)
+    scr.pix = bytearray(MW.wallpaper(W, H))
+    ls, lox, loy = lay["ls"], lay["lox"], lay["loy"]
+    adeep, alight, deep = K.rgb(rgb3(tok["accent.deep"])), K.rgb(rgb3(tok["accent.light"])), K.rgb(rgb3(tok["bg.deep"]))
+    for i, (x1, y1, x2, y2) in enumerate(MW.STROKES):
+        cov = {}
+        MW.capsule(K, cov, lox + x1 * ls, loy + K.mul(K.fx(y1 * MW.RX, MW.RY), ls),
+                   lox + x2 * ls, loy + K.mul(K.fx(y2 * MW.RX, MW.RY), ls), MW.RX * ls, W, H)
+
+        def col(x, back=i < 2):
+            t = max(0, min(K.one, K.div((x << 8) - (lox + MW.LX0 * ls), (MW.LX1 - MW.LX0) * ls)))
+            c = K.mix(adeep, alight, t)
+            return K.mix(c, deep, K.fx(35, 100)) if back else c
+        paint_k(scr, cov, col)
+    return "the M at the splash's place (origin %d, %d in 1/256 px)" % (lox, loy)
+
+
+def taskbar(scr, tok, clock):
+    L = layout(scr.w, scr.h)
+    fill(scr, L["bar"], tok["surface.bar"])
+    fill(scr, L["edge"], tok["surface.bar.edge"])
+    mx, my, mp = L["m"]
+    icon(scr, "M", mx, my, mp, tok["accent"])
+    text(scr, L["font"], L["clock"][0], L["clock"][1], clock, tok["text"])
+    return L
+
+
+def scene_taskbar(scr, tok, s):
+    L = taskbar(scr, tok, FIXED_CLOCK)
+    return "the bar at y %d (%d high), the clock at (%d, %d)" % (L["bar"][1], L["bar"][3], *L["clock"])
+
+
+_backgrounds = {}
+
+
+def desktop(w, h, clock):
+    """The whole desktop as tests/qmp_desktop.py expects it on the screen:
+    the background, the taskbar with the clock `clock` (bytes, "HH:MM")."""
+    tok = colours()
+    if (w, h) not in _backgrounds:
+        scr = Screen(w, h, tok["bg.deep"])
+        scene_background(scr, tok, scale_of(w, h))
+        _backgrounds[(w, h)] = bytes(scr.pix)
+    scr = Screen(w, h, tok["bg.deep"])
+    scr.pix = bytearray(_backgrounds[(w, h)])
+    taskbar(scr, tok, clock)
+    return bytes(scr.pix)
+
+
+SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
+          "taskbar": scene_taskbar}
 
 
 def scale_of(w, h):

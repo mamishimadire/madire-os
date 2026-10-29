@@ -1303,3 +1303,9 @@ expect "$LOG" "$FC_RE_CLEAN" \
     "[1.0] filecontend: cleanup: processes, open files, nodes, data pages, heap bytes and the VFS lock back to the start"
 expect "$LOG" "^File contention test: PASS$"         "[1.0] filecontend: PASS"
 reject "$LOG" "PANIC"                                 "[1.0] filecontend: no crash screen, no panic"
+
+# ---- 1.3 stage 3b: the desktop behind test=desktop (tests/qemu-lib.sh) ----
+
+section "[1.3] The desktop at 1024x768x32: test=desktop (tests/qmp_desktop.py), desktopnocache, slot 506 (stage 3b)"
+# The header's mode (Limine's default). desktop_case: 8 checks, two boots.
+desktop_case 1024 1024x768x32 100 "desktop at 1024x768x32"

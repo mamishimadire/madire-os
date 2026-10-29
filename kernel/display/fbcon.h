@@ -51,6 +51,12 @@ struct fbcon_layout;
 const struct fbcon_layout *fbcon_current_layout(void);
 void fbcon_release(void);
 
+/* 1.3 stage 3: the desktop (desktop.h) holds the screen as the splash
+ * does: the grid changes only in the shadow until fbcon_release(), or a
+ * panic, draws the whole screen. False (nothing held) if the console is
+ * not active on the back buffer. */
+bool fbcon_hold(void);
+
 /* Called by vga_text.c (only while active): cell i (row x 80 + col) of the
  * shadow changed; the whole shadow changed; colour slot `slot` changed;
  * the cursor was shown, hidden or moved. */

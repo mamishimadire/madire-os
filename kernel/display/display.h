@@ -63,6 +63,11 @@ struct surface *display_front_buffer(void);
  * number (1 for the first). Only while display_active(). */
 uint32_t display_present(void);
 
+/* 1.3 stage 3: the compositor presented a frame (its damaged rectangles,
+ * kernel/display/compositor.h); returns its number, counted with
+ * display_present's. */
+uint32_t display_frame_done(void);
+
 /* 1.2 stage 10, the early crash screen (fbcon.h): the framebuffer to draw
  * the crash screen on directly, or NULL. Slot 506's mapping once it is
  * live; before paging_init() loaded the kernel's tables, the boot tables'

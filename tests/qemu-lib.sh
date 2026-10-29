@@ -275,3 +275,144 @@ mouse_done_ok() {
     read -r i b e <<< "$(sed -nE "s/^Mouse test: done: $2 packets from $(( $2 * 3 )) bytes \(0 bad bytes, 0 overflows, 0 dropped: queue full\); IRQ12 delivered ([0-9]+) times: ([0-9]+) bytes read, ([0-9]+) with nothing waiting, 0 with a port 1 byte$/\1 \2 \3/p" <<< "$d")"
     [ -n "${e:-}" ] && [ "$b" -eq $(( $2 * 3 )) ] && [ "$e" -le 1 ] && [ "$i" -eq $(( b + e )) ]
 }
+
+# ---- 1.3 stage 3b: the desktop behind test=desktop (parts 2 and 3) ----
+
+# Test ISOs with one entry (no "textmode" line) and "cmdline: test=desktop
+# ...": at System ready the desktop takes the screen (kernel/display/
+# desktop.h). tests/qmp_desktop.py stops the guest at the desktop's frame
+# marker and compares the screendump with tests/desktop_ref.py's desktop,
+# its clock drawn from the logged "desktop: clock HH:MM" (no mask); then
+# the pointer after relative moves (parked at 0, 0 first), and a key that
+# hands the screen back to the console without being typed. A second boot
+# with desktopnocache must give the same screen. tests/pagetables.py
+# models slot 506 with and without the background cache.
+QMPDESKTOP=$(dirname "$0")/qmp_desktop.py
+# desktop_iso <name> <cmdline> [a limine.conf line]: DT_ISO, empty if it failed.
+desktop_iso() {
+    local dir=$OUT/isodesktop-$1
+    DT_ISO=$OUT/madire-os-desktop-$1.iso
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (desktop test)\n    protocol: multiboot1\n'
+        [ -z "${3:-}" ] || printf '    %s\n' "$3"
+        printf '    path: boot():/boot/madire.kernel\n'
+        printf '    cmdline: %s\n' "$2"
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    limine_iso "$dir" "$DT_ISO" || { echo "      the test ISO could not be made"; DT_ISO=""; }
+}
+# desktop_boot <log> <iso> <WxH> <qmp_desktop.py steps...>: boots paused at
+# -m 128M, runs qmp_desktop.py, then stops QEMU. DT_OUT holds its output
+# (also kept in <log>.desktop.txt); it waits for DT_UNTIL at the end.
+desktop_boot() {
+    local log=$1 iso=$2 size=$3 sock=$OUT/qmp-desktop.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    DT_OUT=$(python3 "$QMPDESKTOP" "$sock" "$log" "$@" --size "$size" ${DT_UNTIL:+--until "$DT_UNTIL"} \
+             --timeout 180 2>&1)
+    grep -v '^MISMATCH ' <<< "$DT_OUT" | sed 's/^/      /'
+    grep '^MISMATCH ' <<< "$DT_OUT" | head -n 5 | sed 's/^/      /'
+    echo "$DT_OUT" > "${log%.log}.desktop.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# desktop_moves <dx> <dy>: qmp_desktop.py move steps adding up to (dx, dy),
+# none larger than 127 on either axis (one PS/2 packet each).
+desktop_moves() {
+    local dx=$1 dy=$2 sx sy
+    while [ "$dx" -ne 0 ] || [ "$dy" -ne 0 ]; do
+        sx=$dx; [ "$sx" -gt 127 ] && sx=127; [ "$sx" -lt -127 ] && sx=-127
+        sy=$dy; [ "$sy" -gt 127 ] && sy=127; [ "$sy" -lt -127 ] && sy=-127
+        printf 'move:%d,%d ' "$sx" "$sy"
+        dx=$((dx - sx)); dy=$((dy - sy))
+    done
+}
+# desktop_case <name> <mode WxHxD> <percent> <label> [a limine.conf line]:
+# the desktop's 8 checks in one mode (two boots).
+desktop_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h pt px py first
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    # Boot 1: the desktop (cached background), the pointer, a key.
+    log=$OUT/serial-desktop-$name.log
+    desktop_iso "$name" "test=desktop desktoplog mouselog" "$extra"
+    px=$((w - 30)); py=$((h - 12))
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        # shellcheck disable=SC2046
+        DT_UNTIL="desktop-key-ok" desktop_boot "$log" "$DT_ISO" "${w}x${h}" screen \
+            $(desktop_moves -635 -635) $(desktop_moves 127 100) pointer \
+            $(desktop_moves $((px - 127)) $((py - 100))) pointer \
+            "type:x{wait:1}echo desktop-key-ok{ret}"
+    else : > "$log"; fi
+    grep -E "^Desktop|^Mouse: pointer|^display: frame |^desktop: clock " "$log" | head -n 12 | sed 's/^/      /'
+    first=$(sed -nE 's/^desktop: clock (.*)$/\1/p' "$log" | head -n 1)
+    if grep -qxF "Desktop: shown on $mode (scale $pct %): the wallpaper with the M, the taskbar, the clock $first; a key hands the screen back to the console (test=desktop, 1.3 stage 3)" "$log" &&
+       grep -qE "^Desktop: slot 506: background cache at 0xfffffd0080000000 \([0-9]+ pages of free RAM, pitch $((w * ${mode##*x} / 8))\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^Desktop: slot 506 now: [0-9]+ page tables, [0-9]+ pages mapped \(walked\)$" "$log"; then
+        pass "[1.3] $label: Desktop: shown on $mode (scale $pct %) with its first clock; the background cached in slot 506 at 0xfffffd0080000000; slot 506 walked"
+    else
+        fail "[1.3] $label: no Desktop: shown line with the first logged clock, no background cache line, or no slot 506 walk line (see $log)"
+    fi
+    if grep -qE "^SCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the desktop at its first frame (the wallpaper with the M at the splash's place, the taskbar, the clock as logged) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: the desktop's first frame differs from tests/desktop_ref.py's rendering ($(grep -E '^(SCREEN 1|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" && grep -qE "^mouse: packet 5: .* at \(0, 0\)$" "$log" &&
+       grep -qE "^SCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the pointer parked at (0, 0), then moved to (127, 100): every packet exact, the screen (the pointer on the desktop) equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: a packet not as predicted, not parked at (0, 0), or the pointer's screen at (127, 100) differs ($(grep -E '^(PACKETS|SCREEN 2|MISMATCH|qmp_desktop)' <<< "$DT_OUT" | head -n 3 | tr '\n' ' '))"
+    fi
+    if grep -qE "^SCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the pointer moved over the taskbar's clock to ($px, $py): the screen equals the reference pixel for pixel (its earlier place shows the desktop again)"
+    else
+        fail "[1.3] $label: the pointer's screen at ($px, $py) differs ($(grep -E '^(SCREEN 3|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qxF "Desktop: closed (a key): the screen handed back to the console; the key is not typed" "$log" &&
+       grep -qxF "madire> echo desktop-key-ok" "$log" && grep -qxF "desktop-key-ok" "$log" &&
+       ! grep -qE "^madire> x|PANIC|events dropped|FAILED|MISMATCH" "$log"; then
+        pass "[1.3] $label: a key hands the screen back to the console, which opens; the key not typed (madire> echo desktop-key-ok, no x); no FAILED line, panic or dropped key"
+    else
+        fail "[1.3] $label: the key did not hand the screen back to the console, was typed, or a FAILED line, panic or dropped key (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-$name")
+    sed 's/^/      /' <<< "$pt"
+    if grep -qE "^PAGETABLES_RESULT label=desktop-$name computed=([0-9]+) logged=\1 .* MATCH$" <<< "$pt" &&
+       grep -qE "^PAGETABLES_DESKTOP label=desktop-$name cache=present computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
+        pass "[1.3] $label: tests/pagetables.py models slot 506 with the background cache: its tables and pages equal the kernel's walk, the cache's tables as logged"
+    else
+        fail "[1.3] $label: tests/pagetables.py: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$pt" | tr '\n' ' ')"
+    fi
+    # Boot 2: desktopnocache: the background drawn per damaged rectangle.
+    log=$OUT/serial-desktop-$name-nocache.log
+    desktop_iso "$name-nocache" "test=desktop desktopnocache" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" screen
+    else : > "$log"; fi
+    grep -E "^Desktop|^display: frame |^desktop: clock " "$log" | head -n 6 | sed 's/^/      /'
+    if grep -qxF "Desktop: background not cached (test option desktopnocache): drawn per damaged rectangle" "$log" &&
+       grep -qE "^SCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|MISMATCH" "$log"; then
+        pass "[1.3] $label, desktopnocache: the background not cached, drawn per damaged rectangle: the same screen as the reference pixel for pixel"
+    else
+        fail "[1.3] $label, desktopnocache: no 'not cached' line, a different screen, or a FAILED line or panic ($(grep -E '^(SCREEN 1|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-$name-nocache")
+    sed 's/^/      /' <<< "$pt"
+    if grep -qE "^PAGETABLES_RESULT label=desktop-$name-nocache computed=([0-9]+) logged=\1 .* MATCH$" <<< "$pt" &&
+       grep -qE "^PAGETABLES_DESKTOP label=desktop-$name-nocache cache=absent computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
+        pass "[1.3] $label, desktopnocache: tests/pagetables.py models slot 506 without the cache: its tables and pages equal the kernel's walk"
+    else
+        fail "[1.3] $label, desktopnocache: tests/pagetables.py: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$pt" | tr '\n' ' ')"
+    fi
+}

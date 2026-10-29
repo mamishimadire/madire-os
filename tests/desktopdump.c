@@ -14,8 +14,11 @@
  * 48 dp, on the backgrounds of the Design Guide's contrast table, and
  * clipped) or widgets (labels in every alignment and both weights, and
  * every button in each state the Design Guide defines, at the screen's
- * scale and at 125 %). The scenes are test arrangements, not the desktop's
- * layout; desktop_ref.py lays them out from the same description:
+ * scale and at 125 %). 1.3 stage 3b: also background (the wallpaper with
+ * the M) and taskbar, the desktop's own pictures (kernel/display/desktop_core.h; the functions
+ * below say how each is drawn). The first three scenes are test
+ * arrangements, not the desktop's layout; desktop_ref.py lays them out
+ * from the same description:
  *   - the scale s is the console's (fbcon_layout); d(n) = ui_px(n, s);
  *   - the screen starts filled with bg.deep;
  *   - a flow places boxes left to right from (margin, margin) with `gap`
@@ -28,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "kernel/display/desktop_core.h"
 #include "kernel/display/fbcon_core.h"
 #include "kernel/display/tokens.h"
 #include "kernel/display/ui_draw.h"
@@ -283,6 +287,41 @@ static int scene_widgets(struct ui_canvas *c, int32_t W)
     return drawn == 32 ? 0 : 1;
 }
 
+/* 1.3 stage 3b: the desktop's background (the wallpaper with the M at the
+ * splash's place), drawn as the compositor does when there is no cache:
+ * tile by tile, each tile drawn again from scratch, 97 x 61 pixels from
+ * (-7, -13); the result must be the whole background. */
+static int scene_background(struct surface *s, const struct fbcon_layout *cl)
+{
+    struct desktop_layout l;
+    struct wallpaper wp;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font))
+        return 1;
+    wallpaper_setup(&wp, s->width, s->height, cl->scale);
+    uint32_t tiles = 0;
+    for (int32_t y = -13; y < (int32_t)s->height; y += 61)
+        for (int32_t x = -7; x < (int32_t)s->width; x += 97, tiles++)
+            desktop_draw_background(s, &l, &wp, (struct rect){ x, y, 97, 61 });
+    printf("SCENE background: scale %u %%, drawn in %u tiles of 97x61; the M's origin (%lld, %lld)/256\n",
+           cl->scale * 25, tiles, (long long)l.lox, (long long)l.loy);
+    return 0;
+}
+
+/* 1.3 stage 3b: the taskbar on bg.deep with the clock "88:88", then its
+ * clock's box alone again with the fixed time "09:41" (a minute changed):
+ * the result must be the taskbar with "09:41". */
+static int scene_taskbar(struct surface *s, const struct fbcon_layout *cl)
+{
+    struct desktop_layout l;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font))
+        return 1;
+    desktop_draw_taskbar(s, &l, (struct rect){ 0, 0, (int32_t)s->width, (int32_t)s->height }, "88:88");
+    desktop_draw_taskbar(s, &l, l.clock_box, "09:41");
+    printf("SCENE taskbar: scale %u %%, the bar at y %d (%d high), the clock's box at (%d, %d) %dx%d\n",
+           cl->scale * 25, l.bar.y, l.bar.h, l.clock_box.x, l.clock_box.y, l.clock_box.w, l.clock_box.h);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -309,6 +348,10 @@ int main(int argc, char **argv)
         scene_icons(&c, (int32_t)w);
     } else if (strcmp(argv[4], "widgets") == 0) {
         rc = scene_widgets(&c, (int32_t)w);
+    } else if (strcmp(argv[4], "background") == 0) {
+        rc = scene_background(&s, &cl);
+    } else if (strcmp(argv[4], "taskbar") == 0) {
+        rc = scene_taskbar(&s, &cl);
     } else {
         fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
         return 1;

@@ -109,6 +109,11 @@ uint32_t display_present(void)
     return ++frames;
 }
 
+uint32_t display_frame_done(void)
+{
+    return ++frames;
+}
+
 struct surface *display_crash_screen(void)
 {
     if (active)

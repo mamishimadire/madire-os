@@ -18,7 +18,10 @@
  *             (kernel/display/display.h): the framebuffer at VM_FB_BASE
  *             (plus its offset in its first page) and the back buffer,
  *             frames of free RAM, at VM_BACKBUF_BASE; each area up to
- *             1 GiB, so each has its own page directory
+ *             1 GiB, so each has its own page directory. 1.3 stage 3: a
+ *             third area at VM_DESKTOP_BASE, the desktop's (the
+ *             background cache, frames of free RAM), mapped when the
+ *             desktop starts (kernel/display/desktop.h), never unmapped
  *   slot 507  (0.9) kernel thread stacks: VM_KSTACK_BASE, one 32 KiB slot
  *             per thread (16 KiB unmapped guard, then the 16 KiB stack);
  *             kernel/proc/sched_core.h
@@ -41,6 +44,7 @@
 #define VM_DISPLAY_INDEX      506u
 #define VM_FB_BASE            0xFFFFFD0000000000ull
 #define VM_BACKBUF_BASE       0xFFFFFD0040000000ull /* VM_FB_BASE + 1 GiB */
+#define VM_DESKTOP_BASE       0xFFFFFD0080000000ull /* VM_FB_BASE + 2 GiB (1.3) */
 #define VM_DISPLAY_AREA       0x0000000040000000ull /* each area's size */
 
 #define VM_KSTACK_INDEX       507u

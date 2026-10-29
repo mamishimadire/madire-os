@@ -116,6 +116,13 @@
 # objects compiled with the kernel's flags: undefined symbols, libgcc/libc
 # helpers, SSE/x87 (3); tests/desktopdump.c against tests/desktop_ref.py,
 # three scenes in five modes (15); 5 unit suites (coverage, ui_rect,
-# ui_draw, ui_icon, ui_widget).
-1.3 19
-unit-suites 83
+# ui_draw, ui_icon, ui_widget). Stage 3b: 26 more: in part static 10 (the
+# desktop's background, the wallpaper with the M alone, and its taskbar,
+# tests/desktopdump.c against tests/desktop_ref.py in five modes; no text
+# lies on the desktop's wallpaper, so no contrast check there); test=desktop at 1024x768x32 in part 2 and at
+# 800x600x24 in part 3, 8 each (the Desktop: lines, the first frame, the
+# pointer twice, the key back to the console, slot 506 modelled, and with
+# desktopnocache the same screen and slot 506 modelled); 3 unit suites
+# (rtc13, compositor, ui_desktop).
+1.3 45
+unit-suites 86

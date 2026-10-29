@@ -18,7 +18,9 @@ The kernel's own tables (kernel/memory/paging.c, build_tables) map:
 A page-directory-pointer table, page directory or page table exists for each
 distinct 512 GiB, 1 GiB or 2 MiB region holding a mapped page (the recursive
 slot 510 is not a table). The count is compared with the kernel's
-"Paging tables: N page tables + PML4" line.
+"Paging tables: N page tables + PML4" line. 1.3 stage 3b: on a desktop
+boot, slot 506 is also modelled with the background cache's area
+(desktop_slot below; its own PAGETABLES_DESKTOP line).
 
     python3 tests/pagetables.py <serial log> --label <name>
 
@@ -114,7 +116,46 @@ def main():
     print("PAGETABLES_RESULT label=%s computed=%d logged=%d kernel_slot=%d kernel_end=0x%x display_slot=%s %s" % (
         a.label, total, got, kernel_slot, kend,
         "none" if not disp else "%d/%s" % (display_slot, disp.group(5)), "MATCH" if ok else "DIFFER"))
+    desktop_slot(text, disp, say, a.label)
     return 0 if ok else 1
+
+
+def desktop_slot(text, disp, say, label):
+    """1.3 stage 3b: on a desktop boot (its "Desktop: slot 506 now: ..."
+    line, the kernel's walk of the live slot), slot 506 is modelled again:
+    the framebuffer's and the back buffer's pages as above, plus the
+    background cache's pages from 0xFFFFFD0080000000 when the "Desktop:
+    slot 506: background cache ..." line says it was mapped (absent
+    otherwise). The modelled tables and pages must equal the walk's, and
+    the cache's own tables (its page directory and page tables) the ones
+    that line logs. One PAGETABLES_DESKTOP line; it decides nothing about
+    PAGETABLES_RESULT or the exit status."""
+    walk = re.search(r"^Desktop: slot 506 now: (\d+) page tables, (\d+) pages mapped \(walked\)$", text, re.M)
+    if not walk:
+        return
+    cache = re.search(r"^Desktop: slot 506: background cache at 0x([0-9a-f]{16}) \((\d+) pages of free RAM, "
+                      r"pitch \d+\), (\d+) page tables; ", text, re.M)
+    if not disp:
+        print("PAGETABLES_DESKTOP label=%s no display slot 506 line MISSING" % label)
+        return
+    vas = ({int(disp.group(1), 16) + i * PAGE for i in range(int(disp.group(2)))} |
+           {int(disp.group(3), 16) + i * PAGE for i in range(int(disp.group(4)))})
+    cache_ok = True
+    if cache:
+        base, n = int(cache.group(1), 16), int(cache.group(2))
+        own = {base + i * PAGE for i in range(n)}
+        cache_tables = len({(va >> 30) for va in own}) + len({(va >> 21) for va in own})
+        cache_ok = cache_tables == int(cache.group(3)) and not (own & vas)
+        say("desktop: background cache %d pages at 0x%016x, %d tables modelled, %s logged" % (
+            n, base, cache_tables, cache.group(3)))
+        vas |= own
+    else:
+        say("desktop: no background cache mapped")
+    tables = len({va >> 39 for va in vas}) + len({va >> 30 for va in vas}) + len({va >> 21 for va in vas})
+    logged = (int(walk.group(1)), int(walk.group(2)))
+    ok = cache_ok and (tables, len(vas)) == logged
+    print("PAGETABLES_DESKTOP label=%s cache=%s computed=%d/%d logged=%d/%d %s" % (
+        label, "present" if cache else "absent", tables, len(vas), logged[0], logged[1], "MATCH" if ok else "DIFFER"))
 
 
 if __name__ == "__main__":

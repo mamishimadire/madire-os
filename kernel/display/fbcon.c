@@ -160,6 +160,14 @@ const struct fbcon_layout *fbcon_current_layout(void)
     return active ? &lay : 0;
 }
 
+bool fbcon_hold(void)
+{
+    if (!active || direct || panic_active)
+        return false;
+    held = true;
+    return true;
+}
+
 void fbcon_release(void)
 {
     if (!held)

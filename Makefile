@@ -43,9 +43,11 @@ ISO    := $(BUILD)/madire-os.iso
 # not linked into the kernel yet; it is compiled with the kernel's flags
 # (make toolkit) and checked, and built into the host tools. 1.3 stage 3:
 # coverage_core.c is linked (the splash uses it), so it is no longer here.
+# 1.3 stage 3b: the whole toolkit is linked (the desktop draws with it);
+# TOOLKIT_SRCS still names it for the host tools and part static's checks.
 TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
-C_SRCS   := $(filter-out $(TOOLKIT_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
+C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # 1.2 stage 6: the console fonts, converted at build time from the pinned
@@ -56,6 +58,8 @@ OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 FONT_SIZES  := 8x16 10x20 12x24 16x32
 FONT_C      := $(foreach s,$(FONT_SIZES),$(BUILD)/font/font_$(s).c $(BUILD)/font/font_$(s)_bold.c)
 FONT_OBJS   := $(FONT_SIZES:%=$(BUILD)/font/font_%.o)
+# 1.3 stage 3b: the bold fonts too (the toolkit, now linked, uses them).
+FONT_OBJS   += $(FONT_SIZES:%=$(BUILD)/font/font_%_bold.o)
 FONT_SUMS   := third_party/terminus/SHA256SUMS
 OBJS        += $(FONT_OBJS)
 define font_rule
@@ -86,7 +90,7 @@ $(BUILD)/kernel/display/ui_icon.o: $(GEN)/splash_data.h
 $(BUILD)/kernel/display/ui_icon.o: CFLAGS += -I$(GEN)
 
 # 1.3 stage 2: the toolkit's objects, compiled with the kernel's own flags
-# but not linked (OBJS leaves them out), and the bold fonts they use; part
+# but not linked (OBJS leaves them out; since 1.3 stage 3b they are), and the bold fonts they use; part
 # static checks their undefined symbols against madire.elf's and the bold
 # fonts', and that they use no libgcc/libc helper and no SSE/x87 register.
 TOOLKIT_OBJS := $(TOOLKIT_SRCS:%.c=$(BUILD)/%.o) $(FONT_SIZES:%=$(BUILD)/font/font_%_bold.o)
@@ -279,7 +283,7 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
                  $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard drivers/mouse/*.h drivers/mouse/*_core.c) \
                  $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c) \
-                 $(TOOLKIT_SRCS) $(GEN)/splash_data.h
+                 $(TOOLKIT_SRCS) kernel/display/compositor.c $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< $(UNIT_MODULES) -o $@
 
@@ -289,7 +293,7 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
 # wallpaper_core.c now calls.
 $(BUILD)/unit/test_ui_%: tests/unit/test_ui_%.c tests/unit/unit.h $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) \
                          kernel/display/wallpaper_core.c kernel/display/surface_core.c kernel/display/coverage_core.c \
-                         $(GEN)/splash_data.h
+                         kernel/display/desktop_core.c $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< kernel/display/wallpaper_core.c kernel/display/surface_core.c \
 	    kernel/display/coverage_core.c -o $@
@@ -330,13 +334,15 @@ splashdump: $(SPLASHDUMP)
 # 1.3 stage 2: the desktop toolkit (kernel/display/ui_*, icons.c and
 # coverage_core.c, with the fonts) as a host tool that draws the stage's
 # scenes as a PPM; part static compares them with tests/desktop_ref.py.
+# 1.3 stage 3b: with the desktop's pictures (desktop_core.c).
 DESKTOPDUMP := $(BUILD)/desktopdump
 $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) kernel/display/wallpaper_core.c \
                 kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
-                $(GEN)/splash_data.h $(FONT_C)
+                kernel/display/desktop_core.c $(GEN)/splash_data.h $(FONT_C)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) tests/desktopdump.c $(TOOLKIT_SRCS) kernel/display/wallpaper_core.c \
-	    kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c $(FONT_C) -o $@
+	    kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
+	    kernel/display/desktop_core.c $(FONT_C) -o $@
 
 desktopdump: $(DESKTOPDUMP)
 

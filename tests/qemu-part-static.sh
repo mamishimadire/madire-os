@@ -19,7 +19,8 @@
 # in two more. 1.3 stage 2: before the size report, the [1.3] checks of
 # the desktop toolkit (tokens.h against the Design Guide, the toolkit's
 # objects compiled with the kernel's flags, tests/desktopdump.c against
-# tests/desktop_ref.py in five modes).
+# tests/desktop_ref.py in five modes). 1.3 stage 3b: after them, the
+# desktop's background and taskbar against desktop_ref.py in five modes.
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -541,6 +542,44 @@ for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; d
     for scene in prims icons widgets; do
         # shellcheck disable=SC2086
         desktop_static $mode $scene
+    done
+done
+
+# ---- 1.3 stage 3b: the desktop's pictures ----
+
+section "[1.3] The desktop's background and taskbar against tests/desktop_ref.py (stage 3b)"
+# kernel/display/desktop_core.c built as the host tool (build/desktopdump)
+# draws the desktop's background (the wallpaper with the M at the splash's
+# place) tile by tile, as the compositor does without the cache, and the
+# taskbar with its clock drawn again in its box with a fixed time;
+# desktop_ref.py draws both from desktop_core.h's rules. Five modes, both
+# pixel formats, every scale but 125 %. No text lies on the desktop's
+# wallpaper (the owner's decision in stage 3b), so the Design Guide's
+# section 12 text-box check has nothing to check there.
+desktop3_static() {   # desktop3_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the desktop's $4 at $1x$2x$(($3 * 8)) (desktop_core.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the desktop's $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in background taskbar; do
+        # shellcheck disable=SC2086
+        desktop3_static $mode $scene
     done
 done
 

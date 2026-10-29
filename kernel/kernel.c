@@ -27,6 +27,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/display/desktop.h"
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
 #include "kernel/display/pointer.h"
@@ -766,6 +767,9 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                 console_handle_key(&e);
             } else if (e.flags & KEY_PRESSED) {
                 BOOTSCREEN_SAFE(bootscreen_last_key(&e));
+                /* 1.3 stage 3: on a test=desktop boot a key hands the
+                 * screen back to the console, which opens (not typed). */
+                desktop_close_key();
                 /* 1.2 stage 8 (decision 17): a key closes the splash; Esc
                  * shows the text boot screen and opens nothing. */
                 bool esc = splash_showing() && e.keycode == KEY_ESC;
@@ -778,6 +782,7 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
 
         splash_tick();                      /* 1.2 stage 8: the dots, every 400 ms */
         pointer_poll();                     /* 1.2 stage 7: nothing without a mouse */
+        desktop_poll();                     /* 1.3 stage 3: the clock, then one composition */
 
         /* 1.1: the lights follow the lock keys; a change is logged only
          * with keylog (K8), a failure always. */
@@ -858,6 +863,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bool splash_opt = cmdline_has("test=splash");
     splash_options(cmdline_word("verbose"), cmdline_word("still"), !cmdline_has("test=") || splash_opt,
                    cmdline_word("still") || splash_opt);
+    /* 1.3 stage 3: the desktop, on test=desktop boots only (desktop.h). */
+    desktop_options(cmdline_has("test=desktop"), cmdline_word("desktoplog"), cmdline_word("desktopnocache"));
 
     bootscreen_draw_header();
 
@@ -981,7 +988,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         /* 1.2 stage 10: no pointer on the console but with the test
          * option `pointer` or test=mouse. */
         pointer_start(cmdline_word("mouselog") || cmdline_has("test=mouse"),
-                      cmdline_word("pointer") || cmdline_has("test=mouse"));
+                      cmdline_word("pointer") || cmdline_has("test=mouse") ||
+                      cmdline_has("test=desktop"));     /* 1.3 stage 3: on the desktop */
     }
     bootscreen_uptime(timer_uptime_seconds());
     bootscreen_last_key(NULL);
@@ -1045,5 +1053,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
                      : !keyboard_ok ? "Keyboard unavailable: console disabled."
                      : "Console self-test failed: console disabled.");
     klogf("Kernel stack: %u bytes at peak, of %u\n", kernel_stack_peak(), kernel_stack_size());
+    desktop_start(console_offered);         /* 1.3 stage 3: test=desktop boots only */
     idle_loop(&mem, console_offered);
 }

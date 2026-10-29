@@ -864,3 +864,9 @@ reject "$LOG" "PANIC|Screen output from thread" "[0.11] program output session: 
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 
+
+# ---- 1.3 stage 3b: the desktop behind test=desktop (tests/qemu-lib.sh) ----
+
+section "[1.3] The desktop at 800x600x24: test=desktop (tests/qmp_desktop.py), desktopnocache, slot 506 (stage 3b)"
+# The smallest mode, at 3 bytes per pixel. desktop_case: 8 checks, two boots.
+desktop_case 800 800x600x24 100 "desktop at 800x600x24" "resolution: 800x600x24"
