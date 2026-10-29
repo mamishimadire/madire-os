@@ -230,8 +230,16 @@ static void test_close_button(void)
     /* Released elsewhere: not closed. */
     ui_wm_pointer(&m, cx - 100, cy, false, true);
     CHECK(b.open && !m.pressed && b.close == UI_BUTTON_NORMAL);
-    /* Pressed elsewhere, then moved over it: not hovered while the button is held. */
-    ui_wm_pointer(&m, cx - 100, cy, true, false);
+    /* Pressed elsewhere, then moved over it: not pressed (nor hovered while
+     * the button is held); released there: not closed, then hovered. The
+     * press is in B's body (B: x 360-711, y 199-575, its title bar rows
+     * 199-230, its close button x 680-711), below A (rows 175-551): on no
+     * title bar, no close button, no other window. */
+    struct ui_window *at;
+    int32_t ex = cx - 100, ey = cy + 345;                           /* (596, 560) */
+    CHECK(ui_wm_hit(&m, ex, ey, &at) == UI_HIT_BODY && at == &b && !ui_rect_contains(a.r, ex, ey));
+    ui_wm_pointer(&m, ex, ey, true, false);
+    CHECK(!m.drag && !m.pressed);
     ui_wm_pointer(&m, cx, cy, false, false);
     CHECK(b.close == UI_BUTTON_NORMAL);
     ui_wm_pointer(&m, cx, cy, false, true);
@@ -251,6 +259,35 @@ static void test_close_button(void)
     /* A window that does not close on Esc. */
     ui_wm_open(&m, &b);
     CHECK(!ui_wm_esc(&m) && b.open);
+}
+
+/* A press on B's title bar left of its close button, then a move to where
+ * the close button was: B is dragged (its rectangle follows the pointer
+ * 1:1, then clamped, and the drag is logged once, at the release); no
+ * close button reaches hover or pressed. */
+static void test_title_press_drags(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window a = win("A", 352, 377, true), b = win("B", 352, 377, false), *at;
+    ui_wm_open(&m, &a);                             /* (336, 175) */
+    ui_wm_open(&m, &b);                             /* (360, 199): its title bar rows 199-230 */
+    CHECK(ui_wm_hit(&m, 596, 215, &at) == UI_HIT_TITLE && at == &b);
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 596, 215, true, false);
+    CHECK(m.drag == &b && !m.pressed);
+    ui_wm_pointer(&m, 696, 215, false, false);      /* the close button's centre before the move */
+    CHECK(same_rect(b.r, 460, 199, 352, 377));
+    CHECK(b.close == UI_BUTTON_NORMAL && a.close == UI_BUTTON_NORMAL);
+    ui_wm_pointer(&m, 2000, 300, false, false);     /* asks x 1764: clamped to 1024 - 48 */
+    CHECK(same_rect(b.r, 976, 284, 352, 377));
+    CHECK(b.close == UI_BUTTON_NORMAL && a.close == UI_BUTTON_NORMAL);
+    ui_wm_pointer(&m, 2000, 300, false, true);
+    int drags = 0;
+    for (uint32_t i = 0; i < m.n_ev; i++)
+        if (m.ev[i].kind == UI_EV_DRAG && m.ev[i].w == &b && same_rect(m.ev[i].r, 976, 284, 352, 377))
+            drags++;
+    CHECK(drags == 1 && count(&m, UI_EV_DRAG) == 1);
+    CHECK(count(&m, UI_EV_CLOSE_STATE) == 0 && count(&m, UI_EV_CLOSE_BUTTON) == 0 && b.open);
 }
 
 /* The window painted directly against its surface composed through
@@ -353,6 +390,7 @@ int main(void)
     RUN(test_hit_z_focus);
     RUN(test_drag);
     RUN(test_close_button);
+    RUN(test_title_press_drags);
     RUN(test_surface_equals_direct);
     RUN(test_frame_pixels);
     return unit_report("test_ui_window");
