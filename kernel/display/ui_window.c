@@ -111,7 +111,7 @@ static void look_changed(struct ui_wm *m, struct ui_window *w)
     damage(m, w->r);
 }
 
-static int32_t clamp32(int64_t v, int64_t lo, int64_t hi)
+static int32_t win_clamp(int64_t v, int64_t lo, int64_t hi)
 {
     if (v > hi)
         v = hi;
@@ -124,8 +124,8 @@ struct rect ui_wm_clamp(const struct ui_wm *m, struct rect r)
 {
     int32_t keep = ui_px(48, m->scale);
     int64_t ymax = (int64_t)m->bar_y - r.h;
-    r.x = clamp32(r.x, (int64_t)keep - r.w, (int64_t)m->width - keep);
-    r.y = clamp32(r.y, 0, ymax < 0 ? 0 : ymax);
+    r.x = win_clamp(r.x, (int64_t)keep - r.w, (int64_t)m->width - keep);
+    r.y = win_clamp(r.y, 0, ymax < 0 ? 0 : ymax);
     return r;
 }
 
@@ -321,8 +321,8 @@ void ui_wm_pointer(struct ui_wm *m, int32_t x, int32_t y, bool down, bool up)
     if (m->drag) {
         struct ui_window *w = m->drag;
         struct rect r = m->grab_r;
-        r.x = clamp32((int64_t)r.x + x - m->grab_x, INT32_MIN, INT32_MAX);
-        r.y = clamp32((int64_t)r.y + y - m->grab_y, INT32_MIN, INT32_MAX);
+        r.x = win_clamp((int64_t)r.x + x - m->grab_x, INT32_MIN, INT32_MAX);
+        r.y = win_clamp((int64_t)r.y + y - m->grab_y, INT32_MIN, INT32_MAX);
         r = ui_wm_clamp(m, r);
         if (r.x != w->r.x || r.y != w->r.y) {
             damage(m, w->r);
