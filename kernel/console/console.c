@@ -4,6 +4,7 @@
 #include "kernel/arch/x86/cmos.h"
 #include "kernel/arch/x86/cpuid.h"
 #include "kernel/arch/x86/reset.h"
+#include "kernel/console/conskeys.h"
 #include "kernel/console/console.h"
 #include "kernel/console/history.h"
 #include "kernel/console/lineedit.h"
@@ -1276,6 +1277,40 @@ static void tab_key(void)
     place_cursor();
 }
 
+/* ---- 1.3 stage 7b: the console keys (conskeys.h) ---- */
+
+/* Ctrl+L clears the screen as "clear" does (the screen's used rows kept in
+ * the scrollback first), then draws the prompt on the top row with the
+ * typed line and its cursor as they were. Only a fixed line is logged,
+ * never the text. */
+static void clear_keep_line(void)
+{
+    keep_screen_rows();
+    textbuf_clear(&screen);
+    write_screen(prompt, ATTR_PROMPT);
+    prompt_row = screen.row;
+    draw_input();
+    render_all();
+    place_cursor();
+    klogf("console: Ctrl+L: screen cleared, the input line kept\n");
+}
+
+/* Ctrl+L, A, E, K, U or W at the prompt (the caller has ruled out a
+ * program, sleep, presskey, cat and cp). */
+static void ctrl_key(enum conskey k)
+{
+    tab_armed = false;
+    enum conskeys_do d = conskeys_route(k, sb_scrolled(&sb), confirming, fg_pid != 0);
+    if (d == CONSKEYS_LEAVE || d == CONSKEYS_LEAVE_ACT)
+        leave_scrollback();
+    if (d != CONSKEYS_ACT && d != CONSKEYS_LEAVE_ACT)
+        return;
+    if (k == CONSKEY_CLEAR)
+        clear_keep_line();
+    else if (conskeys_edit(&input, k))
+        draw_input();
+}
+
 /* ---- Public ---- */
 
 void console_start(const struct memory_stats *mem)
@@ -1395,6 +1430,14 @@ void console_handle_key(const struct key_event *e)
             if (process_kill(fg_pid) == PROC_OK)
                 klogf("console: Ctrl+C: kill requested for process %d\n", (int)fg_pid);
         }
+        return;
+    }
+
+    /* 1.3 stage 7b: Ctrl+L, A, E, K, U and W (conskeys.h); they never
+     * reach the line editor. */
+    enum conskey ck = conskeys_classify(e);
+    if (ck != CONSKEY_NONE) {
+        ctrl_key(ck);
         return;
     }
 

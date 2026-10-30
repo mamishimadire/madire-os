@@ -2,6 +2,7 @@
  * The desktop, the kernel side (1.3 stage 3); see desktop.h.
  */
 #include "kernel/display/desktop.h"
+#include "drivers/keyboard/ps2kbd.h"
 #include "drivers/keyboard/scancode.h"
 #include "drivers/mouse/ps2mouse.h"
 #include "drivers/vga/vga_text.h"
@@ -85,6 +86,24 @@ static uint32_t desk_bytes_seen;
 static struct ui_menus desk_menus;
 static uint16_t desk_menu_scratch[UI_ABOUT_SCRATCH];
 static bool desk_console_wanted;
+
+/* 1.3 stage 7b (report only, desktoplog): during a drag, the damage before
+ * and after ui_damage_merge_overlaps (rectangles and pixels), and for each
+ * key press passed to the console, the TSC cycles from its being taken out
+ * of the key queue (desktop_key) to the first composition after it (its
+ * echo composed), with the number of keys still waiting in the queue then.
+ * A key event carries no time (kernel/input/ and drivers/ unchanged). */
+#define DESK_KEYS_PENDING 32
+#define DESK_KEYS_KEPT 128
+static uint64_t desk_drag_rects_in = 0, desk_drag_rects_out = 0, desk_drag_px_in = 0, desk_drag_px_out = 0;
+static uint64_t desk_key_taken[DESK_KEYS_PENDING] = { 0 };
+static uint32_t desk_key_waiting[DESK_KEYS_PENDING] = { 0 };
+static uint32_t desk_keys_pending = 0;
+static uint64_t desk_key_cycles[DESK_KEYS_KEPT] = { 0 };
+static uint32_t desk_key_queued[DESK_KEYS_KEPT] = { 0 };
+static uint64_t desk_key_sorted[DESK_KEYS_KEPT] = { 0 };     /* the waiting counts, sorted (not on the stack) */
+static uint32_t desk_drag_keys = 0, desk_drag_keys_lost = 0;
+static uint64_t desk_key_longest = 0;
 
 void desktop_options(bool w, bool l, bool n, bool ns, bool about_opt, bool panic_opt)
 {
@@ -222,6 +241,40 @@ static bool desk_settled(void)
     return c.queued == 3u * c.packets + c.bad_bytes || now - desk_bytes_tick >= 50;
 }
 
+/* 1.3 stage 7b: the middle value of v[0..n) (n > 0), sorted in place
+ * (insertion sort: n is at most DESK_KEYS_KEPT). */
+static uint64_t desk_median(uint64_t *v, uint32_t n)
+{
+    for (uint32_t i = 1; i < n; i++) {
+        uint64_t x = v[i];
+        uint32_t j = i;
+        for (; j > 0 && v[j - 1] > x; j--)
+            v[j] = v[j - 1];
+        v[j] = x;
+    }
+    return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
+}
+
+/* 1.3 stage 7b: the drag's damage and key-latency lines (report only). */
+static void desk_log_drag_figures(uint64_t per)
+{
+    kserialf("desktop: damage during the drag: %llu rectangles merged into %llu, %llu pixels into %llu\n",
+             (ull)desk_drag_rects_in, (ull)desk_drag_rects_out, (ull)desk_drag_px_in, (ull)desk_drag_px_out);
+    if (!desk_drag_keys)
+        return;
+    uint32_t kept = desk_drag_keys - desk_drag_keys_lost;
+    uint32_t most = 0;
+    for (uint32_t i = 0; i < kept; i++) {
+        desk_key_sorted[i] = desk_key_queued[i];
+        if (desk_key_queued[i] > most)
+            most = desk_key_queued[i];
+    }
+    uint64_t mid = desk_median(desk_key_cycles, kept), mid_waiting = desk_median(desk_key_sorted, kept);
+    kserialf("desktop: keys during the drag: %u (%u kept for the median), from the key queue to the echo composed: "
+             "median %llu us, longest %llu us; keys waiting then: median %llu, at most %u\n", desk_drag_keys, kept,
+             (ull)fd_cycles_us(mid, per), (ull)fd_cycles_us(desk_key_longest, per), (ull)mid_waiting, most);
+}
+
 /* The marker of the last frame composed (test=desktop boots only, stage
  * 3) and the clock it shows; with desktoplog, first the burst's line when
  * more than one frame was composed since the last marker (report only). */
@@ -242,10 +295,14 @@ static void desk_log_frame(void)
             kserialf("desktop: frames during the drag: %u composed, the longest composition %llu us (%llu TSC "
                      "cycles)\n", desk_drag_frames, (ull)fd_cycles_us(desk_drag_longest, per),
                      (ull)desk_drag_longest);
+            desk_log_drag_figures(per);                 /* 1.3 stage 7b */
         }
         desk_in_drag = false;
         desk_drag_frames = 0;
         desk_drag_longest = 0;
+        desk_drag_rects_in = desk_drag_rects_out = desk_drag_px_in = desk_drag_px_out = 0;
+        desk_drag_keys = desk_drag_keys_lost = 0;
+        desk_key_longest = 0;
     }
     desk_burst_frames = 0;
     desk_burst_longest = 0;
@@ -259,13 +316,39 @@ static void desk_log_frame(void)
     }
 }
 
+/* 1.3 stage 7b: the keys taken since the last composition have their echo
+ * composed now (at `now`); during a drag each is kept for the figures. */
+static void desk_keys_composed(uint64_t now)
+{
+    for (uint32_t i = 0; desk_in_drag && i < desk_keys_pending; i++) {
+        uint64_t c = now - desk_key_taken[i];
+        if (c > desk_key_longest)
+            desk_key_longest = c;
+        if (desk_drag_keys - desk_drag_keys_lost < DESK_KEYS_KEPT) {
+            desk_key_cycles[desk_drag_keys - desk_drag_keys_lost] = c;
+            desk_key_queued[desk_drag_keys - desk_drag_keys_lost] = desk_key_waiting[i];
+        } else {
+            desk_drag_keys_lost++;
+        }
+        desk_drag_keys++;
+    }
+    desk_keys_pending = 0;
+}
+
 /* One composition of whatever is damaged; its frame is logged only once
  * settled (1.3 stage 4b): frames composed while mouse bytes wait are
- * counted, and the marker comes with the first settled pass. */
+ * counted, and the marker comes with the first settled pass. 1.3 stage 7b:
+ * the damaged rectangles merged first (ui_damage_merge_overlaps). */
 static void compose(void)
 {
     refresh_surfaces();
     if (comp_pending(&comp)) {
+        uint64_t rects_in = comp.damage.n, px_in = 0, px_out = 0;
+        for (uint32_t i = 0; i < comp.damage.n; i++)
+            px_in += ui_rect_area(comp.damage.r[i]);
+        ui_damage_merge_overlaps(&comp.damage);
+        for (uint32_t i = 0; i < comp.damage.n; i++)
+            px_out += ui_rect_area(comp.damage.r[i]);
         struct rect first = comp.damage.r[0];
         uint64_t t0 = fd_tsc();
         uint32_t n = comp_compose(&comp);
@@ -282,7 +365,12 @@ static void compose(void)
             desk_drag_frames++;
             if (took > desk_drag_longest)
                 desk_drag_longest = took;
+            desk_drag_rects_in += rects_in;             /* 1.3 stage 7b */
+            desk_drag_rects_out += n;
+            desk_drag_px_in += px_in;
+            desk_drag_px_out += px_out;
         }
+        desk_keys_composed(t0 + took);
         desk_unlogged = true;
         if (logging)
             kserialf("desktop: composed %u rectangle%s, the first at (%d, %d) %dx%d\n", n, n == 1 ? "" : "s",
@@ -761,5 +849,12 @@ enum desktop_key_route desktop_key(uint8_t keycode, bool pressed)
     log_events();
     if (desk_menu_done() == UI_MENU_CONSOLE)
         out = DESKTOP_KEY_OPENED;
+    /* 1.3 stage 7b: a key press the console gets, taken out of the queue
+     * just now (report only: desk_keys_composed). */
+    if (out == DESKTOP_KEY_CONSOLE && pressed && desk_keys_pending < DESK_KEYS_PENDING) {
+        desk_key_taken[desk_keys_pending] = fd_tsc();
+        desk_key_waiting[desk_keys_pending] = keyboard_queued();
+        desk_keys_pending++;
+    }
     return out;
 }

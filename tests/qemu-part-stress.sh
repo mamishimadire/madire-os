@@ -400,3 +400,11 @@ DB_KEYS=no
 grep -qxF "madire> echo burstkeys-0123456789" "$LOG" && grep -qxF "burstkeys-0123456789" "$LOG" && DB_KEYS=yes
 echo "DRAGBURST_KEYS (report only) $(grep -E '^DRAGBURST ' <<< "$DB_OUT" | sed -n 2p); the line typed during the Console window's burst complete and in order: $DB_KEYS; the drag lines: $(grep -cE '^desktop: frames during the drag: ' "$LOG"), the burst lines: $(grep -cE '^desktop: burst: ' "$LOG")"
 grep -E "^desktop: frames during the drag: " "$LOG" | sed 's/^/DRAGBURST_FRAMES /'
+# 1.3 stage 7b, report only: each drag's damage before and after
+# ui_damage_merge_overlaps (rectangles per frame and pixels), and the keys
+# typed during the Console window's drag (from the key queue to the echo
+# composed, and the keys waiting then).
+awk '/^desktop: frames during the drag: / { f = $6; next }
+     /^desktop: damage during the drag: / { d++; printf "DRAGBURST_DAMAGE drag %d: %d frames; rectangles per frame %.2f before the merge, %.2f composed; pixels %s before, %s composed (%.2f times fewer)\n",
+                                             d, f, f ? $6 / f : 0, f ? $10 / f : 0, $11, $14, $14 ? $11 / $14 : 0 }' "$LOG"
+grep -E "^desktop: keys during the drag: " "$LOG" | sed 's/^/DRAGBURST_KEY_LATENCY /'

@@ -883,3 +883,88 @@ section "[1.3] The menus at 800x600x24: the M button and menu, the right-click m
 # desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
 # ending with Restart; the decision 20 key session; test=mousefail=4).
 desktop_menu_case 800 800x600x24 100 "menus at 800x600x24" "resolution: 800x600x24"
+
+# ---- 1.3 stage 7b: the console keys (decision 16; docs/commands.md) ----
+
+section "[1.3] Console keys: Ctrl+L, A, E, K, U and W in the Console window at 800x600x24 and the full-screen console; scrollback first (stage 7b)"
+# One typed line uses every key, at the start, the middle and the end:
+# "ho beta", Ctrl+A, "zzz ", Ctrl+U (gives "ho beta"), "ec", Ctrl+E,
+# " gamma junk", Ctrl+W twice (gives "echo beta "), "delta", Left 6 times,
+# Ctrl+K (gives "echo beta"), Left twice, Ctrl+L (the screen cleared, the
+# line and its cursor on the top row), "-": the line run is "echo be-ta".
+# Then "echo sbk", Ctrl+A, Shift+PgUp (scrolled back), Ctrl+E (back to the
+# live view first, then the end of the line), "x": "echo sbkx". The same
+# keys in the Console window (test=desktop desktoplog; the screens against
+# the reference drawn from vga_shadow, row 0 of the grid read from it) and
+# on the full-screen console (the default boot; row 0 read from the VGA
+# text screen by tests/qmp_screen.py). 8 checks, two boots.
+CK_LINE='ho beta{ctrl+a}zzz {ctrl+u}ec{ctrl+e} gamma junk{ctrl+w}{ctrl+w}delta{left}{left}{left}{left}{left}{left}{ctrl+k}{left}{left}{ctrl+l}-{wait:2}'
+CK_SB='echo sbk{ctrl+a}{shift+pgup}{wait:2}{ctrl+e}x{ret}'
+CK_CLEARED="console: Ctrl+L: screen cleared, the input line kept"
+# ck_lines <log> <label>: the two lines run, their output, and the scrollback order.
+ck_lines() {
+    local log=$1 label=$2
+    if grep -A1 -xF "madire> echo be-ta" "$log" | grep -qxF "be-ta" &&
+       [ "$(grep -cE '^madire> ' "$log")" -eq 2 ] && ! grep -E "^(madire> |console: )" "$log" | grep -qE "zzz|gamma|junk|delta"; then
+        pass "[1.3] console keys, $label: Ctrl+A, Ctrl+U, Ctrl+E, Ctrl+W (twice), Ctrl+K and Ctrl+L in one typed line give the line 'echo be-ta', run with its output; the deleted words never logged"
+    else
+        fail "[1.3] console keys, $label: the edited line is not 'echo be-ta' with its output ($(grep -E '^madire> ' "$log" | head -n 3 | tr '\n' ' '))"
+    fi
+    expect_in_order "$log" "[1.3] console keys, $label: in scrollback Ctrl+E first returns to the live view, then acts (the line run is 'echo sbkx')" \
+        "^madire> echo be-ta$" "^console: scrolled back: line [0-9]+ of [0-9]+, top '" "^console: back at the bottom$" \
+        "^madire> echo sbkx$" "^sbkx$"
+}
+# The Console window (800x600x24, part 3's mode).
+CK_LOG=$OUT/serial-desktop-conskeys-800.log
+CK_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+CK_SHP=$(printf '0x%x' $(( 0x${CK_SHV:-0} - 0xffffffff80000000 )))
+desktop_iso "conskeys-800" "test=desktop desktoplog" "resolution: 800x600x24"
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$CK_LOG" "$DT_ISO" 800x600 ready windowed "type:x" wshot \
+        "type:$CK_LINE" "wait:$CK_CLEARED" wshot "type:{ret}" "wait:be-ta" \
+        "type:$CK_SB" "wait:sbkx" wshot --shadow "$CK_SHP"
+else : > "$CK_LOG"; fi
+grep -E "^console: |^desktop: (open|focus)|^Desktop: a key" "$CK_LOG" | head -n 12 | sed 's/^/      /'
+grep -E "^GRID " <<< "$DT_OUT" | sed 's/^/      /'
+if [ "$(grep -cxF "$CK_CLEARED" "$CK_LOG")" -eq 1 ] &&
+   grep -qE "^GRID 2 crc=[0-9a-f]+ row0='madire> echo be-ta' " <<< "$DT_OUT" &&
+   grep -qE "^WSCREEN 2 size=800x600 differ=0 " <<< "$DT_OUT"; then
+    pass "[1.3] console keys, the Console window: Ctrl+L clears the screen and keeps the typed line and its cursor (row 0 of the grid 'madire> echo be-ta', the '-' typed after it at the kept cursor); logged once by a fixed line; the window equals the reference pixel for pixel"
+else
+    fail "[1.3] console keys, the Console window: Ctrl+L did not keep the line on row 0, was not logged once, or the screen differs ($(grep -E '^(WSCREEN 2|GRID 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+fi
+ck_lines "$CK_LOG" "the Console window"
+if grep -qE "^WSCREEN 1 size=800x600 differ=0 " <<< "$DT_OUT" && grep -qE "^WSCREEN 3 size=800x600 differ=0 " <<< "$DT_OUT" &&
+   grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$CK_LOG" &&
+   grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+   ! grep -qE "^key: " "$CK_LOG" && ! grep -qE "PANIC|FAILED|events dropped|bytes dropped" "$CK_LOG"; then
+    pass "[1.3] console keys, the Console window: the window opened by a key and the screen after the scrollback key equal the reference pixel for pixel; every window line as predicted; no key logged, no panic, FAILED line or drop"
+else
+    fail "[1.3] console keys, the Console window: $(grep -E '^(WSCREEN 1|WSCREEN 3|EVENTS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+# The full-screen console (the default boot, VGA text).
+CK_LOG=$OUT/serial-conskeys-fullscreen.log
+SOCK=$OUT/qmp-conskeys.sock
+rm -f "$CK_LOG" "$SOCK" "$OUT/screen-conskeys.bin"
+timeout 240 qemu-system-x86_64 -display none -no-reboot -serial file:"$CK_LOG" \
+    -qmp unix:"$SOCK",server=on,wait=off -m 32M -kernel "$KERNEL" >/dev/null 2>&1 &
+QPID=$!
+python3 "$QMPKEYS" "$SOCK" "$CK_LOG" "System ready." --text "x{wait:1}$CK_LINE" --gap 0.05 \
+    --done "$CK_CLEARED" --done-timeout 90
+CK_SCREEN=bad
+python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-conskeys.bin" --log "$CK_LOG" --wait '^console: Ctrl\+L: screen cleared, the input line kept$' 1 \
+    --row 0 '^madire> echo be-ta$' > "$OUT/screen-conskeys.txt" 2>&1 && CK_SCREEN=ok
+grep -E "^(row 0[0-2]|CHECK)" "$OUT/screen-conskeys.txt" | sed 's/^/      /'
+python3 "$QMPKEYS" "$SOCK" "$CK_LOG" "System ready." --text "{ret}$CK_SB" --gap 0.05 --done "sbkx" --done-timeout 90
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
+[ -f "$CK_LOG" ] || : > "$CK_LOG"
+grep -E "^console: |^madire> " "$CK_LOG" | head -n 8 | sed 's/^/      /'
+if [ "$CK_SCREEN" = ok ] && [ "$(grep -cxF "$CK_CLEARED" "$CK_LOG")" -eq 1 ]; then
+    pass "[1.3] console keys, the full-screen console: Ctrl+L clears the screen and keeps the typed line and its cursor (VGA row 0 'madire> echo be-ta'); logged once by a fixed line"
+else
+    fail "[1.3] console keys, the full-screen console: Ctrl+L did not keep the line on row 0, or was not logged once (see $OUT/screen-conskeys.txt)"
+fi
+ck_lines "$CK_LOG" "the full-screen console"
+reject "$CK_LOG" "^key: |PANIC|FAILED|Screen output from thread" "[1.3] console keys, the full-screen console: no key logged, no panic, FAILED line or screen-rule violation"

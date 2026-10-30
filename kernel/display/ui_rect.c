@@ -102,3 +102,40 @@ void ui_damage_add(struct ui_damage *d, struct rect r)
     d->r[0] = r;
     d->n = 1;
 }
+
+uint64_t ui_rect_area(struct rect r)
+{
+    return ui_rect_empty(r) ? 0 : (uint64_t)r.w * (uint64_t)r.h;
+}
+
+/* Removes entry i, the later ones moved down one place. */
+static void rect_damage_remove(struct ui_damage *d, uint32_t i)
+{
+    for (; i + 1 < d->n; i++)
+        d->r[i] = d->r[i + 1];
+    d->n--;
+}
+
+void ui_damage_merge_overlaps(struct ui_damage *d)
+{
+    for (uint32_t i = 0; i < d->n;) {
+        if (ui_rect_empty(d->r[i]))
+            rect_damage_remove(d, i);
+        else
+            i++;
+    }
+    bool merged = true;
+    while (merged) {
+        merged = false;
+        for (uint32_t i = 0; i < d->n && !merged; i++) {
+            for (uint32_t j = i + 1; j < d->n && !merged; j++) {
+                struct rect u = ui_rect_union(d->r[i], d->r[j]);
+                if (ui_rect_area(u) > ui_rect_area(d->r[i]) + ui_rect_area(d->r[j]))
+                    continue;
+                d->r[i] = u;
+                rect_damage_remove(d, j);
+                merged = true;
+            }
+        }
+    }
+}

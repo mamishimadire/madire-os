@@ -54,4 +54,15 @@ void ui_damage_clear(struct ui_damage *d);
 /* Adds r (the rules above). */
 void ui_damage_add(struct ui_damage *d, struct rect r);
 
+/* 1.3 stage 7b: r's area in pixels (0 if empty). */
+uint64_t ui_rect_area(struct rect r);
+
+/* 1.3 stage 7b (the drag damage): empty rectangles are dropped; then two
+ * listed rectangles become their bounding rectangle, at the first one's
+ * place (the later one removed, the order otherwise kept), whenever its
+ * area is no larger than the sum of their areas; repeated until no pair
+ * merges. ui_damage_add is unchanged; the compositor calls this before it
+ * composes. */
+void ui_damage_merge_overlaps(struct ui_damage *d);
+
 #endif

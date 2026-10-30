@@ -113,6 +113,142 @@ static void test_damage_full(void)
     CHECK(same(d.r[0], R(0, 0, 64, 48)));
 }
 
+/* 1.3 stage 7b: the drag damage (ui_damage_merge_overlaps). */
+
+static void merge_list(struct ui_damage *d, const struct rect *r, uint32_t n)
+{
+    ui_damage_init(d, 1024, 768);
+    for (uint32_t i = 0; i < n; i++)
+        d->r[i] = r[i];                             /* as listed, not through ui_damage_add */
+    d->n = n;
+    ui_damage_merge_overlaps(d);
+}
+
+static void test_area(void)
+{
+    CHECK_EQ(ui_rect_area(R(5, 5, 3, 4)), 12);
+    CHECK_EQ(ui_rect_area(R(5, 5, 0, 4)), 0);
+    CHECK_EQ(ui_rect_area(R(5, 5, -3, 4)), 0);
+    CHECK_EQ(ui_rect_area(R(0, 0, INT32_MAX, INT32_MAX)), (uint64_t)INT32_MAX * INT32_MAX);
+}
+
+static void test_merge_disjoint(void)
+{
+    struct ui_damage d = { 0 };
+    struct rect far[2] = { R(0, 0, 10, 10), R(100, 100, 10, 10) };     /* union 12,100 > 200 */
+    merge_list(&d, far, 2);
+    CHECK_EQ(d.n, 2);
+    CHECK(same(d.r[0], far[0]) && same(d.r[1], far[1]));
+    struct rect diag[2] = { R(0, 0, 10, 10), R(10, 10, 10, 10) };      /* touching corners: 400 > 200 */
+    merge_list(&d, diag, 2);
+    CHECK_EQ(d.n, 2);
+    struct rect side[2] = { R(0, 0, 10, 10), R(10, 0, 10, 10) };       /* side by side: 200 = 200 */
+    merge_list(&d, side, 2);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(0, 0, 20, 10)));
+    struct rect one[1] = { R(3, 4, 5, 6) };
+    merge_list(&d, one, 1);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], one[0]));
+    merge_list(&d, one, 0);
+    CHECK_EQ(d.n, 0);
+}
+
+static void test_merge_overlap(void)
+{
+    struct ui_damage d = { 0 };
+    /* A window dragged 4 px right and 3 down: its old and new places
+     * (100x80 each, union 104x83 = 8,632 <= 16,000) become one. */
+    struct rect drag[2] = { R(200, 150, 100, 80), R(204, 153, 100, 80) };
+    merge_list(&d, drag, 2);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(200, 150, 104, 83)));
+    /* Overlapping but thin and crossed: the union (100x100 = 10,000) is
+     * larger than 1,000 + 1,000: kept apart. */
+    struct rect cross[2] = { R(0, 45, 100, 10), R(45, 0, 10, 100) };
+    merge_list(&d, cross, 2);
+    CHECK_EQ(d.n, 2);
+    /* One inside another: the outer one alone. */
+    struct rect inner[2] = { R(5, 5, 2, 2), R(0, 0, 20, 20) };
+    merge_list(&d, inner, 2);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(0, 0, 20, 20)));
+    /* The order is kept: the merged one at the first one's place. */
+    struct rect order[3] = { R(500, 500, 10, 10), R(0, 0, 50, 50), R(10, 10, 50, 50) };
+    merge_list(&d, order, 3);
+    CHECK_EQ(d.n, 2);
+    CHECK(same(d.r[0], R(500, 500, 10, 10)));
+    CHECK(same(d.r[1], R(0, 0, 60, 60)));
+}
+
+static void test_merge_chain(void)
+{
+    struct ui_damage d = { 0 };
+    /* A and C are apart, B overlaps both: A+B merge, then (A+B)+C. */
+    struct rect chain[3] = { R(0, 0, 40, 40), R(300, 0, 40, 40), R(30, 0, 280, 40) };
+    merge_list(&d, chain, 3);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(0, 0, 340, 40)));
+    /* A merge that only becomes possible after another: B (90,80 20x20)
+     * merges with neither A (0,0 100x100) nor C (100,0 100x100) alone
+     * (11,000 > 10,400 each); A and C side by side merge (20,000 =
+     * 20,000); B then lies inside their union, at B's place. */
+    struct rect later[3] = { R(90, 80, 20, 20), R(0, 0, 100, 100), R(100, 0, 100, 100) };
+    merge_list(&d, later, 3);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(0, 0, 200, 100)));
+    /* Five frames of a drag, each 4 px further: one rectangle. */
+    struct rect five[5] = { 0 };
+    for (int i = 0; i < 5; i++)
+        five[i] = R(100 + 4 * i, 100 + 2 * i, 300, 200);
+    merge_list(&d, five, 5);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(100, 100, 316, 208)));
+}
+
+static void test_merge_full(void)
+{
+    struct ui_damage d = { 0 };
+    /* A full list (32) of overlapping squares along a diagonal: one, their
+     * bounding rectangle, as the full list's own rule would give. */
+    struct rect diag[UI_DAMAGE_MAX] = { 0 };
+    for (int i = 0; i < UI_DAMAGE_MAX; i++)
+        diag[i] = R(i * 2, i * 2, 100, 100);
+    merge_list(&d, diag, UI_DAMAGE_MAX);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(0, 0, 162, 162)));
+    /* A full list of small squares far apart: nothing merges. */
+    struct rect apart[UI_DAMAGE_MAX] = { 0 };
+    for (int i = 0; i < UI_DAMAGE_MAX; i++)
+        apart[i] = R((i % 8) * 100, (i / 8) * 100, 10, 10);
+    merge_list(&d, apart, UI_DAMAGE_MAX);
+    CHECK_EQ(d.n, UI_DAMAGE_MAX);
+    for (int i = 0; i < UI_DAMAGE_MAX; i++)
+        CHECK(same(d.r[i], apart[i]));
+    /* The list's own bounding case (ui_damage_add, the 33rd entry) is
+     * unchanged; merging its one rectangle changes nothing. */
+    ui_damage_init(&d, 640, 480);
+    for (int i = 0; i < UI_DAMAGE_MAX + 1; i++)
+        ui_damage_add(&d, R(10 + i * 15, 100, 4, 4));
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(10, 100, 484, 4)));
+    ui_damage_merge_overlaps(&d);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(10, 100, 484, 4)));
+}
+
+static void test_merge_empty(void)
+{
+    struct ui_damage d = { 0 };
+    struct rect e[4] = { R(0, 0, 0, 0), R(5, 5, 10, 10), R(9, 9, -2, 4), R(500, 500, 0, 10) };
+    merge_list(&d, e, 4);
+    CHECK_EQ(d.n, 1);
+    CHECK(same(d.r[0], R(5, 5, 10, 10)));
+    struct rect none[2] = { R(0, 0, 0, 0), R(3, 3, 5, 0) };
+    merge_list(&d, none, 2);
+    CHECK_EQ(d.n, 0);
+}
+
 int main(void)
 {
     printf("test_ui_rect\n");
@@ -120,5 +256,11 @@ int main(void)
     RUN(test_limits);
     RUN(test_damage_basic);
     RUN(test_damage_full);
+    RUN(test_area);
+    RUN(test_merge_disjoint);
+    RUN(test_merge_overlap);
+    RUN(test_merge_chain);
+    RUN(test_merge_full);
+    RUN(test_merge_empty);
     return unit_report("test_ui_rect");
 }
