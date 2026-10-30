@@ -2,22 +2,49 @@
 
 Madire OS is an operating system written from scratch: its own kernel and architecture, not a Linux distribution.
 
-**Current version:** 1.2 (Milestone 1.2 "Graphical boot and console"; tag `v1.2`)
+**Current version:** 1.3 (Milestone 1.3 "The desktop"; tag `v1.3`)
 
-![Madire OS v1.2: the splash at System ready](docs/images/v1.2-boot.png)
+![Madire OS v1.3: the desktop at System ready](docs/images/v1.3-desktop.png)
 
-1.2 moves Madire OS from VGA text to graphics:
+1.3 gives Madire OS **a desktop**:
+
+- **The desktop at System ready:** the splash hands over to the desktop with the Madire M where it was, on the same procedural wallpaper; a **taskbar** with the **M button** at the left and a **clock** (24-hour `HH:MM`, from the computer's clock) at the right; the **mouse pointer** appears with the first movement.
+- **The M menu:** click the M button, or press the **Windows key** (also with a window open), for **About**, **Console** and **Restart**; Up, Down, Enter and Esc work in it. A **right-click** on the desktop opens a small menu (Open Console, About Madire OS).
+- **Windows:** the **About** window (the version, boot loader, display, memory and mode) and the **Console** window: the same shell and commands as before, 80×25 at the screen's scale. **Any key** on the desktop opens the Console window (that key isn't typed); closing it only hides it, and the session goes on. Windows are dragged by their title bar, raised and focused by a click, and closed with ×.
+- **Restart asks first**, in a dialog (Cancel or Restart).
+- **New console keys:** **Ctrl+L** clears the screen and keeps the typed line; **Ctrl+A** and **Ctrl+E** go to the start and end of the line; **Ctrl+K** and **Ctrl+U** delete to the end and to the start; **Ctrl+W** deletes the word before the cursor.
+- **Built from scratch, tested pixel by pixel:** a compositor that redraws only what changed, and Madire's own toolkit (drawing, Madire's own stroke icons, buttons, windows, menus, the dialog), in the colours and sizes of the **Madire Design Guide v0.2**; every scene is compared with an independent reference rendering pixel for pixel, in five screen modes.
+- **The full-screen console stays** for Esc during the splash, the boot option `verbose`, any failure or crash, and the test boots; the Diagnostics entries still boot in text mode.
+- **Tests:** 271 new QEMU checks (`[1.3]`), 16 new unit-test suites, a drag burst in the stress part, and a VirtualBox `desktop` group that drives the mouse through VirtualBox's own mouse events.
+
+The M menu, the About window, the right-click menu, the Console window and the Restart dialog (the VirtualBox acceptance run; the clock shows the VM's clock, which VirtualBox keeps on the host's local time):
+
+![The M menu (1.3)](docs/images/v1.3-menu.png)
+
+![The About window (1.3)](docs/images/v1.3-about.png)
+
+![The right-click menu over the Console window (1.3)](docs/images/v1.3-rightclick.png)
+
+![mem in the Console window (1.3)](docs/images/v1.3-console-mem.png)
+
+![The Restart dialog (1.3)](docs/images/v1.3-restart.png)
+
+1.2 moved Madire OS from VGA text to graphics:
 
 - **A graphical boot:** the default boot entry asks the boot loader for a 1024×768 screen (any mode from 800×600 works). A **splash** shows the Madire logo and "MADIRE OS" on a procedural wallpaper (dark blue, glowing curves), with "Booting Madire OS" and moving dots; at System ready it says **"Press any key to open the console"**. Esc, or the boot option `verbose`, shows the text boot screen instead, and so does any failure or crash.
 - **The console in graphics:** the same 80×25 console and shell, drawn on the screen with the **Terminus** bitmap font (SIL OFL 1.1, the first third-party asset Madire ships), scaled to 100, 125, 150 or 200 % by the screen's height. The crash screen is drawn there too, even before the console has started.
 - **`display`:** a new command that shows the screen's mode and scale.
-- **The mouse:** a PS/2 mouse driver (IRQ12) with a pointer drawn over the screen. The console has no use for a pointer yet, so it is shown only with a test option; the desktop that uses it comes in 1.3.
+- **The mouse:** a PS/2 mouse driver (IRQ12) with a pointer drawn over the screen. The console has no use for a pointer, so in 1.2 it was shown only with a test option; since 1.3 the desktop uses it.
 - **Built from scratch, tested pixel by pixel:** the drawing library, the wallpaper (integer maths, the same rules as the boot menu's wallpaper script, which is now integer too), the console and the pointer are Madire's own code, and the tests compare the screen with independent reference renderings pixel for pixel.
 - **Text mode stays:** the Diagnostics entries, and any machine without a usable framebuffer, boot in VGA text as before.
 - **The Madire Design Guide v0.1** ([docs/design/design-guide.md](docs/design/design-guide.md)): the colours, sizes and layout rules the graphics follow.
 - **Tests:** 149 new QEMU checks (`[1.2]`), 8 new unit-test suites, a 1000-packet mouse burst in the stress part, and a VirtualBox `graphics` group.
 
-`display` in the console, drawn on the framebuffer:
+The splash at System ready (1.2; since 1.3 it hands over to the desktop):
+
+![Madire OS v1.2: the splash at System ready](docs/images/v1.2-boot.png)
+
+`display` in the console, drawn on the framebuffer (1.2):
 
 ![display: the screen's mode and scale (1.2)](docs/images/v1.2-display.png)
 
@@ -79,7 +106,7 @@ Programs run in **user mode** (since 0.10), each in its own address space, and t
 
 ![User fault test: PASS (0.10)](docs/images/userfault-v0.10.png)
 
-At System ready, press any key to open the console. Output that scrolls off the top isn't lost: **Shift+PgUp** and **Shift+PgDn** page back through the last 1000 lines (0.9.2; since 1.1 also Shift + keypad 9/3 with Num Lock off), with an indicator on the bottom row; any other key returns:
+At System ready, press any key to open the console (since 1.3 the Console window on the desktop). Output that scrolls off the top isn't lost: **Shift+PgUp** and **Shift+PgDn** page back through the last 1000 lines (0.9.2; since 1.1 also Shift + keypad 9/3 with Num Lock off), with an indicator on the bottom row; any other key returns:
 
 ![Madire OS v0.9.2 console: scrolled back](docs/images/scrollback-page1-v0.9.2.png)
 
@@ -128,15 +155,18 @@ It boots through Limine (GRUB until 0.12) into a 64-bit (x86-64) kernel written 
 - handles hardware interrupts safely: only the timer (IRQ0), the keyboard (IRQ1) and, since 1.2 on graphics boots, the mouse (IRQ12, through the cascade IRQ2) are enabled, each only after its handler is ready;
 - keeps time with the PIT at 100 Hz (uptime is shown on screen);
 - reads the PS/2 keyboard: key presses and releases, Shift/Ctrl/Alt/Caps Lock and extended keys, queued for the kernel; since 1.1 also Num Lock (on at start; the keypad follows it), Scroll Lock and the ISO key, and it sets the **keyboard lights** at boot and at every lock-key change;
-- provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End), since 0.9.2 a **scrollback** of the last 1000 lines (Shift+PgUp / Shift+PgDn), and since 1.1 **Ctrl+C** and **Esc** to clear the line and **Tab** to complete a command name;
+- provides a text console with a scrolling screen, a blinking cursor and an editable input line (insert, Backspace, Delete, Left/Right/Home/End), since 0.9.2 a **scrollback** of the last 1000 lines (Shift+PgUp / Shift+PgDn), since 1.1 **Ctrl+C** and **Esc** to clear the line and **Tab** to complete a command name, and since 1.3 **Ctrl+L**, **Ctrl+A/E** and **Ctrl+K/U/W**;
 - **doesn't log what you type** (since 0.9.2): key events reach the logs only with the boot option `keylog` (for tests) or during the keyboard diagnostics;
 - runs a small command shell: `help`, `clear`, `version`, `uptime`, `mem`, `cpu`, `echo`, since 0.9 `ps`, since 0.9.1 `history` (with Up/Down recall), `uname`, `hostname`, `date`, `dmesg` and `reboot` (which asks first), since 0.11 `run` and `kill`, since 0.12 `prompt`, `alias`, `unalias`, `set`, `unset`, `export`, `env`, `sleep`, `presskey`, `time` and `kill -y`, and since 1.0 `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `touch`, `stat`, `cat`, `rm`, `cp`, `mv`, `df` and `du`, with `>` and `>>`, and since 1.2 `display` (40 commands); `help` fits one screen, `help <command>` and `<command> --help` explain any command, `help <section>` lists one group, and a mistyped name gets "Did you mean" suggestions;
 - **checks itself at every switch** (since 0.12): the scheduler, address-space (CR3) and return-to-user-mode self-checks are always on, and each one's panic is proven by its own test boot;
 - keeps a 32 KiB kernel log in memory (`dmesg`), reads the date and time from the real-time clock, and restarts the machine through the keyboard controller, with a triple-fault fallback;
 - draws the Madire M logo, built from geometry, in VGA text mode (and, since 1.1, the same geometry drawn smooth in the boot menu's wallpaper, since 1.2 also on the splash);
-- **draws on a framebuffer** (since 1.2): the mode the boot loader set (1024×768×32 asked for), mapped in its own kernel area with a back buffer; a splash on a procedural wallpaper; the console in the Terminus font, scaled by the screen's height; the crash screen; a mouse pointer with save-under; only the console thread draws, and VGA text stays for every boot without a usable framebuffer.
+- **draws on a framebuffer** (since 1.2): the mode the boot loader set (1024×768×32 asked for), mapped in its own kernel area with a back buffer; a splash on a procedural wallpaper; the console in the Terminus font, scaled by the screen's height; the crash screen; a mouse pointer with save-under; only the console thread draws, and VGA text stays for every boot without a usable framebuffer;
+- shows **a desktop** (since 1.3): a compositor on the console thread that owns the back buffer from System ready and redraws only the damaged rectangles, from a cached background and per-window surfaces (with fallbacks that give the same pixels when memory is short); Madire's own toolkit for windows, menus and a dialog; the taskbar with the M button and the clock; the M menu (also by the Windows key), a right-click menu, the About and Console windows, the Restart dialog; the crash screen still full-screen.
 
 The project is built one milestone at a time, and each milestone has to boot in VirtualBox before the next one starts. See [docs/roadmap.md](docs/roadmap.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
+
+**Tested at v1.3:** 1948 QEMU checks and 94 unit-test suites pass in the official regression on GitHub Actions (the full run 41096493517 and the sharded run 41096468244 on the last code change), together with the reproducible-build check; the stress part's 130 checks passed in run 41026007238 (stage 7b) and run again from `main` before the tag; the automated VirtualBox acceptance test (`MadireOS-Test`, run by the owner) passes 674 of its 675 rows on that full run's ISO, with the new `desktop` group driving the pointer, the menus, the windows and the Restart dialog and comparing each screen with its reference pixel for pixel (the clock masked); the one missed row, and one more in five reruns of the boot menu's key window (59 of 60), are timing edges of the test outside Madire's code (keys reaching the VirtualBox BIOS during its keyboard check at 0 ms; keys arriving as the boot loader's 2 s wait ends at 6 s), accepted and to be redesigned; 30 more normal boots all reached System ready and the desktop.
 
 **Tested at v1.2:** 1677 QEMU checks and 78 unit-test suites pass in the official regression on GitHub Actions (the full run 40015866525 and the sharded run 40015842544 on the last code change), together with the reproducible-build check, and the stress part's 127 checks (40005957778) on the same kernel; the automated VirtualBox acceptance test (`MadireOS-Test`) passes all 645 of its rows on that run's ISO, with the new `graphics` group comparing the splash and the console with their reference renderings pixel for pixel, and 30 more normal boots all reached System ready. From `main`, the milestone commit passed a full run (40036808466), a sharded run (40036822525, with the 4 MiB kernel gate) and the stress part's 127 checks (40036836216) on the same kernel, before the tag `v1.2`.
 
@@ -148,10 +178,17 @@ A summary of [docs/roadmap.md](docs/roadmap.md); each step needs its own plan an
 - **1.0: the filesystem, done** ([plan](docs/plans/1.0.md)): a VFS layer with a RAM filesystem, the Live mode, the file system calls and commands, System V program start-up.
 - **1.1 "Polish", done** ([plan](docs/plans/1.1.md)): the branded, hidden boot menu (boot branding, phase A) and keyboard polish (Num Lock and the keypad, Scroll Lock, the keyboard lights, Ctrl+C, Esc and Tab at the prompt, the ISO key).
 - **1.2 "Graphical boot and console", done** ([plan](docs/plans/1.2.md)): the Madire Design Guide, a framebuffer, the Terminus console with display scaling, the mouse and a pointer, the splash (the boot branding's phase B).
-- **1.3: the desktop, next** (it needs its own plan, starting with a report-only design session): moved from 1.2; a right-click menu and a first Calculator app are candidates.
-- **1.4: storage** (a disk driver and a filesystem that keeps files).
+- **1.3: the desktop, done** ([plan](docs/plans/1.3.md)): the Madire Design Guide v0.2, a compositor and Madire's own toolkit, the taskbar with the M button and a clock, the M menu and a right-click menu, the About and Console windows, the Restart dialog, the console keys Ctrl+L, Ctrl+A/E/K/U/W.
+- **1.4: storage, next** (a disk driver and a filesystem that keeps files: ext2 first, built from its specification; Madire's own filesystem later).
+- **1.5: the Files app and the desktop folders** (the home folders and a Trash, desktop icons, New Folder and New File from the right-click menu, window management: minimise, maximise, resizing; the mouse wheel).
+- **1.6: UEFI boot** (the boot loader's own protocol, a UEFI ISO, the test VMs in UEFI mode).
+- **Then the desktop grows further:** a window interface for programs; the Madire Calculator (Standard, Scientific and Financial); a search box in the M menu when typing on the desktop; the screen resolution in Settings.
 - **Then, unscheduled and in this order:** an installer (virtual disks only at first), networking, the Linux-compatible foundation (system calls and a C library), TLS, audio and video, the Madire Browser, Linux apps, and in the long term Windows apps through Wine on top of the Linux layer.
 - **Alongside:** the modernisation track: UEFI, APIC, multi-core, USB, all RAM, Wi-Fi and Bluetooth; ARM64 later.
+
+## v1.3 in pictures
+
+Screenshots from the 1.3 VirtualBox acceptance run (`MadireOS-Test`, the ISO of the full regression run 41096493517), the guest screen only. The desktop at System ready is at the top of this page, with the M menu, the About window, the right-click menu, `mem` in the Console window and the Restart dialog below it. The clock shows the time as the VM's clock gave it (20:46–20:47; VirtualBox keeps that clock on the host's local time).
 
 ## v1.2 in pictures
 
@@ -262,7 +299,7 @@ bash scripts/install-deps.sh   # once (a Codespace from .devcontainer/ runs it f
 make            # kernel: build/madire.elf (with symbols) and build/madire.kernel (bootable)
 make iso        # bootable ISO: build/madire-os.iso (Limine; scripts/install-deps.sh
                 # fetches the pinned Limine package)
-make unit       # host unit tests, 78 suites (memory, 4-level page tables, heap,
+make unit       # host unit tests, 94 suites (memory, 4-level page tables, heap,
                 # keyboard decoder and queue, PIT maths, console text grid, line
                 # editor, parser, shell, CPUID decoding, kprintf, NX and page-fault
                 # decoding, boot modules, stack high-water mark, scheduler, thread
@@ -280,14 +317,18 @@ make unit       # host unit tests, 78 suites (memory, 4-level page tables, heap,
                 # lights exchange, command-name completion; 1.2: the i8042
                 # controller, the framebuffer fields, drawing surfaces, the
                 # framebuffer console, the mouse decoder, the pointer, the
-                # wallpaper and splash, display)
+                # wallpaper and splash, display; 1.3: coverage, rectangles and
+                # damage, drawing, icons, widgets, the clock, the compositor,
+                # the desktop, windows, About, the display plan, the Console
+                # window, menus, the dialog, menu input, the console keys)
 make repro      # two clean builds in fresh directories: madire.elf and
                 # madire.kernel must be byte-identical (make test runs it too)
-make test       # unit tests + repro + 1677 QEMU checks (150 from 0.3 + 30 from 0.4 +
+make test       # unit tests + repro + 1948 QEMU checks (150 from 0.3 + 30 from 0.4 +
                 # 31 from 0.5 + 49 from 0.6 + 96 from 0.7 + 32 from 0.8 + 139 from
                 # 0.9 + 32 from 0.9.1 + 25 from 0.9.2 + 253 from 0.10 + 233 from
                 # 0.11 + 151 from 0.12 + 11 from 0.13 + 260 from 1.0 + 36 from 1.1
-                # + 149 new; the agreed counts are in tests/expected-checks.txt):
+                # + 149 from 1.2 + 271 new; the agreed counts are in
+                # tests/expected-checks.txt):
                 # boot, long mode, CPUs without long mode, logo, memory at 5 RAM
                 # sizes, crash tests, timer rate, scripted keyboard input, a scripted
                 # console session, paging and heap self-tests, the higher-half kernel
@@ -313,7 +354,11 @@ make test       # unit tests + repro + 1677 QEMU checks (150 from 0.3 + 30 from 
                 # stores them, Ctrl+C, Esc and Tab at the prompt; the framebuffer
                 # in several modes, the console, the splash and the pointer
                 # compared with reference renderings pixel for pixel, the mouse
-                # through QEMU's injected events, the crash screen in graphics.
+                # through QEMU's injected events, the crash screen in graphics;
+                # the desktop, its windows, menus and dialog compared with an
+                # independent reference renderer in five modes, driven by the
+                # mouse and the keyboard over QMP, the splash-to-desktop
+                # handover, the console keys.
                 # The official run is on GitHub Actions, sharded, about 20 minutes:
                 # scripts/actions-regress.ps1 -Dispatch (see docs/development.md)
 make run        # boot in a QEMU window
@@ -334,12 +379,14 @@ make clean
                                         # since 1.1 the hidden menu's key window
                                         # (-Only keywindow), the lights and the
                                         # console keys; since 1.2 the splash and
-                                        # the console in graphics (-Only graphics)
+                                        # the console in graphics (-Only graphics);
+                                        # since 1.3 the desktop (-Only desktop),
+                                        # run by the owner with VS Code closed
 ```
 
-In the console, try `run hello`, `run -b spin`, `ps`, then `kill <pid>` (it asks first) or `kill -y <pid>`, and `run lines 65636` followed by **Ctrl+C**. From 0.12: `help shell`, a typo such as `hlep`, `alias ll echo hi`, `set A=1`, `time sleep 1`. From 1.0: `help files`, `mkdir docs`, `cd docs`, `echo hello > a.txt`, `cat a.txt`, `ls -l`, `cp a.txt b.txt`, `df`. From 1.1: type `his` and press **Tab**, type `un` and press **Tab** twice, clear a line with **Esc** or **Ctrl+C**, and press Num Lock to turn the keypad into arrow keys. From 1.2: `display`.
+In the console, try `run hello`, `run -b spin`, `ps`, then `kill <pid>` (it asks first) or `kill -y <pid>`, and `run lines 65636` followed by **Ctrl+C**. From 0.12: `help shell`, a typo such as `hlep`, `alias ll echo hi`, `set A=1`, `time sleep 1`. From 1.0: `help files`, `mkdir docs`, `cd docs`, `echo hello > a.txt`, `cat a.txt`, `ls -l`, `cp a.txt b.txt`, `df`. From 1.1: type `his` and press **Tab**, type `un` and press **Tab** twice, clear a line with **Esc** or **Ctrl+C**, and press Num Lock to turn the keypad into arrow keys. From 1.2: `display`. From 1.3: click the M button or press the Windows key, open About, drag its window by the title bar, right-click the desktop, type a line and try Ctrl+A, Ctrl+E, Ctrl+W and Ctrl+L.
 
-When the splash says `Press any key to open the console` (in text mode the boot screen's `System ready. Press any key to open the console.`), press a key. That key only opens the console; it isn't typed. Type `help` for the list of commands. Esc while the splash shows brings back the text boot screen.
+When the desktop appears, press a key: the Console window opens (that key only opens it; it isn't typed). In text mode the boot screen says `System ready. Press any key to open the console.` Type `help` for the list of commands. Esc while the splash shows brings back the text boot screen and the full-screen console. In `MadireOS-Test` the mouse doesn't move in the VM's window (its USB tablet; the acceptance script moves it through VirtualBox's mouse events); `MadireOS-View` has a PS/2 mouse.
 
 The boot menu is hidden (since 1.1): press a key (for example **Home**) during the 2 s after the BIOS screen to show it. It has a **Diagnostics** directory (press **↓**, then **Enter** to open it):
 
@@ -354,20 +401,21 @@ The boot menu is hidden (since 1.1): press a key (for example **Home**) during t
 
 See [docs/testing.md](docs/testing.md) for the expected screens and troubleshooting.
 
-## Limitations (v1.2)
+## Limitations (v1.3)
 
 - 64-bit x86 (x86-64) only; the 32-bit build was dropped in 0.7. The VM must use **BIOS** firmware (the ISO is BIOS-only; the framebuffer comes from the BIOS's VBE modes, and VGA text, the fallback, doesn't exist under EFI; Limine could also boot UEFI later).
-- **Graphics (1.2):** the screen mode is the one the firmware gives for 1024×768×32 (VirtualBox offers only 800×600 and 1024×768); no other resolution can be chosen and nothing changes the mode at run time (`display` only shows it). The framebuffer is mapped without write-combining, so drawing may be slow on real hardware (untested there). The console is the 80×25 grid, centred, with a black border. No desktop yet (1.3).
+- **Graphics (1.2):** the screen mode is the one the firmware gives for 1024×768×32 (VirtualBox offers only 800×600 and 1024×768); no other resolution can be chosen and nothing changes the mode at run time (`display` only shows it). The framebuffer is mapped without write-combining, so drawing may be slow on real hardware (untested there). The full-screen console is the 80×25 grid, centred, with a black border.
+- **The desktop (1.3)** runs inside the kernel: programs can't open windows yet. It has the M menu, a right-click menu, the About window, one Console window (fixed size; closing hides it) and the Restart dialog; no minimise, maximise or resizing, no taskbar window buttons, several consoles, desktop icons, Files, Settings, Shut Down or Calculator yet; windows are dragged only by their title bar. The clock is the computer's clock as it is, with no date or time zone. The text is the Terminus bitmap font. The 1.2 splash's own text has too little contrast against the wallpaper for the desktop's rules (a follow-up).
 - **Early failures in graphics:** a panic before the kernel has read the framebuffer's details, and the boot stub's "no 64-bit CPU" message, appear on the serial port only. Keys act from System ready on, so a boot that hangs earlier leaves the splash on the screen: boot with `verbose` (no splash) or read the serial log.
-- **The mouse** works only on graphics boots, and the pointer shows only with the test option `pointer` (it has nothing to point at yet). The test VM `MadireOS-Test` has a USB tablet, which gives a PS/2-only guest no mouse in its window; `MadireOS-View` has a PS/2 mouse.
-- **A rare hang before the kernel starts** at 1024×768 has been seen 3 times on this laptop's virtualisation (never on GitHub Actions, never in 30 VirtualBox boots of the release ISO); its cause is unknown (an open watch item, see [docs/PROGRESS.md](docs/PROGRESS.md)).
+- **The mouse** works only on graphics boots; the pointer shows on the desktop from the first movement (on the full-screen console only with the test option `pointer`). It moves 1:1 (no acceleration); the scroll wheel and the middle button do nothing yet. The test VM `MadireOS-Test` has a USB tablet, which gives a PS/2-only guest no mouse in its window; `MadireOS-View` has a PS/2 mouse.
+- **A rare hang before the kernel starts** at 1024×768 has been seen 3 times on this laptop's virtualisation in 1.2 (never on GitHub Actions, never in 30 VirtualBox boots in 1.2 or in 30 more in 1.3); its cause is unknown (an open watch item, see [docs/PROGRESS.md](docs/PROGRESS.md)).
 - **Only RAM below 4 GiB is used.** On `MadireOS-Test` (4096 MB), 512 MB sits above 4 GiB and is shown separately as `RAM above 4 GiB`.
 - The whole low 1 MiB is reserved on purpose, and ACPI-reclaimable memory isn't reclaimed yet.
 - **Paging:** 4 KiB pages; one kernel half, shared by every process and frozen at boot. There is no direct map of physical memory: the physical view covers only the low 1 MiB and the boot data, and other frames are reached one page at a time through the physical-access window. A page fault in the kernel is fatal (nothing is loaded on demand); one in a program ends that program.
 - **Stacks:** the high-water mark covers the kernel stack and each thread's stack (not the double-fault stack). It can read a few bytes too low, never too high, and it always counts the top 736 bytes (the boot frames and a safety margin, which are never painted) as used.
 - **Kernel heap:** one heap, at most 16 MiB, never shrinks. Safe between threads, but not interrupt-safe: `kmalloc`/`kcalloc`/`kfree` refuse to run with interrupts disabled (so never from an IRQ or exception handler). `kfree` checks the whole heap every time, which gets slower as the heap fills.
 - **Boot modules:** the screen has one message line, so with several modules only the last result stays visible; the serial log has them all.
-- **Keyboard:** PS/2 only (USB keyboards need firmware legacy emulation), US layout only (no AltGr or other layouts). The keyboard diagnostics leave the lights as they were set at boot; after one failed exchange they stay off until restart. The PS/2 waits are bounded by a count, not by time, so on a real keyboard that never answers a light change could pause the console for seconds (virtual machines only so far). F1–F12, Insert's overwrite mode, plain PgUp/PgDn, the Windows and Menu keys, media and power keys, Print Screen and Pause do nothing; Scroll Lock only toggles its light.
+- **Keyboard:** PS/2 only (USB keyboards need firmware legacy emulation), US layout only (no AltGr or other layouts). The keyboard diagnostics leave the lights as they were set at boot; after one failed exchange they stay off until restart. F1–F12, Insert's overwrite mode, plain PgUp/PgDn, the Menu key, media and power keys, Print Screen and Pause do nothing (the Windows key opens the M menu on the desktop since 1.3); Scroll Lock only toggles its light.
 - **Boot menu:** shown only when a key is pressed in its 2 s window; its layout is made for 1024×768 (another resolution centres the wallpaper, and the menu may not line up with its panel).
 - **Console and shell:**
   - 40 built-in commands (the full plan is in [docs/commands.md](docs/commands.md)).
@@ -379,7 +427,7 @@ See [docs/testing.md](docs/testing.md) for the expected screens and troubleshoot
   - `dmesg` shows only what the kernel logged through `kprintf`/`klogf`: the boot screen's status lines and the console's own output aren't in it, and a boot-screen line can appear joined to the next one there.
   - Key events are logged only with the boot option `keylog` or during the keyboard diagnostics (for tests); never use `keylog` where secrets are typed. There is no password prompt yet; the first one must come with a secret-input mode (see [AGENTS.md](AGENTS.md)).
   - `reboot` uses the keyboard controller (or a triple fault); there is no `shutdown` or `poweroff` yet.
-  - Ctrl+key and Alt+key do nothing, except Ctrl+C: it ends the foreground program (0.11), cancels `sleep` and `presskey` (0.12), and at the prompt clears the line or answers "no" to a yes/no question (1.1). The planned console keys (Ctrl+L, Ctrl+A/E/K/U/W, Ctrl+D) are listed in [docs/commands.md](docs/commands.md).
+  - Ctrl+key and Alt+key do nothing, except Ctrl+C: it ends the foreground program (0.11), cancels `sleep` and `presskey` (0.12), and at the prompt clears the line or answers "no" to a yes/no question (1.1); and since 1.3 Ctrl+L, Ctrl+A/E and Ctrl+K/U/W at the prompt (ignored at a yes/no question and while a program runs). Ctrl+D waits for `exit` ([docs/commands.md](docs/commands.md)).
   - Long output lines wrap at column 80, even mid-word (for example `cpu`'s "Features:" line on some CPUs).
 - **Interrupts:** only IRQ0 and IRQ1 are enabled (and IRQ12 with the cascade IRQ2 on graphics boots), through the legacy 8259 PIC (no APIC). The timer runs at a fixed 100 Hz (10 ms resolution).
 - **User processes:** programs come only as boot modules (files can't be run yet): at most 8 are kept, and 14 or more boot modules of any kind stop the boot. Only static x86-64 ELF executables within the loader's rules (no dynamic linking, at most 4 segments, 1 MiB). One thread per process, at most 63 processes, a 32 KiB stack each; no signals, `fork` or `exec`. Programs can't use x87/MMX/SSE (no FPU state is saved). Only the foreground program's output reaches the screen; background programs (`run -b`) write to the serial log and `dmesg` only. 27 system calls (Linux numbers); the others a C library needs (`mmap`, `brk`, `readv`/`writev`, `ioctl`, `fcntl`, `pipe`, …) come with the Linux-compatibility milestone. The start-up block (arguments and environment) holds at most 4096 bytes, without `AT_RANDOM`. Programs can't read the keyboard (fd 0 reads return 0). Without NX, program data is executable. SMEP and SMAP are used only when the CPU offers them (the VirtualBox VM doesn't).
@@ -405,7 +453,7 @@ Madire OS is designed and directed by Mamishi Tonny Madire. The code is written 
 - [AGENTS.md](AGENTS.md): the working rules for anyone, person or coding agent, changing the repository
 - [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES): the third-party software Madire OS ships (since 0.13: Limine); since 1.0 every ISO carries it at its root, with Madire's `LICENSE` and `NOTICE`
 - [THIRD_PARTY_ASSETS.md](THIRD_PARTY_ASSETS.md): the third-party assets Madire OS ships (since 1.2: the Terminus font, SIL OFL 1.1, whose licence every ISO carries too)
-- [docs/design/design-guide.md](docs/design/design-guide.md): the Madire Design Guide (since 1.2)
+- [docs/design/design-guide.md](docs/design/design-guide.md): the Madire Design Guide (since 1.2; v0.2 since 1.3)
 - [docs/plans/](docs/plans/): every approved milestone plan
 
 ## Licence

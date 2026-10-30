@@ -121,7 +121,12 @@ VirtualBox power-on
           high-water mark so far goes to serial (0.8); just before it
           (1.2) the splash goes to its ready state
       15. idle loop                handle queued keys, uptime, counters;
-                                   first key press → console; then keys → shell;
+                                   (1.3) at its first pass on the default path
+                                   the desktop starts, unless the first queued
+                                   key is Esc; once per pass the compositor
+                                   draws the damaged rectangles;
+                                   first key press → console (1.3: the Console
+                                   window on the desktop); then keys → shell;
                                    then thread_idle (0.9): free exited
                                    detached threads, yield if another thread
                                    is ready, else hlt
@@ -462,6 +467,7 @@ The memory subsystem is unchanged in 0.4. Its tests now also run with IRQ0 and I
 | rest of slot 256 | 256 | – | unmapped: page 0 (`0xFFFF800000000000`), **free RAM** and the **kernel image** are deliberately not in the view |
 | `0xFFFFFD0000000000` (+ the framebuffer's offset in its first page) (1.2) | 506 | the framebuffer | **only on boots with a usable framebuffer**: read/write, no-execute, mapped write-back (no PAT write-combining yet); up to 1 GiB, its own page directory. See *Display* |
 | `0xFFFFFD0040000000` (1.2) | 506 | back-buffer frames (free RAM) | the back buffer, the framebuffer's size and format (3 MiB at 1024×768×32); read/write, no-execute; up to 1 GiB, its own page directory. Absent on every other boot (no PML4[506] entry); frozen with the kernel half when present |
+| `0xFFFFFD0080000000` (1.3, `VM_DESKTOP_BASE`) | 506 | desktop frames (free RAM) | **only on desktop boots:** the background cache, then the Console window's surface, then the About window's, each in the framebuffer's format, planned once when the desktop starts under the quarter share (`FBPLAN_SHARE`); read/write, no-execute; up to 1 GiB; nothing freed while the desktop runs. See *Desktop* |
 | `0xFFFFFD8000000000–0xFFFFFD80001FFFFF` (0.9) | 507 | thread stack frames | kernel thread stacks: 64 slots of 32 KiB; in each, a 16 KiB **unmapped guard**, then a 16 KiB stack (read/write, no-execute) mapped while its thread exists. Empty at boot; its page table is made at boot |
 | `0xFFFFFE0000000000` | 508 | – | page used by the paging self-test |
 | `0xFFFFFE0000001000` | 508 | any frame | physical-access window (one page) |
@@ -1041,7 +1047,38 @@ The design rules (colours, sizes in dp, scaling) are in the [Madire Design Guide
 
 **`display`** (MOCS v0.10) prints `Screen:  framebuffer 1024x768, 32 bits per pixel` and `Scale:   100 % (console: 80x25 cells of 8x16 pixels)`, or in text mode only `Screen:  VGA text 80x25`; read only.
 
-**Not in 1.2:** the desktop (1.3), run-time mode changes, UEFI GOP, more than one screen, smooth fonts.
+**Not in 1.2:** the desktop (1.3, below), run-time mode changes, UEFI GOP, more than one screen, smooth fonts.
+
+## Desktop [built: 1.3]
+
+The design rules (window chrome, menus, the dialog, the taskbar, the contrast table) are in the [Madire Design Guide](design/design-guide.md) v0.2; the decisions are in [plans/1.3.md](plans/1.3.md). The desktop runs in the kernel, drawn by thread 0 (decision 1); the toolkit has no kernel dependency, so it can move to user space later.
+
+| Module | Pure? | Responsibility |
+|---|---|---|
+| `kernel/display/tokens.h` | yes | Every colour token of the Design Guide's three tables (27), as `UI_*` defines; the 1.2 wallpaper and pointer constants take theirs from it |
+| `kernel/display/coverage_core.c` | yes | Capsule coverage (the splash's rule), shared by the wallpaper, the icons and the logo |
+| `kernel/display/ui_rect.c` | yes | Rectangles and the damage list (32 entries; full → its bounding rectangle); `ui_damage_merge_overlaps` joins two rectangles whose union is no larger than their sum (the drag damage, 7b) |
+| `kernel/display/ui_draw.c`, `ui_font.c`, `ui_icon.c`, `icons.c` | yes | A canvas with a clip: fills, rounded rectangles and frames (integer quarter-circles), blending, a surface blitted through a rounded shape, text in Terminus regular and bold per scale, Madire's stroke icons drawn by coverage |
+| `kernel/display/ui_widget.c` | yes | Label and button (normal, hover, pressed, focused with the focus ring) |
+| `kernel/display/ui_window.c` | yes | The window frame (6 dp corners, the active or inactive edge, the 32 dp title bar, the close button) and the window manager: z-order, raise and focus on click, the drag by the title bar with capture (1:1, clamped above the taskbar), placement, close, key routing |
+| `kernel/display/ui_about.c`, `ui_console.c` | yes | The About window's content; the Console window's client: the 80×25 grid at the screen's scale, clipped to the window's inner rounded shape |
+| `kernel/display/ui_menu.c`, `ui_dialog.c`, `ui_menus.c` | yes | The M menu and the desktop menu (layout, placement, hit testing, the selected row's fill, bar and focus ring); the Restart dialog; what the pointer and the keys do to them before the window manager (the Windows key toggles the M menu from anywhere and never reaches a window; an open dialog keeps every key) |
+| `kernel/display/compositor.c` | yes | The damaged rectangles composed layer by layer from the bottom up (the background, the windows, the taskbar, the overlay), then one present step |
+| `kernel/display/desktop_core.c`, `desktop.c` | core yes | The desktop: the plan of slot 506's third area under the quarter share (the cache, the Console surface, the About surface, each mapped only if it still fits), the taskbar with the M button and the clock, the windows and menus, the `desktoplog` lines, Restart through `kernel/arch/x86/reset.c` |
+| `kernel/rtc_time.c` | yes | The clock's text (`HH:MM`, or `--:--`) from `cmos_rtc_read()` |
+| `kernel/console/conskeys.c` | yes | The console keys Ctrl+L, Ctrl+A/E/K/U/W on the public `struct lineedit` (`lineedit.c` unchanged) |
+
+**When the desktop shows (decision 6, D2).** On `test=desktop…` boots, and on the default path: a framebuffer boot with no `test=` option whose splash is still showing at the idle loop's first pass. There the keys queued by then decide (D1): a first key press that is Esc keeps 1.2's path (the splash closes, the full-screen console follows); any other key starts the desktop, which then opens the Console window with it. `verbose`, a FAILED status line, every other `test=` boot and every boot without a framebuffer keep 1.2's full-screen console and log no `Desktop:` line. **The handover:** `splash_handover()` ends the splash without the text boot screen, and the desktop's first frame replaces the splash's ready state in one copy, the M at the same place and size.
+
+**Who owns the back buffer (decision 2).** From the desktop's start the compositor owns it and is the only code that copies to the framebuffer, one damaged rectangle at a time, through the pointer's hide and show hooks (the pointer stays a save-under overlay on the framebuffer). The splash owned it until then. A panic takes the screen back to 1.2's full-screen crash screen, drawn on the framebuffer whatever the compositor was doing.
+
+**Surfaces and fallbacks (decision 4, A1).** The background (the wallpaper with the M alone) is cached; each window draws into its own surface (retained surfaces, decision 3). What does not fit the quarter share is drawn without a buffer, with the same pixels: the background per damaged rectangle (`Desktop: background not cached …`), a window by painting the damaged part straight into the back buffer during composition (`Desktop: window Console drawn on exposure …`), never onto the framebuffer. `desktopnocache` and `desktopnosurface` force each path for the tests.
+
+**The Console window (decision 5, C2).** `fbcon` draws the console's grid into the Console window's surface (or the compositor paints it from `vga_shadow`) and reports damage instead of copying to the framebuffer; the grid stays 80×25 at the screen's scale and `vga_shadow` holds the same cells, so every check that reads the grid reads the same text. Closing the window hides it; the session goes on. With no window focused, any key opens it and isn't typed (decision 7).
+
+**The clock (decision 11).** The idle loop reads the CMOS clock once a second and redraws the clock's box when the minute changes; 24-hour `HH:MM`, no date, no time zone. Its string is logged only with `desktoplog` (the frame markers likewise on the default path).
+
+**Not in 1.3:** windows for user programs, minimise, maximise, resizing, taskbar window buttons, several consoles, desktop icons, Files, Settings, Shut Down, the Calculator (skipped), the scroll wheel, smooth fonts, a user-space compositor.
 
 ## Hardware Abstraction Layer [planned]
 
@@ -1135,4 +1172,4 @@ User-mode services (init, logging, device manager). User mode and system calls e
 
 ## User interface [planned]
 
-A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history (0.9.1) and scrollback (0.9.2) exist; running programs from the console (`run`, `kill`, `ps` with process numbers) comes in 0.11, on top of the 0.10 user processes. Since 1.2 the console is drawn on a framebuffer, after a splash, and a PS/2 mouse driver moves a pointer (see *Display*). The desktop comes in 1.3; settings, the application runtime, the Madire Store and the update system much later.
+A text console with a small built-in command shell exists since 0.5 (see *Console and shell*); since 0.9 `ps` lists the kernel threads. Command history (0.9.1) and scrollback (0.9.2) exist; running programs from the console (`run`, `kill`, `ps` with process numbers) comes in 0.11, on top of the 0.10 user processes. Since 1.2 the console is drawn on a framebuffer, after a splash, and a PS/2 mouse driver moves a pointer (see *Display*). Since 1.3 the default boot shows a desktop with the console in a window (see *Desktop*); the Files app, window management and a window interface for programs come after storage; settings, the application runtime, the Madire Store and the update system much later.
