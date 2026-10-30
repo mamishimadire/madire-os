@@ -13,12 +13,15 @@
  * it, replaces the desktop menu, is never passed on (also with a window
  * focused), does nothing while the dialog is open, and lets go of a drag;
  * the dialog: Cancel focused, Tab, Enter on each button, Esc, its buttons'
- * and close button's states and clicks, and every click kept. Fonts are
- * made here (a fixed bit pattern). The toolkit's modules are included
+ * and close button's states and clicks, and every click kept; the release
+ * of an Esc or Enter that closed a menu goes on to the window manager and
+ * does nothing (no window opened or closed; the console's line, a
+ * kernel/console/lineedit.c line given that release as the kernel hands it
+ * on, unchanged). Every test checks that no event was lost (clear()). Fonts
+ * are made here (a fixed bit pattern). The toolkit's modules are included
  * directly; surface_core.c, wallpaper_core.c and coverage_core.c are
  * linked (the Makefile). */
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include "tests/unit/unit.h"
 #include "kernel/display/ui_rect.c"
@@ -30,6 +33,7 @@
 #include "kernel/display/ui_menu.c"
 #include "kernel/display/ui_dialog.c"
 #include "kernel/display/ui_menus.c"
+#include "kernel/console/lineedit.c"
 
 static uint8_t font_bits[2][256 * 16];
 static struct font font_store[2];
@@ -75,8 +79,12 @@ static void setup(void)
     ui_menus_init(&mn, &wm, &about, &console, (struct rect){ 0, 728, 40, 40 }, &f);
 }
 
+/* Empties the event lists; first, no event may have been lost (an
+ * overflow of either list fails here, visibly). */
 static void clear(void)
 {
+    CHECK_EQ(mn.lost_ev, 0);
+    CHECK_EQ(wm.lost_ev, 0);
     ui_menus_clear_events(&mn);
     ui_wm_clear_events(&wm);
     ui_damage_clear(&dmg);
@@ -108,11 +116,13 @@ static void right(int32_t x, int32_t y)
     ui_menus_pointer(&mn, x, y, false, false, true);
 }
 
+/* One key pressed, then released; the press's route (the release's is
+ * checked on its own, test_release_after_closing_key). */
 static enum ui_menus_route key(enum ui_menus_key k)
 {
     enum ui_menus_route r = ui_menus_key(&mn, k, true);
-    enum ui_menus_route r2 = ui_menus_key(&mn, k, false);
-    return r == UI_MENUS_TAKEN && r2 == UI_MENUS_TAKEN ? UI_MENUS_TAKEN : UI_MENUS_TO_WM;
+    ui_menus_key(&mn, k, false);
+    return r;
 }
 
 static int mevents(enum ui_menus_ev_kind k)
@@ -163,11 +173,13 @@ static void test_m_button(void)
     CHECK_EQ(mn.m_state, UI_M_OPEN);
     CHECK_EQ(last_why(UI_MEV_MENU_OPEN), UI_WHY_MOUSE);
     CHECK(wm.focus == 0 && wm.n_ev == 0);
+    clear();
     /* Released off the button: nothing opens. */
     setup();
     tpress(20, 748);
     trelease(300, 300);
     CHECK(!mn.menu_open && mn.m_state == UI_M_NORMAL);
+    clear();
     /* A click on the button with the M menu open closes it. */
     setup();
     click(20, 748);
@@ -176,6 +188,7 @@ static void test_m_button(void)
     CHECK(!mn.menu_open);
     CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_M_BUTTON);
     CHECK_EQ(mn.m_state, UI_M_HOVER);
+    clear();
 }
 
 static void test_rows_by_pointer(void)
@@ -197,6 +210,7 @@ static void test_rows_by_pointer(void)
     CHECK_EQ(wevents(UI_EV_OPEN), 1);
     CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_ABOUT);
     CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_NONE);
+    clear();
     click(20, 748);
     click(152, 653);
     CHECK(console.open && wm.focus == &console && about.open);
@@ -208,11 +222,13 @@ static void test_rows_by_pointer(void)
     CHECK(wm.focus == &about && wm.z[wm.n - 1] == &about && wm.n == 2);
     CHECK_EQ(wevents(UI_EV_OPEN), 0);
     CHECK_EQ(wevents(UI_EV_RAISE), 1);
+    clear();
     /* A press in the menu released off its rows chooses nothing. */
     click(20, 748);
     tpress(152, 617);
     trelease(152, 560);
     CHECK(mn.menu_open);
+    clear();
 }
 
 static void test_outside(void)
@@ -227,15 +243,18 @@ static void test_outside(void)
     trelease(500, 100);
     CHECK(wm.focus == &about && !wm.left);          /* the click did nothing else */
     CHECK_EQ(wevents(UI_EV_UNFOCUS), 0);
+    clear();
     click(436, 191);                                /* after it, the window manager has the pointer again */
     CHECK(wm.focus == &about);
     click(500, 100);
     CHECK(wm.focus == 0);
+    clear();
     /* A right click outside the M menu closes it. */
     click(20, 748);
     right(900, 300);
     CHECK(!mn.menu_open);
     CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_OUTSIDE);
+    clear();
 }
 
 static void test_desktop_menu(void)
@@ -250,6 +269,7 @@ static void test_desktop_menu(void)
     CHECK(!mn.menu_open);
     CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_ESC);
     CHECK_EQ(key(UI_MKEY_OTHER), UI_MENUS_TO_WM);
+    clear();
     ui_wm_open(&wm, &about);
     right(436, 300);                                /* on a window: nothing */
     CHECK(!mn.menu_open);
@@ -262,14 +282,17 @@ static void test_desktop_menu(void)
     click(150, 120);
     CHECK(!mn.menu_open && console.open && wm.focus == &console);
     CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_CONSOLE);
+    clear();
     right(100, 100);
     click(150, 160);
     CHECK(wm.focus == &about);
     CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_ABOUT);
+    clear();
     /* A press on the M button with the desktop menu open is outside it. */
     right(100, 100);
     click(20, 748);
     CHECK(!mn.menu_open);
+    clear();
 }
 
 static void test_keyboard(void)
@@ -290,6 +313,7 @@ static void test_keyboard(void)
     CHECK_EQ(mn.menu.sel, 0);
     key(UI_MKEY_UP);
     CHECK_EQ(mn.menu.sel, 2);
+    clear();
     /* The pointer off the rows keeps the keyboard's selection. */
     move(500, 100);
     CHECK(mn.menu.sel == 2 && mn.menu.ring);
@@ -304,6 +328,7 @@ static void test_keyboard(void)
     key(UI_MKEY_ENTER);
     CHECK(!mn.menu_open && mn.dlg_open && mn.dlg.ring && mn.dlg.focus == UI_DLG_CANCEL);
     CHECK(same_rect(mn.dlg.w.r, 332, 278, 360, 172));
+    clear();
 }
 
 static void test_windows_key_routing(void)
@@ -316,17 +341,20 @@ static void test_windows_key_routing(void)
     CHECK_EQ(key(UI_MKEY_OTHER), UI_MENUS_TAKEN);
     CHECK_EQ(key(UI_MKEY_ENTER), UI_MENUS_TAKEN);   /* About chosen */
     CHECK(about.open && wm.focus == &about);
+    clear();
     key(UI_MKEY_WINDOWS);
     CHECK(mn.menu_open);
     key(UI_MKEY_WINDOWS);
     CHECK(!mn.menu_open);
     CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_WINDOWS);
+    clear();
     key(UI_MKEY_WINDOWS);
     key(UI_MKEY_DOWN);
     CHECK_EQ(key(UI_MKEY_ENTER), UI_MENUS_TAKEN);
     CHECK(wm.focus == &console);
     CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_CONSOLE);
     CHECK_EQ(key(UI_MKEY_ESC), UI_MENUS_TO_WM);     /* no menu: Esc goes on */
+    clear();
     /* The Windows key replaces the desktop menu with the M menu. */
     right(100, 100);
     CHECK(mn.menu_open && mn.menu.kind == UI_MENU_DESKTOP);
@@ -344,6 +372,7 @@ static void test_windows_key_routing(void)
     CHECK(mn.dlg_open && !mn.menu_open && mn.n_ev == 0);
     CHECK_EQ(key(UI_MKEY_OTHER), UI_MENUS_TAKEN);
     CHECK_EQ(key(UI_MKEY_UP), UI_MENUS_TAKEN);
+    clear();
 }
 
 static void test_dialog_keys(void)
@@ -362,6 +391,7 @@ static void test_dialog_keys(void)
     key(UI_MKEY_ENTER);                             /* Enter on Cancel */
     CHECK(!mn.dlg_open && !mn.restart);
     CHECK_EQ(last_why(UI_MEV_DLG_CLOSE), UI_WHY_CANCEL);
+    clear();
     key(UI_MKEY_WINDOWS);
     key(UI_MKEY_UP);
     key(UI_MKEY_ENTER);
@@ -376,6 +406,7 @@ static void test_dialog_keys(void)
     key(UI_MKEY_ENTER);                             /* Enter on Restart */
     CHECK(mn.restart && mn.dlg_open);
     CHECK_EQ(mevents(UI_MEV_RESTART), 1);
+    clear();
 }
 
 static void test_dialog_pointer(void)
@@ -393,6 +424,7 @@ static void test_dialog_pointer(void)
     CHECK_EQ(mn.dlg.btn[UI_DLG_CANCEL], UI_BUTTON_PRESSED);
     move(400, 300);
     CHECK_EQ(mn.dlg.btn[UI_DLG_CANCEL], UI_BUTTON_NORMAL);
+    clear();
     trelease(400, 300);
     CHECK(mn.dlg_open && !mn.restart);
     move(620, 410);
@@ -402,21 +434,26 @@ static void test_dialog_pointer(void)
     trelease(620, 410);
     CHECK(mn.restart && mn.dlg_open);
     mn.restart = false;
+    clear();
     move(676, 294);
     CHECK_EQ(mn.dlg.w.close, UI_BUTTON_HOVER);
     tpress(100, 100);                                /* outside: kept, nothing happens */
     trelease(100, 100);
     CHECK(mn.dlg_open && !wm.left && wm.n_ev == 0);
     CHECK_EQ(mn.dlg.w.close, UI_BUTTON_NORMAL);
+    clear();
     click(676, 294);
     CHECK(!mn.dlg_open);
     CHECK_EQ(last_why(UI_MEV_DLG_CLOSE), UI_WHY_CLOSE_BUTTON);
+    clear();
     /* Cancel by a click. */
     click(20, 748);
     click(152, 698);
+    clear();
     click(516, 410);
     CHECK(!mn.dlg_open && !mn.restart);
     CHECK_EQ(last_why(UI_MEV_DLG_CLOSE), UI_WHY_CANCEL);
+    clear();
 }
 
 static void test_windows_key_ends_drag(void)
@@ -433,6 +470,7 @@ static void test_windows_key_ends_drag(void)
     CHECK_EQ(wevents(UI_EV_DRAG), 1);
     trelease(456, 201);                              /* the release that follows does nothing */
     CHECK(mn.menu_open && about.r.x == 356 && about.open);
+    clear();
     /* The close button pressed, then the Windows key: nothing closes. */
     setup();
     ui_wm_open(&wm, &about);
@@ -443,6 +481,69 @@ static void test_windows_key_ends_drag(void)
     key(UI_MKEY_ESC);
     trelease(672, 191);
     CHECK(about.open);
+    clear();
+}
+
+/* A line typed into the console: each byte pressed (lineedit_key). */
+static void type_line(struct lineedit *le, const char *text)
+{
+    lineedit_reset(le);
+    for (const char *p = text; *p; p++) {
+        struct key_event e = { KEY_CHAR, *p, KEY_PRESSED, 0 };
+        lineedit_key(le, &e);
+    }
+}
+
+/* The release of an Esc or Enter whose press closed a menu goes on to the
+ * window manager (UI_MENUS_TO_WM) and does nothing there: with the Console
+ * window focused it reaches the console as a release, which leaves the
+ * console's line as it was (lineedit_key, as console_handle_key hands it
+ * on); with another window focused, or none, it is taken; no window opens
+ * or closes. */
+static void test_release_after_closing_key(void)
+{
+    struct lineedit le;
+    setup();
+    ui_wm_open(&wm, &console);
+    type_line(&le, "ech");
+    for (int k = 0; k < 2; k++) {
+        enum ui_menus_key which = k ? UI_MKEY_ENTER : UI_MKEY_ESC;
+        CHECK_EQ(ui_menus_key(&mn, UI_MKEY_WINDOWS, true), UI_MENUS_TAKEN);
+        CHECK_EQ(ui_menus_key(&mn, UI_MKEY_WINDOWS, false), UI_MENUS_TAKEN);
+        if (k)
+            key(UI_MKEY_DOWN);                      /* Enter on Console: the focused window again */
+        clear();
+        CHECK_EQ(ui_menus_key(&mn, which, true), UI_MENUS_TAKEN);
+        CHECK(!mn.menu_open && wm.focus == &console);
+        clear();
+        CHECK_EQ(ui_menus_key(&mn, which, false), UI_MENUS_TO_WM);
+        CHECK_EQ(ui_wm_key(&wm, &console, false, which == UI_MKEY_ESC), UI_KEY_TO_CONSOLE);
+        struct key_event rel = { k ? KEY_ENTER : KEY_ESC, k ? '\n' : 0, 0, 0 };    /* KEY_PRESSED clear */
+        CHECK_EQ(lineedit_key(&le, &rel), LE_NONE);
+        CHECK(le.len == 3 && strcmp(le.buf, "ech") == 0);
+        CHECK(wm.n == 1 && console.open && !about.open && wm.focus == &console);
+        CHECK(wm.n_ev == 0 && mn.n_ev == 0);
+        clear();
+    }
+    /* Enter on About: the release goes on to the About window, which takes it. */
+    key(UI_MKEY_WINDOWS);
+    clear();
+    CHECK_EQ(ui_menus_key(&mn, UI_MKEY_ENTER, true), UI_MENUS_TAKEN);
+    CHECK(about.open && wm.focus == &about && wm.n == 2);
+    clear();
+    CHECK_EQ(ui_menus_key(&mn, UI_MKEY_ENTER, false), UI_MENUS_TO_WM);
+    CHECK_EQ(ui_wm_key(&wm, &console, false, false), UI_KEY_TAKEN);
+    CHECK(wm.n == 2 && about.open && console.open && wm.focus == &about && wm.n_ev == 0);
+    clear();
+    /* No window focused: the release of Esc opens nothing. */
+    setup();
+    key(UI_MKEY_WINDOWS);
+    CHECK_EQ(ui_menus_key(&mn, UI_MKEY_ESC, true), UI_MENUS_TAKEN);
+    clear();
+    CHECK_EQ(ui_menus_key(&mn, UI_MKEY_ESC, false), UI_MENUS_TO_WM);
+    CHECK_EQ(ui_wm_key(&wm, &console, false, true), UI_KEY_TAKEN);
+    CHECK(wm.n == 0 && !console.open && wm.n_ev == 0);
+    clear();
 }
 
 int main(void)
@@ -457,5 +558,6 @@ int main(void)
     RUN(test_dialog_keys);
     RUN(test_dialog_pointer);
     RUN(test_windows_key_ends_drag);
+    RUN(test_release_after_closing_key);
     return unit_report("test_ui_menus");
 }
