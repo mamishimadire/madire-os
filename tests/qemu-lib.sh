@@ -6,7 +6,8 @@
 # 0.13 stage 3a adds limine_iso and limine_tree, and builds the keylog test
 # ISO with Limine instead of GRUB. 1.2 stage 7 adds the mouse sessions'
 # helpers at the end (parts 1 and stress). 1.3 stage 7a bounds boot_until's
-# stop and adds boot_until_below.
+# stop and adds boot_until_below. 1.3 stage 8 adds the splash-to-desktop
+# handover's case at the end (parts 2 and 3).
 
 # limine_iso <dir> <iso> (0.13): makes a bootable ISO from <dir> as `make iso`
 # does (xorriso, then limine bios-install). <dir> must hold boot/limine/ with
@@ -965,5 +966,91 @@ desktop_menu_case() {
         pass "[1.3] $label, no mouse: Esc closes the About window; the screen back to the plain desktop pixel for pixel; every line as predicted; no mouse packet, panic or FAILED line"
     else
         fail "[1.3] $label, no mouse: Esc: $(grep -E '^(WSCREEN 3|EVENTS|MENUS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+}
+
+# ---- 1.3 stage 8: the splash-to-desktop handover on the default path ----
+
+# desktop_handover_case <name> <mode WxHxD> <percent> <label> <the first
+# check's tag> [a limine.conf line]: the handover's 7 checks in one mode, one
+# boot of a test ISO whose one entry has no test= option ("cmdline: still
+# desktoplog mouselog": the splash's lines, the desktop's frame log, the
+# mouse's packets), so it takes the default path (kernel/display/desktop.h).
+# With desktoplog the kernel holds the splash's ready state 3 s after its own
+# frame marker before the cut. tests/qmp_desktop.py takes that screen
+# (splash, against scripts/make-wallpaper.py's ready state), the desktop's
+# first frame (screen), and compares the two (handover: the M's box
+# identical, every other difference inside the wordmark, the ready line or
+# the taskbar; tests/desktop_ref.py's handover_check); then the pointer
+# after relative moves (parked at 0, 0 first), and a key that opens the
+# Console window without being typed (its frame drawn from vga_shadow). The
+# first check is 1.2's ready-state check (moved here from part 1's Esc
+# section in stage 8, where Esc now comes during the splash) in part 2, and
+# its [1.3] twin in the other mode.
+desktop_handover_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 tag=$5 extra=${6:-} log w h first n shv shp ready_at hold_at hand_at shown_at
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    shv=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+    shp=$(printf '0x%x' $(( 0x${shv:-0} - 0xffffffff80000000 )))
+    log=$OUT/serial-handover-$name.log
+    desktop_iso "handover-$name" "still desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        # shellcheck disable=SC2046
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" splash screen handover \
+            $(desktop_moves -635 -635) $(desktop_moves 127 100) pointer windowed "type:x" wshot \
+            "type:{wait:1}echo handover-ok{ret}" "wait:handover-ok" --shadow "$shp"
+    else : > "$log"; fi
+    grep -E "^Splash|^System ready|^Desktop|^display: frame |^desktop: (clock|hold) " "$log" | head -n 16 | sed 's/^/      /'
+    grep -E "^(SPLASHSCREEN|HANDOVER) " <<< "$DT_OUT" | sed 's/^/      /'
+    n=$(sed -nE 's/^SPLASHSCREEN size=[0-9]+x[0-9]+ held=[a-z]+ differ=-?[0-9]+ \(frame ([0-9]+): .*/\1/p' <<< "$DT_OUT" | head -n 1)
+    if grep -qE "^SPLASHSCREEN size=${w}x${h} held=yes differ=0 \(" <<< "$DT_OUT" &&
+       grep -qxF "Splash: shown on $mode (scale $pct %, frame 1); the dots frozen (boot option 'still')" "$log" &&
+       grep -qxF "Splash: ready: the dots stopped, \"Press any key to open the console\" shown" "$log"; then
+        pass "[$tag] still at $mode: at System ready the splash shows its ready state (the dots stopped, \"Press any key to open the console\"), equal to make-wallpaper.py's rendering pixel for pixel (held before the cut to the desktop)"
+    else
+        fail "[$tag] still at $mode: no splash in its ready state at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(SPLASHSCREEN|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    first=$(sed -nE 's/^desktop: clock (.*)$/\1/p' "$log" | head -n 1)
+    if grep -qxF "Desktop: shown on $mode (scale $pct %): the wallpaper with the M, the taskbar, the clock $first; a key opens the Console window (the default path, 1.3 stage 8)" "$log" &&
+       grep -qE "^SCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: after the cut the desktop shows on the default path (Desktop: shown on $mode (scale $pct %) ... (the default path, 1.3 stage 8), with its first clock); its first frame equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: no default-path Desktop: shown line with the first logged clock, or the first frame differs ($(grep -E '^(SCREEN 1|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qE "^HANDOVER m_box=[0-9]+,[0-9]+,[0-9]+x[0-9]+ m_differ=0 outside=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: across the cut the M stays still (its box identical pixel for pixel) and the screens differ only where the splash's text was (the wordmark, the ready line) and on the taskbar"
+    else
+        fail "[1.3] $label: the handover: $(grep -E '^(HANDOVER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    ready_at=$(grep -nxF "Splash: ready: the dots stopped, \"Press any key to open the console\" shown" "$log" | head -n 1 | cut -d: -f1)
+    hold_at=$(grep -nE "^desktop: hold ${n:-x} over: the splash's ready state held 3 s before the cut \(desktoplog\)$" "$log" | head -n 1 | cut -d: -f1)
+    hand_at=$(grep -nxF "Splash: handed over to the desktop: the M kept, the splash's text gone" "$log" | head -n 1 | cut -d: -f1)
+    shown_at=$(grep -nE "^Desktop: shown on .*\(the default path, 1\.3 stage 8\)$" "$log" | head -n 1 | cut -d: -f1)
+    if [ -n "$ready_at" ] && [ -n "$hold_at" ] && [ -n "$hand_at" ] && [ -n "$shown_at" ] &&
+       [ "$ready_at" -lt "$hold_at" ] && [ "$hold_at" -lt "$hand_at" ] && [ "$hand_at" -lt "$shown_at" ] &&
+       grep -qxF "display: frame $n" "$log" && ! grep -q "^Splash: closed" "$log" &&
+       grep -qE "^Desktop: the pointer shown from the first mouse movement: [0-9]+x[0-9]+ pixels \(scale $pct %\), first at \($((w / 2)), $((h / 2))\)$" "$log"; then
+        pass "[1.3] $label: the cut in order: the splash's ready state, its held frame (display: frame $n), Splash: handed over to the desktop, Desktop: shown (the default path); no Splash: closed line (the text boot screen never drawn); the pointer turned on"
+    else
+        fail "[1.3] $label: the handover's lines are missing or out of order, a Splash: closed line, or no pointer line (see $log)"
+    fi
+    if grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" && grep -qE "^mouse: packet 5: .* at \(0, 0\)$" "$log" &&
+       grep -qE "^SCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: on the default path the pointer appears from the first mouse movement: parked at (0, 0), then moved to (127, 100); every packet exact; the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: a packet not as predicted, not parked at (0, 0), or the pointer's screen at (127, 100) differs ($(grep -E '^(PACKETS|SCREEN 2|MISMATCH|qmp_desktop)' <<< "$DT_OUT" | head -n 3 | tr '\n' ' '))"
+    fi
+    if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$log" &&
+       grep -qxF "madire> echo handover-ok" "$log" && grep -qxF "handover-ok" "$log" && ! grep -qE "^madire> x" "$log" &&
+       grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT"; then
+        pass "[1.3] $label: a key opens the Console window, not typed (madire> echo handover-ok, no x); its first frame equals the reference drawn from vga_shadow pixel for pixel; every window line as the model predicts"
+    else
+        fail "[1.3] $label: the key that opens the Console window: $(grep -E '^(WSCREEN 1|EVENTS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -q "^System ready\." "$log" && ! grep -qE "PANIC|FAILED|MISMATCH|events dropped|bytes dropped" "$log"; then
+        pass "[1.3] $label: System ready; no FAILED status line, panic, mismatch or drop"
+    else
+        fail "[1.3] $label: no System ready, or a FAILED status line, panic, mismatch or drop (see $log)"
     fi
 }

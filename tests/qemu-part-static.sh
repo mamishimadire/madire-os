@@ -25,7 +25,9 @@
 # desktop's background and taskbar against desktop_ref.py in five modes.
 # 1.3 stage 4a: the windows and the contrast check; stage 4b: the Console
 # window's scenes and their contrast check. 1.3 stage 7a: before the size
-# report, the self-test of boot_until's stop with a fake QEMU.
+# report, the self-test of boot_until's stop with a fake QEMU. 1.3 stage 8:
+# before the moved boot-menu section, the handover's rule on the references
+# and the VirtualBox desktop group's plan and references.
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -842,6 +844,56 @@ if [ -n "$KEND" ]; then
     echo "KERNEL_MARGIN_TRIGGER KERNEL_MARGIN_BYTES $KMARGIN, trigger 524288 (decision 13): $KVERDICT"
 else
     echo "KERNEL_MARGIN_TRIGGER KERNEL_MARGIN_BYTES unknown (no __kernel_end in madire.elf), trigger 524288 (decision 13)"
+fi
+
+# ---- 1.3 stage 8: the switch ----
+
+section "[1.3] The splash-to-desktop handover and the VirtualBox desktop group's references (stage 8)"
+# The handover's rule on the references themselves, in the five modes of the
+# desktop's checks above: make-wallpaper.py's splash in its ready state
+# against desktop_ref.py's desktop (tests/desktop_ref.py's handover_check):
+# the M's box identical pixel for pixel, every other difference inside the
+# wordmark, the ready line or the taskbar (the QEMU handover sections of
+# parts 2 and 3 check the kernel's own two screens with the same rule).
+HO=$(python3 - "$(dirname "$0")" <<'EOF' 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.dont_write_bytecode = True
+import desktop_ref as D
+for w, h in ((800, 600), (1024, 768), (1280, 800), (1920, 1080), (2560, 1440)):
+    md, out, b, first = D.handover_check(w, h, D.MW.splash(w, h, "ready"), D.desktop(w, h, D.FIXED_CLOCK))
+    print("HANDOVER %dx%d m_box=%d,%d,%dx%d m_differ=%d outside=%d%s" % (
+        (w, h) + b["m"] + (md, out, "" if first is None else " first outside at %d,%d" % first)))
+EOF
+)
+sed 's/^/      /' <<< "$HO"
+if [ "$(grep -cE '^HANDOVER [0-9]+x[0-9]+ m_box=[0-9]+,[0-9]+,[0-9]+x[0-9]+ m_differ=0 outside=0$' <<< "$HO")" -eq 5 ]; then
+    pass "[1.3] the handover on the references in five modes: make-wallpaper.py's ready state and desktop_ref.py's desktop have the M's box identical pixel for pixel and differ only in the wordmark, the ready line and the taskbar"
+else
+    fail "[1.3] the handover on the references: $(grep -vE 'm_differ=0 outside=0$' <<< "$HO" | tr '\n' ' ')"
+fi
+# The VirtualBox desktop group's plan and references (tests/screen_ref.py;
+# the group runs in stage 9, on the owner's host): the plan replays its steps
+# through desktop_ref.py's model without an error, and after the run every
+# shot gets its reference; here with a fixed usable memory (4095 MB). The
+# graphics group's two references (the desktop at System ready, the Console
+# window after clear) are made too, and the first equals the plan's "ready".
+VB=$OUT/vbox-desktop-ref
+rm -rf "$VB" && mkdir -p "$VB"
+SR=$(dirname "$0")/screen_ref.py
+VBP=$(python3 "$SR" desktop-plan 1024 768 2>&1)
+VBR=$(python3 "$SR" desktop-render 1024 768 "$VB" 4095 2>&1)
+VBG=$( { python3 "$SR" desktop 1024 768 "$VB/desktop.rgb" && python3 "$SR" desktop-console 1024 768 "$VB/desktop-console.rgb"; } 2>&1)
+grep -vE '^MOUSE ' <<< "$VBP" | tr '\n' '|' | sed 's/^/      plan: /'; echo
+echo "      plan: $(grep -c '^MOUSE ' <<< "$VBP") mouse packets; $(grep -c '^REFERENCE ' <<< "$VBR") references rendered"
+VB_SHOTS=$(grep -c '^SHOT ' <<< "$VBP")
+VB_FILES=$(find "$VB" -name 'desktop-*.rgb' ! -name 'desktop-console.rgb' -size "$((1024 * 768 * 3))c" | wc -l)
+if [ "$VB_SHOTS" -gt 0 ] && [ "$VB_FILES" -eq "$VB_SHOTS" ] && ! grep -q "ERROR" <<< "$VBP$VBR$VBG" &&
+   grep -qxF "MASK 968 740 40 16 (the clock's cells)" <<< "$VBG" && cmp -s "$VB/desktop.rgb" "$VB/desktop-ready.rgb" &&
+   [ "$(stat -c%s "$VB/desktop-console.rgb")" -eq $((1024 * 768 * 3)) ]; then
+    pass "[1.3] the VirtualBox desktop group's plan replays through desktop_ref.py's model ($VB_SHOTS shots), each shot's reference is rendered, and the graphics group's references are made (the desktop at System ready equal to the plan's first)"
+else
+    fail "[1.3] the VirtualBox desktop group's plan or references: $VB_SHOTS shots, $VB_FILES references ($(grep -E 'ERROR' <<< "$VBP$VBR$VBG" | head -n 2 | tr '\n' ' '))"
 fi
 
 section "[1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"

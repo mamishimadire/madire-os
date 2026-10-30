@@ -33,7 +33,12 @@
 # pointer without it), and a session without it follows; the splash cases
 # take a fifth screen, the ready state at System ready, and the Esc case's
 # first screen is that state; at the end, the early crash screen
-# (test=earlypanic).
+# (test=earlypanic). 1.3 stage 8 (the switch): after the real ISO's slot
+# 506, its default path (the desktop at System ready; the keylog ISO's
+# too); the twins, verbose and test=splashfail sections gain a [1.3] check
+# each; the two mouselog sessions get `verbose` (1.2's full-screen console);
+# the Esc case presses Esc during the splash, and its ready-state check
+# moved to part 2's handover section.
 
 section "Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
@@ -1655,6 +1660,53 @@ fb_figures() {   # fb_figures <log> <label>
 fb_figures "$OUT/serial-boot.log" "framebuffer boot (real ISO since 10b; 5a's text boot: 14, 573, 32160)"
 fb_figures "$OUT/serial-mem-32M.log" "text boot (-kernel -m 32M; 5a: free 7597)"
 
+# ---- 1.3 stage 8: the switch: the real ISO's default path ----
+
+section "[1.3] The real ISO's default path: the desktop at System ready (stage 8)"
+# The logs of the normal boot of the real ISO and of the keylog test ISO
+# (fixture_normal_boot; no new boot). Neither has a test= option, so at the
+# idle loop's first pass after System ready the splash hands the screen to
+# the desktop (kernel/display/desktop.h); the key typed after System ready
+# ("x") then opens the Console window and is not typed, and the console
+# starts in it. tests/pagetables.py models slot 506 with the background
+# cache and the window surfaces from the desktop's own lines.
+LOG=$OUT/serial-boot.log
+DP_SHOWN="^Desktop: shown on 1024x768x32 \(scale 100 %\): the wallpaper with the M, the taskbar, the clock [0-9]{2}:[0-9]{2}; a key opens the Console window \(the default path, 1\.3 stage 8\)$"
+DP_KEY="Desktop: a key opened the Console window (the key is not typed)"
+grep -E "^Desktop" "$LOG" | sed 's/^/      /'
+if grep -qE "$DP_SHOWN" "$LOG" &&
+   grep -qE "^Desktop: slot 506: background cache at 0xfffffd0080000000 \([0-9]+ pages of free RAM, pitch 4096\), [0-9]+ page tables; " "$LOG" &&
+   grep -qE "^Desktop: slot 506 now: [0-9]+ page tables, [0-9]+ pages mapped \(walked\)$" "$LOG" && ! grep -q "^Desktop: not started" "$LOG"; then
+    pass "[1.3] real ISO: the default path shows the desktop at System ready (Desktop: shown on 1024x768x32 (scale 100 %) ... (the default path, 1.3 stage 8)); the background cached in slot 506; slot 506 walked"
+else
+    fail "[1.3] real ISO: no default-path Desktop: shown line, no background cache or slot 506 walk line, or a 'not started' line (see $LOG)"
+fi
+DP_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label iso-desktop)
+grep -E "^PAGETABLES_(DESKTOP|SURFACES)" <<< "$DP_PT" | sed 's/^/      /'
+if grep -qE "^PAGETABLES_DESKTOP label=iso-desktop cache=present computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$DP_PT"; then
+    pass "[1.3] real ISO: tests/pagetables.py models slot 506 with the background cache: its tables and pages equal the kernel's walk, the cache's tables as logged"
+else
+    fail "[1.3] real ISO: tests/pagetables.py, the background cache: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$DP_PT" | tr '\n' ' ')"
+fi
+if grep -qE "^PAGETABLES_SURFACES label=iso-desktop cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$DP_PT"; then
+    pass "[1.3] real ISO: tests/pagetables.py models slot 506 with the window surfaces (Console, then About, after the cache): its tables and pages equal the kernel's walk"
+else
+    fail "[1.3] real ISO: tests/pagetables.py, the window surfaces: $(grep -E '^PAGETABLES_SURFACES' <<< "$DP_PT" | tr '\n' ' ')"
+fi
+DP_SHOWN_AT=$(grep -nE "$DP_SHOWN" "$LOG" | head -n 1 | cut -d: -f1)
+DP_KEY_AT=$(grep -nxF "$DP_KEY" "$LOG" | head -n 1 | cut -d: -f1)
+DP_CON_AT=$(grep -nxF "console: started" "$LOG" | head -n 1 | cut -d: -f1)
+if [ -n "$DP_SHOWN_AT" ] && [ -n "$DP_KEY_AT" ] && [ -n "$DP_CON_AT" ] && [ "$DP_SHOWN_AT" -lt "$DP_KEY_AT" ] &&
+   [ "$DP_KEY_AT" -lt "$DP_CON_AT" ] && [ "$(grep -cxF "$DP_KEY" "$LOG")" -eq 1 ]; then
+    pass "[1.3] real ISO: the key typed after System ready opened the Console window (once, after the desktop showed), where the console started; the key not typed"
+else
+    fail "[1.3] real ISO: the key did not open the Console window once, after the desktop and before console: started (see $LOG)"
+fi
+LOG=$KLOG
+grep -E "^Desktop|^key: press" "$LOG" | sed 's/^/      /'
+expect_in_order "$LOG" "[1.3] keylog test ISO: the default path shows the desktop; the key typed after System ready is logged, opens the Console window (not typed), and the console starts" \
+    "$DP_SHOWN" "^key: press sc=0x2d key=CHAR ascii='x' flags=0x01$" "^Desktop: a key opened the Console window \(the key is not typed\)$" "^console: started$"
+
 section "[1.2] Framebuffer boots: slot 506 and test=fbpattern (two test ISOs, tests/qmp_fb.py)"
 # Two test ISOs with one entry each and no "textmode" line (in stage 5b the
 # real ISO and every other test ISO kept "textmode: yes", decision 3; since
@@ -1987,6 +2039,15 @@ if grep -qE "^TWIN_RESULT lines=[1-9][0-9]* .* other=0 MATCH$" <<< "$TWIN"; then
 else
     fail "[1.2] serial twins: $(grep '^TWIN_RESULT' <<< "$TWIN")"
 fi
+# 1.3 stage 8: no command line is the default path: the framebuffer twin
+# shows the desktop (its Desktop: lines are framebuffer-only for
+# tests/serial_twin.py); the text twin, with no splash, does not.
+if grep -qE "^Desktop: shown on 1024x768x32 \(scale 100 %\): .* \(the default path, 1\.3 stage 8\)$" "$TF_LOG" &&
+   ! grep -q "^Desktop" "$TT_LOG"; then
+    pass "[1.3] serial twins: the framebuffer twin (no command line) shows the desktop on the default path; the text twin has no Desktop: line"
+else
+    fail "[1.3] serial twins: no default-path Desktop: shown line in the framebuffer twin, or a Desktop: line in the text twin (see $TF_LOG, $TT_LOG)"
+fi
 # Stage 5's Display: check of a textmode: yes entry and stage 5b's two
 # checks of a text boot without slot 506 (stage 10b: on the text twin, a
 # test ISO entry with "textmode: yes" as every Diagnostics entry has;
@@ -2052,8 +2113,10 @@ section "[1.2] The mouse on the framebuffer console: a mouselog session at 1024x
 # the reference: the console's cells with the pointer at the logged place
 # and nowhere else, so every earlier place shows the console again exactly
 # (save-under). 1.2 stage 10: with the test option pointer (the console
-# draws none without it; the next section).
-fbcon_iso mouse1024 "mouselog pointer"
+# draws none without it; the next section). 1.3 stage 8: with `verbose`
+# too, which keeps 1.2's full-screen console (no splash, so no desktop:
+# kernel/display/desktop.h) and changes nothing else this session reads.
+fbcon_iso mouse1024 "mouselog pointer verbose"
 LOG=$OUT/serial-mouse-1024.log
 MB_OUT=""
 if [ -n "$FBC_ISO" ]; then
@@ -2096,9 +2159,9 @@ section "[1.2] The console without a pointer: a mouselog session at 1024x768x32 
 # draws no pointer. The console is opened, then 4 packets (moves both ways,
 # the left button); each must be logged exactly, without a position, and
 # the screen (taken after the idle loop's next uptime line) must equal the
-# console's cells alone.
+# console's cells alone. 1.3 stage 8: with `verbose` too (as above).
 NOPTR_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
-fbcon_iso mousenoptr "mouselog"
+fbcon_iso mousenoptr "mouselog verbose"
 LOG=$OUT/serial-mouse-nopointer.log
 MB_OUT=""
 if [ -n "$FBC_ISO" ]; then
@@ -2294,27 +2357,31 @@ section "[1.2] The splash closed by Esc; the next key opens the console (1024x76
 # splash's lines logged). At System ready the splash's ready state (1.2
 # stage 10; before it, the splash with none lit); Esc shows the text boot
 # screen and opens nothing; then "x" opens the console.
+# 1.3 stage 8: the default path now shows the desktop at the idle loop's
+# first pass, unless the first key press queued by then is Esc (the
+# stage 8 decision D1). So Esc is pressed during the splash: the guest is
+# stopped at a line logged after the keyboard and the mouse have started
+# and well before System ready, the Esc sent, the guest let go on
+# (tests/qmp_splash.py, stopkey: its "ready_before" must be "no"). The
+# ready-state check of this section moved to part 2's handover section
+# (tests/qemu-lib.sh, desktop_handover_case), where that state is held.
 ESC_LINE="Splash: closed (Esc): the text boot screen shown"
+ESC_AT_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
 fbcon_iso splashesc "still"
 LOG=$OUT/serial-splash-esc.log
 SPL_OUT=""
 if [ -n "$FBC_ISO" ]; then
-    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "screen:ready:$FB_READY" "type:{esc}" \
+    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "stopkey:{esc}:$ESC_AT_LINE" \
         "screen:console:$ESC_LINE" "type:{wait:1}x"
 else : > "$LOG"; fi
-grep -E "^Splash|^System ready|^console: started" "$LOG" | sed 's/^/      /'
+grep -E "^Splash|^System ready|^console: started|^Desktop" "$LOG" | sed 's/^/      /'
+grep -E "^STOPKEY " <<< "$SPL_OUT" | sed 's/^/      /'
 if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
-   grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots frozen (boot option 'still')" "$LOG" &&
-   grep -qxF "$READY_LINE" "$LOG"; then
-    pass "[1.2] still at 1024x768x32: at System ready the splash shows its ready state (the dots stopped, \"Press any key to open the console\"), equal to make-wallpaper.py's rendering pixel for pixel"
+   grep -qE "^ROWS 1 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT" &&
+   grep -qE "^STOPKEY .* ready_before=no$" <<< "$SPL_OUT" && ! grep -q "^Desktop:" "$LOG"; then
+    pass "[1.2] Esc during the splash closes it: $ESC_LINE, no desktop, and the screen equals the reference rendering of the console's cell grid (the boot screen at System ready) pixel for pixel"
 else
-    fail "[1.2] still at 1024x768x32: no splash in its ready state at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(MARKER 1|SCREEN 1|REFERENCE|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
-fi
-if grep -qE "^SCREEN 2 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
-   grep -qE "^ROWS 2 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
-    pass "[1.2] Esc closes the splash: $ESC_LINE, and the screen equals the reference rendering of the console's cell grid (the boot screen at System ready) pixel for pixel"
-else
-    fail "[1.2] Esc: no closed line, the screen differs from the cell grid's rendering, or the grid is not the boot screen at System ready ($(grep -E '^(MARKER 2|SCREEN 2|ROWS 2|WAIT|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+    fail "[1.2] Esc: not pressed during the splash, no closed line, a Desktop: line, the screen differs from the cell grid's rendering, or the grid is not the boot screen at System ready ($(grep -E '^(STOPKEY|MARKER 1|SCREEN 1|ROWS 1|WAIT|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi
 ESC_AT=$(grep -nxF "$ESC_LINE" "$LOG" | head -n 1 | cut -d: -f1)
 CON_AT=$(grep -nxF "console: started" "$LOG" | head -n 1 | cut -d: -f1)
@@ -2341,6 +2408,13 @@ if grep -qxF "$FB_READY" "$LOG" && ! grep -q "^Splash" "$LOG" && ! grep -q "FAIL
 else
     fail "[1.2] verbose: no System ready, a Splash: line, a FAILED status line, or a panic (see $LOG)"
 fi
+# 1.3 stage 8: no test= option, but no splash: no desktop either (D2).
+if grep -qxF "$FB_READY" "$LOG" && grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   ! grep -q "^Desktop" "$LOG"; then
+    pass "[1.3] verbose: no desktop (the default path needs the splash): at System ready 1.2's boot screen, no Desktop: line"
+else
+    fail "[1.3] verbose: a Desktop: line, or not 1.2's boot screen at System ready (see $LOG)"
+fi
 
 section "[1.2] A FAILED status line closes the splash (test=splashfail, 1024x768x32)"
 # test=splashfail reports the Console & shell line FAILED on purpose: the
@@ -2364,6 +2438,13 @@ if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
     pass "[1.2] test=splashfail: at System ready the screen equals the reference rendering of the console's cell grid (the boot screen with the FAILED line) pixel for pixel; no panic"
 else
     fail "[1.2] test=splashfail: the screen at System ready is not the boot screen's rendering, or a panic ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+fi
+# 1.3 stage 8: a FAILED status line keeps 1.2's path: no desktop, and no
+# Desktop: line (its refusals are logged on test=desktop boots only, D2).
+if grep -qxF "$FAIL_READY" "$LOG" && ! grep -q "^Desktop" "$LOG"; then
+    pass "[1.3] test=splashfail: a FAILED status line keeps 1.2's path: no desktop, no Desktop: line"
+else
+    fail "[1.3] test=splashfail: a Desktop: line, or no '$FAIL_READY' line (see $LOG)"
 fi
 
 section "[1.2] A panic while the splash shows: the crash screen (test=splashpanic, 1024x768x32)"

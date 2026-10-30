@@ -181,6 +181,17 @@ void splash_ready(bool console_offered)
         klogf("Splash: ready: the dots stopped, \"%s\" shown\n", SPLASH_READY_TEXT);
 }
 
+bool splash_handover(void)
+{
+    if (!splash_showing())
+        return false;
+    showing = false;
+    fbcon_unhold();
+    if (logging)
+        klogf("Splash: handed over to the desktop: the M kept, the splash's text gone\n");
+    return true;
+}
+
 /* ---- test=splash ---- */
 
 static uint32_t micros(uint64_t ticks, uint32_t n)

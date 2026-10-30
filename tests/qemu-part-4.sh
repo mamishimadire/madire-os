@@ -10,8 +10,9 @@
 # 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink);
 # stage 7 the System V start-up's (test=startup and a console session);
 # stage 8 the console's file commands; stage 9 redirection, rm, cp, mv, df
-# and du (one console session). 1.1 stage 2 adds the hidden boot menu's
-# [1.1] checks at the end (tests/qmp_menu.py).
+# and du (one console session). 1.1 stage 2 added the hidden boot menu's
+# [1.1] checks at the end (tests/qmp_menu.py); 1.3 stage 8a moved them,
+# unchanged, to the end of part static (the shards' balance).
 
 section "[0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its

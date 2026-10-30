@@ -85,17 +85,37 @@
  * shell's reboot). With desktoplog, also a line for each change: "desktop:
  * menu <M|desktop> opened|closed|...", "desktop: M button: <state>",
  * "desktop: dialog Restart ...". desktopabout stays a test option.
+ *
+ * 1.3 stage 8, the switch (docs/plans/1.3.md, decision 6; the stage 8
+ * decisions D1 and D2): the desktop also shows on the default path, a boot
+ * with no test= option whose splash is still showing at the first pass of
+ * the idle loop after System ready (desktop_start_default). A key queued
+ * by then decides first: Esc keeps 1.2's path (the splash closes and the
+ * text boot screen shows, nothing opens); any other key starts the desktop
+ * and then opens the Console window (not typed). `verbose`, a FAILED status
+ * line, a console not offered and every boot without the splash keep 1.2's
+ * full-screen console, with no "Desktop:" line (the refusals are logged on
+ * test=desktop boots only). The splash hands the screen over (splash.h):
+ * the M stays still and only the splash's text disappears. On the default
+ * path the "Desktop: shown ..." line ends "(the default path, 1.3 stage
+ * 8)", the pointer is turned on ("Desktop: the pointer shown ...",
+ * pointer.h), and the frame markers and clock lines come only with
+ * desktoplog; with desktoplog the splash's ready state is also held 3 s
+ * before the cut, after its own marker ("display: frame N", then "desktop:
+ * hold N over: ...").
  */
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The boot options: test=desktop (`wanted`), desktoplog, desktopnocache;
+/* The boot options: test=desktop (`wanted`), no test= option at all
+ * (`default_path`, 1.3 stage 8), desktoplog, desktopnocache;
  * 1.3 stage 4a: desktopnosurface, desktopabout; 1.3 stage 4b: desktoppanic
  * (test-only: once a key has opened the Console window and its frame is
  * logged, "Desktop fault test: ..." and a deliberate panic through the
  * normal panic path; the crash screen is 1.2's full-screen one, C3). */
-void desktop_options(bool wanted, bool log, bool nocache, bool nosurface, bool about, bool panic_test);
+void desktop_options(bool wanted, bool default_path, bool log, bool nocache, bool nosurface, bool about,
+                     bool panic_test);
 
 /* 1.3 stage 4a: the About window's values the desktop cannot read itself:
  * the boot loader's name (Multiboot's, or none) and the usable memory in
@@ -105,6 +125,12 @@ void desktop_about_info(const char *loader, uint32_t usable_mb);
 /* At System ready, after its line: starts the desktop if wanted (above).
  * True if it shows. */
 bool desktop_start(bool console_offered);
+/* 1.3 stage 8: the default path (`default_path` above: no test= option),
+ * at the first pass of the idle loop, unless the first key press queued
+ * by then is Esc: starts the desktop if the console is offered and the
+ * splash is still showing, taking the screen from it (above). False,
+ * silently, otherwise. */
+bool desktop_start_default(bool console_offered);
 
 bool desktop_showing(void);
 

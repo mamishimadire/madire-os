@@ -202,6 +202,11 @@ void fbcon_release(void)
     fbcon_redraw();
 }
 
+void fbcon_unhold(void)
+{
+    held = false;
+}
+
 bool fbcon_window(struct surface *surf, int32_t w, int32_t h, void (*damage)(struct rect r))
 {
     struct fbcon_layout wl;

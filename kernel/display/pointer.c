@@ -30,6 +30,23 @@ static uint32_t reported_dropped;
 static int64_t sum_dx, sum_dy;
 static uint32_t presses[3], releases[3];
 
+/* The pointer on the framebuffer: its sprite at the screen's scale, at
+ * the screen's centre, hidden until the first packet. False if it cannot
+ * be drawn (no framebuffer, no sprite). */
+static bool pointer_setup(void)
+{
+    const struct fb_info *fi = display_info();
+    width = fi->width;
+    height = fi->height;
+    front = display_front_buffer();
+    if (!front || !pointer_sprite_make(&sprite, fbcon_scale_for_height(height)))
+        return false;
+    px = (int32_t)width / 2;
+    py = (int32_t)height / 2;
+    on_screen = true;
+    return true;
+}
+
 void pointer_start(bool log_packets, bool show)
 {
     logging = log_packets;
@@ -45,17 +62,17 @@ void pointer_start(bool log_packets, bool show)
         klogf("Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)\n");
         return;
     }
-    const struct fb_info *fi = display_info();
-    width = fi->width;
-    height = fi->height;
-    front = display_front_buffer();
-    if (!front || !pointer_sprite_make(&sprite, fbcon_scale_for_height(height)))
+    if (pointer_setup())
+        klogf("Mouse: pointer %ux%u pixels (scale %u %%), hidden until the first packet, then at (%d, %d) "
+              "moved by it\n", sprite.w, sprite.h, sprite.scale * 25, px, py);
+}
+
+void pointer_desktop(void)
+{
+    if (on_screen || !mouse_present() || !fbcon_active() || !pointer_setup())
         return;
-    px = (int32_t)width / 2;
-    py = (int32_t)height / 2;
-    on_screen = true;
-    klogf("Mouse: pointer %ux%u pixels (scale %u %%), hidden until the first packet, then at (%d, %d) "
-          "moved by it\n", sprite.w, sprite.h, sprite.scale * 25, px, py);
+    klogf("Desktop: the pointer shown from the first mouse movement: %ux%u pixels (scale %u %%), first at "
+          "(%d, %d)\n", sprite.w, sprite.h, sprite.scale * 25, px, py);
 }
 
 /* ---- Drawing (thread 0 or the crash screen; the framebuffer only) ---- */

@@ -175,5 +175,21 @@
 # 1 unit suite (conskeys13); new test_ui_rect cases (the drag damage
 # merge) in its existing suite. The stress part's new drag figures are
 # report only.
-1.3 246
+# Stage 8a: none (the hidden boot menu's 6 [1.1] checks moved from part 4
+# to part static, unchanged). Stage 8b, the switch: 25 more. Part static 2
+# (the handover's rule on the references in five modes; the VirtualBox
+# desktop group's plan and references); part 1 8 (the real ISO's default
+# path: the desktop shown, slot 506 with the cache and with the window
+# surfaces against tests/pagetables.py, the key that opens the Console
+# window; the keylog ISO's; the serial twins; verbose and test=splashfail
+# show no desktop); part 2 6 and part 3 7 (the splash-to-desktop handover
+# at 1024x768x32 and 800x600x24: the desktop after the cut, the M still
+# across it, the lines in order, the pointer, the key that opens the
+# Console window, the boot's health; and at 800x600x24 the ready state held
+# before the cut); part 3 1 more (the kernel stack's peak after the
+# desktop, on the real ISO); part final 1 (no Desktop: line off the
+# framebuffer). [1.2] unchanged at 149: its "still at 1024x768x32" ready-
+# state check moved from part 1 (the Esc section) to part 2 (the handover
+# at 1024x768x32, where that state is held).
+1.3 271
 unit-suites 94

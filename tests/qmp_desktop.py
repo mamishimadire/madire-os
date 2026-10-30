@@ -119,6 +119,22 @@ More steps:
 type: keys go through the model's menus first (the Windows key is
 {meta_l}), and the step waits for the kernel's lines of what it changed
 (window and menu lines). to:desktop also avoids an open menu.
+
+1.3 stage 8: the splash-to-desktop handover, on a default-path boot (no
+test= option) with desktoplog, whose kernel holds the splash's ready
+state 3 s after its own frame marker before the cut. More steps:
+    splash        wait for the next frame marker, then a screen of the
+                  splash's ready state against scripts/make-wallpaper.py's
+                  rendering of it ("held=yes" when the log, read while the
+                  guest was stopped, does not yet hold "desktop: hold N
+                  over"); prints
+    SPLASHSCREEN size=<w>x<h> held=<yes|no> differ=<pixels> (...)
+    handover      (after splash, then screen) the two screens compared by
+                  tests/desktop_ref.py's handover_check: the pixels that
+                  differ inside the M's box and outside the boxes where
+                  they may (the wordmark, the ready line, the taskbar);
+                  prints
+    HANDOVER m_box=<x>,<y>,<w>x<h> m_differ=<n> outside=<n> (...)
 """
 import argparse
 import os
@@ -160,10 +176,14 @@ def markers(serial):
     return sum(1 for line in serial.lines if MARKER.match(line))
 
 
+HANDOVER = {}                               # 1.3 stage 8: the screens before and after the cut
+
+
 def take(qmp, serial, dump, pointer_at):
     """One screen against the desktop with the last logged clock."""
     qmp.command("stop")
     w, h, pix = qmp.screendump(dump)
+    HANDOVER["after"] = (w, h, pix)
     frame, clock = last_clock(serial)
     seen = markers(serial)
     qmp.command("cont")
@@ -644,6 +664,35 @@ def main():
                 if not win:
                     raise ValueError("windowed needs --size")
                 windowed = True
+            elif step == "splash":                              # 1.3 stage 8
+                i = serial.wait(lambda l: MARKER.match(l) is not None, left, used)
+                if i is None:
+                    print("MARKER not seen in %.0f s" % left, flush=True)
+                    return 0
+                used = i + 1
+                n = int(MARKER.match(serial.lines[i]).group(1))
+                qmp.command("stop")
+                w, h, pix = qmp.screendump(dump)
+                serial.poll()
+                held = not any(l.startswith("desktop: hold %d over" % n) for l in serial.lines)
+                qmp.command("cont")
+                HANDOVER["before"] = (w, h, pix)
+                want = desktop_ref.MW.splash(w, h, "ready", desktop_ref.FONTDIR)
+                differ, first = fbcon_ref.compare(pix, want, w)
+                extra = "" if first is None else ", first at %d,%d: screen %s, reference %s" % first
+                print("SPLASHSCREEN size=%dx%d held=%s differ=%d (frame %d: the splash's ready state, "
+                      "scripts/make-wallpaper.py%s)" % (w, h, "yes" if held else "no", differ, n, extra), flush=True)
+            elif step == "handover":                            # 1.3 stage 8
+                if "before" not in HANDOVER or "after" not in HANDOVER:
+                    raise RuntimeError("handover: needs a splash step, then a screen step")
+                (w, h, before), (w2, h2, after) = HANDOVER["before"], HANDOVER["after"]
+                if (w, h) != (w2, h2):
+                    raise RuntimeError("handover: the screens' sizes differ")
+                md, out, b, first = desktop_ref.handover_check(w, h, before, after)
+                allowed = "; ".join("%s %d,%d %dx%d" % ((k,) + tuple(r)) for k, r in b["allowed"].items())
+                print("HANDOVER m_box=%d,%d,%dx%d m_differ=%d outside=%d (allowed: %s%s)" % (
+                    b["m"] + (md, out, allowed, "" if first is None else "; the first outside at %d,%d" % first)),
+                    flush=True)
             elif step == "ready":                               # 1.3 stage 4b
                 if serial.wait(lambda l: MARKER.match(l) is not None, left) is None:
                     print("MARKER not seen in %.0f s" % left, flush=True)

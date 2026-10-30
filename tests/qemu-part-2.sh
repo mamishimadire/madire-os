@@ -4,7 +4,8 @@
 # every line was moved unchanged from the single script; the [0.12] shell
 # session at the end was added in stage 1. 1.0 stage 2 adds the [1.0]
 # storage diagnostics (test=fslimits, test=fsfill at 32M and 64M) last;
-# stage 3 the VFS lock's test=klock after them.
+# stage 3 the VFS lock's test=klock after them. 1.3 stage 8: the
+# splash-to-desktop handover at 1024x768x32 at the end.
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 
@@ -1361,3 +1362,11 @@ section "[1.3] The menus at 1024x768x32: the M button and menu, the right-click 
 # desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
 # ending with Restart; the decision 20 key session; test=mousefail=4).
 desktop_menu_case 1024 1024x768x32 100 "menus at 1024x768x32"
+
+# ---- 1.3 stage 8: the switch: the default path shows the desktop ----
+
+section "[1.3] The splash-to-desktop handover at 1024x768x32: the default path (still desktoplog mouselog; stage 8)"
+# desktop_handover_case (tests/qemu-lib.sh): 7 checks, one boot. Its first
+# check is 1.2's "still at 1024x768x32" ready-state check, moved here from
+# part 1's Esc section (Esc now comes during the splash there).
+desktop_handover_case 1024 1024x768x32 100 "handover at 1024x768x32" 1.2

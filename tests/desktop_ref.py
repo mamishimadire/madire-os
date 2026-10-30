@@ -708,6 +708,62 @@ def desktop(w, h, clock):
     return bytes(scr.pix)
 
 
+# ---- The splash-to-desktop handover (1.3 stage 8) ----
+
+def handover_boxes(w, h):
+    """The handover's places, in pixels (x, y, w, h), from the splash's
+    layout (make-wallpaper.py) and the taskbar's (layout above): the M's
+    box (its strokes' capsules, 2 px around them), and the boxes where the
+    splash's ready state and the desktop may differ: the wordmark (its
+    strokes' radius and 2 px around), the ready line's cells, the taskbar."""
+    lay, L = MW.splash_layout(w, h), layout(w, h)
+    ls, lox, loy, ts, track = lay["ls"], lay["lox"], lay["loy"], lay["ts"], lay["track"]
+    r = MW.RX * ls
+    ys = [loy + K.mul(K.fx(y * MW.RX, MW.RY), ls) for s_ in MW.STROKES for y in (s_[1], s_[3])]
+    m_box = ((lox + MW.LX0 * ls >> 8) - 2, (min(ys) - r >> 8) - 2)
+    m_box += (((lox + MW.LX1 * ls + 255) >> 8) + 2 - m_box[0], ((max(ys) + r + 255) >> 8) + 2 - m_box[1])
+    adv = sum(MW.kernel_glyph(ch)[0] + track for ch in MW.WORDMARK)
+    width = K.mul(adv, ts) - K.mul(track, ts)
+    pen = K.fx(w, 2) - width // 2
+    rt = max(lay["r_title"], lay["r_os"])
+    wx0, wy0 = (pen - rt >> 8) - 2, (lay["title_y"] - rt >> 8) - 2
+    word = (wx0, wy0, ((pen + width + rt + 255) >> 8) + 2 - wx0,
+            ((lay["title_y"] + K.mul(K.fx(14), ts) + rt + 255) >> 8) + 2 - wy0)
+    ready = (lay["ready_x"], lay["text_y"], len(MW.READY_TEXT) * lay["cw"], lay["ch"])
+    return {"m": m_box, "allowed": {"wordmark": word, "ready line": ready, "taskbar": L["bar"]}}
+
+
+def handover_check(w, h, before, after):
+    """The splash's ready state (`before`) against the desktop's first
+    frame (`after`), both RGB bytes of a w x h screen: the pixels that
+    differ inside the M's box (none expected: the M stays still) and
+    outside every allowed box (none expected: only the splash's text goes,
+    the taskbar comes). Returns (m_differ, outside, boxes, the first
+    pixel outside or None)."""
+    b = handover_boxes(w, h)
+    mx, my, mw, mh = b["m"]
+
+    def inside(x, y, r):
+        return r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
+    m_differ = outside = 0
+    first = None
+    for y in range(h):
+        row = y * w * 3
+        if before[row:row + w * 3] == after[row:row + w * 3]:
+            continue
+        for x in range(w):
+            o = row + 3 * x
+            if before[o:o + 3] == after[o:o + 3]:
+                continue
+            if mx <= x < mx + mw and my <= y < my + mh:
+                m_differ += 1
+            elif not any(inside(x, y, r) for r in b["allowed"].values()):
+                outside += 1
+                if first is None:
+                    first = (x, y)
+    return m_differ, outside, b, first
+
+
 # ---- Windows and the About window (1.3 stage 4a; kernel/display/ui_window.h, ui_about.h) ----
 
 ABOUT_TITLE = b"About Madire OS"

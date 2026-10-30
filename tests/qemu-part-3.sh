@@ -1,7 +1,10 @@
 # Madire OS QEMU tests, part 3 (0.12, stage 0c): [0.10] usersys to
 # userchurn, and [0.11]. Sourced by tests/qemu-tests.sh (a full run, or
 # --shard 3). Apart from this header and the fixture calls, every line was
-# moved unchanged from the single script.
+# moved unchanged from the single script. 1.3 stage 8: the real ISO's
+# session shows the Console window (its screen after clear with the clock
+# read from the kernel; the stack's peak after the desktop), and the
+# splash-to-desktop handover at 800x600x24 comes at the end.
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 # Logs of part 1 that this part reads: the most-modules check reads the 32M
@@ -415,26 +418,50 @@ fi
 # closes the splash and opens the console, and is not typed (decision 17;
 # the same key path as the text boot screen's since 0.5); every later key
 # is typed: "madire> display" exactly, no x before it.
+# 1.3 stage 8: the real ISO shows the desktop at System ready (the default
+# path): the first key opens the Console window instead, not typed, and
+# "display" in it gives the same two lines (the window's grid has the
+# screen's scale and cells).
 python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "x{wait:1}display{ret}" --gap 0.05 \
     --done "Scale:   100 % (console: 80x25 cells of 8x16 pixels)" --done-timeout 20 >/dev/null 2>&1
-expect_lines "$LOG" "[1.2] display on the real ISO (graphics): 'display' typed whole after the key that closes the splash shows Screen:  framebuffer 1024x768, 32 bits per pixel and Scale:   100 % (console: 80x25 cells of 8x16 pixels)" \
+expect_lines "$LOG" "[1.2] display on the real ISO (graphics): 'display' typed whole after the key that opens the Console window shows Screen:  framebuffer 1024x768, 32 bits per pixel and Scale:   100 % (console: 80x25 cells of 8x16 pixels)" \
     "^madire> display$" "^Screen:  framebuffer 1024x768, 32 bits per pixel$" \
     "^Scale:   100 % \(console: 80x25 cells of 8x16 pixels\)$"
 reject "$LOG" "^madire> x|PANIC|events dropped" \
-    "[1.2] real ISO (graphics): the key that closed the splash was not typed; no panic, no dropped key"
+    "[1.2] real ISO (graphics): the key that opened the Console window was not typed; no panic, no dropped key"
 # The console's screen right after "clear" against tests/screen_ref.py's
 # reference for it, the one the VirtualBox graphics group compares its
 # screenshot with (scripts/vbox-acceptance.ps1): proven here on the
-# kernel's own rendering.
+# kernel's own rendering. 1.3 stage 8: the desktop with the Console window
+# (focused, the grid right after clear, no pointer: no mouse movement), the
+# clock read from the kernel's own string while the guest is stopped (the
+# real ISO logs no clock: the stage 8 decision Q3; one retry only if the
+# string changed); VirtualBox masks the clock's cells instead.
 python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "clear{ret}" --gap 0.05 \
     --done "console: cleared" --done-timeout 20 >/dev/null 2>&1
 sleep 1
-SREF=$(python3 "$(dirname "$0")/screen_ref.py" check-console "$SOCK" 2>&1)
+CLOCK_V=$(nm "$OUT/madire.elf" | awk '$3 == "clock" { print $1 }')
+CLOCK_P=$(printf '0x%x' $(( 0x$(head -n 1 <<< "${CLOCK_V:-0}") - 0xffffffff80000000 )))
+echo "      desktop.c's clock at 0x${CLOCK_V:-?} (physical $CLOCK_P; $(grep -c . <<< "$CLOCK_V") symbol(s) named clock)"
+SREF=$(python3 "$(dirname "$0")/screen_ref.py" check-desktop-console "$SOCK" "$CLOCK_P" 2>&1)
 echo "      $SREF"
-if grep -qE "^CONSOLE size=1024x768 differ=0 " <<< "$SREF"; then
-    pass "[1.2] real ISO (graphics): the console's screen after clear equals tests/screen_ref.py's reference pixel for pixel (the VirtualBox graphics group's reference)"
+if grep -qE "^DESKTOP_CONSOLE size=1024x768 differ=0 " <<< "$SREF"; then
+    pass "[1.2] real ISO (graphics): the Console window's screen after clear equals tests/screen_ref.py's reference pixel for pixel, the clock drawn from the kernel's clock string (the VirtualBox graphics group's reference)"
 else
-    fail "[1.2] real ISO (graphics): the console after clear differs from tests/screen_ref.py's reference ($SREF)"
+    fail "[1.2] real ISO (graphics): the Console window after clear differs from tests/screen_ref.py's reference ($SREF)"
+fi
+# 1.3 stage 8: the kernel stack's peak after thread 0 composed the desktop
+# and the Console window ("mem"'s last row; the [0.8] check of the boot
+# reads the line logged at System ready, before the desktop starts).
+python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "mem{ret}" --gap 0.05 \
+    --done "Kernel stack:  " --done-timeout 20 >/dev/null 2>&1      # mem's padded row (the boot's line has one space)
+sleep 1
+ISO_PEAK=$(awk '/^madire> mem$/ { on = 1 } on && /^Kernel stack: +[0-9]+ bytes at peak, of 16384$/ { print $3; exit }' "$LOG")
+echo "      the kernel stack after the desktop: peak ${ISO_PEAK:-?} bytes"
+if [ -n "$ISO_PEAK" ] && [ "$ISO_PEAK" -gt 0 ] && [ "$ISO_PEAK" -lt 16384 ]; then
+    pass "[1.3] real ISO: the kernel stack's peak after thread 0 composed the desktop and the Console window ('mem'): 0 < peak < 16 KiB ($ISO_PEAK bytes)"
+else
+    fail "[1.3] real ISO: no 'mem' stack row after the desktop, or its peak out of range (${ISO_PEAK:-missing})"
 fi
 kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
 
@@ -968,3 +995,9 @@ else
 fi
 ck_lines "$CK_LOG" "the full-screen console"
 reject "$CK_LOG" "^key: |PANIC|FAILED|Screen output from thread" "[1.3] console keys, the full-screen console: no key logged, no panic, FAILED line or screen-rule violation"
+
+# ---- 1.3 stage 8: the switch: the default path shows the desktop ----
+
+section "[1.3] The splash-to-desktop handover at 800x600x24: the default path (still desktoplog mouselog; stage 8)"
+# desktop_handover_case (tests/qemu-lib.sh): 7 checks, one boot.
+desktop_handover_case 800 800x600x24 100 "handover at 800x600x24" 1.3 "resolution: 800x600x24"

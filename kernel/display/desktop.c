@@ -14,6 +14,7 @@
 #include "kernel/display/fbcon.h"
 #include "kernel/display/fbcon_core.h"
 #include "kernel/display/pointer.h"
+#include "kernel/display/splash.h"
 #include "kernel/display/ui_about.h"
 #include "kernel/display/ui_console.h"
 #include "kernel/display/ui_icon.h"
@@ -27,6 +28,7 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/proc/diagwait.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/thread.h"
 #include "kernel/rtc_time.h"
@@ -35,6 +37,8 @@
 typedef unsigned long long ull;
 
 static bool wanted, logging, nocache;
+/* 1.3 stage 8: no test= option: the default path (desktop_start_default). */
+static bool desk_default;
 static bool showing;
 static struct desktop_layout lay;
 static struct wallpaper wp;
@@ -105,9 +109,10 @@ static uint64_t desk_key_sorted[DESK_KEYS_KEPT] = { 0 };     /* the waiting coun
 static uint32_t desk_drag_keys = 0, desk_drag_keys_lost = 0;
 static uint64_t desk_key_longest = 0;
 
-void desktop_options(bool w, bool l, bool n, bool ns, bool about_opt, bool panic_opt)
+void desktop_options(bool w, bool default_path, bool l, bool n, bool ns, bool about_opt, bool panic_opt)
 {
     wanted = w;
+    desk_default = default_path && !w;
     logging = l;
     nocache = n;
     nosurface = ns;
@@ -277,7 +282,10 @@ static void desk_log_drag_figures(uint64_t per)
 
 /* The marker of the last frame composed (test=desktop boots only, stage
  * 3) and the clock it shows; with desktoplog, first the burst's line when
- * more than one frame was composed since the last marker (report only). */
+ * more than one frame was composed since the last marker (report only).
+ * 1.3 stage 8: on the default path the marker and the clock line only
+ * with desktoplog (a test option), so a normal boot's serial log and
+ * dmesg gain no line per frame. */
 static void desk_log_frame(void)
 {
     if (logging && desk_burst_frames > 1) {
@@ -307,6 +315,8 @@ static void desk_log_frame(void)
     desk_burst_frames = 0;
     desk_burst_longest = 0;
     desk_unlogged = false;
+    if (!wanted && !logging)
+        return;                         /* 1.3 stage 8: the default path without desktoplog */
     klogf("display: frame %u\n", desk_frame);
     kserialf("desktop: clock %s\n", clock);
     /* 1.3 stage 4b: desktoppanic, once the Console window's frame is shown. */
@@ -712,6 +722,16 @@ static bool refuse(const char *why)
     return false;
 }
 
+/* 1.3 stage 8: the default path's refusal once the splash was seen (the
+ * splash stays, and 1.2's path goes on). */
+static bool desk_refuse_splash(const char *why)
+{
+    klogf("Desktop: not started (%s): the splash kept\n", why);
+    return false;
+}
+
+static bool desk_begin(const struct fb_info *fi, const struct fbcon_layout *cl);
+
 bool desktop_start(bool console_offered)
 {
     if (!wanted)
@@ -725,12 +745,42 @@ bool desktop_start(bool console_offered)
         return refuse("the console is not on the framebuffer");
     if (!desktop_layout(&lay, fi->width, fi->height, cl->scale, cl->font))
         return refuse("no layout for this screen");
+    return desk_begin(fi, cl);
+}
+
+#define DESK_HOLD_TICKS 300             /* 3 s at 100 Hz: the splash held before the cut (desktoplog) */
+
+bool desktop_start_default(bool console_offered)
+{
+    if (!desk_default || !console_offered || !splash_showing())
+        return false;                   /* silent: 1.2's path (decision 6) */
+    const struct fbcon_layout *cl = fbcon_current_layout();
+    const struct fb_info *fi = display_info();
+    back = display_back_buffer();
+    if (!back || !cl || !desktop_layout(&lay, fi->width, fi->height, cl->scale, cl->font))
+        return desk_refuse_splash("no layout for this screen");
+    if (logging) {
+        /* tests/qmp_desktop.py's screen of the splash's ready state, held
+         * still as test=splash holds its screens. */
+        uint32_t n = display_frame_done();
+        klogf("display: frame %u\n", n);
+        diag_sleep(DESK_HOLD_TICKS);
+        kserialf("desktop: hold %u over: the splash's ready state held 3 s before the cut (desktoplog)\n", n);
+    }
+    if (!splash_handover())
+        return desk_refuse_splash("the splash closed before the cut");
+    return desk_begin(fi, cl);
+}
+
+/* The desktop takes the screen (after the checks of either start). */
+static bool desk_begin(const struct fb_info *fi, const struct fbcon_layout *cl)
+{
     wallpaper_setup(&wp, fi->width, fi->height, cl->scale);
     read_clock(clock);
     clock_second = timer_uptime_seconds();
     klogf("Desktop: shown on %ux%ux%u (scale %u %%): the wallpaper with the M, the taskbar, the clock %s; "
-          "a key opens the Console window (test=desktop, 1.3 stage 4b)\n", fi->width, fi->height, fi->bpp,
-          cl->scale * 25, clock);
+          "a key opens the Console window (%s)\n", fi->width, fi->height, fi->bpp, cl->scale * 25, clock,
+          wanted ? "test=desktop, 1.3 stage 4b" : "the default path, 1.3 stage 8");
     scale = cl->scale;
     setup_windows(fi, cl);
     uint32_t free_pages = pmm_free_pages();
@@ -741,8 +791,11 @@ bool desktop_start(bool console_offered)
     plan_surfaces(free_pages);
     /* 1.3 stage 4b: from here the console draws into its window (C2). */
     if (!fbcon_window(console_win.has_surface ? &console_win.surf : 0, console_win.w.w, console_win.w.h,
-                      desk_console_damage))
+                      desk_console_damage)) {
+        if (!wanted)
+            fbcon_redraw();             /* 1.3 stage 8: the splash gave the screen up: the text boot screen */
         return refuse("the console could not move into its window");
+    }
     desk_tsc0 = fd_tsc();
     desk_tick0 = timer_ticks();
     comp_init(&comp, back, present, 0);
@@ -756,6 +809,7 @@ bool desktop_start(bool console_offered)
     if (menu_need > UI_ABOUT_SCRATCH)
         klogf("Desktop: the M menu's wordmark needs %u coverage entries (%u kept): not drawn whole\n",
               (uint32_t)menu_need, (uint32_t)UI_ABOUT_SCRATCH);
+    pointer_desktop();                  /* 1.3 stage 8: the default path's pointer (on already otherwise) */
     showing = true;
     comp_damage(&comp, (struct rect){ 0, 0, (int32_t)fi->width, (int32_t)fi->height });
     if (about_at_start) {

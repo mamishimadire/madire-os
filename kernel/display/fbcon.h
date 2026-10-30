@@ -58,6 +58,11 @@ void fbcon_release(void);
  * not active on the back buffer. */
 bool fbcon_hold(void);
 
+/* 1.3 stage 8: the splash hands the screen to the desktop (splash.h):
+ * nothing held any more, and nothing drawn (the desktop's first frame
+ * replaces the splash's ready state; fbcon_window follows at once). */
+void fbcon_unhold(void);
+
 /* 1.3 stage 4b: the console in the Console window (desktop.h;
  * docs/plans/1.3.md, C2). From now on the grid is laid out window-relative
  * (fbcon_layout_at: at the screen's scale, its top-left pixel at the

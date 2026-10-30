@@ -2,7 +2,9 @@
 # boot's log, after all other parts (a sharded run: in the combining job,
 # over every job's logs). Sourced by tests/qemu-tests.sh (a full run, or
 # --shard final). Apart from this header, every line was moved unchanged
-# from the single script. 1.0 stage 1 adds the [1.0] filesystem check.
+# from the single script. 1.0 stage 1 adds the [1.0] filesystem check;
+# 1.3 stage 8 the [1.3] check that no boot off the framebuffer logs a
+# Desktop: line.
 
 section "[0.10] The user-mode boot self-test (every boot)"
 LOG=$OUT/serial-boot.log
@@ -78,3 +80,18 @@ for f in "$OUT"/serial-*.log; do
 done
 if [ "$nb" -gt 0 ] && [ "$nm" -eq 0 ]; then pass "[1.0] filesystem self-test: PASS in every one of the $nb boots that reached System ready"
 else fail "[1.0] filesystem self-test: missing in $nm of $nb boots that reached System ready"; fi
+
+
+section "[1.3] The desktop only on the framebuffer (every boot)"
+# 1.3 stage 8: the default path's desktop needs the splash, so a boot whose
+# console is not on the framebuffer (every -kernel boot, every textmode
+# entry, a framebuffer refused) logs no "Desktop:" line at all: the
+# refusals are logged on test=desktop boots only (the stage 8 decision D2).
+nb=0; nm=0
+for f in "$OUT"/serial-*.log; do
+    grep -q "^Display: console on the framebuffer" "$f" && continue
+    nb=$((nb + 1))
+    if grep -q "^Desktop" "$f"; then nm=$((nm + 1)); echo "      a Desktop: line in $(basename "$f")"; fi
+done
+if [ "$nb" -gt 0 ] && [ "$nm" -eq 0 ]; then pass "[1.3] no Desktop: line in any of the $nb boots without the framebuffer console"
+else fail "[1.3] a Desktop: line in $nm of $nb boots without the framebuffer console"; fi

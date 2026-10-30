@@ -15,26 +15,58 @@
 #   .\scripts\vbox-acceptance.ps1 -Only boot,preempt   # some tests
 #   .\scripts\vbox-acceptance.ps1 -Only repeat -Repeat 20   # 20 normal boots
 #   .\scripts\vbox-acceptance.ps1 -VBoxManage "D:\VirtualBox\VBoxManage.exe"
+#
+# 1.3 stage 8: an owner-run step (AGENTS.md section 6): run from plain
+# PowerShell with VS Code closed. Before anything else it measures the
+# available host memory three times (5 s apart) and refuses unless all
+# three are at or above -MinFreeMB (5,500 MB); it refuses while Kali or
+# MadireOS-View runs; it writes everything into one new result folder
+# (-OutDir, by default build\vbox-acceptance-<date>-<time>; an existing,
+# non-empty folder is refused, never overwritten); it saves showvminfo
+# before and after and reports every line that differs (only the medium
+# and VMStateChangeTime may); and at the end, also after an error, it
+# restores the resting medium (-RestoreIso, checked against
+# -RestoreSha256) and records its SHA-256 and the medium as showvminfo
+# reads it. It closes no application and asks for no credential. The
+# summary's last line is its exit status.
 param(
     [string]$VM = "MadireOS-Test",
     [string]$VBoxManage = "",
     [string]$Iso = "",                  # default: build\madire-os.iso
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
-    [string]$OutDir = "",               # default: build\vbox-acceptance
+    [string]$OutDir = "",               # default: build\vbox-acceptance-<date>-<time> (1.3 stage 8: always a new folder)
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, graphics, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow
+    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow
     [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
     [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
-    [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64"   # must not be running (0.11)
+    [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64",  # must not be running (0.11)
+    [string]$ViewVM = "MadireOS-View",  # 1.3 stage 8: must not be running (AGENTS.md section 6)
+    [int]$MinFreeMB = 5500,             # 1.3 stage 8: the owner's threshold for this step (three samples)
+    [string]$RestoreIso = "",           # the resting medium; default: build\v1.2-release\madire-os.iso
+    [string]$RestoreSha256 = "2a2acbe599c003d4e3015a6ab7bfd1632d15c8741dbcffede07381cb8b7292c6"
 )
 $ErrorActionPreference = "Stop"
 $root = (Get-Item (Split-Path $PSScriptRoot -Parent)).FullName
 $build = Join-Path $root "build"
 if (-not $Iso) { $Iso = Join-Path $build "madire-os.iso" }
 if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
-if (-not $OutDir) { $OutDir = Join-Path $build "vbox-acceptance" }
+if (-not $OutDir) { $OutDir = Join-Path $build ("vbox-acceptance-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
+if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.2-release\madire-os.iso" }
+
+# ---- 1.3 stage 8: host memory first (AGENTS.md section 6): three samples, 5 s apart ----
+$memSamples = @()
+for ($i = 0; $i -lt 3; $i++) {
+    if ($i) { Start-Sleep -Seconds 5 }
+    $memSamples += [int]((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1KB)
+}
+$memLine = "host memory available: {0} MB (threshold {1} MB)" -f ($memSamples -join " / "), $MinFreeMB
+Write-Host $memLine
+if (@($memSamples | Where-Object { $_ -lt $MinFreeMB }).Count) {
+    Write-Host "ACCEPTANCE RUN REFUSED: $memLine; a sample is below the threshold (nothing started, no application closed)"
+    exit 1
+}
 $serial = Join-Path $build "vbox-serial.log"    # the documented COM1 file
 
 # 0.10: the version is read once, from kernel/kernel.h; the checks that
@@ -133,13 +165,26 @@ if ($problems.Count) {
 # regression there would distort this run's timing evidence).
 $running = @(VBox list runningvms | ForEach-Object { if ($_ -match '^"(.+)" \{') { $Matches[1] } })
 if ($running -contains $KaliVM) { throw "The Kali build VM '$KaliVM' is running; refusing to run (power it off first)." }
-foreach ($f in @($Iso, $ModuleIso)) { if (-not (Test-Path $f)) { throw "Not found: $f" } }
+# 1.3 stage 8: only one VM at a time (AGENTS.md section 6).
+if ($running -contains $ViewVM) { throw "The VM '$ViewVM' is running; refusing to run (power it off first)." }
+foreach ($f in @($Iso, $ModuleIso, $RestoreIso)) { if (-not (Test-Path $f)) { throw "Not found: $f" } }
 $Iso = (Get-Item $Iso).FullName
 $ModuleIso = (Get-Item $ModuleIso).FullName
+$RestoreIso = (Get-Item $RestoreIso).FullName
+$restoreHash = (Get-FileHash $RestoreIso -Algorithm SHA256).Hash.ToLower()
+if ($restoreHash -ne $RestoreSha256.ToLower()) { throw "The resting medium's SHA-256 is $restoreHash (expected $RestoreSha256); refusing to run." }
+# 1.3 stage 8: one new result folder; an earlier one is never overwritten.
+if ((Test-Path $OutDir) -and @(Get-ChildItem $OutDir -Force).Count) { throw "The result folder $OutDir exists and is not empty; refusing to run (nothing is overwritten)." }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
+$OutDir = (Get-Item $OutDir).FullName
 $summary = Join-Path $OutDir "$Prefix-summary.txt"
 $results = New-Object System.Collections.Generic.List[string]
 function Note([string]$s) { Write-Host $s; $script:results.Add($s) }
+$memSamples -join "`r`n" | Set-Content -Path (Join-Path $OutDir "$Prefix-host-memory.txt") -Encoding ascii
+Note ("started {0}; {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"), $memLine)
+$vmBefore = @(VBox showvminfo $VM --machinereadable)
+$vmBefore | Set-Content -Path (Join-Path $OutDir "$Prefix-vminfo-before.txt") -Encoding ascii
+Note "resting medium (checked before the run): $restoreHash  $RestoreIso"
 
 Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else; display VBoxSVGA, 128 MB VRAM; pointing device USB tablet)"
 foreach ($f in @($Iso, $ModuleIso)) {
@@ -177,6 +222,20 @@ if (($Only.Count -eq 0) -or ($Only -contains "graphics")) {
     foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") console 1024 768 (Join-Path $refDir "console-cleared.rgb"))) {
         Note "reference (report only): $l"
     }
+}
+# 1.3 stage 8: the real ISO shows the desktop at System ready (the default
+# path), so the graphics and desktop groups compare with the desktop's
+# references (tests/screen_ref.py, from tests/desktop_ref.py), the clock's
+# cells masked (decision 12: its time is not known here).
+$Mask = $null
+if (($Only.Count -eq 0) -or ($Only -contains "graphics") -or ($Only -contains "desktop")) {
+    foreach ($kind in @("desktop", "desktop-console")) {
+        foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") $kind 1024 768 (Join-Path $refDir "$kind.rgb"))) {
+            Note "reference (report only): $l"
+            if ($l -match '^MASK ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+) ') { $Mask = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], [int]$Matches[4]) }
+        }
+    }
+    if (-not $Mask) { throw "tests\screen_ref.py gave no clock mask" }
 }
 
 # A screenshot's size, whether it is one colour, whether it shows the
@@ -233,6 +292,22 @@ public static class MadireShot {
         for (int i = 0; i < p.Length; i++)
             if (p[i] != ((r[3 * i] << 16) | (r[3 * i + 1] << 8) | r[3 * i + 2])) n++;
         return n;
+    }
+    // 1.3 stage 8: "<pixels differing outside the mask> <inside it>" (the
+    // clock's cells, x y w h), or "-1 -1" for another size.
+    public static string DifferMasked(string shot, string rgb, int width, int height, int mx, int my, int mw, int mh) {
+        int w, h;
+        int[] p = Load(shot, out w, out h);
+        if (w != width || h != height) return "-1 -1";
+        byte[] r = File.ReadAllBytes(rgb);
+        if (r.Length != (long)w * h * 3) return "-1 -1";
+        long outside = 0, inside = 0;
+        for (int i = 0; i < p.Length; i++) {
+            if (p[i] == ((r[3 * i] << 16) | (r[3 * i + 1] << 8) | r[3 * i + 2])) continue;
+            int x = i % w, y = i / w;
+            if (x >= mx && x < mx + mw && y >= my && y < my + mh) inside++; else outside++;
+        }
+        return outside + " " + inside;
     }
 }
 '@
@@ -419,7 +494,45 @@ function Get-Ps2kLeds([string[]]$lines) {
 
 function Want([string]$group) { return ($Only.Count -eq 0) -or ($Only -contains $group) }
 
+# 1.3 stage 8: a kept screenshot <Prefix>-<shot>.png against a reference
+# in the ref folder, the clock's cells ($Mask) masked: @(outside, inside),
+# -1 for another size or a missing file.
+function Get-MaskedDiffer([string]$shot, [string]$ref) {
+    $png = Join-Path $OutDir "$Prefix-$shot.png"
+    $rgb = Join-Path $refDir $ref
+    if (-not (Test-Path $png) -or -not (Test-Path $rgb)) { return @(-1, -1) }
+    $r = [MadireShot]::DifferMasked($png, $rgb, 1024, 768, $Mask[0], $Mask[1], $Mask[2], $Mask[3]) -split ' '
+    return @([long]$r[0], [long]$r[1])
+}
+
 $halted = "System halted\. Power off the machine\."
+
+# 1.3 stage 8 (AGENTS.md section 6): at the end, also after an error: the
+# VM powered off, the resting medium back in the optical drive (its SHA-256
+# and the medium as showvminfo reads it recorded), and showvminfo after the
+# run against before: only the medium and VMStateChangeTime may differ.
+function Finish-Run {
+    try { if ((Get-VMInfo)["VMState"] -eq "running") { VBox controlvm $VM poweroff | Out-Null; Start-Sleep -Seconds 2 } } catch {}
+    try {
+        VBox storageattach $VM --storagectl SATA --port 1 --device 0 --type dvddrive --medium $RestoreIso | Out-Null
+        $now = (Get-VMInfo)["SATA-1-0"]
+        $h = (Get-FileHash $RestoreIso -Algorithm SHA256).Hash.ToLower()
+        $ok = (Test-SamePath $now $RestoreIso) -and $h -eq $RestoreSha256.ToLower()
+        Note ("{0,-16} {1,-8} /the resting medium restored: SHA-256 {2}; showvminfo SATA-1-0: {3}/" -f "vm",
+              $(if ($ok) { "OK" } else { "MISSING" }), $h, $now)
+    } catch { Note ("{0,-16} {1,-8} /the resting medium restored: {2}/" -f "vm", "MISSING", $_) }
+    try {
+        $after = @(VBox showvminfo $VM --machinereadable)
+        $after | Set-Content -Path (Join-Path $OutDir "$Prefix-vminfo-after.txt") -Encoding ascii
+        $diff = @(Compare-Object $script:vmBefore $after)
+        $other = @($diff | Where-Object { $_.InputObject -notmatch '^"?(SATA-1-0|SATA-ImageUUID-1-0|VMStateChangeTime)"?=' })
+        foreach ($d in $diff) { Note ("vm (report only): showvminfo {0}: {1}" -f $(if ($d.SideIndicator -eq "<=") { "before" } else { "after " }), $d.InputObject) }
+        Note ("{0,-16} {1,-8} /showvminfo before and after: {2} lines differ, {3} other than the medium and VMStateChangeTime/" -f "vm",
+              $(if ($other.Count -eq 0) { "OK" } else { "MISSING" }), $diff.Count, $other.Count)
+    } catch { Note ("{0,-16} {1,-8} /showvminfo after the run: {2}/" -f "vm", "MISSING", $_) }
+}
+
+try {
 Attach $Iso
 
 if (Want "menu") {
@@ -551,6 +664,11 @@ if (Want "boot") {
 # after the first serial byte is counted as blank (the hand-off), one of
 # the splash's four dot phases, or other (taken while a frame was being
 # copied; report only).
+# 1.3 stage 8 (the switch): at System ready the desktop instead of the
+# splash's ready state, the key opens the Console window (not typed), and
+# both screens are compared with the desktop's references, the clock's
+# cells masked (tests/screen_ref.py desktop and desktop-console, which the
+# QEMU [1.2] check of the real ISO proves equal to the kernel's rendering).
 if (Want "graphics") {
     if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
     VBox startvm $VM --type headless | Out-Null
@@ -578,27 +696,130 @@ if (Want "graphics") {
     Note ("{0,-16} {1,-8} /the splash while booting: a screenshot equal to its reference rendering with 0-3 dots lit (make-wallpaper.py): {2}/" -f "graphics",
           $(if ($ready -and $seen -gt 0) { "OK" } else { "MISSING" }), $seen)
     Start-Sleep -Seconds 1
+    # 1.3 stage 8: at System ready the desktop (the default path), once its
+    # line is logged; then the screenshot against its reference, the clock's
+    # cells masked.
+    Wait-Serial "^Desktop: shown on " 20 | Out-Null
+    Start-Sleep -Seconds 1
     Shot "graphics-ready"
-    $d = [MadireShot]::Differ((Join-Path $OutDir "$Prefix-graphics-ready.png"), (Join-Path $refDir "splash-ready.rgb"), 1024, 768)
-    Note ("{0,-16} {1,-8} /the splash's ready state at System ready equals its reference rendering (make-wallpaper.py): {2} pixels differ/" -f "graphics",
-          $(if ($ready -and $d -eq 0) { "OK" } else { "MISSING" }), $d)
-    Key 39 b9; Start-Sleep -Seconds 1      # closes the splash, opens the console (not typed)
+    $d = Get-MaskedDiffer "graphics-ready" "desktop.rgb"
+    Note ("{0,-16} {1,-8} /the desktop at System ready equals its reference rendering (tests/screen_ref.py, the clock's box masked): {2} pixels differ outside the clock's box/" -f "graphics",
+          $(if ($ready -and $d[0] -eq 0) { "OK" } else { "MISSING" }), $d[0])
+    Key 39 b9; Start-Sleep -Seconds 1      # 1.3 stage 8: opens the Console window (not typed)
     TypeText "display"; Enter
     Start-Sleep -Seconds 1
     Shot "graphics-display"
     TypeText "clear"; Enter
     Start-Sleep -Seconds 1
     Shot "graphics-console"
-    $d = [MadireShot]::Differ((Join-Path $OutDir "$Prefix-graphics-console.png"), (Join-Path $refDir "console-cleared.rgb"), 1024, 768)
-    Note ("{0,-16} {1,-8} /the console after clear equals its reference rendering (tests/screen_ref.py): {2} pixels differ/" -f "graphics",
-          $(if ($d -eq 0) { "OK" } else { "MISSING" }), $d)
+    $d = Get-MaskedDiffer "graphics-console" "desktop-console.rgb"
+    Note ("{0,-16} {1,-8} /the Console window after clear equals its reference rendering (tests/screen_ref.py, the clock's box masked): {2} pixels differ outside the clock's box/" -f "graphics",
+          $(if ($d[0] -eq 0) { "OK" } else { "MISSING" }), $d[0])
     Stop-Run "graphics" @("^Display: framebuffer 1024x768x32 at 0x[0-9a-f]+, pitch 4096, RGB at bits 16/8/0$",
         "^Display: console on the framebuffer: 80x25 cells of 8x16 pixels at \(192, 184\), scale 100 %$",
         "^System ready\. Press any key to open the console\.$", "^console: started$",
+        "^Desktop: shown on 1024x768x32 \(scale 100 %\): .* \(the default path, 1\.3 stage 8\)$",
+        "^Desktop: a key opened the Console window \(the key is not typed\)$",
         "^madire> display$", "^Screen:  framebuffer 1024x768, 32 bits per pixel$",
         "^Scale:   100 % \(console: 80x25 cells of 8x16 pixels\)$", "^console: cleared$")
     Absent "graphics" "PANIC|FAILED|events dropped|Unexpected IRQ"
 }
+# 1.3 stage 8 (run in stage 9): the desktop group. One normal boot of the
+# real ISO (the default path: the desktop at System ready). The steps come
+# from tests/screen_ref.py desktop-plan (its VBOX_DESKTOP list, replayed
+# through tests/desktop_ref.py's model of the window manager and the menus,
+# which the QEMU [1.3] sessions prove against the kernel): relative mouse
+# events through COM IMouse.PutMouseEvent (the pointer parked at 0, 0 by
+# moves the clamp stops, then moved 1:1; at most 127 per event), the
+# Windows key as the scancodes e0 5b / e0 db, other keys and text through
+# keyboardputscancode / keyboardputstring. After the run every shot's
+# reference is rendered (tests/screen_ref.py desktop-render, the About
+# window's memory from this boot's serial log) and each screenshot is
+# compared with it, the clock's cells masked; the serial log is checked
+# for the default path's lines, the Console window's commands, the
+# Restart dialog (Cancel keeps running, Restart restarts) and, by
+# tests/pagetables.py, slot 506 with the cache and the window surfaces.
+if (Want "desktop") {
+    $planLines = @(Py -I (Join-Path $root "tests\screen_ref.py") desktop-plan 1024 768)
+    $shots = @($planLines | Where-Object { $_ -match '^SHOT ' } | ForEach-Object { $_.Substring(5) })
+    Note ("desktop (report only): the plan: {0} mouse events, {1} key events, {2} texts, {3} shots" -f
+          @($planLines | Where-Object { $_ -match '^MOUSE ' }).Count, @($planLines | Where-Object { $_ -match '^KEYS ' }).Count,
+          @($planLines | Where-Object { $_ -match '^TYPE ' }).Count, $shots.Count)
+    Start-Run
+    $ready = Wait-Serial "^Desktop: shown on " 60
+    Start-Sleep -Seconds 2
+    $client = New-Object -ComObject VirtualBox.VirtualBoxClient
+    $session = $client.Session
+    $client.VirtualBox.FindMachine($VM).LockMachine($session, 1)    # LockType_Shared: the console only, no setting
+    $restarted = $false
+    try {
+        $mouse = $session.Console.Mouse
+        foreach ($p in $planLines) {
+            $f = $p -split ' ', 2
+            switch ($f[0]) {
+                "MOUSE" { $v = @($f[1] -split ' ' | ForEach-Object { [int]$_ }); $mouse.PutMouseEvent($v[0], $v[1], 0, 0, $v[2]); Start-Sleep -Milliseconds 60 }
+                "KEYS" { Key @($f[1] -split ' '); Start-Sleep -Milliseconds 400 }
+                "TYPE" { TypeText $f[1] }
+                "SHOT" { Start-Sleep -Seconds 1; Shot ("desktop-" + $f[1]) }
+                "RESTART" {
+                    # Restart in the dialog: the reset path; the second boot's desktop.
+                    $until = (Get-Date).AddSeconds(90)
+                    do {
+                        Start-Sleep -Milliseconds 500
+                        $n = @(Select-String -Path $serial -Pattern '^Desktop: shown on ' -ErrorAction SilentlyContinue).Count
+                    } while ($n -lt 2 -and (Get-Date) -lt $until)
+                    $restarted = $n -ge 2
+                    Start-Sleep -Seconds 2
+                    Shot "desktop-after-restart"
+                }
+                default { }
+            }
+        }
+    } finally { $session.UnlockMachine() }
+    Stop-Run "desktop" @("^Desktop: shown on 1024x768x32 \(scale 100 %\): .* \(the default path, 1\.3 stage 8\)$",
+        "^Desktop: the pointer shown from the first mouse movement: 12x18 pixels \(scale 100 %\), first at \(512, 384\)$",
+        "^Desktop: a key opened the Console window \(the key is not typed\)$", "^console: started$",
+        "^madire> version$", "^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$", "^madire> echo ok$",
+        "^Desktop: Restart chosen in the Restart dialog: restarting$")
+    $log = Join-Path $OutDir "$Prefix-desktop.serial.log"
+    if (Test-Path $log) {
+        $lines = @(Get-Content $log)
+        $chosen = @($lines | Where-Object { $_ -ceq "Desktop: Restart chosen in the Restart dialog: restarting" }).Count
+        $boots = @($lines | Where-Object { $_ -ceq "boot32: start" }).Count
+        Note ("{0,-16} {1,-8} /Restart then Cancel keeps running, Restart then Restart restarts: 1 restart chosen ({2}), 2 boots ({3}), the second boot's desktop seen/" -f "desktop",
+              $(if ($ready -and $restarted -and $chosen -eq 1 -and $boots -eq 2) { "OK" } else { "MISSING" }), $chosen, $boots)
+        $typedOk = @($lines | Where-Object { $_ -cmatch '^madire> (echo ok|version|clear)$' }).Count -eq 5 -and
+                   @($lines | Where-Object { $_ -cmatch '^madire> ' }).Count -eq 5
+        Note ("{0,-16} {1,-8} /every line typed in the Console window as sent: madire> clear (x3), version, echo ok; the opening key and the Windows key not typed/" -f "desktop",
+              $(if ($typedOk) { "OK" } else { "MISSING" }))
+        # Slot 506 with the cache and the window surfaces (the first boot's lines).
+        $first = @(); foreach ($l in $lines) { if ($l -ceq "boot32: start" -and $first.Count) { break }; $first += $l }
+        $one = Join-Path $OutDir "$Prefix-desktop-first-boot.serial.log"
+        $first | Set-Content -Path $one -Encoding ascii
+        $pt = @(Py -I (Join-Path $root "tests\pagetables.py") $one --label vbox-desktop)
+        foreach ($l in $pt) { if ($l -match '^PAGETABLES_') { Note "desktop (report only): $l" } }
+        $ptOk = @($pt | Where-Object { $_ -cmatch '^PAGETABLES_DESKTOP label=vbox-desktop cache=present computed=([0-9]+/[0-9]+) logged=\1 MATCH$' }).Count -eq 1 -and
+                @($pt | Where-Object { $_ -cmatch '^PAGETABLES_SURFACES label=vbox-desktop cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$' }).Count -eq 1
+        Note ("{0,-16} {1,-8} /slot 506 with the background cache and the window surfaces as tests/pagetables.py models them/" -f "desktop",
+              $(if ($ptOk) { "OK" } else { "MISSING" }))
+        # The references, now that this boot's usable memory is known.
+        $mb = $null
+        foreach ($l in $first) { if ($l -cmatch '^Memory: [0-9]+ MB detected, ([0-9]+) MB usable below 4 GiB, ') { $mb = $Matches[1]; break } }
+        if ($mb) {
+            foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") desktop-render 1024 768 $refDir $mb)) { Note "reference (report only): $l" }
+            foreach ($s in @($shots + "after-restart")) {
+                $ref = if ($s -eq "after-restart") { "desktop-ready.rgb" } else { "desktop-$s.rgb" }
+                $d = Get-MaskedDiffer "desktop-$s" $ref
+                Note ("{0,-16} {1,-8} /the screen '{2}' equals its reference rendering (tests/screen_ref.py, the clock's box masked): {3} pixels differ outside the clock's box/" -f "desktop",
+                      $(if ($d[0] -eq 0) { "OK" } else { "MISSING" }), $s, $d[0])
+            }
+        } else {
+            Note ("{0,-16} {1,-8} /the usable memory line (for the About window's reference)/" -f "desktop", "MISSING")
+        }
+    }
+    Absent "desktop" "PANIC|FAILED|events dropped|bytes dropped|Unexpected IRQ"
+}
+
 # 0.9.2: console scrollback. dmesg 60 gives enough lines to page back.
 if (Want "scrollback") {
     Start-Run
@@ -1483,8 +1704,15 @@ if ($script:ScreenWaits.Count) {
           $sw.Count, $sw.Maximum, $sw.Average)
 }
 
-$results | Set-Content -Path $summary -Encoding ascii
+} catch {
+    Note ("{0,-16} {1,-8} /the run stopped on an error: {2}/" -f "run", "MISSING", $_)
+} finally {
+    Finish-Run
+}
+
 $missing =@($results | Where-Object { $_ -match ' MISSING ' -or $_ -match 'NO SERIAL LOG' }).Count
+$results.Add(("exit status {0} ({1} missing)" -f $(if ($missing) { 1 } else { 0 }), $missing))
+$results | Set-Content -Path $summary -Encoding ascii
 Write-Host ""
 Write-Host "Summary: $summary ($missing missing)"
 if ($missing) { exit 1 }

@@ -780,12 +780,22 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
 {
     uint32_t shown_seconds = 0xFFFFFFFFu;
     uint32_t reported_dropped = 0, reported_unexpected = 0;
+    /* 1.3 stage 8 (D1): the default path's desktop is decided at the first
+     * pass, after the keys queued by then: a first key press that is Esc
+     * keeps 1.2's path (the splash closes below, nothing opens); any other
+     * starts the desktop, which then takes that key (desktop.h). */
+    bool desk_undecided = true;
 
     for (;;) {
         struct key_event e;
         while (keyboard_get_event(&e)) {
             if (key_logging)                /* 0.9.2: off by default */
                 devtest_log_key(&e);
+            if (desk_undecided && (e.flags & KEY_PRESSED)) {
+                desk_undecided = false;
+                if (e.keycode != KEY_ESC)
+                    desktop_start_default(console_offered);
+            }
             if (desktop_showing()) {
                 /* 1.3 stage 4b: on a test=desktop boot the desktop routes
                  * every key (desktop.h): with no window focused a key
@@ -815,6 +825,10 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                 if (console_offered && !esc)
                     console_start(mem);
             }
+        }
+        if (desk_undecided) {               /* 1.3 stage 8: no key press queued */
+            desk_undecided = false;
+            desktop_start_default(console_offered);
         }
 
         splash_tick();                      /* 1.2 stage 8: the dots, every 400 ms */
@@ -905,9 +919,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     splash_options(cmdline_word("verbose"), cmdline_word("still"), !cmdline_has("test=") || splash_opt,
                    cmdline_word("still") || splash_opt);
     /* 1.3 stage 3: the desktop, on test=desktop boots only (desktop.h).
-     * Stage 4a: desktopnosurface and desktopabout too; stage 4b: desktoppanic. */
-    desktop_options(cmdline_has("test=desktop"), cmdline_word("desktoplog"), cmdline_word("desktopnocache"),
-                    cmdline_word("desktopnosurface"), cmdline_word("desktopabout"),
+     * Stage 4a: desktopnosurface and desktopabout too; stage 4b: desktoppanic.
+     * Stage 8: also on the default path (no test= option; desktop.h). */
+    desktop_options(cmdline_has("test=desktop"), !cmdline_has("test="), cmdline_word("desktoplog"),
+                    cmdline_word("desktopnocache"), cmdline_word("desktopnosurface"), cmdline_word("desktopabout"),
                     cmdline_word("desktoppanic"));                                  /* 1.3 stage 4b */
 
     bootscreen_draw_header();
