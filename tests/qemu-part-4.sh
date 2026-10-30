@@ -10,10 +10,11 @@
 # 6 the folder calls' [1.0] checks after them (test=dirops, test=fsunlink);
 # stage 7 the System V start-up's (test=startup and a console session);
 # stage 8 the console's file commands; stage 9 redirection, rm, cp, mv, df
-# and du (one console session). 1.1 stage 2 adds the hidden boot menu's
-# [1.1] checks at the end (tests/qmp_menu.py).
+# and du (one console session). 1.1 stage 2 added the hidden boot menu's
+# [1.1] checks at the end (tests/qmp_menu.py); 1.3 stage 8a moved them,
+# unchanged, to the end of part static (the shards' balance).
 
-echo "== [0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
+section "[0.10] Boot menu Diagnostics: the user-mode entries (appended; existing entries unchanged)"
 # 0.13: the boot menu is limine.conf: the "/Diagnostics" directory and its
 # "//<title>" sub-entries, each with "cmdline: test=<option>".
 CFG="$OUT/limine.conf"
@@ -140,7 +141,7 @@ else
     fail "[1.2] boot menu Diagnostics: not in text mode: ${DT_BAD:-?} ($DT_N boots)"
 fi
 
-echo "== [0.12] Self-check (stage 2b): each forbidden state panics, naming it"
+section "[0.12] Self-check (stage 2b): each forbidden state panics, naming it"
 # The always-on self-check: a destroyed address space loaded (thread_set_cr3)
 # or switched to (switch_threads), a thread taken off the run queue while not
 # ready, and a return to ring 3 by a thread whose process has ended or without
@@ -150,7 +151,7 @@ echo "== [0.12] Self-check (stage 2b): each forbidden state panics, naming it"
 selfcheck_panic() {   # selfcheck_panic <test> <description> <line regex>...
     local name=$1 desc=$2
     shift 2
-    echo "== [0.12] self-check: $desc (test=$name)"
+    section "[0.12] self-check: $desc (test=$name)"
     LOG=$OUT/serial-$name.log
     # Ends at the crash screen's last line; at the limit (10 s) if it never comes.
     boot_until "$LOG" 10 " System halted. Power off the machine." -m 32M -kernel "$KERNEL" \
@@ -176,7 +177,7 @@ selfcheck_panic selfcheckring3cr3 "ring 3 without a live address space" \
     "process_return_to_user: thread [0-9]+ returns to ring 3 at$" \
     "^ RIP 0x00000000004[0-9a-f]{5} without a live address space$" "^ \(CR3 0x[0-9a-f]{16}\)\.$"
 
-echo "== [1.0] self-check (stage 4): a user copy while holding the VFS lock (test=selfcheckcopylock)"
+section "[1.0] self-check (stage 4): a user copy while holding the VFS lock (test=selfcheckcopylock)"
 # kernel/memory/usercopy.h: user memory is never touched under the VFS lock.
 # Thread 0 takes the lock and calls copy_to_user; "(WRONG)" means it returned.
 LOG=$OUT/serial-selfcheckcopylock.log
@@ -191,7 +192,7 @@ else
     fail "[1.0] self-check: no halt, a reset, a returned copy or System ready in $LOG"
 fi
 
-echo "== [1.0] self-check (stage 7b): a yield while holding the VFS lock (test=selfcheckyieldlock)"
+section "[1.0] self-check (stage 7b): a yield while holding the VFS lock (test=selfcheckyieldlock)"
 # kernel/proc/klock.h: a holder runs with preemption off and never yields,
 # sleeps, joins or exits. Thread 0 takes the lock and calls thread_yield;
 # "(WRONG)" means it returned.
@@ -207,7 +208,7 @@ else
     fail "[1.0] self-check: no halt, a reset, a returned yield or System ready in $LOG"
 fi
 
-echo "== [0.12] Bounded diagnostic waits: the timer stopped on purpose (test=waitstall)"
+section "[0.12] Bounded diagnostic waits: the timer stopped on purpose (test=waitstall)"
 # 0.12 stage 3: with interrupts off on thread 0 the tick count cannot move;
 # a bounded wait and thread 0's bounded sleep must each end as a stall
 # after 100 x the boot calibration polls, logging one line that names the
@@ -230,7 +231,7 @@ else
 fi
 reject "$LOG" "KERNEL PANIC|\(WRONG\)"                "[0.12] waitstall: no panic (the test ended normally)"
 
-echo "== [0.13] A program module without module_string (Limine passes an empty string)"
+section "[0.13] A program module without module_string (Limine passes an empty string)"
 # The default entry of limine.conf, with one more module after the 7: hello.elf
 # again, without "module_string:". Limine then passes "" as its string; the
 # kernel must refuse it by name (progmod_name: an empty string is "bad name";
@@ -258,7 +259,7 @@ fi
 
 # ---- 1.0 stage 1 (D1): a kernel past 2 MiB boots; the ISO holds the real kernel ----
 
-echo "== [1.0] The padded test kernel (make padkernel: KERNEL_PAD=2M in build/pad), under QEMU -kernel"
+section "[1.0] The padded test kernel (make padkernel: KERNEL_PAD=2M in build/pad), under QEMU -kernel"
 # The same boot twice (-m 64M -kernel, no module), with the kernel under test
 # and with the padded one. tests/pagetables.py recomputes each boot's page
 # tables from its log (the kernel's end, the reserve: lines, the window and
@@ -327,7 +328,7 @@ fi
 # rename-over, a last close and a teardown (S6-6); test=dirops added to
 # B7 (S6-8); getdents64's count read as 32 bits (recorded with F17).
 
-echo "== [1.0] test=dirops: getcwd, chdir, mkdir, mkdirat, rmdir, unlink, unlinkat, rename, getdents64 (-m 32M)"
+section "[1.0] test=dirops: getcwd, chdir, mkdir, mkdirat, rmdir, unlink, unlinkat, rename, getdents64 (-m 32M)"
 LOG=$OUT/serial-dirops.log
 DREADY="System ready. Press any key to open the console."
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -append "test=dirops"
@@ -382,7 +383,7 @@ expect "$LOG" "^Dir test: cleanup: open files ([0-9]+) -> \1, nodes ([0-9]+) -> 
 expect "$LOG" "^Dir test: PASS$"                     "[1.0] dirops: PASS"
 reject "$LOG" "PANIC"                                 "[1.0] dirops: no crash screen, no panic"
 
-echo "== [1.0] test=fsunlink: open files and folders unlinked, renamed over, removed (-m 32M)"
+section "[1.0] test=fsunlink: open files and folders unlinked, renamed over, removed (-m 32M)"
 LOG=$OUT/serial-fsunlink.log
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -append "test=fsunlink"
 grep -E "^Unlink test: |^\[pid [0-9]+\] dirops: polls" "$LOG" | sed 's/^/      /'
@@ -416,7 +417,7 @@ reject "$LOG" "PANIC"                                 "[1.0] fsunlink: no crash 
 # (S7-6, recorded with F17). args is a built-in image and, here, a module
 # (QEMU -initrd); it is not in limine.conf.
 
-echo "== [1.0] Built-in images: entry points from the ELF header (report only, no check)"
+section "[1.0] Built-in images: entry points from the ELF header (report only, no check)"
 # scripts/user-images.sh takes each image's entry from e_entry since stage
 # 7 (it took nm's _start before): the two agree for every program but args.
 same=0 total=0
@@ -452,7 +453,7 @@ st_join() {
         END { for (p in held) print held[p] }' "$1" > "$2"
 }
 
-echo "== [1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
+section "[1.0] test=startup: argc, argv, envp and auxv (System V start-up, -m 32M)"
 LOG=$OUT/serial-startup.log
 boot_until "$LOG" 300 "$DREADY" -m 32M -kernel "$KERNEL" -initrd "$OUT/user/args.elf" -append "test=startup"
 st_join "$LOG" "$OUT/startup-joined.txt"
@@ -538,7 +539,7 @@ else
     fail "[1.0] startup: no PASS line, or a panic"
 fi
 
-echo "== [1.0] run with arguments and exported variables (a console session through QMP)"
+section "[1.0] run with arguments and exported variables (a console session through QMP)"
 LOG=$OUT/serial-startup-run.log
 S="x{ret}run args a b{ret}{wait:1}set X=1{ret}set Y=2{ret}export X{ret}run args{ret}{wait:1}"
 S+="echo end-of-startup-test{ret}"
@@ -554,7 +555,7 @@ expect_in_order "$LOG" "[1.0] run args with X exported (set, export): envp holds
 
 # ---- 1.0 stage 8: the console's file commands and the Live label ----
 
-echo "== [1.0] Console: the file commands (pwd, cd, ls, mkdir, rmdir, touch, stat, cat) and the Live label"
+section "[1.0] Console: the file commands (pwd, cd, ls, mkdir, rmdir, touch, stat, cat) and the Live label"
 # One console session through QMP at the pace proven in stage 0d (a 50 ms
 # gap and a 20 ms hold). The test program fsmake (user/prog/fsmake.c) is a
 # module given with -initrd (not in limine.conf): it makes files with known
@@ -814,7 +815,7 @@ reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
 
 # ---- 1.0 stage 9: redirection, rm, cp, mv, df and du ----
 
-echo "== [1.0] Console: output redirection (> and >>), rm, cp, mv, df and du"
+section "[1.0] Console: output redirection (> and >>), rm, cp, mv, df and du"
 # One console session through QMP, as stage 8's (a 50 ms gap and a 20 ms
 # hold), at -m 32M so that the file budget (about 5,400 pages) can be
 # filled for the copy that runs out of it. fsmake (-initrd, as in stage 8)
@@ -1095,120 +1096,3 @@ grep -q "^end-of-fs9-test$" "$LOG" && [ "$w" -le 79 ]
 ck $? "[1.0] stage 9 file session: every console line at most 79 characters"
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[1.0] stage 9 file session: no panic, dropped key, screen-rule violation or self-check"
-
-echo "== [1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"
-# 1.1 stage 2 (docs/plans/1.1.md, D1 Q1-Q6): the real ISO's boot menu
-# (limine.conf: quiet, timeout 2, term_margin 240), driven by
-# tests/qmp_menu.py, never together with qmp_keys.py. QEMU starts paused,
-# so power-on is time 0. Each state's screen is compared pixel by pixel with
-# the ISO tree's wallpaper.png; the panel, header, hint and version boxes
-# come from scripts/make-wallpaper.py --layout-json (one source). The marker
-# rows: the up markers in y 288-303, the down markers in y 464-479 (plan,
-# section E). The logs are in $OUT/menu/, not serial-*.log, so part final
-# counts the same boots as before (as the padded test kernel's).
-MENU_T0=$(date +%s)
-QMPMENU=$(dirname "$0")/qmp_menu.py
-MENUDIR=$OUT/menu
-rm -rf "$MENUDIR" && mkdir -p "$MENUDIR"
-MENU_WP=$OUT/isodir/boot/limine/wallpaper.png
-MENU_LAYOUT=$MENUDIR/layout.json
-python3 "$(dirname "$0")/../scripts/make-wallpaper.py" "$MENUDIR/wallpaper-layout.png" --version "$VERSION" \
-    --layout-json "$MENU_LAYOUT" | sed 's/^/      /'
-echo "      layout: $(tr -d ' \n' < "$MENU_LAYOUT" 2>/dev/null)"
-# menu_boot <log> <seconds> <qmp_menu.py mode> <its arguments after the
-# socket and the log...>: boots the real ISO paused with a QMP socket, runs
-# qmp_menu.py, then stops QEMU. MENU_OUT holds qmp_menu.py's output (also
-# printed and kept in <log>.menu.txt).
-menu_boot() {
-    local log=$1 secs=$2 mode=$3 sock=$MENUDIR/qmp.sock t0 qpid
-    shift 3
-    rm -f "$log" "$sock"
-    t0=$(date +%s%N)
-    timeout "$secs" qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
-        -qmp unix:"$sock",server=on,wait=off -cdrom "$ISO" >/dev/null 2>&1 &
-    qpid=$!
-    MENU_OUT=$(python3 "$QMPMENU" "$mode" "$sock" "$log" "$@" 2>&1)
-    sed 's/^/      /' <<< "$MENU_OUT"
-    echo "$MENU_OUT" > "${log%.log}.menu.txt"
-    sleep 0.5
-    kill "$qpid" 2>/dev/null
-    wait "$qpid" 2>/dev/null
-    [ -f "$log" ] || : > "$log"
-    boot_seconds "$log" "$t0"
-}
-# menu_state <name>: qmp_menu.py's STATE line of that shot, if 1024x768.
-menu_state() { grep -E "^STATE $1 size=1024x768 " <<< "$MENU_OUT"; }
-
-# Q1-Q4: one boot. Home every 300 ms until the menu shows, 5 s held, then
-# the four states: collapsed; Down, Enter (Diagnostics open, the top of
-# the list); Down x27 (position 26, the end of the list); Up x28 (back at
-# the top).
-LOG=$MENUDIR/reveal.log
-menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:5 shot:collapsed down ret shot:open \
-    'down*27' shot:position-26 'up*28' shot:back-top --band up=288-303 --band down=464-479 --shots "$MENUDIR"
-if grep -qE '^REVEAL [0-9]+\.[0-9] s, [0-9]+ presses, 1024x768$' <<< "$MENU_OUT" &&
-   grep -qxF 'HOLD 5 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT"; then
-    pass "[1.1] boot menu: a key during the 2 s shows the menu (1024x768), and nothing boots for 5 s"
-else
-    fail "[1.1] boot menu: no 1024x768 menu within 30 s of keys, or the serial log not empty 5 s later (see ${LOG%.log}.menu.txt)"
-fi
-ok=1
-for s in collapsed open position-26 back-top; do
-    menu_state "$s" | grep -qE ' drawn=[1-9][0-9]* inside_panel=yes ' || ok=0
-done
-if [ "$ok" = 1 ]; then
-    pass "[1.1] boot menu: in every state Limine draws only inside the panel (collapsed, Diagnostics open, scrolled to position 26, back at the top)"
-else
-    fail "[1.1] boot menu: a state drew outside the panel, nothing, or was not 1024x768 (see ${LOG%.log}.menu.txt)"
-fi
-ok=1
-for s in collapsed open position-26 back-top; do
-    menu_state "$s" | grep -qE ' header=0 hint=0 version=0 ' || ok=0
-done
-if [ "$ok" = 1 ]; then
-    pass "[1.1] boot menu: no Limine name or help text (the header, hint and version areas are the wallpaper's own pixels)"
-else
-    fail "[1.1] boot menu: Limine drew in the header, hint or version area, or a state was not 1024x768 (see ${LOG%.log}.menu.txt)"
-fi
-if menu_state collapsed | grep -qE ' band_up=0 band_down=0$' &&
-   menu_state open | grep -qE ' band_down=[1-9][0-9]*$' &&
-   menu_state position-26 | grep -qE ' band_up=[1-9][0-9]* '; then
-    pass "[1.1] boot menu: scroll markers only when the list overflows (down markers at the top of the list, up markers at position 26)"
-else
-    fail "[1.1] boot menu: scroll markers wrong (collapsed: none in y 288-303 and 464-479; open: some in 464-479; position 26: some in 288-303; see ${LOG%.log}.menu.txt)"
-fi
-
-# Q5: a second boot, the keys of the VirtualBox automation: Down, Enter,
-# Down x27, Enter (1 s after the menu shows; Home only selects the first
-# entry, so a Home still queued changes nothing). "No PANIC" relies on
-# QEMU's default CPU lacking SMAP: position 26 then reports NOT APPLICABLE.
-# With a SMAP-capable -cpu the crash test would panic by design, and this
-# check would need changing.
-LOG=$MENUDIR/position-26.log
-menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:1 down ret 'down*27' ret 'until:SMAP test:'
-if grep -qE '^REVEAL ' <<< "$MENU_OUT" && grep -qxF 'HOLD 1 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT" &&
-   grep -q '^SMAP test: ' "$LOG" && ! grep -q "PANIC" "$LOG"; then
-    pass "[1.1] boot menu: Down, Enter, Down x27 boots Diagnostics position 26 to 'SMAP test:'"
-else
-    fail "[1.1] boot menu: Down, Enter, Down x27, Enter did not boot position 26 to 'SMAP test:' (or booted early, or a panic; see $LOG)"
-fi
-
-# Q6: no key: a screendump every 250 ms until System ready. 1.2 stage 10b
-# (docs/plans/1.2.md, D2): the real ISO now boots in graphics at 1024x768,
-# so the width no longer tells the menu apart. Each screendump is placed
-# by the serial log's size read just before it: before the first serial
-# byte (Limine's time) only 640x480, 720x400 or a blank screen in the
-# kernel's mode; after it, only the kernel's mode; no screendump at any
-# time with the menu's header box; one boot (boot32: start once).
-LOG=$MENUDIR/no-key.log
-menu_boot "$LOG" 150 nokey "System ready." --wallpaper "$MENU_WP" --layout "$MENU_LAYOUT"
-Q6MODE=$(sed -n 's/^MODE //p' <<< "$MENU_OUT")
-if grep -qE "^BEFORE( (640x480|720x400)(/blank)?:[0-9]+| ${Q6MODE:-none}/blank:[0-9]+)+$" <<< "$MENU_OUT" &&
-   grep -qE "^AFTER( ${Q6MODE:-none}(/blank)?:[0-9]+)+$" <<< "$MENU_OUT" &&
-   grep -qxF "HEADER matches=0" <<< "$MENU_OUT" && grep -qxF "BOOTS boot32=1" <<< "$MENU_OUT" &&
-   [ "${Q6MODE:-none}" != none ] && grep -qE "^UNTIL 'System ready\.': seen after " <<< "$MENU_OUT"; then
-    pass "[1.1] no key: the real ISO boots to System ready and Limine's menu is never shown (before the first serial byte only 640x480, 720x400 or a blank screen; no screen ever matches the menu wallpaper's header)"
-else
-    fail "[1.1] no key: no System ready, a non-blank or other-size screen before the first serial byte, or a screen matching the menu wallpaper's header (see ${LOG%.log}.menu.txt)"
-fi
-echo "      [1.1] boot menu checks: $(( $(date +%s) - MENU_T0 )) s (report only)"

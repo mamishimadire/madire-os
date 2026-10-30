@@ -87,3 +87,18 @@ void rtc_format(const struct rtc_time *t, char out[RTC_TEXT_SIZE])
     p = two(p, t->second);
     *p = '\0';
 }
+
+void rtc_clock_text(const struct rtc_raw *raw, bool read_ok, char out[RTC_CLOCK_SIZE])
+{
+    struct rtc_time t;
+    if (!read_ok || !rtc_decode(raw, &t)) {
+        out[0] = out[1] = out[3] = out[4] = '-';
+        out[2] = ':';
+        out[5] = '\0';
+        return;
+    }
+    char *p = two(out, t.hour);
+    *p++ = ':';
+    p = two(p, t.minute);
+    *p = '\0';
+}

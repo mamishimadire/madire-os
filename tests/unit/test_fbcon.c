@@ -203,6 +203,76 @@ static void test_cell_outside_surface(void)
     CHECK_EQ(r.h, 16);
 }
 
+/* 1.3 stage 4b: the grid at a given scale and place (the Console window's),
+ * not centred and whatever the surface's size; any other scale refused. */
+static void test_layout_at(void)
+{
+    static const uint32_t scales[4] = { 4, 5, 6, 8 };
+    for (uint32_t i = 0; i < 4; i++) {
+        struct fbcon_layout l = { 0, 0, 0, 0, 0, 0 };
+        CHECK(fbcon_layout_at(scales[i], fonts, 2 + i, 32 + 8 * i, &l));
+        CHECK(l.font == fonts[i] && l.scale == scales[i]);
+        CHECK_EQ(l.cell_w, fonts[i]->width);
+        CHECK_EQ(l.cell_h, fonts[i]->height);
+        CHECK_EQ(l.x, 2 + i);
+        CHECK_EQ(l.y, 32 + 8 * i);
+        struct rect r = fbcon_cell_rect(&l, 24, 79);
+        CHECK(r.x == (int32_t)(2 + i + 79 * fonts[i]->width) && r.y == (int32_t)(32 + 8 * i + 24 * fonts[i]->height));
+    }
+    static const uint32_t bad[5] = { 0, 3, 7, 9, 16 };
+    for (uint32_t i = 0; i < 5; i++) {
+        struct fbcon_layout l = { &fa, 99, 1, 2, 3, 4 };
+        CHECK(!fbcon_layout_at(bad[i], fonts, 0, 0, &l));
+        CHECK(l.scale == 99 && l.x == 1 && l.cell_h == 4);  /* unchanged */
+    }
+}
+
+/* 1.3 stage 4b: a cell placed at any (x, y) and clipped: inside the clip
+ * and the surface the same pixels as fbcon_draw_cell's, nothing else. */
+static void test_cell_at_clipped(void)
+{
+    static uint8_t want[100 * 40 * 4];
+    for (uint32_t bpp = 3; bpp <= 4; bpp++) {
+        struct surface s, w;
+        memset(want, GUARD, sizeof(want));
+        CHECK(surface_init(&w, want, 100, 40, 100 * bpp, bpp));
+        struct fbcon_layout l = { &fb, 5, 30, 10, 10, 20 };
+        fbcon_draw_cell(&w, &l, 0, 0, 'Q', 0xC0FFEE, 0x123456, true);     /* the cell at (30, 10) */
+        /* Whole, clipped to the surface only: fbcon_draw_cell's. */
+        memset(screen, GUARD, sizeof(screen));
+        CHECK(surface_init(&s, screen, 100, 40, 100 * bpp, bpp));
+        fbcon_draw_cell_at(&s, &fb, 30, 10, 'Q', 0xC0FFEE, 0x123456, true, (struct rect){ -50, -50, 500, 500 });
+        CHECK(memcmp(screen, want, 100 * 40 * bpp) == 0);
+        /* Clipped to a rectangle: only its pixels. */
+        memset(screen, GUARD, sizeof(screen));
+        struct rect k = { 33, 14, 5, 9 };
+        fbcon_draw_cell_at(&s, &fb, 30, 10, 'Q', 0xC0FFEE, 0x123456, true, k);
+        uint32_t bad = 0, in = 0;
+        for (uint32_t y = 0; y < 40; y++)
+            for (uint32_t x = 0; x < 100; x++)
+                for (uint32_t b = 0; b < bpp; b++) {
+                    size_t o = y * 100 * bpp + x * bpp + b;
+                    bool inside = (int32_t)x >= k.x && (int32_t)x < k.x + k.w && (int32_t)y >= k.y &&
+                                  (int32_t)y < k.y + k.h;
+                    bad += screen[o] != (inside ? want[o] : GUARD);
+                    in += inside;
+                }
+        CHECK_EQ(bad, 0);
+        CHECK_EQ(in, 5 * 9 * bpp);
+        /* Partly off the surface (negative and past the edge): no write outside. */
+        memset(screen, GUARD, sizeof(screen));
+        fbcon_draw_cell_at(&s, &fb, -4, -7, 'Q', 0xC0FFEE, 0x123456, false, (struct rect){ -50, -50, 500, 500 });
+        fbcon_draw_cell_at(&s, &fb, 95, 30, 'Q', 0xC0FFEE, 0x123456, false, (struct rect){ -50, -50, 500, 500 });
+        uint32_t touched = 0, past = 0;
+        for (size_t i = 0; i < sizeof(screen); i++) {
+            touched += screen[i] != GUARD;
+            past += i >= 100 * 40 * bpp && screen[i] != GUARD;
+        }
+        CHECK_EQ(past, 0);
+        CHECK_EQ(touched, ((10 - 4) * (20 - 7) + (100 - 95) * (40 - 30)) * bpp);
+    }
+}
+
 int main(void)
 {
     make_font(&fa, bits_a);
@@ -215,5 +285,7 @@ int main(void)
     RUN(test_colours_and_cursor);
     RUN(test_cells);
     RUN(test_cell_outside_surface);
+    RUN(test_layout_at);
+    RUN(test_cell_at_clipped);
     return unit_report("fbcon");
 }

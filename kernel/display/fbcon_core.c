@@ -88,3 +88,55 @@ void fbcon_draw_cell(struct surface *s, const struct fbcon_layout *l, uint32_t r
         }
     }
 }
+
+bool fbcon_layout_at(uint32_t scale, const struct font *const fonts[4], uint32_t x, uint32_t y,
+                     struct fbcon_layout *out)
+{
+    int i = scale == 4 ? 0 : scale == 5 ? 1 : scale == 6 ? 2 : scale == 8 ? 3 : -1;
+    if (i < 0)
+        return false;
+    out->font = fonts[i];
+    out->scale = scale;
+    out->cell_w = fonts[i]->width;
+    out->cell_h = fonts[i]->height;
+    out->x = x;
+    out->y = y;
+    return true;
+}
+
+void fbcon_draw_cell_at(struct surface *s, const struct font *f, int32_t x, int32_t y, uint8_t ch, uint32_t fg,
+                        uint32_t bg, bool cursor, struct rect clip)
+{
+    int64_t cx0 = clip.x, cy0 = clip.y, cx1 = (int64_t)clip.x + clip.w, cy1 = (int64_t)clip.y + clip.h;
+    if (cx0 < 0)
+        cx0 = 0;
+    if (cy0 < 0)
+        cy0 = 0;
+    if (cx1 > s->width)
+        cx1 = s->width;
+    if (cy1 > s->height)
+        cy1 = s->height;
+    const uint8_t *glyph = f->bits + (uint32_t)ch * f->height * f->row_bytes;
+    uint32_t c_first, c_end, bpp = s->bytes_per_pixel;
+    fbcon_cursor_rows(f->height, &c_first, &c_end);
+    for (uint32_t gy = 0; gy < f->height; gy++) {
+        int64_t py = (int64_t)y + gy;
+        if (py < cy0 || py >= cy1)
+            continue;
+        const uint8_t *bits = glyph + gy * f->row_bytes;
+        bool under = cursor && gy >= c_first && gy < c_end;
+        for (uint32_t gx = 0; gx < f->width; gx++) {
+            int64_t px = (int64_t)x + gx;
+            if (px < cx0 || px >= cx1)
+                continue;
+            bool on = under || (bits[gx >> 3] & (0x80u >> (gx & 7)));
+            uint32_t rgb = on ? fg : bg;
+            uint8_t *p = s->pixels + (uint64_t)py * s->pitch + (uint64_t)px * bpp;
+            p[0] = (uint8_t)rgb;
+            p[1] = (uint8_t)(rgb >> 8);
+            p[2] = (uint8_t)(rgb >> 16);
+            if (bpp == 4)
+                p[3] = 0;
+        }
+    }
+}

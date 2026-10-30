@@ -54,4 +54,13 @@ uint8_t rtc_days_in_month(uint16_t year, uint8_t month);
 /* Formats as "2026-10-05 14:03:27" into out[RTC_TEXT_SIZE]. */
 void rtc_format(const struct rtc_time *t, char out[RTC_TEXT_SIZE]);
 
+#define RTC_CLOCK_SIZE 6    /* "HH:MM" + NUL */
+
+/* 1.3 stage 3, the desktop's clock (Design Guide, section 10): "HH:MM"
+ * (24 hours, leading zeros) of the registers `raw` as cmos_rtc_read() read
+ * them, or "--:--" if the read failed (`read_ok` false: the RTC stayed busy
+ * updating, or never gave two equal reads) or any field is invalid
+ * (rtc_decode). */
+void rtc_clock_text(const struct rtc_raw *raw, bool read_ok, char out[RTC_CLOCK_SIZE]);
+
 #endif

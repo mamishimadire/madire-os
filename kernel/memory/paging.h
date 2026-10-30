@@ -56,6 +56,12 @@ void vmm_window_unmap(void);
 
 const struct paging_stats *paging_stats(void);
 
+/* 1.3 stage 3: the live tables of kernel PML4 slot `index` (256-511),
+ * walked through the recursive mapping: its PDPT, page directories and page
+ * tables (0 if the slot is empty), and its present leaf entries (pages
+ * mapped). Large pages are not used in these slots. Normal context. */
+void paging_slot_figures(unsigned index, uint32_t *tables, uint32_t *pages);
+
 /* 0.10: the table operations through the recursive slot. They reach the
  * tables of whichever PML4 is loaded in CR3 (each process PML4's slot 510
  * points to itself), so a process's lower half is edited while its CR3 is

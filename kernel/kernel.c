@@ -27,6 +27,7 @@
 #include "kernel/bootscreen.h"
 #include "kernel/console/console.h"
 #include "kernel/devtest.h"
+#include "kernel/display/desktop.h"
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
 #include "kernel/display/pointer.h"
@@ -102,6 +103,29 @@ static int cmdline_has(const char *word)
             return 1;
     }
     return 0;
+}
+
+/*
+ * 1.3 stage 4a: the boot loader's name (Multiboot's boot_loader_name,
+ * flags bit 9), at most 63 bytes, every byte outside printable ASCII
+ * shown as '?'; "-" if the loader gave none. For the About window only.
+ */
+#define MB_INFO_BOOT_LOADER_NAME (1u << 9)
+static char loader_name[64] = "-";
+
+static void copy_loader_name(const struct multiboot_info *mbi)
+{
+    if (!(mbi->flags & MB_INFO_BOOT_LOADER_NAME) || !mbi->boot_loader_name)
+        return;
+    const char *src = phys_view(mbi->boot_loader_name);
+    size_t n = 0;
+    for (; n < sizeof(loader_name) - 1 && src[n]; n++)
+        loader_name[n] = src[n] >= 0x20 && src[n] < 0x7F ? src[n] : '?';
+    loader_name[n] = 0;
+    if (!n) {
+        loader_name[0] = '-';
+        loader_name[1] = 0;
+    }
 }
 
 /*
@@ -756,12 +780,39 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
 {
     uint32_t shown_seconds = 0xFFFFFFFFu;
     uint32_t reported_dropped = 0, reported_unexpected = 0;
+    /* 1.3 stage 8 (D1): the default path's desktop is decided at the first
+     * pass, after the keys queued by then: a first key press that is Esc
+     * keeps 1.2's path (the splash closes below, nothing opens); any other
+     * starts the desktop, which then takes that key (desktop.h). */
+    bool desk_undecided = true;
 
     for (;;) {
         struct key_event e;
         while (keyboard_get_event(&e)) {
             if (key_logging)                /* 0.9.2: off by default */
                 devtest_log_key(&e);
+            if (desk_undecided && (e.flags & KEY_PRESSED)) {
+                desk_undecided = false;
+                if (e.keycode != KEY_ESC)
+                    desktop_start_default(console_offered);
+            }
+            if (desktop_showing()) {
+                /* 1.3 stage 4b: on a test=desktop boot the desktop routes
+                 * every key (desktop.h): with no window focused a key
+                 * opens the Console window and is not typed (the first
+                 * one starts the console); with the Console window
+                 * focused the console takes it; with the About window
+                 * focused Esc closes it. 1.3 stage 5: the menus, the
+                 * Restart dialog and the Windows key read it first. */
+                enum desktop_key_route r = desktop_key(e.keycode, e.flags & KEY_PRESSED);
+                if (r == DESKTOP_KEY_OPENED && !console_active()) {
+                    BOOTSCREEN_SAFE(bootscreen_last_key(&e));
+                    console_start(mem);
+                } else if (r == DESKTOP_KEY_CONSOLE) {
+                    console_handle_key(&e);
+                }
+                continue;
+            }
             if (console_active()) {
                 console_handle_key(&e);
             } else if (e.flags & KEY_PRESSED) {
@@ -775,9 +826,18 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                     console_start(mem);
             }
         }
+        if (desk_undecided) {               /* 1.3 stage 8: no key press queued */
+            desk_undecided = false;
+            desktop_start_default(console_offered);
+        }
 
         splash_tick();                      /* 1.2 stage 8: the dots, every 400 ms */
         pointer_poll();                     /* 1.2 stage 7: nothing without a mouse */
+        /* 1.3 stage 5: a menu row chosen with the pointer opened the Console
+         * window: start the console, as a key that opens it does. */
+        if (desktop_take_console() && !console_active())
+            console_start(mem);
+        desktop_poll();                     /* 1.3 stage 3: the clock, then one composition */
 
         /* 1.1: the lights follow the lock keys; a change is logged only
          * with keylog (K8), a failure always. */
@@ -858,6 +918,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     bool splash_opt = cmdline_has("test=splash");
     splash_options(cmdline_word("verbose"), cmdline_word("still"), !cmdline_has("test=") || splash_opt,
                    cmdline_word("still") || splash_opt);
+    /* 1.3 stage 3: the desktop, on test=desktop boots only (desktop.h).
+     * Stage 4a: desktopnosurface and desktopabout too; stage 4b: desktoppanic.
+     * Stage 8: also on the default path (no test= option; desktop.h). */
+    desktop_options(cmdline_has("test=desktop"), !cmdline_has("test="), cmdline_word("desktoplog"),
+                    cmdline_word("desktopnocache"), cmdline_word("desktopnosurface"), cmdline_word("desktopabout"),
+                    cmdline_word("desktoppanic"));                                  /* 1.3 stage 4b */
 
     bootscreen_draw_header();
 
@@ -890,7 +956,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         klogf("Early panic test: a panic before paging and the framebuffer console\n");
         panic("Early panic test: a panic before the framebuffer console (on purpose).");
     }
+    /* 1.3 stage 4a: the boot loader's name for the About window, copied
+     * now: memory_init() does not reserve it, and only the boot tables map
+     * it (after the IDT, as the other boot data). */
+    copy_loader_name(mbi);
     memory_init(mbi_phys, &mem);
+    desktop_about_info(loader_name, memory_bytes_to_mb(mem.usable_bytes));     /* 1.3 stage 4a */
     uint32_t mem_checks = memtest_boot();
 
     /* Only reached if the map was parsed, usable memory identified, the
@@ -981,7 +1052,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         /* 1.2 stage 10: no pointer on the console but with the test
          * option `pointer` or test=mouse. */
         pointer_start(cmdline_word("mouselog") || cmdline_has("test=mouse"),
-                      cmdline_word("pointer") || cmdline_has("test=mouse"));
+                      cmdline_word("pointer") || cmdline_has("test=mouse") ||
+                      cmdline_has("test=desktop"));     /* 1.3 stage 3: on the desktop */
     }
     bootscreen_uptime(timer_uptime_seconds());
     bootscreen_last_key(NULL);
@@ -1045,5 +1117,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
                      : !keyboard_ok ? "Keyboard unavailable: console disabled."
                      : "Console self-test failed: console disabled.");
     klogf("Kernel stack: %u bytes at peak, of %u\n", kernel_stack_peak(), kernel_stack_size());
+    desktop_start(console_offered);         /* 1.3 stage 3: test=desktop boots only */
     idle_loop(&mem, console_offered);
 }

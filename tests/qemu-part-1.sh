@@ -33,9 +33,14 @@
 # pointer without it), and a session without it follows; the splash cases
 # take a fifth screen, the ready state at System ready, and the Esc case's
 # first screen is that state; at the end, the early crash screen
-# (test=earlypanic).
+# (test=earlypanic). 1.3 stage 8 (the switch): after the real ISO's slot
+# 506, its default path (the desktop at System ready; the keylog ISO's
+# too); the twins, verbose and test=splashfail sections gain a [1.3] check
+# each; the two mouselog sessions get `verbose` (1.2's full-screen console);
+# the Esc case presses Esc during the splash, and its ready-state check
+# moved to part 2's handover section.
 
-echo "== Normal boot (ISO through the boot menu)"
+section "Normal boot (ISO through the boot menu)"
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh
 expect "$LOG" "Logo: 36x24, $LOGO_PIXELS pixels lit" "logo rendered ($LOGO_PIXELS pixels, matches reference)"
 expect "$LOG" "M A D I R E   O S"                     "title shown"
@@ -95,7 +100,7 @@ LOG=$OUT/serial-boot.log                              # 0.9.2: back to the real 
 # ram_test <label> <-m size> <usable pages> <physical MB> <above 4 GiB MB>
 ram_test() {
     local label=$1 mem=$2 pages=$3 ram=$4 above=$5
-    echo "== Memory: $label"
+    section "Memory: $label"
     local log=$OUT/serial-mem-$label.log
     boot "$log" 10 -m "$mem" -kernel "$KERNEL"
     expect "$log" "System ready\." "$label: boots to System ready"
@@ -111,7 +116,7 @@ ram_test 32M  32M 8063   31   0
 ram_test 1G   1G  262015 1023 0
 ram_test 4G   4G  786303 4095 1024
 
-echo "== Memory: boot module reserved (-initrd)"
+section "Memory: boot module reserved (-initrd)"
 LOG=$OUT/serial-mem-module.log
 # 0.7: a test module (kernel/bootmod.h): "MADIRETM", payload length, FNV-1a
 # of the payload, then 14000 random payload bytes. The kernel checks it after
@@ -136,14 +141,14 @@ memory_check "$LOG" "module" --expect-module
 expect "$LOG" "^Boot module 1: 0x[0-9a-f]{8}-0x[0-9a-f]{8} \(14016 bytes\): test pattern intact" \
                                                       "[0.7] module (QEMU -kernel/-initrd): contents intact after boot"
 
-echo "== [0.7] Boot module: corruption is detected"
+section "[0.7] Boot module: corruption is detected"
 LOG=$OUT/serial-mem-module-corrupt.log
 make_test_module "$OUT/test-module-corrupt.bin" 14000 corrupt
 boot "$LOG" 10 -m 32M -kernel "$KERNEL" -initrd "$OUT/test-module-corrupt.bin"
 expect "$LOG" "^Boot module 1: .*: test pattern CORRUPTED \(FNV-1a 0x[0-9a-f]{8}, expected 0x[0-9a-f]{8}\)" \
                                                       "[0.7] module: a changed byte is reported as CORRUPTED"
 
-echo "== [0.7] Boot module through the boot menu (ISO with a module entry; 0.13: Limine)"
+section "[0.7] Boot module through the boot menu (ISO with a module entry; 0.13: Limine)"
 LOG=$OUT/serial-bootmenu-module.log
 limine_tree "$OUT/isomod"
 cp "$OUT/test-module.bin" "$OUT/isomod/boot/test-module.bin"
@@ -172,7 +177,7 @@ fi
 # exhaust_test <-m size>: allocate every free page, verify, free them all.
 exhaust_test() {
     local mem=$1
-    echo "== Memory exhaustion: $mem"
+    section "Memory exhaustion: $mem"
     local log=$OUT/serial-exhaust-$mem.log
     boot "$log" 20 -m "$mem" -kernel "$KERNEL" -append "test=memexhaust"
     local free inuse held expected
@@ -195,14 +200,14 @@ exhaust_test() {
 exhaust_test 16M
 exhaust_test 128M
 
-echo "== Memory: double free must be caught"
+section "Memory: double free must be caught"
 LOG=$OUT/serial-doublefree.log
 boot "$LOG" 8 -kernel "$KERNEL" -append "test=doublefree"
 expect "$LOG" "KERNEL PANIC"                              "doublefree: crash screen shown"
 expect "$LOG" "Double free of physical page 0x[0-9a-f]{8}" "doublefree: reported with page address"
 reject "$LOG" "System ready|not detected"                  "doublefree: halted, detection worked"
 
-echo "== Memory: freeing a reserved page must be caught"
+section "Memory: freeing a reserved page must be caught"
 LOG=$OUT/serial-freereserved.log
 boot "$LOG" 8 -kernel "$KERNEL" -append "test=freereserved"
 expect "$LOG" "KERNEL PANIC"                                "freereserved: crash screen shown"
@@ -212,7 +217,7 @@ reject "$LOG" "System ready|not detected"                    "freereserved: halt
 # crash_test <name> <vector> <exception name> <error code>
 crash_test() {
     local name=$1 vector=$2 exname=$3 errcode=$4
-    echo "== Crash test: $name"
+    section "Crash test: $name"
     local log=$OUT/serial-$name.log
     boot "$log" 8 -kernel "$KERNEL" -append "test=$name"
     expect "$log" "KERNEL PANIC"                        "$name: crash screen shown"
@@ -229,7 +234,7 @@ crash_test gpf     13 "General Protection Fault" 00000028
 
 # ---- 0.4: timer, keyboard and IRQ layer ----
 
-echo "== [0.4] Timer rate against the RTC"
+section "[0.4] Timer rate against the RTC"
 # Deterministic time (-icount shift=0,sleep=off -rtc clock=vm) was tried and
 # does not reach a result: the diagnostic busy-polls the RTC and each port
 # access costs far more real time than the virtual time it advances. The
@@ -242,7 +247,7 @@ grep -o "Timer diagnostic: [A-Z]* ([0-9]* ticks" "$LOG" | sed 's/^/      measure
 expect "$LOG" "System ready\."                        "[0.4] timer: system ready afterwards"
 reject "$LOG" "PANIC"                                 "[0.4] timer: no panic"
 
-echo "== [0.4] Keyboard: scripted keys via QMP"
+section "[0.4] Keyboard: scripted keys via QMP"
 LOG=$OUT/serial-keyboard.log
 boot_keys "$LOG" 20 "Keyboard test: ready" \
     "a,shift+b,caps_lock,a,caps_lock,shift+1,up,ctrl_r,ret,kp_enter" 0.15 \
@@ -263,7 +268,7 @@ expect_in_order "$LOG" "[0.4] keyboard: every key decoded, in order" \
 expect "$LOG" "key: release sc=0x9d key=RCTRL"        "[0.4] keyboard: extended key release decoded"
 reject "$LOG" "events dropped|UNKNOWN|PANIC"          "[0.4] keyboard: nothing dropped or unknown"
 
-echo "== [0.4] Keyboard queue overflow"
+section "[0.4] Keyboard queue overflow"
 LOG=$OUT/serial-kbdflood.log
 # 50 keys = 100 events (make + break) sent while the kernel is not reading
 # for 3 s. The queue must end up full (64 kept, oldest first) and every
@@ -296,7 +301,7 @@ expect_in_order "$LOG" "[0.4] flood: kept events are the oldest, in order" \
 expect "$LOG" "System ready\."                        "[0.4] flood: system ready afterwards"
 reject "$LOG" "PANIC"                                 "[0.4] flood: no panic"
 
-echo "== [0.4] Unexpected IRQ"
+section "[0.4] Unexpected IRQ"
 LOG=$OUT/serial-irqunexpected.log
 boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=irqunexpected"
 expect "$LOG" "Unexpected IRQ test: PASS \(IRQ 2 counted and acknowledged, total 1\)" \
@@ -310,7 +315,7 @@ reject "$LOG" "PANIC"                                 "[0.4] unexpected IRQ: no 
 # -> idle loop -> console. The console copies each submitted line to serial
 # as "madire> <line>" followed by the command's output lines.
 
-echo "== [0.5] Console session (scripted keys via QMP)"
+section "[0.5] Console session (scripted keys via QMP)"
 LOG=$OUT/serial-console.log
 A100=$(printf 'a%.0s' $(seq 1 100))
 S="x{wait:1}"                                        # first key: only opens the console
@@ -403,7 +408,7 @@ reject "$LOG" "events dropped|PANIC|Unexpected IRQ"   "[0.5] no dropped keys, no
 
 # ---- 0.6: paging and kernel heap ----
 
-echo "== [0.6] Paging and heap at boot (ISO)"
+section "[0.6] Paging and heap at boot (ISO)"
 LOG=$OUT/serial-boot.log
 expect "$LOG" "^Paging walk-check: PASS \([0-9]+ items, 0 mismatches\)$" "[0.6] walk-check before enabling: PASS"
 expect "$LOG" "^Paging check: page 0 .*expected unmapped, actual unmapped .*: OK$" \
@@ -433,7 +438,7 @@ expect "$LOG" "^Kernel heap self-test: PASS \([0-9]+ checks, 0 mismatches\)$" "[
 expect "$LOG" "^Kernel heap: +OK"                     "[0.6] status: kernel heap OK"
 reject "$LOG" "MISMATCH"                              "[0.6] no walk-check or self-test mismatches"
 
-echo "== [0.6] Paging and heap at every RAM size"
+section "[0.6] Paging and heap at every RAM size"
 for label in 16M 32M 1G 4G module; do
     log=$OUT/serial-mem-$label.log
     expect "$log" "^Paging enabled: +OK" "[0.6] $label: paging enabled"
@@ -443,7 +448,7 @@ done
 # pf_test <name> <CR2> <decoded line>: a deliberate page fault.
 pf_test() {
     local name=$1 cr2=$2 decoded=$3
-    echo "== [0.6] Page fault: $name"
+    section "[0.6] Page fault: $name"
     local log=$OUT/serial-$name.log
     boot "$log" 8 -m 32M -kernel "$KERNEL" -append "test=$name"
     expect "$log" "CPU exception 14: Page Fault \(#PF\)" "[0.6] $name: exception 14"
@@ -460,7 +465,7 @@ pf_test pfreadonly ffffffff80100000 "protection violation, write, kernel mode"  
 # heap_panic_test <name> <message regex>: a kfree misuse must be caught.
 heap_panic_test() {
     local name=$1 message=$2
-    echo "== [0.6] Heap: $name"
+    section "[0.6] Heap: $name"
     local log=$OUT/serial-$name.log
     boot "$log" 8 -m 32M -kernel "$KERNEL" -append "test=$name"
     expect "$log" "KERNEL PANIC"                         "[0.6] $name: crash screen shown"
@@ -471,7 +476,7 @@ heap_panic_test heapdouble  "Heap: double free of 0xfffffe80000[0-9a-f]{5}\."
 heap_panic_test heapinvalid "Heap: invalid free of 0x[0-9a-f]{16} \(pointer not from the heap\)\."
 heap_panic_test heapcorrupt "Heap: corrupted block at 0xfffffe80000[0-9a-f]{5} \(freeing 0xfffffe80000[0-9a-f]{5}\)\."
 
-echo "== [0.6] Heap exhaustion (32M: the 16 MiB cap is reachable)"
+section "[0.6] Heap exhaustion (32M: the 16 MiB cap is reachable)"
 LOG=$OUT/serial-heapexhaust.log
 boot "$LOG" 30 -m 32M -kernel "$KERNEL" -append "test=heapexhaust"
 expect "$LOG" "Heap exhaustion test: [0-9]+ blocks, arena 16384 KiB \(16 MiB cap reached\), [0-9]+ free pages left, further kmalloc still NULL" \
@@ -489,7 +494,7 @@ fi
 expect "$LOG" "System ready\."                        "[0.6] heapexhaust: system ready afterwards"
 reject "$LOG" "PANIC"                                 "[0.6] heapexhaust: no panic"
 
-echo "== [0.6] Console: mem shows paging and heap"
+section "[0.6] Console: mem shows paging and heap"
 LOG=$OUT/serial-console.log
 expect_in_order "$LOG" "[0.6] mem: paging and heap sections, in order" \
     "^madire> mem$" "^Reserved ranges: +[0-9]+$" \
@@ -499,7 +504,7 @@ expect_in_order "$LOG" "[0.6] mem: paging and heap sections, in order" \
 
 # ---- 0.7: long mode, 4-level layout ----
 
-echo "== [0.7] Long mode active (normal boot, ISO)"
+section "[0.7] Long mode active (normal boot, ISO)"
 LOG=$OUT/serial-boot.log
 expect_in_order "$LOG" "[0.7] stub markers: boot32 start, CPU checks passed, entered 64-bit mode" \
     "^boot32: start$" "^boot32: CPUID ok, long mode and PAE present$" "^boot64: entered 64-bit long mode$"
@@ -528,7 +533,7 @@ expect "$LOG" "^Paging check: table walk counts .*, actual as expected: OK$" \
 # 0.8: the kernel runs in the higher half (0xFFFFFFFF80000000 + physical);
 # the check is the same (RIP lies inside kernel code, which starts at the
 # kernel's first page), at the new address.
-echo "== [0.7] Kernel at its higher-half address; PML4 slots 508-510 in use"
+section "[0.7] Kernel at its higher-half address; PML4 slots 508-510 in use"
 RIPL=$(grep -m1 -oE '^Paging check: RIP \(running code\) 0x[0-9a-f]{16}-0x[0-9a-f]{16}: expected kernel ro exec, actual kernel ro exec \(1 pages\): OK$' "$LOG")
 CODEL=$(grep -m1 -oE '^Paging check: kernel code 0xffffffff80100000-0x[0-9a-f]{16}: expected kernel ro exec, actual kernel ro exec \([0-9]+ pages\): OK$' "$LOG")
 RIPA=$(grep -oE '0x[0-9a-f]{16}' <<< "$RIPL" | head -1)
@@ -563,7 +568,7 @@ fi
 
 # ---- 0.7: no-execute (NX) ----
 
-echo "== [0.7] NX at boot (QEMU default CPU: NX supported)"
+section "[0.7] NX at boot (QEMU default CPU: NX supported)"
 LOG=$OUT/serial-boot.log
 expect "$LOG" "^NX: supported by the CPU \(CPUID 0x80000001 EDX bit 20\); EFER.NXE enabled \(EFER=0x[0-9a-f]{16}, LMA still set\); NX bits used for everything but kernel code$" \
                                                       "[0.7] NX: supported by the CPU, EFER.NXE enabled, LMA kept"
@@ -594,7 +599,7 @@ expect "$LOG" "^Kernel heap: [0-9]+ KiB at 0xfffffe8000000000, max 16384 KiB, pa
 expect_in_order "$OUT/serial-console.log" "[0.7] mem: NX supported, enabled" \
     "^madire> mem$" "^Page tables: +[0-9]+$" "^NX: +supported, enabled$"
 
-echo "== [0.7] NX: instruction fetch from a no-execute page (test=pfnx)"
+section "[0.7] NX: instruction fetch from a no-execute page (test=pfnx)"
 LOG=$OUT/serial-pfnx.log
 boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=pfnx"
 expect "$LOG" "^NX test: executable page: kernel code at 0x[0-9a-f]{16} \(no NX bit\) ran, returned 0x5a5a5a5a \(correct\)$" \
@@ -611,7 +616,7 @@ expect_in_order "$LOG" "[0.7] pfnx: decoded as an NX violation at the page" \
 expect "$LOG" "CR2=${NXPAGE:-X}"                      "[0.7] pfnx: CR2 is the fetched address"
 reject "$LOG" "System ready|not detected"             "[0.7] pfnx: halted, fault raised"
 
-echo "== [0.7] CPU without NX (-cpu qemu64,-nx)"
+section "[0.7] CPU without NX (-cpu qemu64,-nx)"
 LOG=$OUT/serial-nonx.log
 boot "$LOG" 10 -cpu qemu64,-nx -m 32M -kernel "$KERNEL"
 expect "$LOG" "^NX: not supported by this CPU \(CPUID 0x80000001 EDX bit 20 clear\); EFER.NXE left clear, no NX bits in the page tables" \
@@ -625,7 +630,7 @@ expect "$LOG" "^Kernel heap: +OK"                     "[0.7] no NX: kernel heap 
 expect "$LOG" "System ready\."                        "[0.7] no NX: boots to System ready"
 reject "$LOG" "PANIC|MISMATCH|FAILED"                 "[0.7] no NX: no failures or panic"
 
-echo "== [0.7] CPU without NX: test=pfnx must not fault"
+section "[0.7] CPU without NX: test=pfnx must not fault"
 LOG=$OUT/serial-nonx-pfnx.log
 boot "$LOG" 10 -cpu qemu64,-nx -m 32M -kernel "$KERNEL" -append "test=pfnx"
 expect "$LOG" "^NX test: NOT APPLICABLE: NX not supported by this CPU; the data page executed without a fault, so no-execute protection could not be tested$" \
@@ -637,7 +642,7 @@ reject "$LOG" "PANIC"                                 "[0.7] no NX: pfnx, no pan
 
 # ---- 0.7: stack guard pages, IST1 double-fault stack ----
 
-echo "== [0.7] Stack guard pages (walk-check before enabling, self-test after)"
+section "[0.7] Stack guard pages (walk-check before enabling, self-test after)"
 LOG=$OUT/serial-boot.log
 expect "$LOG" "^Paging check: kernel stack 0x[0-9a-f]{16}-0x[0-9a-f]{16}: expected kernel rw nx, actual kernel rw nx \(4 pages\): OK$" \
                                                       "[0.7] kernel stack: 16 KiB, rw nx"
@@ -670,7 +675,7 @@ for l in boot kbdflood console heapexhaust exhaust-16M exhaust-128M; do
                                                       "[0.7] $l: never touched a stack guard page"
 done
 
-echo "== [0.7] Kernel stack overflow (test=stackoverflow)"
+section "[0.7] Kernel stack overflow (test=stackoverflow)"
 LOG=$OUT/serial-stackoverflow.log
 boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=stackoverflow"
 G=$(grep -oE '^Paging check: kernel stack guard page 0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}' | head -1)
@@ -702,7 +707,7 @@ reject "$LOG" "System ready|not detected|recursion returned" \
 # after column 79; a line of exactly 80 characters would therefore leave a
 # blank line (and a longer one wraps). The console (textbuf) has a pending
 # wrap instead, but the same limit is used there: at most 79 characters.
-echo "== [0.7] Screen width: crash screens and mem output stay within 79 columns"
+section "[0.7] Screen width: crash screens and mem output stay within 79 columns"
 for l in divzero ud gpf doublefree freereserved pfnull pfunmapped pfreadonly pfnx stackoverflow \
          heapdouble heapinvalid heapcorrupt; do
     w=$(max_width "$OUT/serial-$l.log" "KERNEL PANIC" "System halted")
@@ -728,7 +733,7 @@ fi
 no_lm_test() {
     local label=$1 message=$2 bin=$3 rc
     shift 3
-    echo "== [0.7] No 64-bit CPU: $label"
+    section "[0.7] No 64-bit CPU: $label"
     local log=$OUT/serial-nolm-${label//[^a-z0-9]/-}.log
     rm -f "$log"
     timeout 6 "$bin" -display none -no-reboot -serial file:"$log" -m 32M -kernel "$KERNEL" \
@@ -752,7 +757,7 @@ no_lm_test "qemu64 no pae"  "$NO_PAE" qemu-system-x86_64 -cpu qemu64,-pae
 
 # ---- 0.8: higher-half kernel, empty lower half, physical view ----
 
-echo "== [0.8] Higher-half kernel and physical view (normal boot)"
+section "[0.8] Higher-half kernel and physical view (normal boot)"
 LOG=$OUT/serial-boot.log
 expect "$LOG" "^boot64: running at the higher half, RIP=0xffffffff80[0-9a-f]{6}$" \
                                                       "[0.8] boot stub jumped to the higher half"
@@ -777,7 +782,7 @@ expect "$LOG" "^Paging check: reservation multiboot info 0xffff8000[0-9a-f]{8}-.
 count_lines "$OUT/serial-nonx.log" "^Paging check: lower half empty: PML4\[0\] not present .*: OK$" 2 \
     "[0.8] no NX: lower half empty as well"
 
-echo "== [0.8] Page fault on the kernel's old low address (test=pflow)"
+section "[0.8] Page fault on the kernel's old low address (test=pflow)"
 LOG=$OUT/serial-pflow.log
 boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=pflow"
 expect "$LOG" "^Page-fault test: read at 0x0000000000100000 \(paging on; not mapped\)$" \
@@ -796,7 +801,7 @@ else fail "[0.8] pflow: crash screen line of $w characters (limit 79)"; fi
 
 # ---- 0.8: stack high-water mark, boot module on screen ----
 
-echo "== [0.8] Kernel stack high-water mark"
+section "[0.8] Kernel stack high-water mark"
 expect "$OUT/serial-boot.log" "^Kernel stack: 0x[0-9a-f]{16}-0x[0-9a-f]{16}; painted 0x[0-9a-f]{16}-0x[0-9a-f]{16}, 256 bytes below RSP 0x[0-9a-f]{16} \(live frames untouched\)$" \
                                                       "[0.8] stack painted below RSP minus 256 bytes"
 # peak_ok <log> <description>: the last peak line, 0 < peak < 16384.
@@ -813,7 +818,7 @@ peak_ok "$OUT/serial-console.log"  "[0.8] stack peak after the console session (
 expect_in_order "$OUT/serial-console.log" "[0.8] mem: the stack row comes last" \
     "^madire> mem$" "^Heap free: +[0-9]+ KiB, largest block [0-9]+ KiB$" "^Kernel stack: +[0-9]+ bytes at peak, of 16384$"
 
-echo "== [0.8] Boot module result on the screen"
+section "[0.8] Boot module result on the screen"
 expect "$OUT/serial-mem-module.log" "^Boot module 1: test pattern intact \(14016 bytes\)$" \
                                                       "[0.8] module (QEMU): result on the message line"
 expect "$OUT/serial-bootmenu-module.log" "^Boot module 1: test pattern intact \(14016 bytes\)$" \
@@ -824,7 +829,7 @@ reject "$OUT/serial-boot.log" "^Boot module [0-9]"     "[0.8] normal boot: no mo
 
 # ---- 0.9: kernel threads ----
 
-echo "== [0.9] Scheduler self-test and the thread stack area (normal boot)"
+section "[0.9] Scheduler self-test and the thread stack area (normal boot)"
 LOG=$OUT/serial-boot.log
 expect "$LOG" "^Scheduler self-test: PASS \([0-9]+ checks, 0 mismatches\)$" \
                                                       "[0.9] scheduler self-test: PASS"
@@ -849,7 +854,7 @@ expect "$LOG" "^Scheduler self-test: longest turn: [0-9]+ ticks \(slice 5\); hig
                                                       "[0.9] self-test: longest turn and highest stack peak logged"
 
 
-echo "== [0.11] The longest turn's owner (the 0.10 watch item)"
+section "[0.11] The longest turn's owner (the 0.10 watch item)"
 expect "$LOG" "^Scheduler self-test: longest turn taken by thread [0-9]+ '[^']+' \(kernel thread\)" \
                                                       "[0.11] self-test: its longest turn was a kernel thread's (no process exists yet)"
 LT=$(grep -m1 -E "^Scheduler self-test: longest turn: [0-9]+ ticks" "$LOG" | sed -nE 's/.*longest turn: ([0-9]+) ticks.*/\1/p')
@@ -868,7 +873,7 @@ diag_clean() {
     owner_check "$1" ".*" "$lt"
 }
 
-echo "== [0.9] Cooperative context switches (test=threads)"
+section "[0.9] Cooperative context switches (test=threads)"
 thread_diag threads 15
 expect "$LOG" "^Thread test: create: 8 threads: OK$"  "[0.9] threads: 8 threads created"
 expect "$LOG" "^Thread test: order: 800 turns, strict round robin \(w0\.\.w7, 100 rounds\): OK$" \
@@ -886,7 +891,7 @@ expect "$LOG" "^Thread test: preemptions during the cooperative phase: [0-9]+: O
 expect "$LOG" "^Thread test: PASS \("                 "[0.9] threads: PASS"
 diag_clean threads
 
-echo "== [0.9] Turn order: a forced preemption takes the relaxed branch (test=pingpongpreempt)"
+section "[0.9] Turn order: a forced preemption takes the relaxed branch (test=pingpongpreempt)"
 thread_diag pingpongpreempt 12
 grep -E "^Ping-pong preemption test: (cooperative ping-pong|preemptions during|forced)" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Ping-pong preemption test: cooperative ping-pong: 100 yields, order differs at [1-9][0-9]* point\(s\), each right after a preemption: OK$" \
@@ -900,7 +905,7 @@ expect "$LOG" "^Ping-pong preemption test: everything returned: .*: OK$" \
 expect "$LOG" "^Ping-pong preemption test: PASS \("   "[0.9] pingpongpreempt: PASS"
 diag_clean pingpongpreempt
 
-echo "== [0.9] Turn order: a wrong order without preemption still fails (test=pingpongbad)"
+section "[0.9] Turn order: a wrong order without preemption still fails (test=pingpongbad)"
 thread_diag pingpongbad 12
 grep -E "^Ping-pong order test: a " "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Ping-pong order test: a skipped turn without preemption: detected: out of order without a preemption \(100 turns, 0 preemptions\): OK$" \
@@ -912,7 +917,7 @@ expect "$LOG" "^Ping-pong order test: everything returned: .*: OK$" \
 expect "$LOG" "^Ping-pong order test: PASS \("        "[0.9] pingpongbad: PASS"
 diag_clean pingpongbad
 
-echo "== [0.9] Join, exit codes, detached threads (test=join)"
+section "[0.9] Join, exit codes, detached threads (test=join)"
 thread_diag join 15
 expect "$LOG" "^Join test: exit codes: 6 of 6 exact .*: OK$" \
                                                       "[0.9] join: exit codes 0, 1, 255, 0x7fffffff, -1, INT32_MIN exact"
@@ -924,7 +929,7 @@ expect "$LOG" "^Join test: everything returned: .*: OK$" \
 expect "$LOG" "^Join test: PASS \("                   "[0.9] join: PASS"
 diag_clean join
 
-echo "== [0.9] Interrupt flag across switches (test=ifstate)"
+section "[0.9] Interrupt flag across switches (test=ifstate)"
 thread_diag ifstate 15
 expect "$LOG" "^IF-state test: new thread starts with IF=1 \(trampoline\): IF=1 at the first instruction of a new thread: OK$" \
                                                       "[0.9] ifstate: a new thread starts with IF=1"
@@ -942,7 +947,7 @@ diag_clean ifstate
 # preempt_panic <name> <function>: blocking with preemption disabled is a
 # kernel bug: crash screen naming the call, the count and the thread.
 preempt_panic() {
-    echo "== [0.9] $2 with preemption disabled (test=$1)"
+    section "[0.9] $2 with preemption disabled (test=$1)"
     thread_diag "$1" 8
     expect "$LOG" "$2: called with preemption disabled \(count 1, thread 0 'kernel'\)\." \
                                                       "[0.9] $1: panics naming the call, the count and the thread"
@@ -957,7 +962,7 @@ preempt_panic preemptyield thread_yield
 preempt_panic preemptjoin thread_join
 preempt_panic preemptsleep thread_sleep
 
-echo "== [0.9] Preemption: three threads that never yield (test=preempt, keys typed meanwhile)"
+section "[0.9] Preemption: three threads that never yield (test=preempt, keys typed meanwhile)"
 LOG=$OUT/serial-preempt.log
 boot_keys "$LOG" 14 "Preempt test: 3 threads spinning" "a,b,c,d,e,f,g,h" 0.15 \
     -m 32M -kernel "$KERNEL" -append "test=preempt keylog"
@@ -978,7 +983,7 @@ expect_in_order "$LOG" "[0.9] preempt: keys typed during the test all arrive, in
 reject "$LOG" "events dropped"                       "[0.9] preempt: no key events dropped"
 diag_clean preempt
 
-echo "== [0.9] Deferred switch while preemption is disabled (test=preemptoff)"
+section "[0.9] Deferred switch while preemption is disabled (test=preemptoff)"
 thread_diag preemptoff 10
 grep -E "^Preemptoff test: switch within" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Preemptoff test: no switch while the guard is held: preemption off for [0-9]+ ticks: no switch, the other thread did not run: OK$" \
@@ -992,7 +997,7 @@ expect "$LOG" "^Preemptoff test: everything returned: .*: OK$" \
 expect "$LOG" "^Preemptoff test: PASS \("             "[0.9] preemptoff: PASS"
 diag_clean preemptoff
 
-echo "== [0.9] Sleep next to a spinning thread (test=sleep)"
+section "[0.9] Sleep next to a spinning thread (test=sleep)"
 thread_diag sleep 10
 for n in 1 10 100; do
     expect "$LOG" "^Sleep test: sleep\($n\): woke after ($n|$((n + 1))) ticks .*: OK$" \
@@ -1007,7 +1012,7 @@ expect "$LOG" "^Sleep test: everything returned: .*: OK$" \
 expect "$LOG" "^Sleep test: PASS \("                  "[0.9] sleep: PASS"
 diag_clean sleep
 
-echo "== [0.9] The heap under preemption (test=heapthreads)"
+section "[0.9] The heap under preemption (test=heapthreads)"
 thread_diag heapthreads 12
 grep -E "^Heap threads test: concurrent" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Heap threads test: concurrent use under preemption: .*: OK$" \
@@ -1021,7 +1026,7 @@ expect "$LOG" "^Heap threads test: frames accounted for exactly .*: OK$" \
 expect "$LOG" "^Heap threads test: PASS \("           "[0.9] heapthreads: PASS"
 diag_clean heapthreads
 
-echo "== [0.9] The frame allocator and the window under preemption (test=framethreads)"
+section "[0.9] The frame allocator and the window under preemption (test=framethreads)"
 thread_diag framethreads 12
 grep -E "^Frame threads test: concurrent" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Frame threads test: concurrent use under preemption: .*: OK$" \
@@ -1033,7 +1038,7 @@ expect "$LOG" "^Frame threads test: everything returned: free pages ([0-9]+) -> 
 expect "$LOG" "^Frame threads test: PASS \("          "[0.9] framethreads: PASS"
 diag_clean framethreads
 
-echo "== [0.9] 2000 threads created and freed; per-thread stack peaks (test=threadleak)"
+section "[0.9] 2000 threads created and freed; per-thread stack peaks (test=threadleak)"
 thread_diag threadleak 40
 grep -E "^Thread churn test: (stack peak|2000 threads|exit codes)" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Thread churn test: stack peak reported per thread: .*: OK$" \
@@ -1051,7 +1056,7 @@ count_lines "$LOG" "^Thread [0-9]+ 'churn' exited" 0  "[0.9] threadleak: no exit
 expect "$LOG" "^Thread churn test: PASS \("           "[0.9] threadleak: PASS"
 diag_clean threadleak
 
-echo "== [0.9] Every thread's exit line has a stack peak below the stack size"
+section "[0.9] Every thread's exit line has a stack peak below the stack size"
 peaks_ok=0; peaks_bad=0
 for l in boot threads join ifstate preempt preemptoff sleep heapthreads framethreads threadleak \
          pingpongpreempt pingpongbad; do
@@ -1067,7 +1072,7 @@ else
     fail "[0.9] exit-line stack peaks: $peaks_ok in range, $peaks_bad out of range"
 fi
 
-echo "== [0.9] Kernel thread stack overflow (test=threadoverflow)"
+section "[0.9] Kernel thread stack overflow (test=threadoverflow)"
 thread_diag threadoverflow 10
 expect "$LOG" "CPU exception 8: Double Fault \(#DF\)" "[0.9] threadoverflow: exception 8 (#DF)"
 expect "$LOG" "Double fault: kernel thread stack overflow \(thread [0-9]+ 'overflow'\)" \
@@ -1088,7 +1093,7 @@ w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
 if [ "$w" -le 79 ]; then pass "[0.9] threadoverflow: crash screen lines at most 79 characters (longest $w)"
 else fail "[0.9] threadoverflow: crash screen line of $w characters (limit 79)"; fi
 
-echo "== [0.9] Console: ps"
+section "[0.9] Console: ps"
 LOG=$OUT/serial-ps.log
 boot_text "$LOG" 60 "System ready." "x{ret}ps{ret}help{ret}echo end-of-ps-test{ret}" 0.05 \
     $'\nend-of-ps-test\n' -kernel "$KERNEL"
@@ -1105,7 +1110,7 @@ reject "$LOG" "PANIC|Screen output from thread"      "[0.9] ps: no panic, no scr
 # The boot screen rule (0.9): the checker passes on the real sources and
 # rejects a violation, both from another file and from non-boot code in
 # kernel.c (scratch trees under build/).
-echo "== [0.9] Boot screen used only by the boot sequence and BOOTSCREEN_SAFE()"
+section "[0.9] Boot screen used only by the boot sequence and BOOTSCREEN_SAFE()"
 CHECK=$(dirname "$0")/../scripts/check-bootscreen.sh
 if sh "$CHECK" >/dev/null; then pass "[0.9] boot screen check passes on the sources"
 else fail "[0.9] boot screen check fails on the sources"; fi
@@ -1125,7 +1130,7 @@ else pass "[0.9] boot screen check rejects an unwrapped call outside the boot se
 
 # ---- 0.9.2: key logging off by default, console scrollback ----
 
-echo "== [0.9.2] Key events are logged only with 'keylog' or a keyboard diagnostic"
+section "[0.9.2] Key events are logged only with 'keylog' or a keyboard diagnostic"
 NOTLOGGED="^Key events: not logged \(boot option 'keylog' logs them; for tests only\)$"
 LOG=$OUT/serial-boot.log
 expect "$LOG" "$NOTLOGGED"                            "[0.9.2] normal boot (real ISO): 'Key events: not logged'"
@@ -1164,7 +1169,7 @@ else
 fi
 reject "$LOG" "^key: "                                "[0.9.2] normal boot with typed commands: no key event in the serial log"
 
-echo "== [0.12] Console: set, unset, export, env, sleep, presskey, time and kill -y"
+section "[0.12] Console: set, unset, export, env, sleep, presskey, time and kill -y"
 # 0.12 stage 2, in a boot of its own (here because shard 1 is the shortest).
 # The boot self-test uses process IDs 1-3, so the programs started here are
 # 4 (spin), 5 (spin) and 6 (hello). Keys typed while "sleep" waits are
@@ -1336,7 +1341,7 @@ reject "$LOG" "^key: "                                "[0.12] stage 2 session: n
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[0.12] stage 2 session: no panic, dropped key or screen-rule violation"
 
-echo "== [0.12] The uptime heartbeat: serial log only, never in dmesg (stage 4, option B)"
+section "[0.12] The uptime heartbeat: serial log only, never in dmesg (stage 4, option B)"
 # The console idles for 15 s (at least 10 s of guest time, so two or more
 # heartbeats even on a slow host), then "dmesg 5". The command runs on
 # thread 0, which also writes the heartbeat, so no heartbeat can come
@@ -1362,7 +1367,7 @@ fi
 
 # ---- 0.13: where Limine places the boot data (the real ISO's normal boot) ----
 
-echo "== [0.13] Limine boot: the Multiboot information and the modules"
+section "[0.13] Limine boot: the Multiboot information and the modules"
 LOG=$OUT/serial-boot.log
 # Every boot-data structure the kernel reserves (the information block, the
 # memory map, the command line, the module table, the module names) lies in
@@ -1392,7 +1397,7 @@ fi
 
 # ---- 1.0: the live RAM filesystem and its boot self-test (the normal boot) ----
 
-echo "== [1.0] Filesystem: the live RAM filesystem and its boot self-test"
+section "[1.0] Filesystem: the live RAM filesystem and its boot self-test"
 LOG=$OUT/serial-boot.log
 grep -E "^Filesystem" "$LOG" | sed 's/^/      /'
 expect "$LOG" "^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file" \
@@ -1426,7 +1431,7 @@ expect_in_order "$LOG" "[1.0] filesystem self-test: PASS, after the kernel heap 
 # the normal boot (the ISO, QEMU's default 128 MiB). The first stage 1
 # check above matches the start of the B6 line, which now ends with
 # ", budget N pages"; its regex and condition are unchanged.
-echo "== [1.0] Filesystem: the data budget and the self-test's data step"
+section "[1.0] Filesystem: the data budget and the self-test's data step"
 expect "$LOG" "^Filesystem: live RAM filesystem, 1024 nodes, 2 MiB per file, budget 8192 pages$" \
                                                       "[1.0] filesystem: budget 8192 pages on the 128 MiB boot"
 FSB=$(grep -m1 -E '^Filesystem: budget: ' "$LOG")
@@ -1456,7 +1461,7 @@ fi
 
 # 1.1 stage 6: Num Lock (on at boot), the keypad with Num Lock off and the
 # ISO key 0x56, typed over QMP into a keylog boot (K1-K8).
-echo "== [1.1] Keys: Num Lock, the keypad and the ISO key (keylog)"
+section "[1.1] Keys: Num Lock, the keypad and the ISO key (keylog)"
 LOG=$OUT/serial-keys11.log
 S="x{wait:1}"                                         # opens the console
 S+="echo {kp_1}{kp_2}{ret}"                           # K1 Num Lock on (boot)
@@ -1492,7 +1497,7 @@ expect_in_order "$LOG" "[1.1] Shift + keypad 9 with Num Lock off pages the scrol
 # (ps2_write_keyboard: every byte the guest writes to the keyboard;
 # ps2_set_ledstate: the state QEMU stores). The trace file is not
 # serial-*.log, so it adds no boot count.
-echo "== [1.1] Keyboard lights"
+section "[1.1] Keyboard lights"
 expect "$OUT/serial-boot.log" '^Keyboard lights: Num Lock on, Caps Lock off, Scroll Lock off \(acknowledged\)$' \
     "[1.1] keyboard lights: set at boot (Num Lock on, Caps Lock off, Scroll Lock off), acknowledged"
 LOG=$OUT/serial-lights.log
@@ -1557,7 +1562,7 @@ reject "$LOG" 'Keyboard lights: not acknowledged|events dropped|key=UNKNOWN|PANI
 # 1.1 stage 8: Ctrl+C, Esc and Tab at the prompt, in a normal boot (no
 # keylog): C1-C10 and L6. The cleared lines' text must never reach the
 # serial log (C3: the history and dmesg output is on it too).
-echo "== [1.1] Console keys: Ctrl+C, Esc and Tab (no keylog)"
+section "[1.1] Console keys: Ctrl+C, Esc and Tab (no keylog)"
 LOG=$OUT/serial-conskeys11.log
 S="x{wait:1}"
 S+="echo secretmarker11{ctrl+c}"                      # C1 Ctrl+C with text
@@ -1599,7 +1604,7 @@ reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
 
 # ---- 1.2: the Display line of the text boots (stage 5) ----
 
-echo "== [1.2] Display: a -kernel boot (VGA text) and the real ISO (graphics, since stage 10b)"
+section "[1.2] Display: a -kernel boot (VGA text) and the real ISO (graphics, since stage 10b)"
 # The logs of two boots made above (no new boot): QEMU's -kernel gives no
 # framebuffer fields (flag bit 12 clear) and keeps VGA text (decision 4).
 # The real ISO's default entry, without a "textmode" line since the switch
@@ -1618,7 +1623,7 @@ fi
 
 # ---- 1.2 stage 5b: slot 506 and the framebuffer test ISOs ----
 
-echo "== [1.2] The real ISO (graphics, since stage 10b): slot 506"
+section "[1.2] The real ISO (graphics, since stage 10b): slot 506"
 # The real ISO's normal boot now builds slot 506 (the framebuffer and its
 # back buffer) and freezes it with the kernel half (7 entries), and
 # tests/pagetables.py, which models slot 506 from the "Display: slot 506"
@@ -1655,7 +1660,54 @@ fb_figures() {   # fb_figures <log> <label>
 fb_figures "$OUT/serial-boot.log" "framebuffer boot (real ISO since 10b; 5a's text boot: 14, 573, 32160)"
 fb_figures "$OUT/serial-mem-32M.log" "text boot (-kernel -m 32M; 5a: free 7597)"
 
-echo "== [1.2] Framebuffer boots: slot 506 and test=fbpattern (two test ISOs, tests/qmp_fb.py)"
+# ---- 1.3 stage 8: the switch: the real ISO's default path ----
+
+section "[1.3] The real ISO's default path: the desktop at System ready (stage 8)"
+# The logs of the normal boot of the real ISO and of the keylog test ISO
+# (fixture_normal_boot; no new boot). Neither has a test= option, so at the
+# idle loop's first pass after System ready the splash hands the screen to
+# the desktop (kernel/display/desktop.h); the key typed after System ready
+# ("x") then opens the Console window and is not typed, and the console
+# starts in it. tests/pagetables.py models slot 506 with the background
+# cache and the window surfaces from the desktop's own lines.
+LOG=$OUT/serial-boot.log
+DP_SHOWN="^Desktop: shown on 1024x768x32 \(scale 100 %\): the wallpaper with the M, the taskbar, the clock [0-9]{2}:[0-9]{2}; a key opens the Console window \(the default path, 1\.3 stage 8\)$"
+DP_KEY="Desktop: a key opened the Console window (the key is not typed)"
+grep -E "^Desktop" "$LOG" | sed 's/^/      /'
+if grep -qE "$DP_SHOWN" "$LOG" &&
+   grep -qE "^Desktop: slot 506: background cache at 0xfffffd0080000000 \([0-9]+ pages of free RAM, pitch 4096\), [0-9]+ page tables; " "$LOG" &&
+   grep -qE "^Desktop: slot 506 now: [0-9]+ page tables, [0-9]+ pages mapped \(walked\)$" "$LOG" && ! grep -q "^Desktop: not started" "$LOG"; then
+    pass "[1.3] real ISO: the default path shows the desktop at System ready (Desktop: shown on 1024x768x32 (scale 100 %) ... (the default path, 1.3 stage 8)); the background cached in slot 506; slot 506 walked"
+else
+    fail "[1.3] real ISO: no default-path Desktop: shown line, no background cache or slot 506 walk line, or a 'not started' line (see $LOG)"
+fi
+DP_PT=$(python3 "$(dirname "$0")/pagetables.py" "$LOG" --label iso-desktop)
+grep -E "^PAGETABLES_(DESKTOP|SURFACES)" <<< "$DP_PT" | sed 's/^/      /'
+if grep -qE "^PAGETABLES_DESKTOP label=iso-desktop cache=present computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$DP_PT"; then
+    pass "[1.3] real ISO: tests/pagetables.py models slot 506 with the background cache: its tables and pages equal the kernel's walk, the cache's tables as logged"
+else
+    fail "[1.3] real ISO: tests/pagetables.py, the background cache: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$DP_PT" | tr '\n' ' ')"
+fi
+if grep -qE "^PAGETABLES_SURFACES label=iso-desktop cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$DP_PT"; then
+    pass "[1.3] real ISO: tests/pagetables.py models slot 506 with the window surfaces (Console, then About, after the cache): its tables and pages equal the kernel's walk"
+else
+    fail "[1.3] real ISO: tests/pagetables.py, the window surfaces: $(grep -E '^PAGETABLES_SURFACES' <<< "$DP_PT" | tr '\n' ' ')"
+fi
+DP_SHOWN_AT=$(grep -nE "$DP_SHOWN" "$LOG" | head -n 1 | cut -d: -f1)
+DP_KEY_AT=$(grep -nxF "$DP_KEY" "$LOG" | head -n 1 | cut -d: -f1)
+DP_CON_AT=$(grep -nxF "console: started" "$LOG" | head -n 1 | cut -d: -f1)
+if [ -n "$DP_SHOWN_AT" ] && [ -n "$DP_KEY_AT" ] && [ -n "$DP_CON_AT" ] && [ "$DP_SHOWN_AT" -lt "$DP_KEY_AT" ] &&
+   [ "$DP_KEY_AT" -lt "$DP_CON_AT" ] && [ "$(grep -cxF "$DP_KEY" "$LOG")" -eq 1 ]; then
+    pass "[1.3] real ISO: the key typed after System ready opened the Console window (once, after the desktop showed), where the console started; the key not typed"
+else
+    fail "[1.3] real ISO: the key did not open the Console window once, after the desktop and before console: started (see $LOG)"
+fi
+LOG=$KLOG
+grep -E "^Desktop|^key: press" "$LOG" | sed 's/^/      /'
+expect_in_order "$LOG" "[1.3] keylog test ISO: the default path shows the desktop; the key typed after System ready is logged, opens the Console window (not typed), and the console starts" \
+    "$DP_SHOWN" "^key: press sc=0x2d key=CHAR ascii='x' flags=0x01$" "^Desktop: a key opened the Console window \(the key is not typed\)$" "^console: started$"
+
+section "[1.2] Framebuffer boots: slot 506 and test=fbpattern (two test ISOs, tests/qmp_fb.py)"
 # Two test ISOs with one entry each and no "textmode" line (in stage 5b the
 # real ISO and every other test ISO kept "textmode: yes", decision 3; since
 # 10b the real ISO's default entry has none either): the header's
@@ -1751,7 +1803,7 @@ fb_case 800x24 800x600x24 "framebuffer boot (resolution: 800x600x24)" \
     "[1.2] Limine's per-entry resolution: 800x600x24 overrides the header's 1024x768x32: Display: framebuffer 800x600x24, RGB at bits 16/8/0" \
     "resolution: 800x600x24"
 
-echo "== [1.2] Framebuffer boots that keep VGA text: the undo path (test=fbfail) and the size refusal (32M)"
+section "[1.2] Framebuffer boots that keep VGA text: the undo path (test=fbfail) and the size refusal (32M)"
 # Two more test ISOs, booted without QMP to System ready. Neither gets slot
 # 506, so each must look like a text boot from paging on: no PML4[506], the
 # page tables tests/pagetables.py computes without slot 506, and every
@@ -1839,7 +1891,7 @@ fb_kept "$LOG" "1920x1080x32 at 32M"
 
 # ---- 1.2 stage 6: the framebuffer console ----
 
-echo "== [1.2] The framebuffer console: its screens against the reference renderer (tests/qmp_fbcon.py)"
+section "[1.2] The framebuffer console: its screens against the reference renderer (tests/qmp_fbcon.py)"
 # Test ISOs with one entry, no "textmode" line and "cmdline: test=fbcon":
 # the kernel shows the boot screen, then a chart of the 256 characters, the
 # 16 x 16 colour pairs and the cursor, each after "display: frame N" and
@@ -1942,7 +1994,7 @@ fbcon_case 1280x1024 1280x1024x32 10x20 240 262 125 "fbcon at 1280x1024x32" "res
 fbcon_case 1920 1920x1080x32 12x24 480 240 150 "fbcon at 1920x1080x32" "resolution: 1920x1080x32"
 fbcon_case 2560 2560x1440x32 16x32 640 320 200 "fbcon at 2560x1440x32" "resolution: 2560x1440x32"
 
-echo "== [1.2] The crash screen on the framebuffer (test=gpflimit)"
+section "[1.2] The crash screen on the framebuffer (test=gpflimit)"
 LOG=$OUT/serial-fbcon-crash.log
 fbcon_iso crash "test=gpflimit"
 FBC_OUT=""
@@ -1959,7 +2011,7 @@ else
     fail "[1.2] crash screen on the framebuffer: a FAILED status line, no CPU exception 13, or the screen differs ($(grep -E '^(MARKER|SCREEN|qmp_fbcon)' <<< "$FBC_OUT" | tr '\n' ' '))"
 fi
 
-echo "== [1.2] Serial twins: a framebuffer boot and its text twin (tests/serial_twin.py)"
+section "[1.2] Serial twins: a framebuffer boot and its text twin (tests/serial_twin.py)"
 # One test ISO entry without a command line, booted to System ready at
 # -m 128M twice: with "textmode: yes" (VGA text) and without (the
 # framebuffer and its console). The serial logs must be the same apart
@@ -1986,6 +2038,15 @@ if grep -qE "^TWIN_RESULT lines=[1-9][0-9]* .* other=0 MATCH$" <<< "$TWIN"; then
     pass "[1.2] serial twins: the framebuffer boot's serial log equals the text boot's apart from the allowed differences (fb-only, frames, display, figures; tests/serial_twin.py)"
 else
     fail "[1.2] serial twins: $(grep '^TWIN_RESULT' <<< "$TWIN")"
+fi
+# 1.3 stage 8: no command line is the default path: the framebuffer twin
+# shows the desktop (its Desktop: lines are framebuffer-only for
+# tests/serial_twin.py); the text twin, with no splash, does not.
+if grep -qE "^Desktop: shown on 1024x768x32 \(scale 100 %\): .* \(the default path, 1\.3 stage 8\)$" "$TF_LOG" &&
+   ! grep -q "^Desktop" "$TT_LOG"; then
+    pass "[1.3] serial twins: the framebuffer twin (no command line) shows the desktop on the default path; the text twin has no Desktop: line"
+else
+    fail "[1.3] serial twins: no default-path Desktop: shown line in the framebuffer twin, or a Desktop: line in the text twin (see $TF_LOG, $TT_LOG)"
 fi
 # Stage 5's Display: check of a textmode: yes entry and stage 5b's two
 # checks of a text boot without slot 506 (stage 10b: on the text twin, a
@@ -2017,7 +2078,7 @@ fi
 
 # The helpers (mouse_boot, mouse_done_ok, expect_line) are in tests/qemu-lib.sh.
 
-echo "== [1.2] The mouse: test=mouse under QEMU -kernel (no framebuffer: no pointer)"
+section "[1.2] The mouse: test=mouse under QEMU -kernel (no framebuffer: no pointer)"
 LOG=$OUT/serial-mouse-kernel.log
 MB_OUT=""
 mouse_boot "$LOG" 120 -kernel "$KERNEL" -append "test=mouse" -- "wait:$MOUSE_READY" \
@@ -2043,7 +2104,7 @@ else
     fail "[1.2] -kernel test=mouse: no System ready, a FAILED status line, or a panic (see $LOG)"
 fi
 
-echo "== [1.2] The mouse on the framebuffer console: a mouselog session at 1024x768x32"
+section "[1.2] The mouse on the framebuffer console: a mouselog session at 1024x768x32"
 # The idle loop's path (the boot option mouselog, no test=): the console is
 # opened, then 30 packets: a first move (screen 1), moves both ways and
 # every button, 5 past the top-left corner (screen 2 at (0, 0)), 10 past
@@ -2052,8 +2113,10 @@ echo "== [1.2] The mouse on the framebuffer console: a mouselog session at 1024x
 # the reference: the console's cells with the pointer at the logged place
 # and nowhere else, so every earlier place shows the console again exactly
 # (save-under). 1.2 stage 10: with the test option pointer (the console
-# draws none without it; the next section).
-fbcon_iso mouse1024 "mouselog pointer"
+# draws none without it; the next section). 1.3 stage 8: with `verbose`
+# too, which keeps 1.2's full-screen console (no splash, so no desktop:
+# kernel/display/desktop.h) and changes nothing else this session reads.
+fbcon_iso mouse1024 "mouselog pointer verbose"
 LOG=$OUT/serial-mouse-1024.log
 MB_OUT=""
 if [ -n "$FBC_ISO" ]; then
@@ -2091,14 +2154,14 @@ else
     fail "[1.2] mouse at 1024x768: no mouselog line or System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
 fi
 
-echo "== [1.2] The console without a pointer: a mouselog session at 1024x768x32 (stage 10)"
+section "[1.2] The console without a pointer: a mouselog session at 1024x768x32 (stage 10)"
 # The boot option mouselog alone: the mouse runs and logs, but the console
 # draws no pointer. The console is opened, then 4 packets (moves both ways,
 # the left button); each must be logged exactly, without a position, and
 # the screen (taken after the idle loop's next uptime line) must equal the
-# console's cells alone.
+# console's cells alone. 1.3 stage 8: with `verbose` too (as above).
 NOPTR_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
-fbcon_iso mousenoptr "mouselog"
+fbcon_iso mousenoptr "mouselog verbose"
 LOG=$OUT/serial-mouse-nopointer.log
 MB_OUT=""
 if [ -n "$FBC_ISO" ]; then
@@ -2123,7 +2186,7 @@ else
     fail "[1.2] mouse without the pointer option: no System ready, a FAILED status line, or a panic or mismatch (see $LOG)"
 fi
 
-echo "== [1.2] The pointer's scale and timing: test=mouse at 1024x768x32 and 2560x1440x32"
+section "[1.2] The pointer's scale and timing: test=mouse at 1024x768x32 and 2560x1440x32"
 # mouse_scale <name> <mode WxH> <sprite WxH> <percent> <x> <y> [a limine.conf line]:
 # test=mouse on the framebuffer console; one move of (40, 30) from the
 # centre, a screen there, the report-only timing line.
@@ -2155,7 +2218,7 @@ mouse_scale() {
 mouse_scale scale1024 1024x768 12x18 100 552 414
 mouse_scale scale2560 2560x1440 24x36 200 1320 750 "resolution: 2560x1440x32"
 
-echo "== [1.2] The mouse's give-up path: test=mousefail=N under QEMU -kernel"
+section "[1.2] The mouse's give-up path: test=mousefail=N under QEMU -kernel"
 # What a machine without a PS/2 mouse goes through: start-up step N fails
 # as if no reply came (drivers/mouse/mouse_core.h: 4 is set defaults,
 # before port 2 is owned; 6 the configuration with IRQ12 on and 7 port 1
@@ -2203,7 +2266,7 @@ mousefail_case 7 "port 1 back on: no reply (test=mousefail=7)"
 
 # ---- 1.2 stage 8: the splash ----
 
-echo "== [1.2] The splash: test=splash with the dots frozen (still), against make-wallpaper.py (tests/qmp_splash.py)"
+section "[1.2] The splash: test=splash with the dots frozen (still), against make-wallpaper.py (tests/qmp_splash.py)"
 # Test ISOs with one entry, no "textmode" line and "cmdline: test=splash
 # still": the splash shows from the hand-off; test=splash then draws the
 # dots with 0, 1, 2 and 3 lit, each after "display: frame N" and held still
@@ -2279,7 +2342,7 @@ READY_LINE="Splash: ready: the dots stopped, \"Press any key to open the console
 splash_case 1024 1024x768x32 100 "splash at 1024x768x32 (the header's mode)"
 splash_case 1280 1280x1024x32 125 "splash at 1280x1024x32" "resolution: 1280x1024x32"
 
-echo "== [1.2] The splash's timing at 2560x1440x32 (test=splash still; no screens compared)"
+section "[1.2] The splash's timing at 2560x1440x32 (test=splash still; no screens compared)"
 fbcon_iso splash2560 "test=splash still" "resolution: 2560x1440x32"
 LOG=$OUT/serial-splash-2560.log
 if [ -n "$FBC_ISO" ]; then boot_until "$LOG" 150 "$FB_READY" -m 128M -cdrom "$FBC_ISO"; else : > "$LOG"; fi
@@ -2289,32 +2352,36 @@ expect "$LOG" "^Splash: shown on 2560x1440x32 \(scale 200 %, frame 1\); the dots
     "[1.2] splash at 2560x1440x32: Splash: shown on 2560x1440x32 (scale 200 %, frame 1); the dots frozen (boot option 'still')"
 splash_done "$LOG" "splash at 2560x1440x32"
 
-echo "== [1.2] The splash closed by Esc; the next key opens the console (1024x768x32, boot option still)"
+section "[1.2] The splash closed by Esc; the next key opens the console (1024x768x32, boot option still)"
 # No test= option: the boot a user sees, with "still" (the dots frozen, the
 # splash's lines logged). At System ready the splash's ready state (1.2
 # stage 10; before it, the splash with none lit); Esc shows the text boot
 # screen and opens nothing; then "x" opens the console.
+# 1.3 stage 8: the default path now shows the desktop at the idle loop's
+# first pass, unless the first key press queued by then is Esc (the
+# stage 8 decision D1). So Esc is pressed during the splash: the guest is
+# stopped at a line logged after the keyboard and the mouse have started
+# and well before System ready, the Esc sent, the guest let go on
+# (tests/qmp_splash.py, stopkey: its "ready_before" must be "no"). The
+# ready-state check of this section moved to part 2's handover section
+# (tests/qemu-lib.sh, desktop_handover_case), where that state is held.
 ESC_LINE="Splash: closed (Esc): the text boot screen shown"
+ESC_AT_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
 fbcon_iso splashesc "still"
 LOG=$OUT/serial-splash-esc.log
 SPL_OUT=""
 if [ -n "$FBC_ISO" ]; then
-    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "screen:ready:$FB_READY" "type:{esc}" \
+    SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "stopkey:{esc}:$ESC_AT_LINE" \
         "screen:console:$ESC_LINE" "type:{wait:1}x"
 else : > "$LOG"; fi
-grep -E "^Splash|^System ready|^console: started" "$LOG" | sed 's/^/      /'
+grep -E "^Splash|^System ready|^console: started|^Desktop" "$LOG" | sed 's/^/      /'
+grep -E "^STOPKEY " <<< "$SPL_OUT" | sed 's/^/      /'
 if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
-   grep -qxF "Splash: shown on 1024x768x32 (scale 100 %, frame 1); the dots frozen (boot option 'still')" "$LOG" &&
-   grep -qxF "$READY_LINE" "$LOG"; then
-    pass "[1.2] still at 1024x768x32: at System ready the splash shows its ready state (the dots stopped, \"Press any key to open the console\"), equal to make-wallpaper.py's rendering pixel for pixel"
+   grep -qE "^ROWS 1 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT" &&
+   grep -qE "^STOPKEY .* ready_before=no$" <<< "$SPL_OUT" && ! grep -q "^Desktop:" "$LOG"; then
+    pass "[1.2] Esc during the splash closes it: $ESC_LINE, no desktop, and the screen equals the reference rendering of the console's cell grid (the boot screen at System ready) pixel for pixel"
 else
-    fail "[1.2] still at 1024x768x32: no splash in its ready state at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(MARKER 1|SCREEN 1|REFERENCE|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
-fi
-if grep -qE "^SCREEN 2 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
-   grep -qE "^ROWS 2 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
-    pass "[1.2] Esc closes the splash: $ESC_LINE, and the screen equals the reference rendering of the console's cell grid (the boot screen at System ready) pixel for pixel"
-else
-    fail "[1.2] Esc: no closed line, the screen differs from the cell grid's rendering, or the grid is not the boot screen at System ready ($(grep -E '^(MARKER 2|SCREEN 2|ROWS 2|WAIT|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
+    fail "[1.2] Esc: not pressed during the splash, no closed line, a Desktop: line, the screen differs from the cell grid's rendering, or the grid is not the boot screen at System ready ($(grep -E '^(STOPKEY|MARKER 1|SCREEN 1|ROWS 1|WAIT|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi
 ESC_AT=$(grep -nxF "$ESC_LINE" "$LOG" | head -n 1 | cut -d: -f1)
 CON_AT=$(grep -nxF "console: started" "$LOG" | head -n 1 | cut -d: -f1)
@@ -2325,7 +2392,7 @@ else
     fail "[1.2] Esc: the console started before or without the next key, or a FAILED status line or a panic (see $LOG)"
 fi
 
-echo "== [1.2] The boot option verbose: the text boot screen, no splash (1024x768x32)"
+section "[1.2] The boot option verbose: the text boot screen, no splash (1024x768x32)"
 fbcon_iso splashverbose "verbose"
 LOG=$OUT/serial-splash-verbose.log
 SPL_OUT=""
@@ -2341,8 +2408,15 @@ if grep -qxF "$FB_READY" "$LOG" && ! grep -q "^Splash" "$LOG" && ! grep -q "FAIL
 else
     fail "[1.2] verbose: no System ready, a Splash: line, a FAILED status line, or a panic (see $LOG)"
 fi
+# 1.3 stage 8: no test= option, but no splash: no desktop either (D2).
+if grep -qxF "$FB_READY" "$LOG" && grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
+   ! grep -q "^Desktop" "$LOG"; then
+    pass "[1.3] verbose: no desktop (the default path needs the splash): at System ready 1.2's boot screen, no Desktop: line"
+else
+    fail "[1.3] verbose: a Desktop: line, or not 1.2's boot screen at System ready (see $LOG)"
+fi
 
-echo "== [1.2] A FAILED status line closes the splash (test=splashfail, 1024x768x32)"
+section "[1.2] A FAILED status line closes the splash (test=splashfail, 1024x768x32)"
 # test=splashfail reports the Console & shell line FAILED on purpose: the
 # splash must close there, and the console is disabled as for a real one.
 FAIL_READY="System ready. Console self-test failed: console disabled."
@@ -2365,8 +2439,15 @@ if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
 else
     fail "[1.2] test=splashfail: the screen at System ready is not the boot screen's rendering, or a panic ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi
+# 1.3 stage 8: a FAILED status line keeps 1.2's path: no desktop, and no
+# Desktop: line (its refusals are logged on test=desktop boots only, D2).
+if grep -qxF "$FAIL_READY" "$LOG" && ! grep -q "^Desktop" "$LOG"; then
+    pass "[1.3] test=splashfail: a FAILED status line keeps 1.2's path: no desktop, no Desktop: line"
+else
+    fail "[1.3] test=splashfail: a Desktop: line, or no '$FAIL_READY' line (see $LOG)"
+fi
 
-echo "== [1.2] A panic while the splash shows: the crash screen (test=splashpanic, 1024x768x32)"
+section "[1.2] A panic while the splash shows: the crash screen (test=splashpanic, 1024x768x32)"
 fbcon_iso splashpanic "test=splashpanic"
 LOG=$OUT/serial-splash-panic.log
 SPL_OUT=""
@@ -2388,7 +2469,7 @@ else
     fail "[1.2] test=splashpanic: the crash screen differs from the cell grid's rendering ($(grep -E '^(MARKER 1|SCREEN 1|ROWS 1|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi
 
-echo "== [1.2] The early crash screen: a panic before the framebuffer console (test=earlypanic, 1024x768x32; stage 10)"
+section "[1.2] The early crash screen: a panic before the framebuffer console (test=earlypanic, 1024x768x32; stage 10)"
 # test=earlypanic panics just before memory_init(): still on the boot page
 # tables, before slot 506 and the console. The crash screen must be drawn
 # directly on the framebuffer (option A, decided at stage 8) and equal the

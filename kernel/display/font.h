@@ -6,9 +6,10 @@
  * page order, converted at build time from the pinned BDF files in
  * third_party/terminus/ by scripts/make-font.py (into build/font/; never
  * edited, never committed). One size per scale step (decision 19; the
- * Design Guide, section 3). Only the regular weight is linked so far;
- * the bold files are generated and checked, and linked by the first stage
- * that draws with them.
+ * Design Guide, section 3). Only the regular weight is linked into the
+ * kernel so far; the bold files are generated and checked, and linked by
+ * the first stage that draws with them (1.3 stage 2: the toolkit's host
+ * tools and kernel-flag objects use them; the kernel does not yet).
  */
 
 #include <stdint.h>
@@ -24,5 +25,9 @@ extern const struct font font_8x16;     /* 100 % */
 extern const struct font font_10x20;    /* 125 % */
 extern const struct font font_12x24;    /* 150 % */
 extern const struct font font_16x32;    /* 200 % */
+extern const struct font font_8x16_bold;
+extern const struct font font_10x20_bold;
+extern const struct font font_12x24_bold;
+extern const struct font font_16x32_bold;
 
 #endif

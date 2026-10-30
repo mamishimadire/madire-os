@@ -1216,6 +1216,41 @@ const struct paging_stats *paging_stats(void)
     return &stats;
 }
 
+void paging_slot_figures(unsigned index, uint32_t *tables, uint32_t *pages)
+{
+    const uint64_t pdpt_entry = 1ull << 30, pd_entry = 1ull << 21;      /* the span of one entry */
+    uint64_t base = vm_sign_extend((uint64_t)index << 39);
+    uint32_t t = 0, p = 0;
+    require_enabled("paging_slot_figures");
+    preempt_disable();
+    const volatile uint64_t *pml4 = (const volatile uint64_t *)(uintptr_t)VM_PML4;
+    if (pte_present(pml4[index])) {
+        t++;
+        const volatile uint64_t *pdpt =
+            (const volatile uint64_t *)(uintptr_t)vm_recursive_table(VM_RECURSIVE_INDEX, 3, base);
+        for (unsigned i = 0; i < VM_ENTRIES; i++) {
+            if (!pte_present(pdpt[i]))
+                continue;
+            t++;
+            uint64_t va2 = base + i * pdpt_entry;
+            const volatile uint64_t *pd =
+                (const volatile uint64_t *)(uintptr_t)vm_recursive_table(VM_RECURSIVE_INDEX, 2, va2);
+            for (unsigned j = 0; j < VM_ENTRIES; j++) {
+                if (!pte_present(pd[j]))
+                    continue;
+                t++;
+                const volatile uint64_t *pt = (const volatile uint64_t *)(uintptr_t)
+                    vm_recursive_table(VM_RECURSIVE_INDEX, 1, va2 + j * pd_entry);
+                for (unsigned k = 0; k < VM_ENTRIES; k++)
+                    p += pte_present(pt[k]);
+            }
+        }
+    }
+    preempt_enable();
+    *tables = t;
+    *pages = p;
+}
+
 const struct vmm_ops *paging_recursive_ops(void)
 {
     return &recursive_ops;

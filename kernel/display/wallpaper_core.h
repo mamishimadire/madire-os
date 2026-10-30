@@ -48,17 +48,18 @@
 #include <stdint.h>
 #include "kernel/display/font.h"
 #include "kernel/display/surface_core.h"
+#include "kernel/display/tokens.h"
 
-/* The Design Guide's tokens (section 2). */
-#define WP_BG_DEEP        0x011239u
-#define WP_BG_BASE        0x012060u
-#define WP_BG_LOW         0x011A4Cu
-#define WP_SURFACE_ACTIVE 0x112447u
-#define WP_ACCENT_GLOW    0x029FF8u
-#define WP_ACCENT_LIGHT   0x64F2F9u
-#define WP_ACCENT_DEEP    0x023CA1u
-#define WP_TEXT           0xFAF9FEu
-#define WP_TEXT_MUTED     0x8B9BB4u
+/* The Design Guide's tokens (section 2), from tokens.h (1.3 stage 3). */
+#define WP_BG_DEEP        UI_BG_DEEP
+#define WP_BG_BASE        UI_BG_BASE
+#define WP_BG_LOW         UI_BG_LOW
+#define WP_SURFACE_ACTIVE UI_SURFACE_ACTIVE
+#define WP_ACCENT_GLOW    UI_ACCENT_GLOW
+#define WP_ACCENT_LIGHT   UI_ACCENT_LIGHT
+#define WP_ACCENT_DEEP    UI_ACCENT_DEEP
+#define WP_TEXT           UI_TEXT
+#define WP_TEXT_MUTED     UI_TEXT_MUTED
 
 #define WP_CURVES   3
 #define SPLASH_DOTS 3
@@ -138,5 +139,47 @@ void splash_draw_dots(struct surface *s, const struct splash_layout *l, uint32_t
  * ready_box, then the ready line with the console's font `f`. */
 void splash_draw_ready(struct surface *s, const struct splash_layout *l, const struct font *f,
                        const struct wallpaper *wp);
+
+/*
+ * 1.3 stage 3: the splash's pictures, clipped (the desktop draws the logo
+ * again for each damaged rectangle, desktop_core.h). Only pixels inside
+ * `clip` are painted, and each gets the value it gets unclipped: a
+ * capsule's coverage at a pixel does not depend on the clip, and the paints
+ * keep their order. splash_draw draws its logo and wordmark through them,
+ * with the whole screen as the clip.
+ */
+
+/* A set of the generated capsule letters (splash_data.h): the wordmark
+ * "MADIRE OS". */
+struct wp_text {
+    const struct wp_glyph *glyphs;
+    size_t count;
+    const struct wp_poly *polys;
+    const int16_t (*points)[2];
+};
+extern const struct wp_text wp_wordmark;
+
+/* A line of capsule letters, placed: the pen's start and the cap top, the
+ * px per unit, the tracking (units), the radius of the first n_first
+ * glyphs and of the others (24.8). */
+struct wp_line {
+    const struct wp_text *text;
+    int64_t pen, top, scale, track;
+    int64_t r_first, r_rest;
+    size_t n_first;
+};
+
+/* The 16-bit entries the line's coverage needs (its largest glyph's box on
+ * a width x height screen). */
+size_t wp_line_scratch(const struct wp_line *l, uint32_t width, uint32_t height);
+
+/* Paints the line in colour rgb (0xRRGGBB) inside clip. False (some glyph
+ * not drawn) if `entries` is too few for a glyph's clipped box. */
+bool wp_line_draw(struct surface *s, struct rect clip, const struct wp_line *l, uint32_t rgb,
+                  uint16_t *scratch, size_t entries);
+
+/* Paints the logo (the splash's gradient, its origin and px per 1/8-pixel
+ * unit as in struct splash_layout) inside clip. */
+void wp_logo_draw(struct surface *s, struct rect clip, int64_t lox, int64_t loy, int64_t ls);
 
 #endif

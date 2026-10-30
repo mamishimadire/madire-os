@@ -111,4 +111,85 @@
 # and [0.12] lines of names, [0.12] help system, the 39 -> 40 counts of
 # [0.12] help sections and [1.0] help, the [1.0] purpose rows).
 1.2 149
-unit-suites 78
+# 1.3 stage 2: 19 checks in part static: tokens.h against the Design
+# Guide's colour tables and the 1.2 colour constants (1); the toolkit's
+# objects compiled with the kernel's flags: undefined symbols, libgcc/libc
+# helpers, SSE/x87 (3); tests/desktopdump.c against tests/desktop_ref.py,
+# three scenes in five modes (15); 5 unit suites (coverage, ui_rect,
+# ui_draw, ui_icon, ui_widget). Stage 3b: 26 more: in part static 10 (the
+# desktop's background, the wallpaper with the M alone, and its taskbar,
+# tests/desktopdump.c against tests/desktop_ref.py in five modes; no text
+# lies on the desktop's wallpaper, so no contrast check there); test=desktop at 1024x768x32 in part 2 and at
+# 800x600x24 in part 3, 8 each (the Desktop: lines, the first frame, the
+# pointer twice, the key back to the console, slot 506 modelled, and with
+# desktopnocache the same screen and slot 506 modelled); 3 unit suites
+# (rtc13, compositor, ui_desktop). Stage 4a: 47 more: in part static 21
+# (two About windows, inactive and active, the close button normal, on
+# hover and pressed, composed from surfaces, and painted on exposure in
+# tiles: tests/desktopdump.c against tests/desktop_ref.py, four scenes in
+# five modes; the contrast check of every colour pair drawn against the
+# Design Guide's section 12 table); the About window with test=desktop
+# desktopabout at 1024x768x32 in part 2 and at 800x600x24 in part 3, 13
+# each (its values, the window surfaces in slot 506 modelled, the first
+# frame, a drag, a clamped drag, the close button's hover, pressed and
+# close; with desktopnosurface the first frame and slot 506, a drag,
+# focus by clicks, a key that does nothing and Esc, a key back to the
+# console); 3 unit suites (ui_window, ui_about, ui_plan). Stage 4b: 38
+# more: in part static 21 (the Console window, active, inactive and
+# under an About window, composed from surfaces, and painted on exposure in tiles:
+# tests/desktopdump.c against tests/desktop_ref.py, four scenes in five
+# modes; the contrast check of their colour pairs); the Console window
+# with test=desktop desktopabout at 1024x768x32 in part 2 and at
+# 800x600x24 in part 3, 7 each (a key opens it, commands as on the
+# full-screen console, Shift+PgUp, hide and show again, focus between the
+# windows; with desktopnosurface the same screens, twice); a panic with
+# the Console window open, test=desktop desktoppanic at 1024x768x32 in
+# part 2 (3: the panic's lines, 1.2's full-screen crash screen, nothing
+# drawn by the desktop after it); 1 unit suite (ui_console). Changed, not
+# added: 4 checks no longer read the stage 3
+# hand-back to the full-screen console (desktop_case's Desktop: shown line
+# and its key; desktop_about_case's Esc and its last key; the EVENTS line
+# now includes the Console window's lines). The stress part's 3 drag
+# burst checks are [stress], counted apart. Stage 5: 104 more: in part
+# static 68 (the M button on hover and pressed, the M menu opened by the
+# mouse, by the Windows key and with a row hovered, the desktop menu moved
+# to stay on the screen, the Restart dialog in five states, and the M menu
+# and the dialog painted in tiles: tests/desktopdump.c against
+# tests/desktop_ref.py, thirteen scenes in five modes; the contrast check
+# of their colour pairs, with the carried fills; its self-test, two
+# fixtures it must fail); the menus at 1024x768x32
+# in part 2 and at 800x600x24 in part 3, 18 each (three boots: the mouse,
+# ending with Restart; the decision 20 key session; no mouse, with
+# test=mousefail=4); 3 unit suites (ui_menu, ui_dialog, ui_menus). Changed,
+# not added: the token check expects the guide's three colour tables (27
+# tokens, the stage's three derived ones; it was 24 in two). Stage 7a: 4
+# more, in part static: boot_until's stop with a fake QEMU, through the
+# real wrapper chain (SIGTERM ends it; it ignores SIGTERM and is killed;
+# it never writes the line and timeout ends it; it ends by itself), each
+# with no process of it left. Its BOOT_UNTIL lines are report only.
+# Stage 7b: 8 more, in part 3: the console keys, one Console window boot
+# at 800x600x24 (4: Ctrl+L keeps the line on the grid's row 0, the line
+# edited by every key run, Ctrl+E in scrollback back to the live view
+# first, the screens and the boot's health) and one full-screen console
+# boot (4: Ctrl+L on the VGA row 0, the same two lines, no key logged);
+# 1 unit suite (conskeys13); new test_ui_rect cases (the drag damage
+# merge) in its existing suite. The stress part's new drag figures are
+# report only.
+# Stage 8a: none (the hidden boot menu's 6 [1.1] checks moved from part 4
+# to part static, unchanged). Stage 8b, the switch: 25 more. Part static 2
+# (the handover's rule on the references in five modes; the VirtualBox
+# desktop group's plan and references); part 1 8 (the real ISO's default
+# path: the desktop shown, slot 506 with the cache and with the window
+# surfaces against tests/pagetables.py, the key that opens the Console
+# window; the keylog ISO's; the serial twins; verbose and test=splashfail
+# show no desktop); part 2 6 and part 3 7 (the splash-to-desktop handover
+# at 1024x768x32 and 800x600x24: the desktop after the cut, the M still
+# across it, the lines in order, the pointer, the key that opens the
+# Console window, the boot's health; and at 800x600x24 the ready state held
+# before the cut); part 3 1 more (the kernel stack's peak after the
+# desktop, on the real ISO); part final 1 (no Desktop: line off the
+# framebuffer). [1.2] unchanged at 149: its "still at 1024x768x32" ready-
+# state check moved from part 1 (the Esc section) to part 2 (the handover
+# at 1024x768x32, where that state is held).
+1.3 271
+unit-suites 94

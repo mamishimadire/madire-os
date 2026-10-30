@@ -32,6 +32,12 @@
  * is active and `show`, and the logging switch (logs the "Mouse: packets
  * ..." line, and "Mouse: no pointer ..." on a console without one). */
 void pointer_start(bool log_packets, bool show);
+/* 1.3 stage 8: the desktop on the default path (desktop.h), where the
+ * console had no pointer: the pointer from now on, at the screen's centre
+ * and hidden until the first packet ("Desktop: the pointer shown from the
+ * first mouse movement: ..."). Nothing if it is already on the screen or
+ * there is no mouse. */
+void pointer_desktop(void);
 
 /* Thread 0: every decoded packet moves the pointer (and is logged); the
  * pointer is then drawn once. Returns the number of packets taken. */

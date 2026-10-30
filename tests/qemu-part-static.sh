@@ -1,5 +1,7 @@
 # Madire OS QEMU tests, part static (0.12, stage 0c): the checks that boot
-# nothing: Multiboot header, [0.8] reproducible build (needs make repro),
+# nothing (since 1.3 stage 8a, one section at the end boots: the hidden
+# boot menu's, moved unchanged from part 4 for the shards' balance):
+# Multiboot header, [0.8] reproducible build (needs make repro),
 # [0.10] version read once. Sourced by tests/qemu-tests.sh (a full run, or
 # --shard static). Apart from this header, every line was moved unchanged
 # from the single script. 0.13 stage 3a: the Multiboot header check uses
@@ -16,9 +18,18 @@
 # integer make-wallpaper.py against v1.1's wallpaper, the splash's
 # generated data, and the kernel's splash code (tests/splashdump.c) against
 # make-wallpaper.py in five modes. 1.2 stage 10: the splash's ready state
-# in two more.
+# in two more. 1.3 stage 2: before the size report, the [1.3] checks of
+# the desktop toolkit (tokens.h against the Design Guide, the toolkit's
+# objects compiled with the kernel's flags, tests/desktopdump.c against
+# tests/desktop_ref.py in five modes). 1.3 stage 3b: after them, the
+# desktop's background and taskbar against desktop_ref.py in five modes.
+# 1.3 stage 4a: the windows and the contrast check; stage 4b: the Console
+# window's scenes and their contrast check. 1.3 stage 7a: before the size
+# report, the self-test of boot_until's stop with a fake QEMU. 1.3 stage 8:
+# before the moved boot-menu section, the handover's rule on the references
+# and the VirtualBox desktop group's plan and references.
 
-echo "== Multiboot header"
+section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
 # grub-file --is-x86-multiboot, which it replaced in 0.13).
 MBCHECK=$(dirname "$0")/../scripts/check-multiboot.py
@@ -31,7 +42,7 @@ else fail "kernel has no valid Multiboot header"; fi
 # `make repro` (run by `make test` before this script) built the kernel
 # twice from clean, in two trees created in opposite file orders, and
 # recorded the sha256 sums in build/repro/sha256.txt.
-echo "== [0.8] Reproducible build (make repro)"
+section "[0.8] Reproducible build (make repro)"
 SUMS=$OUT/repro/sha256.txt
 cat "$SUMS" 2>/dev/null | sed 's/^/      /'
 sum_of() { F="$1" awk '$2 == ENVIRON["F"] { print $1 }' "$SUMS" 2>/dev/null; }
@@ -45,7 +56,7 @@ same_sum "[0.8] madire.elf byte-identical in two clean builds" a/build/madire.el
 same_sum "[0.8] madire.kernel byte-identical in two clean builds" a/build/madire.kernel b/build/madire.kernel
 same_sum "[0.8] the kernel under test is the reproducible one" a/build/madire.kernel ../madire.kernel
 
-echo "== [0.10] Version read once by the test harness"
+section "[0.10] Version read once by the test harness"
 if [ -n "$VERSION" ]; then pass "[0.10] version read from kernel/kernel.h: $VERSION (every version check uses it)"
 else fail "[0.10] no version read from kernel/kernel.h"; fi
 # 0.13: the boot menu is limine.conf; its first entry (the first line starting
@@ -60,7 +71,7 @@ fi
 
 # ---- 0.13: the Limine ISO (checks that boot nothing) ----
 
-echo "== [0.13] scripts/check-multiboot.py: the real kernel, and each refusal"
+section "[0.13] scripts/check-multiboot.py: the real kernel, and each refusal"
 MBOUT=$(python3 "$MBCHECK" "$KERNEL")
 # 1.2 stage 5 (docs/plans/1.2.md, D1): flags 0x00010003 -> 0x00010007, the
 # video request (bit 2) added; the mode fields are checked by [1.2] below.
@@ -79,7 +90,7 @@ mb_refuses magic "no Multiboot magic" "a wrong magic"
 mb_refuses checksum "checksum 0x[0-9a-f]{8} at offset [0-9]+" "a wrong checksum"
 mb_refuses aout-outside "load_end_addr 0x[0-9a-f]{8} is beyond the file" "a.out fields outside the file"
 
-echo "== [0.13] The ISO: Limine's files, the notices, no file of the previous boot loader"
+section "[0.13] The ISO: Limine's files, the notices, no file of the previous boot loader"
 # The files that stay byte-identical to the pinned v12.9.3 package (0.13
 # stage 1: bios-install changes only the ISO's system area; xorriso's
 # -boot-info-table changes limine-bios-cd.bin, so it is not compared).
@@ -104,7 +115,7 @@ else
     fail "[0.13] ISO: notices missing or a file of the previous boot loader present ($(grep -ci grub <<< "$ISOLIST") paths)"
 fi
 
-echo "== [1.0] The ISO: Madire's licence files at its root"
+section "[1.0] The ISO: Madire's licence files at its root"
 # 1.0 stage 0a (Apache 2.0, section 4): each file extracted from the ISO root
 # must have the SHA-256 of the repository's copy.
 REPO=$(dirname "$0")/..
@@ -120,7 +131,7 @@ done
 if [ -z "$RBAD" ]; then pass "[1.0] ISO: /LICENSE, /NOTICE and /THIRD_PARTY_NOTICES present and byte-identical to the repository's"
 else fail "[1.0] ISO: missing or different from the repository's:$RBAD"; fi
 
-echo "== [1.0] docs: every .md file valid UTF-8"
+section "[1.0] docs: every .md file valid UTF-8"
 # 1.0 stage 10: two Windows-1252 bytes reached docs/commands.md in stage 8
 # (5cd7daf); every Markdown file under docs/ must decode as UTF-8 (the
 # images are not text and are left out).
@@ -133,7 +144,7 @@ echo "      $UN files"
 if [ "$UN" -gt 0 ] && [ -z "$UBAD" ]; then pass "[1.0] docs: every .md file under docs/ is valid UTF-8"
 else fail "[1.0] docs: not valid UTF-8:${UBAD:- no .md file found}"; fi
 
-echo "== [0.13] limine.conf: every program module names itself"
+section "[0.13] limine.conf: every program module names itself"
 # Limine passes only module_string to the kernel, so every program module of
 # the default entry needs "module_string: <its file name without .elf>".
 MSBAD=$(awk '/^\// { n++ } n == 1 && /^ *module_path: / { if (p != "") print "no string for " p; p = $2; sub(/.*\//, "", p); sub(/\.elf$/, "", p); next }
@@ -144,7 +155,7 @@ else fail "[0.13] limine.conf: ${MSBAD//$'\n'/; }"; fi
 
 # ---- 1.1: the boot menu hidden behind a key, on Madire's wallpaper ----
 
-echo "== [1.1] limine.conf: the global options (docs/plans/1.1.md, section E)"
+section "[1.1] limine.conf: the global options (docs/plans/1.1.md, section E)"
 # S1: the lines before the first entry, without comments and blank lines,
 # must be exactly this list, and no default_entry line may exist (the first
 # entry is the default one).
@@ -173,7 +184,7 @@ else
     fail "[1.1] boot menu: the global options differ from the plan's list, or $GDEF default_entry line(s)"
 fi
 
-echo "== [1.1] The ISO: the boot menu's wallpaper"
+section "[1.1] The ISO: the boot menu's wallpaper"
 # S2a: the ISO's file (extracted with /boot/limine above) must be the bytes
 # that scripts/make-wallpaper.py makes again here with the harness's version
 # (read once from kernel/kernel.h): the proof that the version shown is the
@@ -219,7 +230,7 @@ else
     fail "[1.1] ISO: wallpaper.png: $WPINFO (expected a 1024x768 PNG of at most 262144 bytes, Madire-Version $VERSION)"
 fi
 
-echo "== [1.1] make-wallpaper.py: the M of kernel/logo.c"
+section "[1.1] make-wallpaper.py: the M of kernel/logo.c"
 # S3: the stroke table of kernel/logo.c (x1, y1, x2, y2 per stroke, in its
 # order) must equal the one the wallpaper draws (--print-strokes).
 SLOGO=$(awk '/strokes\[\] = \{/ { on = 1; next } on && /^\};/ { exit }
@@ -235,7 +246,7 @@ fi
 
 # ---- 1.2: the video request, and text mode until the switch stage ----
 
-echo "== [1.2] The Multiboot header's video request (stage 5)"
+section "[1.2] The Multiboot header's video request (stage 5)"
 # The mode fields after the a.out kludge's (header offsets 32-44): a linear
 # framebuffer (mode_type 0) of 1024x768x32 (docs/plans/1.2.md, decision 2).
 MBMODE=$(python3 - "$KERNEL" <<'EOF' 2>&1
@@ -257,7 +268,7 @@ else
     fail "[1.2] the Multiboot header's video request: $MBMODE"
 fi
 
-echo "== [1.2] limine.conf: the default entry in graphics, every other entry in text mode (stage 10b, decision 3)"
+section "[1.2] limine.conf: the default entry in graphics, every other entry in text mode (stage 10b, decision 3)"
 # Since the switch (stage 10b): the first entry (the default one, "/Boot
 # Madire OS") holds no textmode line; every other entry (a line starting
 # "/" with a "protocol:" line: the Diagnostics) holds exactly one
@@ -285,7 +296,7 @@ fi
 
 # ---- 1.2 stage 6: the console font (decision 8) ----
 
-echo "== [1.2] third_party/terminus: the pinned font files (stage 6)"
+section "[1.2] third_party/terminus: the pinned font files (stage 6)"
 # The hashes are written here (as the Limine package's are above), not read
 # from the repository's SHA256SUMS: the BDF files are the release package's
 # (terminus-font-4.49.1.tar.gz, SHA-256 d961c1b7...ef79), OFL.txt its
@@ -308,7 +319,7 @@ done <<< "$TPIN"
 if [ -z "$TBAD" ]; then pass "[1.2] third_party/terminus: the 8 BDF files and OFL.txt have their pinned SHA-256 (Terminus 4.49.1)"
 else fail "[1.2] third_party/terminus: not the pinned file:$TBAD"; fi
 
-echo "== [1.2] scripts/make-font.py: the font C files regenerate byte-identically (stage 6)"
+section "[1.2] scripts/make-font.py: the font C files regenerate byte-identically (stage 6)"
 # The build converted all 8 files (build/font/); converted again here into
 # a fresh folder, each must be byte-identical.
 rm -rf "$OUT/font-regen" && mkdir -p "$OUT/font-regen"
@@ -326,7 +337,7 @@ done
 if [ "$FN" -eq 8 ] && [ -z "$FBAD" ]; then pass "[1.2] scripts/make-font.py regenerates the 8 font C files byte-identically from the pinned BDF files"
 else fail "[1.2] font C files not regenerated byte-identically:${FBAD:- none made}"; fi
 
-echo "== [1.2] The ISO: the font's notices; the font never named in the interface (stage 6)"
+section "[1.2] The ISO: the font's notices; the font never named in the interface (stage 6)"
 rm -rf "$OUT/iso-assets" && mkdir -p "$OUT/iso-assets"
 ABAD=""
 for f in THIRD_PARTY_ASSETS.md third_party/terminus/OFL.txt; do
@@ -350,7 +361,7 @@ fi
 
 # ---- 1.2 stage 8: the wallpaper's integer maths and the splash ----
 
-echo "== [1.2] make-wallpaper.py in integer maths: v1.1's boot-menu wallpaper, pixel for pixel (stage 8)"
+section "[1.2] make-wallpaper.py in integer maths: v1.1's boot-menu wallpaper, pixel for pixel (stage 8)"
 # The script has no floating point since stage 8. Run with --version 1.1,
 # its pixels must be those of the wallpaper.png v1.1's ISO shipped (made by
 # the 1.1 floating-point script; run 39836152722, kernel a21b0cd6): the
@@ -385,7 +396,7 @@ else
     fail "[1.2] make-wallpaper.py --version 1.1: the pixels are not v1.1's ($WP11RGB)"
 fi
 
-echo "== [1.2] The splash's generated data (stage 8)"
+section "[1.2] The splash's generated data (stage 8)"
 # build/gen/splash_data.h: made by the build, made again here; and its copy
 # of the M against kernel/logo.c's stroke table (SLOGO, read for S3 above).
 SDGEN=$OUT/splash_data-regenerated.h
@@ -406,7 +417,7 @@ else
     fail "[1.2] the splash's copy of the M differs from kernel/logo.c's strokes"
 fi
 
-echo "== [1.2] The kernel's splash code against make-wallpaper.py (tests/splashdump.c, stage 8)"
+section "[1.2] The kernel's splash code against make-wallpaper.py (tests/splashdump.c, stage 8)"
 # wallpaper_core.c built as a host tool (build/splashdump, with the console
 # fonts) draws the splash as the kernel does; make-wallpaper.py --splash, the
 # reference, draws it from its own code and the BDF files. Four modes, the
@@ -442,9 +453,376 @@ splash_static 2560 1440 4 0 200
 splash_static 800 600 3 ready 100
 splash_static 1280 1024 4 ready 125
 
+# ---- 1.3 stage 2: the desktop toolkit (pure, not linked into the kernel) ----
+
+section "[1.3] kernel/display/tokens.h against the Design Guide (stage 2)"
+# tests/desktop_ref.py --tokens: every adopted token of the guide's three
+# colour tables (section 2: v0.1, v0.2 and 1.3 stage 5) is a UI_* define of tokens.h with
+# the same value and tokens.h has no other; the colour constants that
+# predate it (wallpaper_core.h's WP_*, pointer_core.h's POINTER_*) each
+# equal their token (the list is desktop_ref.py's TOKEN_TWINS).
+DREF=$(dirname "$0")/desktop_ref.py
+TOK=$(python3 "$DREF" --tokens 2>&1)
+printf '%s\n' "$TOK" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$TOK" | tail -n 1)" = "TOKENS result: PASS" ] &&
+   printf '%s\n' "$TOK" | grep -q '^TOKENS guide: 27 tokens in 3 tables .*; tokens.h: 27 defines$' &&
+   [ "$(printf '%s\n' "$TOK" | grep -c '^TOKENS twin .* equal$')" -eq 12 ]; then
+    pass "[1.3] kernel/display/tokens.h equals the Design Guide's three colour tables (27 tokens), and the 12 colour constants of wallpaper_core.h and pointer_core.h equal their tokens"
+else
+    fail "[1.3] kernel/display/tokens.h or a 1.2 colour constant differs from the Design Guide's colour tables"
+fi
+
+section "[1.3] The toolkit compiled with the kernel's flags, not linked (stage 2)"
+# make toolkit built the toolkit (kernel/display/ui_*.c, icons.c,
+# coverage_core.c) with the kernel's own CFLAGS, and the bold fonts it uses,
+# none of them in madire.elf (1.3 stage 3: except coverage_core.c, now linked
+# and built by the kernel's build; still checked here with the toolkit).
+# Linked together (ld -r), every symbol they leave undefined must be one
+# madire.elf defines, so linking them into the kernel (stage 3) needs
+# nothing else; they must call no libgcc or libc
+# helper and use no SSE/x87 register (the workflow's patterns).
+TKOBJS=""
+TKROOT=$(dirname "$0")/..
+for f in "$TKROOT"/kernel/display/ui_*.c "$TKROOT"/kernel/display/icons.c "$TKROOT"/kernel/display/coverage_core.c; do
+    f=${f#"$TKROOT"/}
+    TKOBJS="$TKOBJS $OUT/${f%.c}.o"
+done
+for s in 8x16 10x20 12x24 16x32; do TKOBJS="$TKOBJS $OUT/font/font_${s}_bold.o"; done
+TKLINK=$OUT/toolkit-linked.o
+rm -f "$TKLINK"
+# shellcheck disable=SC2086
+ld -m elf_x86_64 -r -o "$TKLINK" $TKOBJS 2>&1 | sed 's/^/      /'
+TKUNDEF=$(nm -u "$TKLINK" 2>/dev/null | awk '{ print $2 }' | LC_ALL=C sort -u)
+ELFDEF=$(nm --defined-only "$OUT/madire.elf" 2>/dev/null | awk '{ print $3 }' | LC_ALL=C sort -u)
+TKMISSING=$(LC_ALL=C comm -23 <(printf '%s\n' "$TKUNDEF" | grep .) <(printf '%s\n' "$ELFDEF"))
+echo "      $(echo $TKOBJS | wc -w) objects; undefined after ld -r: $(printf '%s\n' "$TKUNDEF" | grep -c .) ($(echo $TKUNDEF)); not in madire.elf: $(printf '%s\n' "$TKMISSING" | grep -c .)"
+if [ -s "$TKLINK" ] && [ -z "$TKMISSING" ]; then
+    pass "[1.3] the toolkit's objects (kernel flags, linked together with the bold fonts) leave only symbols that madire.elf defines undefined"
+else
+    fail "[1.3] the toolkit's objects need symbols madire.elf does not define: $(echo $TKMISSING)"
+fi
+# shellcheck disable=SC2086
+TKHELP=$(for o in $TKOBJS; do nm -u "$o"; done 2>&1 | grep -cE '__(udiv|div|mod|umod|mul|popcount|stack_chk)|^ *U (memset|memcpy|memmove|memcmp|strlen)$')
+echo "      libgcc/libc helpers: $TKHELP"
+if [ -s "$TKLINK" ] && [ "$TKHELP" -eq 0 ]; then
+    pass "[1.3] the toolkit's objects call no libgcc or libc helper"
+else
+    fail "[1.3] the toolkit's objects call $TKHELP libgcc/libc helper(s)"
+fi
+TKSSE=$(objdump -d "$TKLINK" 2>/dev/null | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]')
+echo "      SSE/x87 register uses: $TKSSE"
+if [ -s "$TKLINK" ] && [ "$TKSSE" -eq 0 ]; then
+    pass "[1.3] the toolkit's objects use no SSE/x87 register"
+else
+    fail "[1.3] the toolkit's objects use SSE/x87 registers ($TKSSE)"
+fi
+
+section "[1.3] The toolkit against tests/desktop_ref.py (tests/desktopdump.c, stage 2)"
+# The pure toolkit built as a host tool (build/desktopdump, with the
+# console fonts) draws each scene as the kernel will; desktop_ref.py, the
+# reference, draws it from the rules, the Design Guide's tables and the
+# BDF files. Three scenes (primitives with clipping and the damage list;
+# every icon at every scale; labels and buttons in each state the guide
+# defines) in five modes: the scales 100 %, 150 % and 200 % (the icons
+# and buttons also at 125 %) and both pixel formats.
+desktop_static() {   # desktop_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the toolkit's $4 scene at $1x$2x$(($3 * 8)) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the toolkit's $4 scene at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in prims icons widgets; do
+        # shellcheck disable=SC2086
+        desktop_static $mode $scene
+    done
+done
+
+# ---- 1.3 stage 3b: the desktop's pictures ----
+
+section "[1.3] The desktop's background and taskbar against tests/desktop_ref.py (stage 3b)"
+# kernel/display/desktop_core.c built as the host tool (build/desktopdump)
+# draws the desktop's background (the wallpaper with the M at the splash's
+# place) tile by tile, as the compositor does without the cache, and the
+# taskbar with its clock drawn again in its box with a fixed time;
+# desktop_ref.py draws both from desktop_core.h's rules. Five modes, both
+# pixel formats, every scale but 125 %. No text lies on the desktop's
+# wallpaper (the owner's decision in stage 3b), so the Design Guide's
+# section 12 text-box check has nothing to check there.
+desktop3_static() {   # desktop3_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the desktop's $4 at $1x$2x$(($3 * 8)) (desktop_core.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the desktop's $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in background taskbar; do
+        # shellcheck disable=SC2086
+        desktop3_static $mode $scene
+    done
+done
+
+# ---- 1.3 stage 4a: windows ----
+
+section "[1.3] Windows against tests/desktop_ref.py, and the contrast check (stage 4a)"
+# kernel/display/ui_window.c and ui_about.c built into the host tool
+# (build/desktopdump) draw two About windows placed by the window manager
+# (the second where the first's place was taken), the first inactive, the
+# second active with its close button normal, on hover or pressed, each
+# painted on its own surface and composed through its rounded shape (the
+# compositor's way); windows_exposed is the first scene painted in tiles
+# without surfaces (docs/plans/1.3.md, C4, A1) and must equal the same
+# reference. desktop_ref.py draws them from ui_window.h's and ui_about.h's
+# rules (the boot loader's value longer than its column: cut with "...").
+# Five modes, both pixel formats, every scale but 125 %. Every run records
+# the colour pairs it draws (desktopdump is built with -DUI_TRACE); with
+# the taskbar's in the five modes, desktop_ref.py --contrast checks each
+# against the Design Guide's section 12 table: a row for it whose result
+# is pass, its ratio recomputed from tokens.h equal to the table's and at
+# or above its rule's minimum; a pair that is no row fails.
+PAIRS=$OUT/desktop-pairs.txt
+rm -f "$PAIRS"
+desktop4_static() {   # desktop4_static <W> <H> <bytes per pixel> <scene> [reference scene]
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "${5:-$4}" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the window scene $4 at $1x$2x$(($3 * 8)) (ui_window.c, ui_about.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the window scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in windows windows_hover windows_pressed; do
+        # shellcheck disable=SC2086
+        desktop4_static $mode $scene
+    done
+    # shellcheck disable=SC2086
+    desktop4_static $mode windows_exposed windows
+    read -r mw mh mb <<< "$mode"
+    DESKTOP_PAIRS=$PAIRS "$OUT/desktopdump" "$mw" "$mh" "$mb" taskbar "$OUT/desktop-pairs-taskbar.ppm" > /dev/null 2>&1 ||
+        echo "PAIRS LOST taskbar-run-failed ${mw}x${mh}" >> "$PAIRS"
+done
+CONTRAST=$(python3 "$DREF" --contrast "$PAIRS" 2>&1)
+printf '%s\n' "$CONTRAST" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 5 scenes \(taskbar windows windows_exposed windows_hover windows_pressed\)$'; then
+    pass "[1.3] contrast: every colour pair the toolkit draws in the window scenes and the taskbar (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h"
+else
+    fail "[1.3] contrast: a colour pair drawn is not in the Design Guide's section 12 table, or its ratio does not pass (see the CONTRAST lines)"
+fi
+
+# ---- 1.3 stage 4b: the Console window ----
+
+section "[1.3] The Console window against tests/desktop_ref.py, and its contrast check (stage 4b)"
+# kernel/display/ui_console.c (with ui_window.c and fbcon_core.c) built into
+# the host tool (build/desktopdump) draws the Console window with a fixed
+# grid (every character, colours by row and column, a full block in both
+# bottom corners, the cursor in the bottom-left one), active (console) and
+# inactive (console_inactive), and under an About window opened over it
+# (console_about), each painted on its own surface and composed through
+# its rounded shape; console_exposed is console_about painted in tiles
+# without surfaces (docs/plans/1.3.md, C4, A1) and must equal the same
+# reference. desktop_ref.py draws them from ui_console.h's rules (the grid
+# in tests/fbcon_ref.py's way, only inside the window's inner rounded
+# shape). Five modes, both pixel formats, every scale but 125 %. The
+# colour pairs these scenes draw are checked against the Design Guide's
+# section 12 table as in stage 4a (their own pairs file); the grid keeps
+# 1.2's VGA palette, outside the table (section 12), and records no pair.
+PAIRS4B=$OUT/desktop-pairs-console.txt
+rm -f "$PAIRS4B"
+desktop4b_static() {   # desktop4b_static <W> <H> <bytes per pixel> <scene> [reference scene]
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS4B "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "${5:-$4}" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the Console window scene $4 at $1x$2x$(($3 * 8)) (ui_console.c, ui_window.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the Console window scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in console console_inactive console_about; do
+        # shellcheck disable=SC2086
+        desktop4b_static $mode $scene
+    done
+    # shellcheck disable=SC2086
+    desktop4b_static $mode console_exposed console_about
+done
+CONTRAST4B=$(python3 "$DREF" --contrast "$PAIRS4B" 2>&1)
+printf '%s\n' "$CONTRAST4B" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST4B" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST4B" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 4 scenes \(console console_about console_exposed console_inactive\)$'; then
+    pass "[1.3] contrast: every colour pair the Console window scenes draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; the grid's VGA colours record none"
+else
+    fail "[1.3] contrast: a colour pair the Console window scenes draw is not in the Design Guide's section 12 table, or its ratio does not pass (see the CONTRAST lines)"
+fi
+
+# ---- 1.3 stage 5: the menus, the M button and the Restart dialog ----
+
+section "[1.3] The menus, the M button and the Restart dialog against tests/desktop_ref.py, and their contrast check (stage 5)"
+# kernel/display/ui_menu.c, ui_dialog.c and desktop_core.c's M button
+# states built into the host tool (build/desktopdump) draw, each on bg.deep
+# with the taskbar: the M button on hover and pressed; the M menu as the
+# mouse opens it (no row selected), as the Windows key opens it (About
+# selected, the focus ring) and with Restart selected by the pointer; the
+# desktop menu moved left and up to stay on the screen and above the
+# taskbar, its second row selected; the Restart dialog with its close button
+# on hover, the ring on Cancel with Restart on hover, the ring on Restart
+# with Cancel on hover, Cancel pressed, Restart pressed. menu_tiles and
+# dialog_tiles are the key-opened M menu and the Tab-focused dialog painted
+# in tiles (as the compositor paints them, clipped to each damaged
+# rectangle) and must equal the same references. desktop_ref.py draws them
+# from ui_menu.h's, ui_dialog.h's and desktop_core.h's rules. Five modes,
+# both pixel formats, every scale but 125 %. The colour pairs the eleven
+# whole scenes draw are checked against the Design Guide's section 12 table
+# as in stage 4a (their own pairs file); a fill the table marks "fail alone"
+# is recorded as carried: by its accent bar (which the same scene must have
+# recorded, passing) or by the pointer.
+PAIRS5=$OUT/desktop-pairs-menus.txt
+rm -f "$PAIRS5"
+desktop5_static() {   # desktop5_static <W> <H> <bytes per pixel> <scene> [reference scene]
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS5 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "${5:-$4}" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the menu scene $4 at $1x$2x$(($3 * 8)) (ui_menu.c, ui_dialog.c, desktop_core.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the menu scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in mbutton_hover mbutton_pressed menu_mouse menu_key menu_hover menu_desktop dialog dialog_key \
+                 dialog_tab dialog_pressed_cancel dialog_pressed_restart; do
+        # shellcheck disable=SC2086
+        desktop5_static $mode $scene
+    done
+    # shellcheck disable=SC2086
+    desktop5_static $mode menu_tiles menu_key
+    # shellcheck disable=SC2086
+    desktop5_static $mode dialog_tiles dialog_tab
+done
+CONTRAST5=$(python3 "$DREF" --contrast "$PAIRS5" 2>&1)
+printf '%s\n' "$CONTRAST5" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST5" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST5" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 11 scenes \(dialog dialog_key dialog_pressed_cancel dialog_pressed_restart dialog_tab mbutton_hover mbutton_pressed menu_desktop menu_hover menu_key menu_mouse\)$' &&
+   [ "$(printf '%s\n' "$CONTRAST5" | grep -c '^CONTRAST carried pass ')" -eq 4 ]; then
+    pass "[1.3] contrast: every colour pair the menus, the M button and the dialog draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; each fill marked fail alone is carried by its passing accent bar in the same scene, or by the pointer"
+else
+    fail "[1.3] contrast: a colour pair the menus, the M button or the dialog draw is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its bar (see the CONTRAST lines)"
+fi
+# The contrast check's own self-test (the owner's mutation test, made
+# permanent): two fixture pairs files (tests/contrast-fixtures/) that it
+# must FAIL, each for the missing bar: a selected row's fill with no accent
+# bar recorded, and one whose bar was recorded only in another scene.
+for fx in row-no-bar:fixture_nobar bar-other-scene:fixture_row; do
+    FXOUT=$(python3 "$DREF" --contrast "$(dirname "$0")/contrast-fixtures/${fx%%:*}.txt" 2>&1)
+    printf '%s\n' "$FXOUT" | grep -E '^CONTRAST (carried|result)' | sed 's/^/      /'
+    if [ "$(printf '%s\n' "$FXOUT" | tail -n 1)" = "CONTRAST result: FAIL (1)" ] &&
+       printf '%s\n' "$FXOUT" | grep -qE "^CONTRAST carried FAIL carried-bar 112447 on 0C182A .*; no passing accent bar on it in: ${fx##*:}: "; then
+        pass "[1.3] contrast self-test: the fixture ${fx%%:*} (a selected row's fill without its accent bar in the same scene) makes the contrast check FAIL, for the missing bar"
+    else
+        fail "[1.3] contrast self-test: the fixture ${fx%%:*} did not make the contrast check fail for the missing bar"
+    fi
+done
+
+# ---- 1.3 stage 7a: boot_until's stop ----
+
+section "[1.3] boot_until's stop: its four paths with a fake QEMU (stage 7a)"
+# The real boot_until (tests/qemu-lib.sh) through the real wrapper chain
+# (timeout -> qemu-system-x86_64 -> tests/qemu-watch.sh -> setsid), with
+# tests/boot-until-fake-qemu.sh as QEMU_REAL for these four boots only. Each
+# must report its path on its BOOT_UNTIL line, and afterwards no process may
+# name the self-test's folder on its command line (ps; the fake's own
+# "sleep 0.2" children name nothing and end within 0.2 s). The logs stay
+# outside serial-*.log (part final's every-boot checks keep their boots).
+BU_DIR=$OUT/boot-until-selftest
+rm -rf "$BU_DIR" && mkdir -p "$BU_DIR"
+printf '#!/bin/sh\nexec bash "%s" "$@"\n' "$(cd "$(dirname "$0")" && pwd)/boot-until-fake-qemu.sh" \
+    > "$BU_DIR/fake-qemu"
+chmod +x "$BU_DIR/fake-qemu"
+BU_REAL=$QEMU_REAL
+for bu in "term 20 line_seen=[0-9]+\.[0-9] stop=term:SIGTERM ends it" \
+          "ignore 20 line_seen=[0-9]+\.[0-9] stop=forced:it ignores SIGTERM, so SIGKILL ends it after 5 s" \
+          "limit 3 line_seen=none stop=limit:it never writes the line, so timeout ends it at its 3 s limit" \
+          "exited 20 line_seen=none stop=exited:it ends by itself without the line"; do
+    read -r bu_mode bu_secs bu_want <<< "${bu%%:*}"
+    export QEMU_REAL=$BU_DIR/fake-qemu BOOT_UNTIL_FAKE=$bu_mode
+    boot_until "$BU_DIR/$bu_mode.log" "$bu_secs" "System ready." -m 32M > "$BU_DIR/$bu_mode.out" 2>&1
+    export QEMU_REAL=$BU_REAL
+    unset BOOT_UNTIL_FAKE
+    sed 's/^/      /' "$BU_DIR/$bu_mode.out"
+    sleep 1                             # anything killed is reaped by now
+    bu_left=$(ps -eo pid=,args= | BU_DIR=$BU_DIR awk 'index($0, ENVIRON["BU_DIR"])')
+    [ -z "$bu_left" ] || printf '%s\n' "$bu_left" | sed 's/^/      left: /'
+    if grep -qxE "BOOT_UNTIL $bu_mode\.log $bu_want" "$BU_DIR/$bu_mode.out" && [ -z "$bu_left" ]; then
+        pass "[1.3] boot_until self-test, the fake QEMU's $bu_mode case (${bu#*:}): its BOOT_UNTIL line says ${bu_want##* }, and none of its processes is left"
+    else
+        fail "[1.3] boot_until self-test, the fake QEMU's $bu_mode case: its BOOT_UNTIL line does not say ${bu_want##* }, or one of its processes is left"
+    fi
+done
+
 # ---- 1.2: the size report (decides no check) ----
 
-echo "== Size report (1.2 stage 2; report only)"
+section "Size report (1.2 stage 2; report only)"
 # Stage 2 (docs/plans/1.2.md, decision 13): `size` of the kernel and of every
 # program ELF, and the kernel margin below 4 MiB (computed as the workflow
 # does) against the 524,288-byte trigger for a size-gate stage. Every line
@@ -467,3 +845,170 @@ if [ -n "$KEND" ]; then
 else
     echo "KERNEL_MARGIN_TRIGGER KERNEL_MARGIN_BYTES unknown (no __kernel_end in madire.elf), trigger 524288 (decision 13)"
 fi
+
+# ---- 1.3 stage 8: the switch ----
+
+section "[1.3] The splash-to-desktop handover and the VirtualBox desktop group's references (stage 8)"
+# The handover's rule on the references themselves, in the five modes of the
+# desktop's checks above: make-wallpaper.py's splash in its ready state
+# against desktop_ref.py's desktop (tests/desktop_ref.py's handover_check):
+# the M's box identical pixel for pixel, every other difference inside the
+# wordmark, the ready line or the taskbar (the QEMU handover sections of
+# parts 2 and 3 check the kernel's own two screens with the same rule).
+HO=$(python3 - "$(dirname "$0")" <<'EOF' 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.dont_write_bytecode = True
+import desktop_ref as D
+for w, h in ((800, 600), (1024, 768), (1280, 800), (1920, 1080), (2560, 1440)):
+    md, out, b, first = D.handover_check(w, h, D.MW.splash(w, h, "ready"), D.desktop(w, h, D.FIXED_CLOCK))
+    print("HANDOVER %dx%d m_box=%d,%d,%dx%d m_differ=%d outside=%d%s" % (
+        (w, h) + b["m"] + (md, out, "" if first is None else " first outside at %d,%d" % first)))
+EOF
+)
+sed 's/^/      /' <<< "$HO"
+if [ "$(grep -cE '^HANDOVER [0-9]+x[0-9]+ m_box=[0-9]+,[0-9]+,[0-9]+x[0-9]+ m_differ=0 outside=0$' <<< "$HO")" -eq 5 ]; then
+    pass "[1.3] the handover on the references in five modes: make-wallpaper.py's ready state and desktop_ref.py's desktop have the M's box identical pixel for pixel and differ only in the wordmark, the ready line and the taskbar"
+else
+    fail "[1.3] the handover on the references: $(grep -vE 'm_differ=0 outside=0$' <<< "$HO" | tr '\n' ' ')"
+fi
+# The VirtualBox desktop group's plan and references (tests/screen_ref.py;
+# the group runs in stage 9, on the owner's host): the plan replays its steps
+# through desktop_ref.py's model without an error, and after the run every
+# shot gets its reference; here with a fixed usable memory (4095 MB). The
+# graphics group's two references (the desktop at System ready, the Console
+# window after clear) are made too, and the first equals the plan's "ready".
+VB=$OUT/vbox-desktop-ref
+rm -rf "$VB" && mkdir -p "$VB"
+SR=$(dirname "$0")/screen_ref.py
+VBP=$(python3 "$SR" desktop-plan 1024 768 2>&1)
+VBR=$(python3 "$SR" desktop-render 1024 768 "$VB" 4095 2>&1)
+VBG=$( { python3 "$SR" desktop 1024 768 "$VB/desktop.rgb" && python3 "$SR" desktop-console 1024 768 "$VB/desktop-console.rgb"; } 2>&1)
+grep -vE '^MOUSE ' <<< "$VBP" | tr '\n' '|' | sed 's/^/      plan: /'; echo
+echo "      plan: $(grep -c '^MOUSE ' <<< "$VBP") mouse packets; $(grep -c '^REFERENCE ' <<< "$VBR") references rendered"
+VB_SHOTS=$(grep -c '^SHOT ' <<< "$VBP")
+VB_FILES=$(find "$VB" -name 'desktop-*.rgb' ! -name 'desktop-console.rgb' -size "$((1024 * 768 * 3))c" | wc -l)
+if [ "$VB_SHOTS" -gt 0 ] && [ "$VB_FILES" -eq "$VB_SHOTS" ] && ! grep -q "ERROR" <<< "$VBP$VBR$VBG" &&
+   grep -qxF "MASK 968 740 40 16 (the clock's cells)" <<< "$VBG" && cmp -s "$VB/desktop.rgb" "$VB/desktop-ready.rgb" &&
+   [ "$(stat -c%s "$VB/desktop-console.rgb")" -eq $((1024 * 768 * 3)) ]; then
+    pass "[1.3] the VirtualBox desktop group's plan replays through desktop_ref.py's model ($VB_SHOTS shots), each shot's reference is rendered, and the graphics group's references are made (the desktop at System ready equal to the plan's first)"
+else
+    fail "[1.3] the VirtualBox desktop group's plan or references: $VB_SHOTS shots, $VB_FILES references ($(grep -E 'ERROR' <<< "$VBP$VBR$VBG" | head -n 2 | tr '\n' ' '))"
+fi
+
+section "[1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"
+# 1.1 stage 2 (docs/plans/1.1.md, D1 Q1-Q6): the real ISO's boot menu
+# (limine.conf: quiet, timeout 2, term_margin 240), driven by
+# tests/qmp_menu.py, never together with qmp_keys.py. QEMU starts paused,
+# so power-on is time 0. Each state's screen is compared pixel by pixel with
+# the ISO tree's wallpaper.png; the panel, header, hint and version boxes
+# come from scripts/make-wallpaper.py --layout-json (one source). The marker
+# rows: the up markers in y 288-303, the down markers in y 464-479 (plan,
+# section E). The logs are in $OUT/menu/, not serial-*.log, so part final
+# counts the same boots as before (as the padded test kernel's).
+MENU_T0=$(date +%s)
+QMPMENU=$(dirname "$0")/qmp_menu.py
+MENUDIR=$OUT/menu
+rm -rf "$MENUDIR" && mkdir -p "$MENUDIR"
+MENU_WP=$OUT/isodir/boot/limine/wallpaper.png
+MENU_LAYOUT=$MENUDIR/layout.json
+python3 "$(dirname "$0")/../scripts/make-wallpaper.py" "$MENUDIR/wallpaper-layout.png" --version "$VERSION" \
+    --layout-json "$MENU_LAYOUT" | sed 's/^/      /'
+echo "      layout: $(tr -d ' \n' < "$MENU_LAYOUT" 2>/dev/null)"
+# menu_boot <log> <seconds> <qmp_menu.py mode> <its arguments after the
+# socket and the log...>: boots the real ISO paused with a QMP socket, runs
+# qmp_menu.py, then stops QEMU. MENU_OUT holds qmp_menu.py's output (also
+# printed and kept in <log>.menu.txt).
+menu_boot() {
+    local log=$1 secs=$2 mode=$3 sock=$MENUDIR/qmp.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout "$secs" qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -cdrom "$ISO" >/dev/null 2>&1 &
+    qpid=$!
+    MENU_OUT=$(python3 "$QMPMENU" "$mode" "$sock" "$log" "$@" 2>&1)
+    sed 's/^/      /' <<< "$MENU_OUT"
+    echo "$MENU_OUT" > "${log%.log}.menu.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# menu_state <name>: qmp_menu.py's STATE line of that shot, if 1024x768.
+menu_state() { grep -E "^STATE $1 size=1024x768 " <<< "$MENU_OUT"; }
+
+# Q1-Q4: one boot. Home every 300 ms until the menu shows, 5 s held, then
+# the four states: collapsed; Down, Enter (Diagnostics open, the top of
+# the list); Down x27 (position 26, the end of the list); Up x28 (back at
+# the top).
+LOG=$MENUDIR/reveal.log
+menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:5 shot:collapsed down ret shot:open \
+    'down*27' shot:position-26 'up*28' shot:back-top --band up=288-303 --band down=464-479 --shots "$MENUDIR"
+if grep -qE '^REVEAL [0-9]+\.[0-9] s, [0-9]+ presses, 1024x768$' <<< "$MENU_OUT" &&
+   grep -qxF 'HOLD 5 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT"; then
+    pass "[1.1] boot menu: a key during the 2 s shows the menu (1024x768), and nothing boots for 5 s"
+else
+    fail "[1.1] boot menu: no 1024x768 menu within 30 s of keys, or the serial log not empty 5 s later (see ${LOG%.log}.menu.txt)"
+fi
+ok=1
+for s in collapsed open position-26 back-top; do
+    menu_state "$s" | grep -qE ' drawn=[1-9][0-9]* inside_panel=yes ' || ok=0
+done
+if [ "$ok" = 1 ]; then
+    pass "[1.1] boot menu: in every state Limine draws only inside the panel (collapsed, Diagnostics open, scrolled to position 26, back at the top)"
+else
+    fail "[1.1] boot menu: a state drew outside the panel, nothing, or was not 1024x768 (see ${LOG%.log}.menu.txt)"
+fi
+ok=1
+for s in collapsed open position-26 back-top; do
+    menu_state "$s" | grep -qE ' header=0 hint=0 version=0 ' || ok=0
+done
+if [ "$ok" = 1 ]; then
+    pass "[1.1] boot menu: no Limine name or help text (the header, hint and version areas are the wallpaper's own pixels)"
+else
+    fail "[1.1] boot menu: Limine drew in the header, hint or version area, or a state was not 1024x768 (see ${LOG%.log}.menu.txt)"
+fi
+if menu_state collapsed | grep -qE ' band_up=0 band_down=0$' &&
+   menu_state open | grep -qE ' band_down=[1-9][0-9]*$' &&
+   menu_state position-26 | grep -qE ' band_up=[1-9][0-9]* '; then
+    pass "[1.1] boot menu: scroll markers only when the list overflows (down markers at the top of the list, up markers at position 26)"
+else
+    fail "[1.1] boot menu: scroll markers wrong (collapsed: none in y 288-303 and 464-479; open: some in 464-479; position 26: some in 288-303; see ${LOG%.log}.menu.txt)"
+fi
+
+# Q5: a second boot, the keys of the VirtualBox automation: Down, Enter,
+# Down x27, Enter (1 s after the menu shows; Home only selects the first
+# entry, so a Home still queued changes nothing). "No PANIC" relies on
+# QEMU's default CPU lacking SMAP: position 26 then reports NOT APPLICABLE.
+# With a SMAP-capable -cpu the crash test would panic by design, and this
+# check would need changing.
+LOG=$MENUDIR/position-26.log
+menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:1 down ret 'down*27' ret 'until:SMAP test:'
+if grep -qE '^REVEAL ' <<< "$MENU_OUT" && grep -qxF 'HOLD 1 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT" &&
+   grep -q '^SMAP test: ' "$LOG" && ! grep -q "PANIC" "$LOG"; then
+    pass "[1.1] boot menu: Down, Enter, Down x27 boots Diagnostics position 26 to 'SMAP test:'"
+else
+    fail "[1.1] boot menu: Down, Enter, Down x27, Enter did not boot position 26 to 'SMAP test:' (or booted early, or a panic; see $LOG)"
+fi
+
+# Q6: no key: a screendump every 250 ms until System ready. 1.2 stage 10b
+# (docs/plans/1.2.md, D2): the real ISO now boots in graphics at 1024x768,
+# so the width no longer tells the menu apart. Each screendump is placed
+# by the serial log's size read just before it: before the first serial
+# byte (Limine's time) only 640x480, 720x400 or a blank screen in the
+# kernel's mode; after it, only the kernel's mode; no screendump at any
+# time with the menu's header box; one boot (boot32: start once).
+LOG=$MENUDIR/no-key.log
+menu_boot "$LOG" 150 nokey "System ready." --wallpaper "$MENU_WP" --layout "$MENU_LAYOUT"
+Q6MODE=$(sed -n 's/^MODE //p' <<< "$MENU_OUT")
+if grep -qE "^BEFORE( (640x480|720x400)(/blank)?:[0-9]+| ${Q6MODE:-none}/blank:[0-9]+)+$" <<< "$MENU_OUT" &&
+   grep -qE "^AFTER( ${Q6MODE:-none}(/blank)?:[0-9]+)+$" <<< "$MENU_OUT" &&
+   grep -qxF "HEADER matches=0" <<< "$MENU_OUT" && grep -qxF "BOOTS boot32=1" <<< "$MENU_OUT" &&
+   [ "${Q6MODE:-none}" != none ] && grep -qE "^UNTIL 'System ready\.': seen after " <<< "$MENU_OUT"; then
+    pass "[1.1] no key: the real ISO boots to System ready and Limine's menu is never shown (before the first serial byte only 640x480, 720x400 or a blank screen; no screen ever matches the menu wallpaper's header)"
+else
+    fail "[1.1] no key: no System ready, a non-blank or other-size screen before the first serial byte, or a screen matching the menu wallpaper's header (see ${LOG%.log}.menu.txt)"
+fi
+echo "      [1.1] boot menu checks: $(( $(date +%s) - MENU_T0 )) s (report only)"

@@ -12,6 +12,7 @@
 #include <string.h>
 #include "tests/unit/unit.h"
 #include "kernel/display/surface_core.c"
+#include "kernel/display/coverage_core.c"
 #include "kernel/display/wallpaper_core.c"
 
 #define GUARD 0xA5

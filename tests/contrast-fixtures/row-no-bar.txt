@@ -1,0 +1,4 @@
+# A contrast-check fixture (1.3 stage 5): a selected menu row's fill (carried by
+# its accent bar) and its label, with no bar recorded: the check must FAIL.
+PAIR carried-bar 112447 0C182A 100 fixture_nobar
+PAIR text FAF9FE 112447 50 fixture_nobar

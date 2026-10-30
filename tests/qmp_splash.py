@@ -22,7 +22,15 @@ The steps run in order:
     wait:LINE        wait until LINE is a whole line of the serial log;
     type:TEXT        type TEXT on the guest's PS/2 keyboard (QMP send-key,
                      20 ms per key, 50 ms apart; TEXT as for
-                     tests/qmp_keys.py: {esc}, {ret} and the like).
+                     tests/qmp_keys.py: {esc}, {ret} and the like);
+    stopkey:KEYS:LINE  (1.3 stage 8) wait until LINE is a whole line of the
+                     serial log, send KEYS (as for type:, without {wait:})
+                     while the guest runs (QEMU drops input sent while it is
+                     stopped), then read the serial log; prints
+                     STOPKEY '<line>': seen after <s> s; ...; ready_before=<yes|no>
+                     ("yes" if "System ready." is in the log read after the
+                     keys were sent: they may then have come after it; "no":
+                     each key press reached the guest before "System ready.").
 Taking screen n: stop the guest (QMP stop), take a screendump, save the
 vga_shadow (pmemsave), read the serial log once more, and let the guest go
 on (cont). Prints
@@ -126,6 +134,24 @@ def main():
                 if wait_line(a.serial, step[5:], left) is None:
                     print(f"WAIT {step[5:]!r}: not seen in {left:.0f} s", flush=True)
                     return 0
+                continue
+            if step.startswith("stopkey:"):                 # 1.3 stage 8
+                _, keys, line = step.split(":", 2)
+                seen = wait_line(a.serial, line, left)
+                if seen is None:
+                    print(f"STOPKEY {line!r}: not seen in {left:.0f} s", flush=True)
+                    return 0
+                # Sent while the guest runs: QEMU drops input events while it
+                # is stopped (ui/input.c, the run-state check). Each press
+                # reaches the PS/2 device within its send-key command.
+                for kind, value in text_to_actions(keys):
+                    if kind == "wait":
+                        raise ValueError("stopkey: no {wait:} in its keys")
+                    qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value],
+                                **{"hold-time": 20})
+                ready = any(l.startswith("System ready.") for l in serial_text(a.serial).splitlines())
+                print(f"STOPKEY {line!r}: seen after {seen:.1f} s; {keys} sent while the guest runs; "
+                      f"ready_before={'yes' if ready else 'no'}", flush=True)
                 continue
             if not step.startswith("screen:") or step.count(":") < 2:
                 raise ValueError(f"unknown step {step!r}")

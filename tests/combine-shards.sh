@@ -12,6 +12,8 @@
 #     static checks (symbols, libgcc/libc, SSE/x87, the kernel margin:
 #     1.0 stage 1, below 4 MiB, computed here from KERNEL_END_VIRTUAL);
 #   - sums the counts and compares them with tests/expected-checks.txt;
+#   - reports every job's make-step seconds and every section's seconds
+#     (tests/section-times.sh; report only, 1.3 stage 1);
 #   - replays every pattern-helper call under mawk and gawk
 #     (tests/helper-replay.sh; evidence only, decides no check);
 #   - writes <dir>/regression.log (every job's log, then the summary).
@@ -137,13 +139,21 @@ main() {
     if [ -n "$km" ] && [ "$km" -ge 524288 ]; then echo "KERNEL_MARGIN_TRIGGER (combined) $km, trigger 524288: at or above the trigger: no gate stage"
     else echo "KERNEL_MARGIN_TRIGGER (combined) ${km:-missing}, trigger 524288: BELOW the trigger or missing: STOP for a gate stage"; fi
 
+    # 1.3 stage 1: every section's seconds, per part (tests/section-times.sh).
+    # Report only: decides nothing.
+    echo "== Section timings (report only)"
+    for s in $shards; do
+        echo "job shard-$s: make step $(cat "$dir/shard-$s/duration.txt" 2>/dev/null || echo "seconds: missing")"
+    done
+    bash "$here/section-times.sh" $(for s in $shards; do echo "$dir/shard-$s/regression.log"; done) "$dir/combined/final.log"
+
     echo "== Counts"
     counts=$( { cat "$dir"/shard-*/regression.log; cat "$dir/combined/final.log"; } | grep '^SHARD_COUNTS ')
     echo "$counts"
     echo "$counts" | bash "$here/check-counts.sh" "$here/expected-checks.txt" || bad "the counts differ from tests/expected-checks.txt"
     summed=$(echo "$counts" | awk '{ for (i = 3; i <= NF; i++) { split($i, kv, "="); s[kv[1]] += kv[2] } }
-        END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", s["passes"], s["failures"], s["0.3"], s["0.4"], s["0.5"], s["0.6"], s["0.7"], s["0.8"], s["0.9"], s["0.9.1"], s["0.9.2"], s["0.10"], s["0.11"], s["0.12"], s["0.13"], s["1.0"], s["1.1"], s["1.2"] }')
-    read -r passes failures c03 c04 c05 c06 c07 c08 c09 c091 c092 c010 c011 c012 c013 c10 c11 c12 <<< "$summed"
+        END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", s["passes"], s["failures"], s["0.3"], s["0.4"], s["0.5"], s["0.6"], s["0.7"], s["0.8"], s["0.9"], s["0.9.1"], s["0.9.2"], s["0.10"], s["0.11"], s["0.12"], s["0.13"], s["1.0"], s["1.1"], s["1.2"], s["1.3"] }')
+    read -r passes failures c03 c04 c05 c06 c07 c08 c09 c091 c092 c010 c011 c012 c013 c10 c11 c12 c13 <<< "$summed"
 
     echo "== Helper replay (evidence only; decides no check)"
     calls=0; declare -A diffs errs
@@ -161,7 +171,7 @@ main() {
 
     echo
     if [ "$ok" -eq 1 ]; then
-        echo "ALL TESTS PASSED ($passes checks: $c03 0.3 regression + $c04 from 0.4 + $c05 from 0.5 + $c06 from 0.6 + $c07 from 0.7 + $c08 from 0.8 + $c09 from 0.9 + $c091 from 0.9.1 + $c092 from 0.9.2 + $c010 from 0.10 + $c011 from 0.11 + $c012 from 0.12 + $c013 from 0.13 + $c10 from 1.0 + $c11 from 1.1 + $c12 new in 1.2)"
+        echo "ALL TESTS PASSED ($passes checks: $c03 0.3 regression + $c04 from 0.4 + $c05 from 0.5 + $c06 from 0.6 + $c07 from 0.7 + $c08 from 0.8 + $c09 from 0.9 + $c091 from 0.9.1 + $c092 from 0.9.2 + $c010 from 0.10 + $c011 from 0.11 + $c012 from 0.12 + $c013 from 0.13 + $c10 from 1.0 + $c11 from 1.1 + $c12 from 1.2 + $c13 new in 1.3)"
         echo "COMBINED_RESULT=PASS"
     else
         echo "$failures TEST(S) FAILED; COMBINED_RESULT=FAIL"

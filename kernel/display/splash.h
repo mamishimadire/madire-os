@@ -63,6 +63,16 @@ void splash_close_key(bool esc);
  * if it is not showing. */
 void splash_ready(bool console_offered);
 
+/* 1.3 stage 8: at the first pass of the idle loop after System ready, on
+ * the default path (desktop.h), the splash hands the screen to the
+ * desktop: it stops showing without the text boot screen being drawn
+ * (fbcon_unhold), so the screen goes from the splash's ready state to the
+ * desktop's first frame in one copy, the M where it was. Logged only with
+ * the splash's lines (`still`): "Splash: handed over to the desktop: the M
+ * kept, the splash's text gone". False (nothing done) if it is not
+ * showing. */
+bool splash_handover(void);
+
 /* test=splash (a test option): four screens for tests/qmp_splash.py, the
  * dots with 0, 1, 2 and 3 lit, each after "display: frame N" and held
  * still for 3 s, then the report-only timing lines. */

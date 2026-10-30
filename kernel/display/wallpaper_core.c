@@ -5,6 +5,8 @@
  * same roundings.
  */
 #include "kernel/display/wallpaper_core.h"
+#include "kernel/display/coverage_core.h"
+#include "kernel/display/ui_trace.h"
 #include "splash_data.h"            /* generated: build/gen/ (the Makefile) */
 
 #define FB    8
@@ -205,52 +207,10 @@ void wallpaper_render(struct surface *s, const struct wallpaper *wp, struct rect
     }
 }
 
-/* ---- Capsules ---- */
-
-struct capsule {
-    int64_t x1, y1, dx, dy, l2, r;
-    int64_t bx0, by0, bx1, by1;     /* the pixels it may cover, clipped */
-};
-
-static bool capsule_setup(struct capsule *c, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t r,
-                          uint32_t width, uint32_t height)
-{
-    c->x1 = x1;
-    c->y1 = y1;
-    c->dx = x2 - x1;
-    c->dy = y2 - y1;
-    c->l2 = c->dx * c->dx + c->dy * c->dy;
-    c->r = r;
-    c->bx0 = ((x1 < x2 ? x1 : x2) - r - 2 * ONE) >> FB;
-    c->bx1 = ((x1 > x2 ? x1 : x2) + r + 2 * ONE) >> FB;
-    c->by0 = ((y1 < y2 ? y1 : y2) - r - 2 * ONE) >> FB;
-    c->by1 = ((y1 > y2 ? y1 : y2) + r + 2 * ONE) >> FB;
-    if (c->bx0 < 0)
-        c->bx0 = 0;
-    if (c->by0 < 0)
-        c->by0 = 0;
-    if (c->bx1 > (int64_t)width - 1)
-        c->bx1 = (int64_t)width - 1;
-    if (c->by1 > (int64_t)height - 1)
-        c->by1 = (int64_t)height - 1;
-    return c->bx0 <= c->bx1 && c->by0 <= c->by1;
-}
-
-/* The coverage of pixel (x, y), 0 to 256: the radius plus half a pixel
- * minus the distance from the pixel's centre to the segment. */
-static int64_t capsule_cov(const struct capsule *c, int64_t x, int64_t y)
-{
-    int64_t cx = (x << FB) + HALF - c->x1, cy = (y << FB) + HALF - c->y1, t = 0;
-    if (c->l2 != 0) {
-        int64_t d = cx * c->dx + cy * c->dy;
-        t = d <= 0 ? 0 : d >= c->l2 ? ONE : (d << FB) / c->l2;
-    }
-    int64_t ex = cx - wp_mul(t, c->dx), ey = cy - wp_mul(t, c->dy);
-    int64_t a = c->r + HALF - (int64_t)wp_isqrt((uint64_t)(ex * ex + ey * ey));
-    return a <= 0 ? 0 : a > ONE ? ONE : a;
-}
-
 /* ---- The splash ---- */
+
+/* The capsules (strokes and dots) are covered by coverage_core.c's rule
+ * (1.3 stage 3; until then this file had its own copy of it). */
 
 bool splash_layout(struct splash_layout *l, uint32_t width, uint32_t height, uint32_t scale,
                    uint32_t cell_w, uint32_t cell_h)
@@ -303,20 +263,26 @@ bool splash_layout(struct splash_layout *l, uint32_t width, uint32_t height, uin
     return (int64_t)l->text_y + cell_h <= (int64_t)height;
 }
 
-/* Glyph g of the wordmark at pen x: its segments' capsules, each through
- * `fn` (from its first to its last point; a one-point polyline is a dot). */
-static void glyph_segments(const struct splash_layout *l, size_t g, int64_t pen, int64_t r, uint32_t width,
-                           uint32_t height, void (*fn)(const struct capsule *, void *), void *arg)
+/* 1.3 stage 3: the generated letters as a set (struct wp_text). */
+const struct wp_text wp_wordmark = {
+    splash_wm_glyphs, sizeof(splash_wm_glyphs) / sizeof(splash_wm_glyphs[0]), splash_wm_polys, splash_wm_points
+};
+
+/* Glyph g of a line at pen x: its segments' capsules, each through `fn`
+ * (from its first to its last point; a one-point polyline is a dot). */
+static void glyph_segments(const struct wp_line *l, size_t g, int64_t pen, int64_t r, uint32_t width,
+                           uint32_t height, void (*fn)(const struct cov_capsule *, void *), void *arg)
 {
-    const struct wp_glyph *gl = &splash_wm_glyphs[g];
+    const struct wp_text *t = l->text;
+    const struct wp_glyph *gl = &t->glyphs[g];
     for (uint32_t p = 0; p < gl->polys; p++) {
-        const struct wp_poly *poly = &splash_wm_polys[gl->first_poly + p];
+        const struct wp_poly *poly = &t->polys[gl->first_poly + p];
         for (uint32_t k = 0; k + 1 < poly->count || (k == 0 && poly->count == 1); k++) {
-            const int16_t *a = splash_wm_points[poly->first + k];
-            const int16_t *b = splash_wm_points[poly->first + (poly->count == 1 ? k : k + 1)];
-            struct capsule c;
-            if (capsule_setup(&c, pen + wp_mul(a[0], l->ts), l->title_y + wp_mul(a[1], l->ts),
-                              pen + wp_mul(b[0], l->ts), l->title_y + wp_mul(b[1], l->ts), r, width, height))
+            const int16_t *a = t->points[poly->first + k];
+            const int16_t *b = t->points[poly->first + (poly->count == 1 ? k : k + 1)];
+            struct cov_capsule c;
+            if (cov_capsule_setup(&c, pen + wp_mul(a[0], l->scale), l->top + wp_mul(a[1], l->scale),
+                              pen + wp_mul(b[0], l->scale), l->top + wp_mul(b[1], l->scale), r, width, height))
                 fn(&c, arg);
         }
     }
@@ -327,7 +293,7 @@ struct box {
     bool any;
 };
 
-static void grow_box(const struct capsule *c, void *arg)
+static void grow_box(const struct cov_capsule *c, void *arg)
 {
     struct box *b = arg;
     if (!b->any || c->bx0 < b->x0)
@@ -346,57 +312,83 @@ struct cover {
     uint16_t *cov;
 };
 
-static void add_cover(const struct capsule *c, void *arg)
+/* The capsule's coverage, kept per pixel as the largest, over the part of
+ * its box that lies in the cover's box (1.3 stage 3: that box may be
+ * clipped; each pixel inside it gets the same value either way). */
+static void add_cover(const struct cov_capsule *c, void *arg)
 {
     struct cover *cv = arg;
     int64_t bw = cv->box.x1 - cv->box.x0 + 1;
-    for (int64_t y = c->by0; y <= c->by1; y++)
-        for (int64_t x = c->bx0; x <= c->bx1; x++) {
-            int64_t a = capsule_cov(c, x, y);
+    int64_t x0 = c->bx0 > cv->box.x0 ? c->bx0 : cv->box.x0, x1 = c->bx1 < cv->box.x1 ? c->bx1 : cv->box.x1;
+    int64_t y0 = c->by0 > cv->box.y0 ? c->by0 : cv->box.y0, y1 = c->by1 < cv->box.y1 ? c->by1 : cv->box.y1;
+    for (int64_t y = y0; y <= y1; y++)
+        for (int64_t x = x0; x <= x1; x++) {
+            int64_t a = cov_capsule_at(c, x, y);
             uint16_t *e = &cv->cov[(y - cv->box.y0) * bw + (x - cv->box.x0)];
             if (a > *e)
                 *e = (uint16_t)a;
         }
 }
 
-static int64_t glyph_radius(const struct splash_layout *l, size_t g)
+static int64_t glyph_radius(const struct wp_line *l, size_t g)
 {
-    return g < 6 ? l->r_title : l->r_os;    /* "MADIRE" heavier than "OS" */
+    return g < l->n_first ? l->r_first : l->r_rest;
 }
 
-size_t splash_scratch_entries(const struct splash_layout *l, uint32_t width, uint32_t height)
+size_t wp_line_scratch(const struct wp_line *l, uint32_t width, uint32_t height)
 {
     size_t most = 0;
-    int64_t pen = l->title_x;
-    for (size_t g = 0; g < sizeof(splash_wm_glyphs) / sizeof(splash_wm_glyphs[0]); g++) {
+    int64_t pen = l->pen;
+    for (size_t g = 0; g < l->text->count; g++) {
         struct box b = { 0, 0, 0, 0, false };
         glyph_segments(l, g, pen, glyph_radius(l, g), width, height, grow_box, &b);
         if (b.any && (size_t)((b.x1 - b.x0 + 1) * (b.y1 - b.y0 + 1)) > most)
             most = (size_t)((b.x1 - b.x0 + 1) * (b.y1 - b.y0 + 1));
-        pen += wp_mul(splash_wm_glyphs[g].advance + l->track, l->ts);
+        pen += wp_mul(l->text->glyphs[g].advance + l->track, l->scale);
     }
     return most;
 }
 
-static void draw_logo(struct surface *s, const struct splash_layout *l)
+/* The splash's wordmark as a line: "MADIRE" heavier than "OS". */
+static struct wp_line wordmark_line(const struct splash_layout *l)
+{
+    return (struct wp_line){ &wp_wordmark, l->title_x, l->title_y, l->ts, l->track, l->r_title, l->r_os, 6 };
+}
+
+size_t splash_scratch_entries(const struct splash_layout *l, uint32_t width, uint32_t height)
+{
+    struct wp_line line = wordmark_line(l);
+    return wp_line_scratch(&line, width, height);
+}
+
+static bool in_clip(struct rect c, int64_t x, int64_t y)
+{
+    return x >= c.x && y >= c.y && x < (int64_t)c.x + c.w && y < (int64_t)c.y + c.h;
+}
+
+void wp_logo_draw(struct surface *s, struct rect clip, int64_t lox, int64_t loy, int64_t ls)
 {
     struct wp_rgb deep = rgb(WP_ACCENT_DEEP), light = rgb(WP_ACCENT_LIGHT), bg = rgb(WP_BG_DEEP);
-    int64_t ls = l->ls, back_t = wp_fx(35, 100);
+    int64_t back_t = wp_fx(35, 100);
+    if (!rect_clip(&clip, s->width, s->height))
+        return;
     for (int i = 0; i < 4; i++) {
         const int32_t *st = splash_logo_strokes[i];
-        struct capsule c;
-        if (!capsule_setup(&c, l->lox + st[0] * ls,
-                           l->loy + wp_mul(wp_fx(st[1] * SPLASH_LOGO_RX, SPLASH_LOGO_RY), ls),
-                           l->lox + st[2] * ls,
-                           l->loy + wp_mul(wp_fx(st[3] * SPLASH_LOGO_RX, SPLASH_LOGO_RY), ls),
+        struct cov_capsule c;
+        if (!cov_capsule_setup(&c, lox + st[0] * ls,
+                           loy + wp_mul(wp_fx(st[1] * SPLASH_LOGO_RX, SPLASH_LOGO_RY), ls),
+                           lox + st[2] * ls,
+                           loy + wp_mul(wp_fx(st[3] * SPLASH_LOGO_RX, SPLASH_LOGO_RY), ls),
                            SPLASH_LOGO_RX * ls, s->width, s->height))
             continue;
         for (int64_t y = c.by0; y <= c.by1; y++)
             for (int64_t x = c.bx0; x <= c.bx1; x++) {
-                int64_t a = capsule_cov(&c, x, y);
+                if (!in_clip(clip, x, y))
+                    continue;
+                int64_t a = cov_capsule_at(&c, x, y);
                 if (!a)
                     continue;
-                int64_t t = wp_div((x << FB) - (l->lox + LX0 * ls), (LX1 - LX0) * ls);
+                int64_t t = wp_div((x << FB) - (lox + LX0 * ls), (LX1 - LX0) * ls);
                 struct wp_rgb col = mix(deep, light, t < 0 ? 0 : t > ONE ? ONE : t);
                 if (i < 2)                  /* the back strokes */
                     col = mix(col, bg, back_t);
@@ -419,20 +411,31 @@ static void draw_line(struct surface *s, const struct font *f, const char *t, in
     }
 }
 
-bool splash_draw(struct surface *s, const struct splash_layout *l, const struct font *f,
-                 uint16_t *scratch, size_t entries)
+bool wp_line_draw(struct surface *s, struct rect clip, const struct wp_line *l, uint32_t rgb_colour,
+                  uint16_t *scratch, size_t entries)
 {
     bool all = true;
-    draw_logo(s, l);
-
-    struct wp_rgb text = rgb(WP_TEXT);
-    int64_t pen = l->title_x;
-    for (size_t g = 0; g < sizeof(splash_wm_glyphs) / sizeof(splash_wm_glyphs[0]); g++) {
+    struct wp_rgb text = rgb(rgb_colour);
+    if (!rect_clip(&clip, s->width, s->height))
+        return true;
+    int64_t pen = l->pen;
+    for (size_t g = 0; g < l->text->count; g++) {
         struct cover cv = { { 0, 0, 0, 0, false }, scratch };
-        int64_t r = glyph_radius(l, g);
+        int64_t r = glyph_radius(l, g), at = pen;
         glyph_segments(l, g, pen, r, s->width, s->height, grow_box, &cv.box);
-        pen += wp_mul(splash_wm_glyphs[g].advance + l->track, l->ts);
+        pen += wp_mul(l->text->glyphs[g].advance + l->track, l->scale);
         if (!cv.box.any)
+            continue;
+        /* Only the part inside the clip (1.3 stage 3). */
+        if (cv.box.x0 < clip.x)
+            cv.box.x0 = clip.x;
+        if (cv.box.y0 < clip.y)
+            cv.box.y0 = clip.y;
+        if (cv.box.x1 > (int64_t)clip.x + clip.w - 1)
+            cv.box.x1 = (int64_t)clip.x + clip.w - 1;
+        if (cv.box.y1 > (int64_t)clip.y + clip.h - 1)
+            cv.box.y1 = (int64_t)clip.y + clip.h - 1;
+        if (cv.box.x0 > cv.box.x1 || cv.box.y0 > cv.box.y1)
             continue;
         size_t bw = (size_t)(cv.box.x1 - cv.box.x0 + 1), n = bw * (size_t)(cv.box.y1 - cv.box.y0 + 1);
         if (n > entries) {
@@ -441,18 +444,29 @@ bool splash_draw(struct surface *s, const struct splash_layout *l, const struct 
         }
         for (size_t i = 0; i < n; i++)
             scratch[i] = 0;
-        glyph_segments(l, g, pen - wp_mul(splash_wm_glyphs[g].advance + l->track, l->ts), r, s->width,
-                       s->height, add_cover, &cv);
+        glyph_segments(l, g, at, r, s->width, s->height, add_cover, &cv);
         for (int64_t y = cv.box.y0; y <= cv.box.y1; y++)
             for (int64_t x = cv.box.x0; x <= cv.box.x1; x++) {
                 uint16_t a = scratch[(size_t)(y - cv.box.y0) * bw + (size_t)(x - cv.box.x0)];
-                if (a)
+                if (a) {
+                    /* 1.3 stage 4a: a host tool's contrast record (ui_trace.h). */
+                    UI_TRACE_PAIR(UI_TRACE_TEXT, rgb_colour, surface_get(s, (uint32_t)x, (uint32_t)y));
                     paint(s, x, y, text, a);
+                }
             }
     }
-
-    draw_line(s, f, SPLASH_TEXT, l->text_x, l->text_y);
     return all;
+}
+
+bool splash_draw(struct surface *s, const struct splash_layout *l, const struct font *f,
+                 uint16_t *scratch, size_t entries)
+{
+    struct rect all = { 0, 0, (int32_t)s->width, (int32_t)s->height };
+    wp_logo_draw(s, all, l->lox, l->loy, l->ls);
+    struct wp_line line = wordmark_line(l);
+    bool done = wp_line_draw(s, all, &line, WP_TEXT, scratch, entries);
+    draw_line(s, f, SPLASH_TEXT, l->text_x, l->text_y);
+    return done;
 }
 
 void splash_draw_ready(struct surface *s, const struct splash_layout *l, const struct font *f,
@@ -466,12 +480,12 @@ void splash_draw_dots(struct surface *s, const struct splash_layout *l, uint32_t
 {
     struct wp_rgb lit = rgb(WP_TEXT), dim = rgb(WP_SURFACE_ACTIVE);
     for (uint32_t i = 0; i < SPLASH_DOTS; i++) {
-        struct capsule c;
-        if (!capsule_setup(&c, l->dot_x[i], l->dot_y, l->dot_x[i], l->dot_y, l->rd, s->width, s->height))
+        struct cov_capsule c;
+        if (!cov_capsule_setup(&c, l->dot_x[i], l->dot_y, l->dot_x[i], l->dot_y, l->rd, s->width, s->height))
             continue;
         for (int64_t y = c.by0; y <= c.by1; y++)
             for (int64_t x = c.bx0; x <= c.bx1; x++) {
-                int64_t a = capsule_cov(&c, x, y);
+                int64_t a = cov_capsule_at(&c, x, y);
                 if (a)
                     paint(s, x, y, i < phase ? lit : dim, a);
             }

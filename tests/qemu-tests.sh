@@ -64,6 +64,7 @@ passes_013=0         # checks added in 0.13, tagged "[0.13]"
 passes_10=0          # checks added in 1.0, tagged "[1.0]"
 passes_11=0          # checks added in 1.1, tagged "[1.1]"
 passes_12=0          # checks added in 1.2, tagged "[1.2]"
+passes_13=0          # checks added in 1.3, tagged "[1.3]"
 passes_stress=0      # 0.12 stage 2b: the stress part's checks, "[stress]" (on request only)
 
 # 0.10: the version is read once, from kernel/kernel.h, and every check that
@@ -100,6 +101,7 @@ pass() {
     "[1.0]"*) passes_10=$((passes_10 + 1)) ;;
     "[1.1]"*) passes_11=$((passes_11 + 1)) ;;
     "[1.2]"*) passes_12=$((passes_12 + 1)) ;;
+    "[1.3]"*) passes_13=$((passes_13 + 1)) ;;
     "[stress]"*) passes_stress=$((passes_stress + 1)) ;;
     esac
 }
@@ -255,13 +257,39 @@ if [ "${3:-}" = "--shard" ]; then
     *) echo "FATAL: unknown part '$SHARD' (parts: $PARTS; on request: $EXTRA_PARTS)"; exit 1 ;;
     esac
 fi
+# 1.3 stage 1: section timings, report only (they decide no check and add
+# none to the counts). A part opens each section with section <title>, which
+# prints "== <title>" exactly as the parts' echo lines did. When the next
+# section opens, or the part ends, the time since the section opened is
+# printed as "SECTION_SECONDS <part> <n> <s>": the part's n-th "== " line
+# (0: from the part's start to its first section), in seconds with one
+# decimal; at the part's end "SECTION_SECONDS <part> total <s>". The line
+# holds no title, so no grep of the log for a word of a title (FAILED, ...)
+# finds it; tests/section-times.sh pairs the numbers with the titles.
+section_close() {
+    local ms=$(( ($(date +%s%N) - SECTION_T0) / 1000000 ))
+    echo "SECTION_SECONDS $qt_part $SECTION_N $((ms / 1000)).$((ms % 1000 / 100))"
+}
+section() {
+    section_close
+    SECTION_N=$((SECTION_N + 1))
+    echo "== $1"
+    SECTION_T0=$(date +%s%N)
+}
+
 . "$(dirname "$0")/qemu-lib.sh"
 for qt_part in $PARTS $EXTRA_PARTS; do
     # 0.12 stage 2b: a part in EXTRA_PARTS runs only when asked for by name.
     case " $EXTRA_PARTS " in *" $qt_part "*) [ "$SHARD" = "$qt_part" ] || continue ;; esac
     [ "$SHARD" = all ] || [ "$SHARD" = "$qt_part" ] || continue
     echo "SHARD_PART_BEGIN $qt_part"
+    SECTION_N=0
+    SECTION_T0=$(date +%s%N)
+    qt_part_t0=$SECTION_T0
     . "$(dirname "$0")/qemu-part-$qt_part.sh"
+    section_close
+    qt_ms=$(( ($(date +%s%N) - qt_part_t0) / 1000000 ))
+    echo "SECTION_SECONDS $qt_part total $((qt_ms / 1000)).$((qt_ms % 1000 / 100))"
     echo "SHARD_PART_END $qt_part"
 done
 
@@ -271,7 +299,7 @@ sed 's/^/      /' "$QEMU_WATCH_DIR/stalls.txt"
 
 # 0.12: the counts of this run in one line (tests/check-counts.sh sums the
 # lines of a sharded run). A shard run ends here.
-COUNTS="SHARD_COUNTS part=$SHARD failures=$failures passes=$passes 0.3=$((passes - passes_stress - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12)) 0.4=$passes_new 0.5=$passes_05 0.6=$passes_06 0.7=$passes_07 0.8=$passes_08 0.9=$passes_09 0.9.1=$passes_091 0.9.2=$passes_092 0.10=$passes_010 0.11=$passes_011 0.12=$passes_012 0.13=$passes_013 1.0=$passes_10 1.1=$passes_11 1.2=$passes_12"
+COUNTS="SHARD_COUNTS part=$SHARD failures=$failures passes=$passes 0.3=$((passes - passes_stress - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12 - passes_13)) 0.4=$passes_new 0.5=$passes_05 0.6=$passes_06 0.7=$passes_07 0.8=$passes_08 0.9=$passes_09 0.9.1=$passes_091 0.9.2=$passes_092 0.10=$passes_010 0.11=$passes_011 0.12=$passes_012 0.13=$passes_013 1.0=$passes_10 1.1=$passes_11 1.2=$passes_12 1.3=$passes_13"
 echo "$COUNTS"
 # 0.12 stage 2b: a part run on request reports its own checks.
 if [ "$passes_stress" -gt 0 ]; then echo "STRESS_COUNTS passes=$passes_stress failures=$failures"; fi
@@ -284,7 +312,7 @@ fi
 
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 from 0.11 + $passes_012 from 0.12 + $passes_013 from 0.13 + $passes_10 from 1.0 + $passes_11 from 1.1 + $passes_12 new in 1.2)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12 - passes_13)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 from 0.11 + $passes_012 from 0.12 + $passes_013 from 0.13 + $passes_10 from 1.0 + $passes_11 from 1.1 + $passes_12 from 1.2 + $passes_13 new in 1.3)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

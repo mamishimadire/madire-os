@@ -1,7 +1,10 @@
 # Madire OS QEMU tests, part 3 (0.12, stage 0c): [0.10] usersys to
 # userchurn, and [0.11]. Sourced by tests/qemu-tests.sh (a full run, or
 # --shard 3). Apart from this header and the fixture calls, every line was
-# moved unchanged from the single script.
+# moved unchanged from the single script. 1.3 stage 8: the real ISO's
+# session shows the Console window (its screen after clear with the clock
+# read from the kernel; the stack's peak after the desktop), and the
+# splash-to-desktop handover at 800x600x24 comes at the end.
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 # Logs of part 1 that this part reads: the most-modules check reads the 32M
@@ -11,7 +14,7 @@ fixture_log "$OUT/serial-preemptoff.log" 10 -m 32M -kernel "$KERNEL" -append "te
 fixture_log "$OUT/serial-heapthreads.log" 12 -m 32M -kernel "$KERNEL" -append "test=heapthreads"
 fixture_log "$OUT/serial-framethreads.log" 12 -m 32M -kernel "$KERNEL" -append "test=framethreads"
 
-echo "== [0.10] The first system calls: exit, exit_group, getpid, sched_yield, -ENOSYS (test=usersys)"
+section "[0.10] The first system calls: exit, exit_group, getpid, sched_yield, -ENOSYS (test=usersys)"
 # The MSRs, read back at every boot (here the normal boot of the first group).
 SC=$(grep -m1 -E '^SYSCALL: ' "$OUT/serial-boot.log")
 echo "      $SC"
@@ -68,7 +71,7 @@ expect "$LOG" "^User syscall test: PASS$"             "[0.10] usersys with SMEP 
 reject "$LOG" "PANIC"                                 "[0.10] usersys with SMEP and SMAP on: no crash screen, no panic"
 expect "$LOG" "System ready\."                        "[0.10] usersys with SMEP and SMAP on: System ready afterwards"
 
-echo "== [0.10] System calls with pointer arguments: write, nanosleep, bad pointers (test=userio)"
+section "[0.10] System calls with pointer arguments: write, nanosleep, bad pointers (test=userio)"
 LOG=$OUT/serial-userio.log
 boot_text "$LOG" 90 "System ready." "x{ret}version{ret}echo end-of-io-test{ret}" 0.05 \
     $'\nend-of-io-test\n' -m 32M -kernel "$KERNEL" -append "test=userio"
@@ -137,7 +140,7 @@ expect "$LOG" "^User I/O test: PASS$"                 "[0.10] userio with SMEP a
 reject "$LOG" "PANIC"                                 "[0.10] userio with SMEP and SMAP on: no crash screen, no panic"
 expect "$LOG" "System ready\."                        "[0.10] userio with SMEP and SMAP on: System ready afterwards"
 
-echo "== [0.10] User processes under preemption: per-process longest turn (test=userpreempt)"
+section "[0.10] User processes under preemption: per-process longest turn (test=userpreempt)"
 thread_diag userpreempt 40
 grep -E "^User preemption test: " "$LOG" | grep -vE ': (PASS|FAIL)$|for 3 seconds\.\.\.$' | sed 's/^/      /'
 n=$(grep -cE "^User preemption test: spin [0-3] \(.*\): process [0-9]+, thread [0-9]+: longest turn [0-6] ticks \(at most 6\), [0-9]+ ticks run, preempted [0-9]+ times, back in ring 3 [1-9][0-9]* times: OK$" "$LOG")
@@ -156,7 +159,7 @@ expect "$LOG" "^User preemption test: PASS$"          "[0.10] userpreempt: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userpreempt: no panic"
 expect "$LOG" "System ready\."                        "[0.10] userpreempt: System ready afterwards"
 
-echo "== [0.10] Process churn: 1000 processes (test=userchurn)"
+section "[0.10] Process churn: 1000 processes (test=userchurn)"
 thread_diag userchurn 180
 grep -E "^User churn test: " "$LOG" | grep -vE ': (PASS|FAIL)$|started and ended\.\.\.$' | sed 's/^/      /'
 expect "$LOG" "^User churn test: 500 hello processes one after another: 500 exited with status 0: OK$" \
@@ -178,7 +181,7 @@ expect "$LOG" "^User churn test: PASS$"               "[0.10] userchurn: PASS"
 reject "$LOG" "PANIC"                                 "[0.10] userchurn: no panic"
 expect "$LOG" "System ready\."                        "[0.10] userchurn: System ready afterwards"
 
-echo "== [0.11] ELF checks on the host: the built programs and the malformed fixtures"
+section "[0.11] ELF checks on the host: the built programs and the malformed fixtures"
 # The kernel's own elf_core.c, built as a host tool (build/elfcheck), on the
 # 28 built programs (19 until stage 2b added lines, 20 until 1.0 stage 4
 # added fdops and fdhold, 22 until stage 5 added fileio, fileerr and bigio,
@@ -218,7 +221,7 @@ while IFS=$'\t' read -r name want; do
     else fail "[0.11] elfcheck fixture $name: got '${got}', expected '${want}'"; fi
 done < "$FIX/manifest.txt"
 
-echo "== [0.11] Program modules found at boot (QEMU -initrd; nothing loaded yet)"
+section "[0.11] Program modules found at boot (QEMU -initrd; nothing loaded yet)"
 # Every boot module that is not a test module is a program candidate: named
 # from its command line, checked by elf_core, kept (at most 8) or refused,
 # one line each on serial and in dmesg, never on the screen.
@@ -357,7 +360,7 @@ else
     fail "[0.11] most modules: 14 modules did not stop at the reservation limit"
 fi
 
-echo "== [0.11] The default boot entry loads 7 programs (the real ISO)"
+section "[0.11] The default boot entry loads 7 programs (the real ISO)"
 # The default entry's program modules (0.13: limine.conf's "module_path:
 # boot():/boot/prog/<name>.elf" lines, each with "module_string: <name>");
 # make iso copies exactly those files. The normal-boot logs (the real ISO
@@ -415,30 +418,54 @@ fi
 # closes the splash and opens the console, and is not typed (decision 17;
 # the same key path as the text boot screen's since 0.5); every later key
 # is typed: "madire> display" exactly, no x before it.
+# 1.3 stage 8: the real ISO shows the desktop at System ready (the default
+# path): the first key opens the Console window instead, not typed, and
+# "display" in it gives the same two lines (the window's grid has the
+# screen's scale and cells).
 python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "x{wait:1}display{ret}" --gap 0.05 \
     --done "Scale:   100 % (console: 80x25 cells of 8x16 pixels)" --done-timeout 20 >/dev/null 2>&1
-expect_lines "$LOG" "[1.2] display on the real ISO (graphics): 'display' typed whole after the key that closes the splash shows Screen:  framebuffer 1024x768, 32 bits per pixel and Scale:   100 % (console: 80x25 cells of 8x16 pixels)" \
+expect_lines "$LOG" "[1.2] display on the real ISO (graphics): 'display' typed whole after the key that opens the Console window shows Screen:  framebuffer 1024x768, 32 bits per pixel and Scale:   100 % (console: 80x25 cells of 8x16 pixels)" \
     "^madire> display$" "^Screen:  framebuffer 1024x768, 32 bits per pixel$" \
     "^Scale:   100 % \(console: 80x25 cells of 8x16 pixels\)$"
 reject "$LOG" "^madire> x|PANIC|events dropped" \
-    "[1.2] real ISO (graphics): the key that closed the splash was not typed; no panic, no dropped key"
+    "[1.2] real ISO (graphics): the key that opened the Console window was not typed; no panic, no dropped key"
 # The console's screen right after "clear" against tests/screen_ref.py's
 # reference for it, the one the VirtualBox graphics group compares its
 # screenshot with (scripts/vbox-acceptance.ps1): proven here on the
-# kernel's own rendering.
+# kernel's own rendering. 1.3 stage 8: the desktop with the Console window
+# (focused, the grid right after clear, no pointer: no mouse movement), the
+# clock read from the kernel's own string while the guest is stopped (the
+# real ISO logs no clock: the stage 8 decision Q3; one retry only if the
+# string changed); VirtualBox masks the clock's cells instead.
 python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "clear{ret}" --gap 0.05 \
     --done "console: cleared" --done-timeout 20 >/dev/null 2>&1
 sleep 1
-SREF=$(python3 "$(dirname "$0")/screen_ref.py" check-console "$SOCK" 2>&1)
+CLOCK_V=$(nm "$OUT/madire.elf" | awk '$3 == "clock" { print $1 }')
+CLOCK_P=$(printf '0x%x' $(( 0x$(head -n 1 <<< "${CLOCK_V:-0}") - 0xffffffff80000000 )))
+echo "      desktop.c's clock at 0x${CLOCK_V:-?} (physical $CLOCK_P; $(grep -c . <<< "$CLOCK_V") symbol(s) named clock)"
+SREF=$(python3 "$(dirname "$0")/screen_ref.py" check-desktop-console "$SOCK" "$CLOCK_P" 2>&1)
 echo "      $SREF"
-if grep -qE "^CONSOLE size=1024x768 differ=0 " <<< "$SREF"; then
-    pass "[1.2] real ISO (graphics): the console's screen after clear equals tests/screen_ref.py's reference pixel for pixel (the VirtualBox graphics group's reference)"
+if grep -qE "^DESKTOP_CONSOLE size=1024x768 differ=0 " <<< "$SREF"; then
+    pass "[1.2] real ISO (graphics): the Console window's screen after clear equals tests/screen_ref.py's reference pixel for pixel, the clock drawn from the kernel's clock string (the VirtualBox graphics group's reference)"
 else
-    fail "[1.2] real ISO (graphics): the console after clear differs from tests/screen_ref.py's reference ($SREF)"
+    fail "[1.2] real ISO (graphics): the Console window after clear differs from tests/screen_ref.py's reference ($SREF)"
+fi
+# 1.3 stage 8: the kernel stack's peak after thread 0 composed the desktop
+# and the Console window ("mem"'s last row; the [0.8] check of the boot
+# reads the line logged at System ready, before the desktop starts).
+python3 "$QMPKEYS" "$SOCK" "$LOG" "System ready." --text "mem{ret}" --gap 0.05 \
+    --done "Kernel stack:  " --done-timeout 20 >/dev/null 2>&1      # mem's padded row (the boot's line has one space)
+sleep 1
+ISO_PEAK=$(awk '/^madire> mem$/ { on = 1 } on && /^Kernel stack: +[0-9]+ bytes at peak, of 16384$/ { print $3; exit }' "$LOG")
+echo "      the kernel stack after the desktop: peak ${ISO_PEAK:-?} bytes"
+if [ -n "$ISO_PEAK" ] && [ "$ISO_PEAK" -gt 0 ] && [ "$ISO_PEAK" -lt 16384 ]; then
+    pass "[1.3] real ISO: the kernel stack's peak after thread 0 composed the desktop and the Console window ('mem'): 0 < peak < 16 KiB ($ISO_PEAK bytes)"
+else
+    fail "[1.3] real ISO: no 'mem' stack row after the desktop, or its peak out of range (${ISO_PEAK:-missing})"
 fi
 kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
 
-echo "== [0.11] ELF programs loaded into processes (test=elfrun)"
+section "[0.11] ELF programs loaded into processes (test=elfrun)"
 # One loading path: built-in images and ELF modules both become load plans.
 # Each module program with a built-in twin must give the twin's result; two
 # isolate instances run at once; no user page is a module page; the modules
@@ -515,7 +542,7 @@ for batch in 0 1 2; do
     reject "$LOG" "PANIC"                    "[0.11] elfrun fixtures, boot $((batch + 1)) of 3: no panic"
 done
 
-echo "== [0.11] Policy (b): preempt_enable switches at once, turns stay within 6 ticks"
+section "[0.11] Policy (b): preempt_enable switches at once, turns stay within 6 ticks"
 # turn_bound <label> <log> <line prefix>: the "longest turn taken by" line
 # names the thread, and its turn is at most 6 ticks (a slice of 5 plus the
 # rest of one guarded section). Policy (b) rule: a turn over 6 ticks is a
@@ -574,7 +601,7 @@ else
     fail "[0.11] preemptoff holder: the longest turn is not the holder's 20-tick hold (${ow:-none})"
 fi
 
-echo "== [0.11] Threads that live in guarded sections (test=preemptlong)"
+section "[0.11] Threads that live in guarded sections (test=preemptlong)"
 thread_diag preemptlong 15
 grep -E "^Preemptlong test: " "$LOG" | grep -vE ': (PASS|FAIL)$|for 3 seconds\.\.\.$' | sed 's/^/      /'
 expect "$LOG" "^Preemptlong test: create: 4 threads that keep preemption disabled until each next tick: OK$" \
@@ -590,7 +617,7 @@ expect "$LOG" "^Preemptlong test: PASS \("   "[0.11] preemptlong: PASS"
 reject "$LOG" "PANIC|MISMATCH"               "[0.11] preemptlong: no panic, no mismatch"
 expect "$LOG" "System ready\."               "[0.11] preemptlong: System ready afterwards"
 
-echo "== [0.11] Console: run, run -b and ps (a console session through QMP)"
+section "[0.11] Console: run, run -b and ps (a console session through QMP)"
 # Four program modules; the console waits for a foreground program (keys
 # are ignored meanwhile, hence the pauses) and collects it, then prompts.
 LOG=$OUT/serial-run.log
@@ -646,7 +673,7 @@ else fail "[0.11] run session: a line of $w characters (limit 79), or the sessio
 reject "$LOG" "^key: "                             "[0.11] run session: no key events logged (keylog off)"
 reject "$LOG" "PANIC|Screen output from thread"    "[0.11] run session: no panic, no screen-rule violation"
 
-echo "== [0.11] Console: kill (asks first) and Ctrl+C (a console session through QMP)"
+section "[0.11] Console: kill (asks first) and Ctrl+C (a console session through QMP)"
 # The boot self-test uses process IDs 1-3, so the first program is 4.
 LOG=$OUT/serial-kill.log
 PM=""
@@ -709,7 +736,7 @@ else fail "[0.11] kill session: a line of $w characters (limit 79), or the sessi
 reject "$LOG" "^key: "                             "[0.11] kill session: no key events logged (keylog off; Ctrl+C never logged as a key)"
 reject "$LOG" "PANIC|Screen output from thread"    "[0.11] kill session: no panic, no screen-rule violation"
 
-echo "== [0.11] Foreground program output on screen, scrollback and Q8 back-pressure"
+section "[0.11] Foreground program output on screen, scrollback and Q8 back-pressure"
 LOG=$OUT/serial-program-output.log
 SOCK=$OUT/qmp-program-output.sock
 PM="$OUT/user/hello.elf,$OUT/user/lines.elf,$OUT/test-user/flood.elf"
@@ -864,3 +891,113 @@ reject "$LOG" "PANIC|Screen output from thread" "[0.11] program output session: 
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 
+
+# ---- 1.3 stage 3b: the desktop behind test=desktop (tests/qemu-lib.sh) ----
+
+section "[1.3] The desktop at 800x600x24: test=desktop (tests/qmp_desktop.py), desktopnocache, slot 506 (stage 3b)"
+# The smallest mode, at 3 bytes per pixel. desktop_case: 8 checks, two boots.
+desktop_case 800 800x600x24 100 "desktop at 800x600x24" "resolution: 800x600x24"
+
+section "[1.3] Windows at 800x600x24: the About window (test=desktop desktopabout), drag, clamp, close, desktopnosurface (stage 4a)"
+# desktop_about_case (tests/qemu-lib.sh): 13 checks, two boots.
+desktop_about_case 800 800x600x24 100 "windows at 800x600x24" "resolution: 800x600x24"
+
+section "[1.3] The Console window at 800x600x24: a key opens it, commands, Shift+PgUp, hide and show, focus, desktopnosurface (stage 4b)"
+# desktop_console_case (tests/qemu-lib.sh): 7 checks, two boots.
+desktop_console_case 800 800x600x24 100 "Console window at 800x600x24" "resolution: 800x600x24"
+
+section "[1.3] The menus at 800x600x24: the M button and menu, the right-click menu, the Restart dialog, the Windows key, no mouse (stage 5)"
+# desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
+# ending with Restart; the decision 20 key session; test=mousefail=4).
+desktop_menu_case 800 800x600x24 100 "menus at 800x600x24" "resolution: 800x600x24"
+
+# ---- 1.3 stage 7b: the console keys (decision 16; docs/commands.md) ----
+
+section "[1.3] Console keys: Ctrl+L, A, E, K, U and W in the Console window at 800x600x24 and the full-screen console; scrollback first (stage 7b)"
+# One typed line uses every key, at the start, the middle and the end:
+# "ho beta", Ctrl+A, "zzz ", Ctrl+U (gives "ho beta"), "ec", Ctrl+E,
+# " gamma junk", Ctrl+W twice (gives "echo beta "), "delta", Left 6 times,
+# Ctrl+K (gives "echo beta"), Left twice, Ctrl+L (the screen cleared, the
+# line and its cursor on the top row), "-": the line run is "echo be-ta".
+# Then "echo sbk", Ctrl+A, Shift+PgUp (scrolled back), Ctrl+E (back to the
+# live view first, then the end of the line), "x": "echo sbkx". The same
+# keys in the Console window (test=desktop desktoplog; the screens against
+# the reference drawn from vga_shadow, row 0 of the grid read from it) and
+# on the full-screen console (the default boot; row 0 read from the VGA
+# text screen by tests/qmp_screen.py). 8 checks, two boots.
+CK_LINE='ho beta{ctrl+a}zzz {ctrl+u}ec{ctrl+e} gamma junk{ctrl+w}{ctrl+w}delta{left}{left}{left}{left}{left}{left}{ctrl+k}{left}{left}{ctrl+l}-{wait:2}'
+CK_SB='echo sbk{ctrl+a}{shift+pgup}{wait:2}{ctrl+e}x{ret}'
+CK_CLEARED="console: Ctrl+L: screen cleared, the input line kept"
+# ck_lines <log> <label>: the two lines run, their output, and the scrollback order.
+ck_lines() {
+    local log=$1 label=$2
+    if grep -A1 -xF "madire> echo be-ta" "$log" | grep -qxF "be-ta" &&
+       [ "$(grep -cE '^madire> ' "$log")" -eq 2 ] && ! grep -E "^(madire> |console: )" "$log" | grep -qE "zzz|gamma|junk|delta"; then
+        pass "[1.3] console keys, $label: Ctrl+A, Ctrl+U, Ctrl+E, Ctrl+W (twice), Ctrl+K and Ctrl+L in one typed line give the line 'echo be-ta', run with its output; the deleted words never logged"
+    else
+        fail "[1.3] console keys, $label: the edited line is not 'echo be-ta' with its output ($(grep -E '^madire> ' "$log" | head -n 3 | tr '\n' ' '))"
+    fi
+    expect_in_order "$log" "[1.3] console keys, $label: in scrollback Ctrl+E first returns to the live view, then acts (the line run is 'echo sbkx')" \
+        "^madire> echo be-ta$" "^console: scrolled back: line [0-9]+ of [0-9]+, top '" "^console: back at the bottom$" \
+        "^madire> echo sbkx$" "^sbkx$"
+}
+# The Console window (800x600x24, part 3's mode).
+CK_LOG=$OUT/serial-desktop-conskeys-800.log
+CK_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+CK_SHP=$(printf '0x%x' $(( 0x${CK_SHV:-0} - 0xffffffff80000000 )))
+desktop_iso "conskeys-800" "test=desktop desktoplog" "resolution: 800x600x24"
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$CK_LOG" "$DT_ISO" 800x600 ready windowed "type:x" wshot \
+        "type:$CK_LINE" "wait:$CK_CLEARED" wshot "type:{ret}" "wait:be-ta" \
+        "type:$CK_SB" "wait:sbkx" wshot --shadow "$CK_SHP"
+else : > "$CK_LOG"; fi
+grep -E "^console: |^desktop: (open|focus)|^Desktop: a key" "$CK_LOG" | head -n 12 | sed 's/^/      /'
+grep -E "^GRID " <<< "$DT_OUT" | sed 's/^/      /'
+if [ "$(grep -cxF "$CK_CLEARED" "$CK_LOG")" -eq 1 ] &&
+   grep -qE "^GRID 2 crc=[0-9a-f]+ row0='madire> echo be-ta' " <<< "$DT_OUT" &&
+   grep -qE "^WSCREEN 2 size=800x600 differ=0 " <<< "$DT_OUT"; then
+    pass "[1.3] console keys, the Console window: Ctrl+L clears the screen and keeps the typed line and its cursor (row 0 of the grid 'madire> echo be-ta', the '-' typed after it at the kept cursor); logged once by a fixed line; the window equals the reference pixel for pixel"
+else
+    fail "[1.3] console keys, the Console window: Ctrl+L did not keep the line on row 0, was not logged once, or the screen differs ($(grep -E '^(WSCREEN 2|GRID 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+fi
+ck_lines "$CK_LOG" "the Console window"
+if grep -qE "^WSCREEN 1 size=800x600 differ=0 " <<< "$DT_OUT" && grep -qE "^WSCREEN 3 size=800x600 differ=0 " <<< "$DT_OUT" &&
+   grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$CK_LOG" &&
+   grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+   ! grep -qE "^key: " "$CK_LOG" && ! grep -qE "PANIC|FAILED|events dropped|bytes dropped" "$CK_LOG"; then
+    pass "[1.3] console keys, the Console window: the window opened by a key and the screen after the scrollback key equal the reference pixel for pixel; every window line as predicted; no key logged, no panic, FAILED line or drop"
+else
+    fail "[1.3] console keys, the Console window: $(grep -E '^(WSCREEN 1|WSCREEN 3|EVENTS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+# The full-screen console (the default boot, VGA text).
+CK_LOG=$OUT/serial-conskeys-fullscreen.log
+SOCK=$OUT/qmp-conskeys.sock
+rm -f "$CK_LOG" "$SOCK" "$OUT/screen-conskeys.bin"
+timeout 240 qemu-system-x86_64 -display none -no-reboot -serial file:"$CK_LOG" \
+    -qmp unix:"$SOCK",server=on,wait=off -m 32M -kernel "$KERNEL" >/dev/null 2>&1 &
+QPID=$!
+python3 "$QMPKEYS" "$SOCK" "$CK_LOG" "System ready." --text "x{wait:1}$CK_LINE" --gap 0.05 \
+    --done "$CK_CLEARED" --done-timeout 90
+CK_SCREEN=bad
+python3 "$QMPSCREEN" "$SOCK" "$OUT/screen-conskeys.bin" --log "$CK_LOG" --wait '^console: Ctrl\+L: screen cleared, the input line kept$' 1 \
+    --row 0 '^madire> echo be-ta$' > "$OUT/screen-conskeys.txt" 2>&1 && CK_SCREEN=ok
+grep -E "^(row 0[0-2]|CHECK)" "$OUT/screen-conskeys.txt" | sed 's/^/      /'
+python3 "$QMPKEYS" "$SOCK" "$CK_LOG" "System ready." --text "{ret}$CK_SB" --gap 0.05 --done "sbkx" --done-timeout 90
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
+[ -f "$CK_LOG" ] || : > "$CK_LOG"
+grep -E "^console: |^madire> " "$CK_LOG" | head -n 8 | sed 's/^/      /'
+if [ "$CK_SCREEN" = ok ] && [ "$(grep -cxF "$CK_CLEARED" "$CK_LOG")" -eq 1 ]; then
+    pass "[1.3] console keys, the full-screen console: Ctrl+L clears the screen and keeps the typed line and its cursor (VGA row 0 'madire> echo be-ta'); logged once by a fixed line"
+else
+    fail "[1.3] console keys, the full-screen console: Ctrl+L did not keep the line on row 0, or was not logged once (see $OUT/screen-conskeys.txt)"
+fi
+ck_lines "$CK_LOG" "the full-screen console"
+reject "$CK_LOG" "^key: |PANIC|FAILED|Screen output from thread" "[1.3] console keys, the full-screen console: no key logged, no panic, FAILED line or screen-rule violation"
+
+# ---- 1.3 stage 8: the switch: the default path shows the desktop ----
+
+section "[1.3] The splash-to-desktop handover at 800x600x24: the default path (still desktoplog mouselog; stage 8)"
+# desktop_handover_case (tests/qemu-lib.sh): 7 checks, one boot.
+desktop_handover_case 800 800x600x24 100 "handover at 800x600x24" 1.3 "resolution: 800x600x24"

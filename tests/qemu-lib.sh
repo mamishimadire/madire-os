@@ -5,7 +5,9 @@
 # lines, every line below was moved unchanged from the single script.
 # 0.13 stage 3a adds limine_iso and limine_tree, and builds the keylog test
 # ISO with Limine instead of GRUB. 1.2 stage 7 adds the mouse sessions'
-# helpers at the end (parts 1 and stress).
+# helpers at the end (parts 1 and stress). 1.3 stage 7a bounds boot_until's
+# stop and adds boot_until_below. 1.3 stage 8 adds the splash-to-desktop
+# handover's case at the end (parts 2 and 3).
 
 # limine_iso <dir> <iso> (0.13): makes a bootable ISO from <dir> as `make iso`
 # does (xorriso, then limine bios-install). <dir> must hold boot/limine/ with
@@ -106,9 +108,26 @@ owner_check() {
 # text), so a deliberate halt need not wait for its time limit (0.12 stage
 # 2b). If the line never comes, QEMU runs to its time limit as with boot, and
 # the checks on the log fail.
+# 1.3 stage 7a: the stop is bounded (run 41001624985: test=fileio ran to its
+# 240 s limit although "System ready." came at about 1.5 s). 0.5 s after the
+# line, SIGTERM to timeout; if timeout has not ended within 5 s, SIGKILL to
+# its process group (GNU timeout makes itself a group leader, as it is not
+# run with --foreground) and to every process below it, listed before the
+# kill: tests/qemu-watch.sh starts the real QEMU with setsid, outside that
+# group (pgrep lists them; its absence is a FAIL, checked once). Report
+# only (decides no check): "BOOT_UNTIL <log> line_seen=<s>
+# stop=term|forced|limit|exited"; without the line, line_seen=none and
+# stop=limit if timeout ended the boot at its time limit (status 124),
+# stop=exited if QEMU ended by itself. Part static's self-test proves the
+# four paths with a fake QEMU (tests/boot-until-fake-qemu.sh).
 boot_until() {
-    local log=$1 secs=$2 line=$3 t0
+    local log=$1 secs=$2 line=$3 t0 seen=none stop="" ms i rc
     shift 3
+    if [ -z "${BOOT_UNTIL_PGREP:-}" ]; then
+        BOOT_UNTIL_PGREP=checked
+        command -v pgrep >/dev/null 2>&1 ||
+            fail "[1.3] boot_until: pgrep not found (it lists the processes below timeout for a forced stop)"
+    fi
     rm -f "$log"
     t0=$(date +%s%N)
     timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
@@ -116,15 +135,44 @@ boot_until() {
     local qpid=$!
     while kill -0 "$qpid" 2>/dev/null; do
         if [ -f "$log" ] && grep -qxF -- "$line" "$log"; then
+            ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+            seen=$((ms / 1000)).$((ms % 1000 / 100))
             sleep 0.5                   # anything still in flight reaches the log
             kill "$qpid" 2>/dev/null
+            stop=term
+            for ((i = 0; i < 50; i++)); do
+                kill -0 "$qpid" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$qpid" 2>/dev/null; then
+                local below
+                below=$(boot_until_below "$qpid")
+                kill -KILL -- -"$qpid" 2>/dev/null
+                kill -KILL "$qpid" $below 2>/dev/null
+                stop=forced
+            fi
             break
         fi
         sleep 0.2
     done
     wait "$qpid" 2>/dev/null
+    rc=$?
+    if [ -z "$stop" ]; then
+        if [ "$rc" -eq 124 ]; then stop=limit; else stop=exited; fi
+    fi
     [ -f "$log" ] || : > "$log"
     boot_seconds "$log" "$t0"           # 1.0 stage 3: report only
+    echo "BOOT_UNTIL ${log##*/} line_seen=$seen stop=$stop"
+}
+
+# boot_until_below <pid> (1.3 stage 7a): the pids of every process below
+# <pid> (children, their children, ...), one per line.
+boot_until_below() {
+    local c
+    for c in $(pgrep -P "$1"); do
+        echo "$c"
+        boot_until_below "$c"
+    done
 }
 
 # thread_diag <name> <seconds>: boots test=<name> into serial-<name>.log.
@@ -274,4 +322,735 @@ mouse_done_ok() {
     echo "      ${d:-no Mouse test: done line}"
     read -r i b e <<< "$(sed -nE "s/^Mouse test: done: $2 packets from $(( $2 * 3 )) bytes \(0 bad bytes, 0 overflows, 0 dropped: queue full\); IRQ12 delivered ([0-9]+) times: ([0-9]+) bytes read, ([0-9]+) with nothing waiting, 0 with a port 1 byte$/\1 \2 \3/p" <<< "$d")"
     [ -n "${e:-}" ] && [ "$b" -eq $(( $2 * 3 )) ] && [ "$e" -le 1 ] && [ "$i" -eq $(( b + e )) ]
+}
+
+# ---- 1.3 stage 3b: the desktop behind test=desktop (parts 2 and 3) ----
+
+# Test ISOs with one entry (no "textmode" line) and "cmdline: test=desktop
+# ...": at System ready the desktop takes the screen (kernel/display/
+# desktop.h). tests/qmp_desktop.py stops the guest at the desktop's frame
+# marker and compares the screendump with tests/desktop_ref.py's desktop,
+# its clock drawn from the logged "desktop: clock HH:MM" (no mask); then
+# the pointer after relative moves (parked at 0, 0 first), and a key that
+# hands the screen back to the console without being typed (since stage
+# 4b: that opens the Console window without being typed). A second boot
+# with desktopnocache must give the same screen. tests/pagetables.py
+# models slot 506 with and without the background cache.
+QMPDESKTOP=$(dirname "$0")/qmp_desktop.py
+# desktop_iso <name> <cmdline> [a limine.conf line]: DT_ISO, empty if it failed.
+desktop_iso() {
+    local dir=$OUT/isodesktop-$1
+    DT_ISO=$OUT/madire-os-desktop-$1.iso
+    limine_tree "$dir"
+    {
+        printf 'timeout: 0\n\n/Madire OS (desktop test)\n    protocol: multiboot1\n'
+        [ -z "${3:-}" ] || printf '    %s\n' "$3"
+        printf '    path: boot():/boot/madire.kernel\n'
+        printf '    cmdline: %s\n' "$2"
+    } > "$dir/boot/limine/limine.conf"
+    sed 's/^/      limine.conf: /' "$dir/boot/limine/limine.conf"
+    limine_iso "$dir" "$DT_ISO" || { echo "      the test ISO could not be made"; DT_ISO=""; }
+}
+# desktop_boot <log> <iso> <WxH> <qmp_desktop.py steps...>: boots paused at
+# -m 128M, runs qmp_desktop.py, then stops QEMU. DT_OUT holds its output
+# (also kept in <log>.desktop.txt); it waits for DT_UNTIL at the end.
+desktop_boot() {
+    local log=$1 iso=$2 size=$3 sock=$OUT/qmp-desktop.sock t0 qpid
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    DT_OUT=$(python3 "$QMPDESKTOP" "$sock" "$log" "$@" --size "$size" ${DT_UNTIL:+--until "$DT_UNTIL"} \
+             --timeout 180 2>&1)
+    grep -v '^MISMATCH ' <<< "$DT_OUT" | sed 's/^/      /'
+    grep '^MISMATCH ' <<< "$DT_OUT" | head -n 5 | sed 's/^/      /'
+    echo "$DT_OUT" > "${log%.log}.desktop.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+# desktop_moves <dx> <dy>: qmp_desktop.py move steps adding up to (dx, dy),
+# none larger than 127 on either axis (one PS/2 packet each).
+desktop_moves() {
+    local dx=$1 dy=$2 sx sy
+    while [ "$dx" -ne 0 ] || [ "$dy" -ne 0 ]; do
+        sx=$dx; [ "$sx" -gt 127 ] && sx=127; [ "$sx" -lt -127 ] && sx=-127
+        sy=$dy; [ "$sy" -gt 127 ] && sy=127; [ "$sy" -lt -127 ] && sy=-127
+        printf 'move:%d,%d ' "$sx" "$sy"
+        dx=$((dx - sx)); dy=$((dy - sy))
+    done
+}
+# desktop_case <name> <mode WxHxD> <percent> <label> [a limine.conf line]:
+# the desktop's 8 checks in one mode (two boots).
+desktop_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h pt px py first
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    # Boot 1: the desktop (cached background), the pointer, a key.
+    log=$OUT/serial-desktop-$name.log
+    desktop_iso "$name" "test=desktop desktoplog mouselog" "$extra"
+    px=$((w - 30)); py=$((h - 12))
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        # shellcheck disable=SC2046
+        DT_UNTIL="desktop-key-ok" desktop_boot "$log" "$DT_ISO" "${w}x${h}" screen \
+            $(desktop_moves -635 -635) $(desktop_moves 127 100) pointer \
+            $(desktop_moves $((px - 127)) $((py - 100))) pointer \
+            "type:x{wait:1}echo desktop-key-ok{ret}"
+    else : > "$log"; fi
+    grep -E "^Desktop|^Mouse: pointer|^display: frame |^desktop: clock " "$log" | head -n 12 | sed 's/^/      /'
+    first=$(sed -nE 's/^desktop: clock (.*)$/\1/p' "$log" | head -n 1)
+    if grep -qxF "Desktop: shown on $mode (scale $pct %): the wallpaper with the M, the taskbar, the clock $first; a key opens the Console window (test=desktop, 1.3 stage 4b)" "$log" &&
+       grep -qE "^Desktop: slot 506: background cache at 0xfffffd0080000000 \([0-9]+ pages of free RAM, pitch $((w * ${mode##*x} / 8))\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^Desktop: slot 506 now: [0-9]+ page tables, [0-9]+ pages mapped \(walked\)$" "$log"; then
+        pass "[1.3] $label: Desktop: shown on $mode (scale $pct %) with its first clock; the background cached in slot 506 at 0xfffffd0080000000; slot 506 walked"
+    else
+        fail "[1.3] $label: no Desktop: shown line with the first logged clock, no background cache line, or no slot 506 walk line (see $log)"
+    fi
+    if grep -qE "^SCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the desktop at its first frame (the wallpaper with the M at the splash's place, the taskbar, the clock as logged) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: the desktop's first frame differs from tests/desktop_ref.py's rendering ($(grep -E '^(SCREEN 1|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" && grep -qE "^mouse: packet 5: .* at \(0, 0\)$" "$log" &&
+       grep -qE "^SCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the pointer parked at (0, 0), then moved to (127, 100): every packet exact, the screen (the pointer on the desktop) equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: a packet not as predicted, not parked at (0, 0), or the pointer's screen at (127, 100) differs ($(grep -E '^(PACKETS|SCREEN 2|MISMATCH|qmp_desktop)' <<< "$DT_OUT" | head -n 3 | tr '\n' ' '))"
+    fi
+    if grep -qE "^SCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the pointer moved over the taskbar's clock to ($px, $py): the screen equals the reference pixel for pixel (its earlier place shows the desktop again)"
+    else
+        fail "[1.3] $label: the pointer's screen at ($px, $py) differs ($(grep -E '^(SCREEN 3|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$log" &&
+       grep -qxF "madire> echo desktop-key-ok" "$log" && grep -qxF "desktop-key-ok" "$log" &&
+       ! grep -qE "^madire> x|PANIC|events dropped|FAILED|MISMATCH" "$log"; then
+        pass "[1.3] $label: a key opens the Console window, where the console opens; the key not typed (madire> echo desktop-key-ok, no x); no FAILED line, panic or dropped key"
+    else
+        fail "[1.3] $label: the key did not open the Console window, was typed, or a FAILED line, panic or dropped key (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-$name")
+    sed 's/^/      /' <<< "$pt"
+    if grep -qE "^PAGETABLES_RESULT label=desktop-$name computed=([0-9]+) logged=\1 .* MATCH$" <<< "$pt" &&
+       grep -qE "^PAGETABLES_DESKTOP label=desktop-$name cache=present computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
+        pass "[1.3] $label: tests/pagetables.py models slot 506 with the background cache: its tables and pages equal the kernel's walk, the cache's tables as logged"
+    else
+        fail "[1.3] $label: tests/pagetables.py: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$pt" | tr '\n' ' ')"
+    fi
+    # Boot 2: desktopnocache: the background drawn per damaged rectangle.
+    log=$OUT/serial-desktop-$name-nocache.log
+    desktop_iso "$name-nocache" "test=desktop desktopnocache" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" screen
+    else : > "$log"; fi
+    grep -E "^Desktop|^display: frame |^desktop: clock " "$log" | head -n 6 | sed 's/^/      /'
+    if grep -qxF "Desktop: background not cached (test option desktopnocache): drawn per damaged rectangle" "$log" &&
+       grep -qE "^SCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|MISMATCH" "$log"; then
+        pass "[1.3] $label, desktopnocache: the background not cached, drawn per damaged rectangle: the same screen as the reference pixel for pixel"
+    else
+        fail "[1.3] $label, desktopnocache: no 'not cached' line, a different screen, or a FAILED line or panic ($(grep -E '^(SCREEN 1|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-$name-nocache")
+    sed 's/^/      /' <<< "$pt"
+    if grep -qE "^PAGETABLES_RESULT label=desktop-$name-nocache computed=([0-9]+) logged=\1 .* MATCH$" <<< "$pt" &&
+       grep -qE "^PAGETABLES_DESKTOP label=desktop-$name-nocache cache=absent computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
+        pass "[1.3] $label, desktopnocache: tests/pagetables.py models slot 506 without the cache: its tables and pages equal the kernel's walk"
+    else
+        fail "[1.3] $label, desktopnocache: tests/pagetables.py: $(grep -E '^PAGETABLES_(RESULT|DESKTOP)' <<< "$pt" | tr '\n' ' ')"
+    fi
+}
+
+# ---- 1.3 stage 4a: windows: the About window behind test=desktop desktopabout ----
+
+# desktop_about_case <name> <mode WxHxD> <percent> <label> [a limine.conf
+# line]: the window manager's 13 checks in one mode (two boots, both with
+# desktoplog and mouselog). tests/qmp_desktop.py follows every packet and
+# key with tests/desktop_ref.py's model of the window manager's rules (WM):
+# its WSCREEN lines compare each screen with the desktop, the model's
+# windows (with their logged About values, cut as ui_about.h says) and the
+# pointer; its EVENTS line compares the kernel's window lines ("desktop:
+# open|raise|focus|drag|close ...") with the model's, in order; its DRAG
+# lines give where each drag asked to go and where the rules put it.
+# Boot 1, the window surfaces (slot 506, after the cache): the first frame,
+# a drag by the title bar, a drag that asks to go under the taskbar and
+# past the left edge (clamped), hover, press and release on the close
+# button. Boot 2, desktopnosurface (every window painted on exposure): the
+# first frame, a drag, a click on the desktop (no window focused) and on
+# the window (focused again), a key that does nothing, Esc, then a key
+# back to the console (since stage 4b: a key that opens the Console
+# window; tests/qmp_desktop.py's model follows it, so the EVENTS line
+# includes its lines).
+desktop_about_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h s mb ok d1 d2 pt
+    local ax ay gx gy ww wh bar left
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; s=$((pct / 25))
+    # Boot 1: surfaces.
+    log=$OUT/serial-desktop-about-$name.log
+    desktop_iso "about-$name" "test=desktop desktopabout desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" wshot rel:-1000,-1000 to:title drag:-120,-60 wshot \
+            to:title-right drag:-2000,1000 wshot to:close wshot press wshot release wshot --about
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (about|open|drag|close|focus)" "$log" | head -n 24 | sed 's/^/      /'
+    mb=$(sed -nE 's/^Memory: [0-9]+ MB detected, ([0-9]+) MB usable below 4 GiB, .*/\1/p' "$log" | head -n 1)
+    if grep -qxF "Desktop: the About window opened at start (test option desktopabout; stage 5's menus open it)" "$log" &&
+       grep -qxF "desktop: about Version: $VERSION" "$log" && grep -qE "^desktop: about Boot loader: Limine" "$log" &&
+       grep -qxF "desktop: about Display: $mode" "$log" && [ -n "$mb" ] && grep -qxF "desktop: about Memory: $mb MB" "$log" &&
+       grep -qxF "desktop: about Mode: Live (memory only)" "$log"; then
+        pass "[1.3] $label: the About window opened at start (desktopabout); its values logged in full: Version $VERSION, Boot loader Limine's name, Display $mode, Memory $mb MB (the boot's usable MB), Mode Live (memory only)"
+    else
+        fail "[1.3] $label: no 'About window opened at start' line, or an About value not as expected (see $log)"
+    fi
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-about-$name")
+    grep -E "window surface|PAGETABLES_SURFACES" <<< "$pt" | sed 's/^/      /'
+    if grep -qE "^Desktop: slot 506: window surface Console at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, [0-9]+x[0-9]+, pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^Desktop: slot 506: window surface About at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, $(( (352 * s + 2) / 4 ))x$(( (377 * s + 2) / 4 )), pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^PAGETABLES_SURFACES label=desktop-about-$name cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
+        pass "[1.3] $label: the window surfaces (Console, then About, 352x377 dp) in slot 506 right after the background cache, under the share; tests/pagetables.py models them: tables and pages equal the kernel's walk"
+    else
+        fail "[1.3] $label: window surface lines or tests/pagetables.py's model: $(grep -E '^PAGETABLES_SURFACES' <<< "$pt")"
+    fi
+    if grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the About window's first frame (active, centred above the taskbar, from its surface) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: the About window's first frame differs ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    d1=$(sed -nE 's/^DRAG 1 asked \((-?[0-9]+), (-?[0-9]+)\) got \(\1, \2\) ([0-9]+x[0-9]+) .*/\1, \2) \3/p' <<< "$DT_OUT")
+    if [ -n "$d1" ] && grep -qxF "desktop: drag About to ($d1" "$log" && grep -qE "^WSCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: a drag by the title bar moves the window 1:1 (logged as predicted: to ($d1); the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: the drag by the title bar: $(grep -E '^(DRAG 1|WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    d2=$(sed -nE 's/^DRAG 2 asked \((-?[0-9]+), (-?[0-9]+)\) got \((-?[0-9]+), (-?[0-9]+)\) ([0-9]+)x([0-9]+) bar ([0-9]+) left (-?[0-9]+)$/\1 \2 \3 \4 \5 \6 \7 \8/p' <<< "$DT_OUT")
+    ok=0
+    if [ -n "$d2" ]; then
+        read -r ax ay gx gy ww wh bar left <<< "$d2"
+        if [ $((ay + wh)) -gt "$bar" ] && [ $((gy + wh)) -eq "$bar" ] && [ "$ax" -lt "$left" ] && [ "$gx" -eq "$left" ] &&
+           [ "$left" -eq $(( (48 * s + 2) / 4 - ww )) ] && grep -qxF "desktop: drag About to ($gx, $gy) ${ww}x${wh}" "$log" &&
+           grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+            ok=1
+        fi
+    fi
+    if [ "$ok" = 1 ]; then
+        pass "[1.3] $label: a drag that asks to go under the taskbar and past the left edge is clamped (its bottom on the taskbar's top, 48 dp left on the screen; logged as predicted: ($gx, $gy)); the screen equals the reference"
+    else
+        fail "[1.3] $label: the clamped drag: $(grep -E '^(DRAG 2|WSCREEN 3|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close button of About: hover" "$log" && grep -qE "^WSCREEN 4 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the pointer on the close button: hover (logged), filled in danger; the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: the close button's hover: $(grep -E '^(WSCREEN 4|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close button of About: pressed" "$log" && grep -qE "^WSCREEN 5 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the left button pressed on the close button: pressed (logged), filled in danger.pressed; the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: the close button pressed: $(grep -E '^(WSCREEN 5|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close About (the close button)" "$log" && grep -qE "^WSCREEN 6 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" && grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|MISMATCH" "$log"; then
+        pass "[1.3] $label: released on the close button: the window closes (logged), the screen back to the plain desktop with the pointer, pixel for pixel; every window line as the model predicts, every packet exact; no panic, FAILED line or drop"
+    else
+        fail "[1.3] $label: the close: $(grep -E '^(WSCREEN 6|EVENTS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    # Boot 2: desktopnosurface: every window painted on exposure (A1).
+    log=$OUT/serial-desktop-about-$name-nosurface.log
+    desktop_iso "about-$name-nosurface" "test=desktop desktopabout desktopnosurface desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="desktop-about-ok" desktop_boot "$log" "$DT_ISO" "${w}x${h}" wshot rel:-1000,-1000 to:title \
+            drag:-100,-50 wshot to:desktop press release wshot to:body press release wshot key:a esc wshot \
+            "type:x{wait:1}echo desktop-about-ok{ret}" --about
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (open|drag|close|focus)" "$log" | head -n 20 | sed 's/^/      /'
+    pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-about-$name-nosurface")
+    grep -E "PAGETABLES_SURFACES" <<< "$pt" | sed 's/^/      /'
+    if grep -qxF "Desktop: window Console drawn on exposure (test option desktopnosurface)" "$log" &&
+       grep -qxF "Desktop: window About drawn on exposure (test option desktopnosurface)" "$log" &&
+       grep -qE "^PAGETABLES_SURFACES label=desktop-about-$name-nosurface cache=present surfaces=none computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt" &&
+       grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: no window surface (slot 506 modelled without them); the About window painted on exposure: its first frame equals the reference pixel for pixel (as with its surface)"
+    else
+        fail "[1.3] $label, desktopnosurface: no 'drawn on exposure' lines, slot 506 not as modelled, or the first frame differs ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') $(grep -E '^PAGETABLES_SURFACES' <<< "$pt"))"
+    fi
+    d1=$(sed -nE 's/^DRAG 1 asked \((-?[0-9]+), (-?[0-9]+)\) got \(\1, \2\) ([0-9]+x[0-9]+) .*/\1, \2) \3/p' <<< "$DT_OUT")
+    if [ -n "$d1" ] && grep -qxF "desktop: drag About to ($d1" "$log" && grep -qE "^WSCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: a drag by the title bar (the damaged rectangles painted on exposure; logged as predicted: to ($d1); the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label, desktopnosurface: the drag: $(grep -E '^(DRAG 1|WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: focus none" "$log" && grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       [ "$(grep -cxF "desktop: focus About" "$log")" -ge 2 ] && grep -qE "^WSCREEN 4 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: a click on the desktop leaves no window focused (the window inactive: its edge and title), a click on the window focuses it again (active); both screens equal the reference pixel for pixel"
+    else
+        fail "[1.3] $label, desktopnosurface: focus by clicks: $(grep -E '^(WSCREEN 3|WSCREEN 4|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close About (Esc)" "$log" &&
+       ! sed -n '1,/^desktop: close About (Esc)$/p' "$log" | grep -qE "^Desktop: a key opened the Console window" &&
+       grep -qE "^WSCREEN 5 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: with the About window focused a key (a) does nothing and Esc closes it (logged); the screen back to the plain desktop, pixel for pixel; every window line as the model predicts"
+    else
+        fail "[1.3] $label, desktopnosurface: the keys with the window focused: $(grep -E '^(WSCREEN 5|EVENTS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$log" &&
+       grep -qxF "madire> echo desktop-about-ok" "$log" && grep -qxF "desktop-about-ok" "$log" &&
+       ! grep -qE "^madire> (a|x)|PANIC|FAILED|events dropped|bytes dropped|MISMATCH" "$log" &&
+       grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: with no window focused a key opens the Console window, not typed (stage 4b); no panic, FAILED line or drop; every packet exact"
+    else
+        fail "[1.3] $label, desktopnosurface: the key that opens the Console window, or a panic, FAILED line or drop (see $log)"
+    fi
+}
+
+# ---- 1.3 stage 4b: the Console window behind test=desktop ----
+
+# desktop_console_case <name> <mode WxHxD> <percent> <label> [a limine.conf
+# line]: the Console window's 7 checks in one mode (two boots, both with
+# desktopabout, desktoplog and mouselog). tests/qmp_desktop.py's model
+# (tests/desktop_ref.py's WM) follows every packet and key: with no window
+# focused a key opens the Console window and is not typed, with it focused
+# the console takes the key, with the About window focused keys do
+# nothing. Each WSCREEN compares the screen with the desktop, the model's
+# windows and the pointer, the Console window drawn from the kernel's cell
+# grid (vga_shadow, saved over QMP at the same stop: --shadow); its GRID
+# line gives the grid's CRC and rows 0 and 24. The commands typed in the
+# window are checked against the same lines as on the full-screen console
+# (version and uname -a as [0.5] and [0.9.1] read them, echo). Boot 1, the
+# window surfaces: a click on the desktop (no window focused), a key opens
+# the Console window, three commands, help and Shift+PgUp (scrolled back:
+# row 0 is the logged top line), its close button hides it, a click on the
+# desktop and a key show it again (the same grid), the Console window
+# dragged aside, a click on the About window's title bar (keys do nothing
+# there), a click on the Console window's body (keys go to the console
+# again). Boot 2, desktopnosurface (both windows painted on exposure): the
+# same without help and Shift+PgUp.
+desktop_console_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h s cw ch shv shp top g2 g3 g4 g5
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; s=$((pct / 25))
+    # The Console window: 80 x 25 cells of the scale's font, the edge, the title bar.
+    case $s in 4) cw=8; ch=16 ;; 5) cw=10; ch=20 ;; 6) cw=12; ch=24 ;; *) cw=16; ch=32 ;; esac
+    local ww=$((80 * cw + 2 * ((s + 2) / 4))) wh=$(( (32 * s + 2) / 4 + 25 * ch + (s + 2) / 4 ))
+    shv=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+    shp=$(printf '0x%x' $(( 0x${shv:-0} - 0xffffffff80000000 )))
+    # Boot 1: surfaces.
+    log=$OUT/serial-desktop-console-$name.log
+    desktop_iso "console-$name" "test=desktop desktopabout desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" ready rel:-1000,-1000 to:desktop press release "type:x" wshot \
+            "type:version{ret}uname -a{ret}echo console-window-ok{ret}" "wait:console-window-ok" wshot \
+            "type:help{ret}echo help-done{ret}" "wait:help-done" "type:{shift+pgup}{wait:2}" wshot \
+            to:close press release wshot to:desktop press release "type:y" wshot \
+            to:title drag:400,0 to:title@About press release "type:a{wait:1}" wshot \
+            to:body@Console press release "type:echo focus-ok{ret}" "wait:focus-ok" wshot \
+            --about --shadow "$shp"
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (open|close|focus|raise)|^console: scrolled" "$log" | head -n 24 | sed 's/^/      /'
+    grep -E "^GRID " <<< "$DT_OUT" | sed 's/^/      /'
+    if grep -qE "^Desktop: shown on $mode \(scale $pct %\): .*; a key opens the Console window \(test=desktop, 1\.3 stage 4b\)$" "$log" &&
+       grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$log" &&
+       grep -qE "^desktop: open Console at \(-?[0-9]+, -?[0-9]+\) ${ww}x${wh}$" "$log" && grep -qxF "desktop: focus Console" "$log" &&
+       ! grep -qE "^madire> x" "$log" && grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: with no window focused a key opens the Console window (${ww}x${wh}: the 80x25 grid at $pct %), focused, the key not typed; its first frame (over the inactive About window) equals the reference drawn from vga_shadow pixel for pixel"
+    else
+        fail "[1.3] $label: the key did not open the Console window as predicted, was typed, or its first frame differs ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -A1 -xF "madire> version" "$log" | grep -qE "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$" &&
+       grep -A1 -xF "madire> uname -a" "$log" | grep -qE "^Madire OS madire $VRE x86_64$" &&
+       grep -A1 -xF "madire> echo console-window-ok" "$log" | grep -qxF "console-window-ok" &&
+       grep -qE "^WSCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: version, uname -a and echo typed in the Console window give the same serial lines as on the full-screen console; the window's screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: a command in the Console window not as on the full-screen console, or its screen differs ($(grep -E '^(WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    top=$(sed -nE "s/^console: scrolled back: line [0-9]+ of [0-9]+, top '(.*)'$/\1/p" "$log" | head -n 1)
+    g2=$(sed -nE 's/^GRID 2 crc=([0-9a-f]+) .*/\1/p' <<< "$DT_OUT")
+    g3=$(sed -nE 's/^GRID 3 crc=([0-9a-f]+) .*/\1/p' <<< "$DT_OUT")
+    if [ -n "$top" ] && grep -qxF "GRID 3 crc=$g3 row0='$top' row24=$(sed -nE 's/^GRID 3 crc=[0-9a-f]+ row0=.* row24=(.*)$/\1/p' <<< "$DT_OUT")" <<< "$DT_OUT" &&
+       [ -n "$g2" ] && [ "$g2" != "$g3" ] && grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: Shift+PgUp in the Console window scrolls back (logged; row 0 of the grid is the logged top line '$top'); the window shows it, equal to the reference pixel for pixel"
+    else
+        fail "[1.3] $label: Shift+PgUp in the Console window: no scrolled-back line, row 0 not its top line, or the screen differs ($(grep -E '^(WSCREEN 3|GRID 3|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    g4=$(sed -nE 's/^GRID 4 crc=([0-9a-f]+) .*/\1/p' <<< "$DT_OUT")
+    g5=$(sed -nE 's/^GRID 5 crc=([0-9a-f]+) .*/\1/p' <<< "$DT_OUT")
+    if grep -qxF "desktop: close Console (the close button)" "$log" && grep -qE "^WSCREEN 4 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       [ "$(grep -cxF "Desktop: a key opened the Console window (the key is not typed)" "$log")" -eq 2 ] &&
+       [ -n "$g5" ] && [ "$g5" = "$g3" ] && [ -z "$g4" ] && ! grep -qE "^madire> .*y$" "$log" &&
+       grep -qE "^WSCREEN 5 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: the close button hides the Console window (the About window alone, pixel for pixel); after a click on the desktop a key shows it again, not typed, with the same grid and cursor (CRC $g5), pixel for pixel"
+    else
+        fail "[1.3] $label: hiding and showing the Console window again: $(grep -E '^(WSCREEN 4|WSCREEN 5|GRID 5|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qE "^WSCREEN 6 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^WSCREEN 7 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       grep -qxF "madire> echo focus-ok" "$log" && grep -qxF "focus-ok" "$log" && ! grep -qE "^madire> a" "$log" &&
+       grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" && grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|MISMATCH" "$log"; then
+        pass "[1.3] $label: focus moves by clicks between the Console and About windows and keys go only to the focused one (a with About focused: nothing; echo focus-ok in the Console window); both screens pixel for pixel; every window line and packet as predicted; no panic, FAILED line or drop"
+    else
+        fail "[1.3] $label: focus between the Console and About windows: $(grep -E '^(WSCREEN 6|WSCREEN 7|EVENTS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    # Boot 2: desktopnosurface: both windows painted on exposure (A1).
+    log=$OUT/serial-desktop-console-$name-nosurface.log
+    desktop_iso "console-$name-nosurface" "test=desktop desktopabout desktopnosurface desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" ready rel:-1000,-1000 to:desktop press release "type:x" wshot \
+            "type:version{ret}echo console-window-ok{ret}" "wait:console-window-ok" wshot \
+            to:close press release wshot to:desktop press release "type:y" wshot \
+            to:title drag:400,0 to:title@About press release "type:a{wait:1}" wshot \
+            to:body@Console press release "type:echo focus-ok{ret}" "wait:focus-ok" wshot \
+            --about --shadow "$shp"
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (open|close|focus|raise)" "$log" | head -n 20 | sed 's/^/      /'
+    grep -E "^GRID " <<< "$DT_OUT" | sed 's/^/      /'
+    if grep -qxF "Desktop: window Console drawn on exposure (test option desktopnosurface)" "$log" &&
+       grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$log" && ! grep -qE "^madire> x" "$log" &&
+       grep -A1 -xF "madire> version" "$log" | grep -qE "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$" &&
+       grep -A1 -xF "madire> echo console-window-ok" "$log" | grep -qxF "console-window-ok" &&
+       grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^WSCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label, desktopnosurface: the Console window without a surface (painted from vga_shadow on exposure): a key opens it, not typed; version and echo as on the full-screen console; both screens equal the reference pixel for pixel (as with its surface)"
+    else
+        fail "[1.3] $label, desktopnosurface: no 'drawn on exposure' line, the key or a command not as expected, or a screen differs ($(grep -E '^(WSCREEN 1|WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    g2=$(sed -nE 's/^GRID 2 crc=([0-9a-f]+) .*/\1/p' <<< "$DT_OUT")
+    g4=$(sed -nE 's/^GRID 4 crc=([0-9a-f]+) .*/\1/p' <<< "$DT_OUT")
+    if grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^WSCREEN 4 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       [ -n "$g4" ] && [ "$g4" = "$g2" ] && grep -qE "^WSCREEN 5 size=${w}x${h} differ=0 " <<< "$DT_OUT" &&
+       grep -qE "^WSCREEN 6 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qxF "focus-ok" "$log" && ! grep -qE "^madire> (a|.*y$)" "$log" &&
+       grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" && grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|MISMATCH" "$log"; then
+        pass "[1.3] $label, desktopnosurface: hidden and shown again with the same grid (CRC $g4), focus moved by clicks, keys only to the focused window; every screen pixel for pixel; every window line and packet as predicted; no panic, FAILED line or drop"
+    else
+        fail "[1.3] $label, desktopnosurface: hide, show and focus: $(grep -E '^(WSCREEN [3-6]|GRID 4|EVENTS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+}
+
+# ---- 1.3 stage 5: the menus, the Restart dialog and the Windows key ----
+
+# desktop_boot_end <log> <iso> <WxH> <qmp_desktop.py steps...>: as
+# desktop_boot, for a boot that ends by itself (the Restart dialog's
+# Restart: QEMU -no-reboot exits on the reset); after qmp_desktop.py it
+# waits up to 20 s for QEMU to exit. DT_EXITED is yes if it did, no if it
+# had to be stopped.
+desktop_boot_end() {
+    local log=$1 iso=$2 size=$3 sock=$OUT/qmp-desktop.sock t0 qpid k
+    shift 3
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+    qpid=$!
+    DT_OUT=$(python3 "$QMPDESKTOP" "$sock" "$log" "$@" --size "$size" --timeout 200 2>&1)
+    grep -v '^MISMATCH ' <<< "$DT_OUT" | sed 's/^/      /'
+    grep '^MISMATCH ' <<< "$DT_OUT" | head -n 5 | sed 's/^/      /'
+    echo "$DT_OUT" > "${log%.log}.desktop.txt"
+    DT_EXITED=no
+    for k in $(seq 1 40); do
+        if ! kill -0 "$qpid" 2>/dev/null; then DT_EXITED=yes; break; fi
+        sleep 0.5
+    done
+    echo "      QEMU exited by itself: $DT_EXITED"
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+
+# desktop_menu_case <name> <mode WxHxD> <percent> <label> [a limine.conf
+# line]: the menus' 18 checks in one mode (three boots). tests/qmp_desktop.py's
+# model (tests/desktop_ref.py's Menus before its WM) follows every packet and
+# key; each WSCREEN compares the screen with the desktop, the M button's
+# state, an open menu, the dialog, the windows (the Console window from
+# vga_shadow) and the pointer; its EVENTS and MENUS lines compare the
+# kernel's window and menu lines with the model's, in order.
+# Boot 1, the mouse (test=desktop desktoplog mouselog): the M button on hover
+# and pressed, the M menu opened by a click (no row selected), About hovered
+# and chosen (the About window opens), the M menu's Console (the Console
+# window opens, focused, and the console starts), a click on the desktop
+# (no window focused), the right-click menu on the desktop and Esc, its two
+# rows (About Madire OS raises and focuses the About window, Open Console
+# the Console window), the M menu closed by a click outside (the click does
+# nothing else), Restart then Cancel (the Console window still takes keys),
+# Restart then Restart (the reset path; QEMU -no-reboot exits by itself).
+# Boot 2, the decision 20 key session (the same options; no mouse packet):
+# the Windows key (meta_l) opens the M menu with About selected and the
+# focus ring; Down, Down, Up; Esc; meta_l twice (open, close); with the
+# Console window focused and "ech" typed, meta_l opens the M menu and Esc
+# closes it, then "o key-line-ok" completes the line (nothing typed by the
+# Windows key, nothing in history); meta_l and Enter (About), meta_l, Down
+# and Enter (Console, focused); meta_l, Up and Enter (Restart: the dialog,
+# the ring on Cancel); meta_l with the dialog open changes nothing; Tab;
+# Esc. Boot 3, no mouse (test=desktop test=mousefail=4 desktoplog mouselog:
+# the mouse's start fails at step 4, so no pointer and no packet): meta_l,
+# Enter (the About window opens), Esc (it closes).
+desktop_menu_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h s shv shp ws ok i
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; s=$((pct / 25))
+    shv=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+    shp=$(printf '0x%x' $(( 0x${shv:-0} - 0xffffffff80000000 )))
+    ws() { grep -qE "^WSCREEN $1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; }
+    # Boot 1: the mouse.
+    log=$OUT/serial-desktop-menus-$name.log
+    desktop_iso "menus-$name" "test=desktop desktoplog mouselog" "$extra"
+    DT_OUT=""; DT_EXITED=no
+    if [ -n "$DT_ISO" ]; then
+        desktop_boot_end "$log" "$DT_ISO" "${w}x${h}" ready rel:-1000,-1000 \
+            to:m wshot press wshot release wshot "to:row@About" wshot click wshot \
+            to:m click "to:row@Console" click "type:echo menu-console-ok{ret}" "wait:menu-console-ok" wshot \
+            to:desktop press release rpress rrelease wshot "type:{esc}" wshot \
+            rpress rrelease "to:row@About Madire OS" click wshot \
+            to:desktop rpress rrelease "to:row@Open Console" click "type:echo open-console-ok{ret}" \
+            "wait:open-console-ok" wshot \
+            to:m click to:desktop press release wshot \
+            to:m click "to:row@Restart" click wshot "to:btn@Cancel" wshot click wshot \
+            "type:echo still-running{ret}" "wait:still-running" \
+            to:m click "to:row@Restart" click "to:btn@Restart" press wshot release \
+            "wait:Restart: keyboard controller reset (0xfe to port 0x64)" --shadow "$shp"
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (menu|dialog|M button|open|focus|raise|close)|^Restart:" "$log" | head -n 60 | sed 's/^/      /'
+    if grep -qxF "desktop: M button: hover" "$log" && grep -qxF "desktop: M button: pressed" "$log" &&
+       grep -qE "^desktop: menu M opened by the mouse at \([0-9]+, [0-9]+\) $(( (288 * s + 2) / 4 ))x$(( (182 * s + 2) / 4 ))$" "$log" &&
+       ws 1 && ws 2 && ws 3; then
+        pass "[1.3] $label: the M button on hover, pressed (a click), then the M menu opened by the mouse (no row selected, the M button open; 288x182 dp, logged); the three screens equal tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: the M button's states or the M menu opened by a click: $(grep -E '^(WSCREEN [1-3]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: menu M: About selected (the pointer)" "$log" && grep -qxF "desktop: menu M: About chosen" "$log" &&
+       grep -qxF "desktop: menu M closed (a row chosen)" "$log" && grep -qE "^desktop: open About at " "$log" &&
+       grep -qxF "desktop: about Mode: Live (memory only)" "$log" && ws 4 && ws 5; then
+        pass "[1.3] $label: the pointer on About selects it; a click chooses it: the menu closes and the About window opens (its values logged); both screens pixel for pixel"
+    else
+        fail "[1.3] $label: About from the M menu: $(grep -E '^(WSCREEN [45]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: menu M: Console chosen" "$log" && grep -qxF "Desktop: a menu opened the Console window" "$log" &&
+       grep -qE "^desktop: open Console at " "$log" && grep -qxF "madire> echo menu-console-ok" "$log" &&
+       grep -qxF "menu-console-ok" "$log" && ws 6; then
+        pass "[1.3] $label: Console from the M menu opens the Console window, focused, and starts the console (echo menu-console-ok typed there); the screen pixel for pixel"
+    else
+        fail "[1.3] $label: Console from the M menu: $(grep -E '^(WSCREEN 6|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qE "^desktop: menu desktop opened by the mouse at \([0-9]+, [0-9]+\) $(( (224 * s + 2) / 4 ))x$(( (80 * s + 2) / 4 ))$" "$log" &&
+       grep -qxF "desktop: menu desktop closed (Esc)" "$log" && ws 7 && ws 8; then
+        pass "[1.3] $label: a right click on the desktop opens the desktop menu at the pointer (224x80 dp, logged); Esc closes it; both screens pixel for pixel"
+    else
+        fail "[1.3] $label: the right-click menu and Esc: $(grep -E '^(WSCREEN [78]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: menu desktop: About Madire OS chosen" "$log" && grep -qxF "desktop: menu desktop: Open Console chosen" "$log" &&
+       grep -qxF "madire> echo open-console-ok" "$log" && grep -qxF "open-console-ok" "$log" && ws 9 && ws 10; then
+        pass "[1.3] $label: the desktop menu's rows: About Madire OS raises and focuses the About window, Open Console the Console window (echo open-console-ok typed there); both screens pixel for pixel"
+    else
+        fail "[1.3] $label: the desktop menu's rows: $(grep -E '^(WSCREEN 9|WSCREEN 10|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: menu M closed (a click outside)" "$log" && ws 11; then
+        pass "[1.3] $label: a click outside the M menu closes it and does nothing else (the Console window keeps the focus: the model's lines); the screen pixel for pixel"
+    else
+        fail "[1.3] $label: the click outside the menu: $(grep -E '^(WSCREEN 11|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qE "^desktop: dialog Restart opened at \([0-9]+, [0-9]+\) $(( (360 * s + 2) / 4 ))x$(( (172 * s + 2) / 4 )), Cancel focused$" "$log" &&
+       grep -qxF "desktop: dialog Restart: Cancel hover" "$log" && grep -qxF "desktop: dialog Restart closed (Cancel)" "$log" &&
+       grep -qxF "madire> echo still-running" "$log" && grep -qxF "still-running" "$log" && ws 12 && ws 13 && ws 14; then
+        pass "[1.3] $label: Restart opens the dialog (360x172 dp, Cancel focused, no ring by the mouse); Cancel on hover, then clicked: the dialog closes and the system keeps running (echo still-running); three screens pixel for pixel"
+    else
+        fail "[1.3] $label: Restart then Cancel: $(grep -E '^(WSCREEN 1[234]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if ws 15 && grep -qxF "desktop: dialog Restart: Restart pressed" "$log" && grep -qxF "desktop: dialog Restart: Restart chosen" "$log" &&
+       grep -qxF "Desktop: Restart chosen in the Restart dialog: restarting" "$log" &&
+       grep -qxF "Restart: keyboard controller reset (0xfe to port 0x64)" "$log" &&
+       ! grep -qE "did not reset the machine|forcing a triple fault" "$log" && [ "$DT_EXITED" = yes ] &&
+       [ "$(grep -c '^boot32: start$' "$log")" -eq 1 ]; then
+        pass "[1.3] $label: Restart then Restart (pressed: the screen pixel for pixel): the reset path's lines logged (keyboard controller reset, no fallback), QEMU -no-reboot exited by itself; booted once"
+    else
+        fail "[1.3] $label: Restart then Restart: QEMU exited by itself: $DT_EXITED; $(grep -E '^(WSCREEN 15|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see $log)"
+    fi
+    if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+       grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+       grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" &&
+       ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|MISMATCH|events not logged" "$log"; then
+        pass "[1.3] $label: every window line and every menu, M button and dialog line as the model predicts, in order; every packet exact; no panic, FAILED line or drop"
+    else
+        fail "[1.3] $label: the menus' lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    # Boot 2: the decision 20 key session.
+    log=$OUT/serial-desktop-keys-$name.log
+    desktop_iso "keys-$name" "test=desktop desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" ready windowed \
+            "type:{meta_l}" wshot "type:{down}{down}" "type:{up}" wshot "type:{esc}" wshot \
+            "type:{meta_l}" "type:{meta_l}" wshot \
+            "type:x" "type:echo hist-a{ret}" "wait:hist-a" "type:ech" "type:{meta_l}" wshot \
+            "type:{esc}" "type:o key-line-ok{ret}" "wait:key-line-ok" "type:history{ret}" "wait:    3  history" \
+            "type:{meta_l}{ret}" wshot "type:{meta_l}{down}{ret}" "type:echo enter-console-ok{ret}" \
+            "wait:enter-console-ok" wshot \
+            "type:{meta_l}{up}{ret}" wshot "type:{meta_l}" wshot "type:{tab}" wshot \
+            "type:{esc}" "type:echo after-dialog-ok{ret}" "wait:after-dialog-ok" wshot --shadow "$shp"
+    else : > "$log"; fi
+    grep -E "^Desktop|^desktop: (menu|dialog|open|focus|close)" "$log" | head -n 40 | sed 's/^/      /'
+    if grep -qE "^desktop: menu M opened by the Windows key at \([0-9]+, [0-9]+\) [0-9]+x[0-9]+, About selected$" "$log" && ws 1; then
+        pass "[1.3] $label: the Windows key (meta_l) opens the M menu with About selected and the focus ring (logged); the screen pixel for pixel"
+    else
+        fail "[1.3] $label: the Windows key and the M menu: $(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    ok=0
+    if grep -qxF "desktop: menu M: Restart selected (the keyboard)" "$log" &&
+       [ "$(grep -cxF "desktop: menu M: Console selected (the keyboard)" "$log")" -ge 2 ] &&
+       grep -qxF "desktop: menu M closed (Esc)" "$log" && grep -qxF "desktop: menu M closed (the Windows key)" "$log" &&
+       ws 2 && ws 3 && ws 4; then ok=1; fi
+    if [ "$ok" = 1 ]; then
+        pass "[1.3] $label: Down, Down selects Restart and Up Console again (the ring moves); Esc closes the menu; meta_l opens it and meta_l closes it; three screens pixel for pixel"
+    else
+        fail "[1.3] $label: Down, Up, Esc and the Windows key toggling: $(grep -E '^(WSCREEN [234]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "madire> echo key-line-ok" "$log" && grep -qxF "key-line-ok" "$log" && ws 5 &&
+       [ "$(grep -A4 -xF "madire> history" "$log" | sed -n '2,4p' | tr '\n' '|')" = "    1  echo hist-a|    2  echo key-line-ok|    3  history|" ] &&
+       ! grep -qE "^madire> ech$" "$log"; then
+        pass "[1.3] $label: with the Console window focused, meta_l opens the M menu over it and the console's line is unchanged (ech + o key-line-ok gives madire> echo key-line-ok); history holds only the commands typed"
+    else
+        fail "[1.3] $label: the Windows key with the Console window focused: $(grep -E '^(WSCREEN 5|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see $log)"
+    fi
+    if [ "$(grep -cxF "desktop: menu M: About chosen" "$log")" -eq 1 ] && grep -qxF "desktop: menu M: Console chosen" "$log" &&
+       grep -qxF "madire> echo enter-console-ok" "$log" && grep -qxF "enter-console-ok" "$log" && ws 6 && ws 7; then
+        pass "[1.3] $label: Enter chooses the selected row: About opens the About window (focused); Down and Enter on Console focus the Console window (echo enter-console-ok typed there); both screens pixel for pixel"
+    else
+        fail "[1.3] $label: Enter in the M menu: $(grep -E '^(WSCREEN [67]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qE "^desktop: dialog Restart opened at \([0-9]+, [0-9]+\) [0-9]+x[0-9]+, Cancel focused \(the focus ring on\)$" "$log" &&
+       ! sed -n '/^desktop: dialog Restart opened/,/^desktop: dialog Restart closed/p' "$log" | grep -qE "^desktop: menu " &&
+       grep -qxF "desktop: dialog Restart: Restart focused" "$log" && grep -qxF "desktop: dialog Restart closed (Esc)" "$log" &&
+       grep -qxF "madire> echo after-dialog-ok" "$log" && grep -qxF "after-dialog-ok" "$log" &&
+       ws 8 && ws 9 && ws 10 && ws 11; then
+        pass "[1.3] $label: Up and Enter on Restart open the dialog with the ring on Cancel; with the dialog open meta_l changes nothing; Tab focuses Restart; Esc cancels and the console goes on (echo after-dialog-ok); four screens pixel for pixel"
+    else
+        fail "[1.3] $label: the dialog by the keyboard: $(grep -E '^(WSCREEN (8|9|10|11)|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+       grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+       ! grep -qE "^mouse: packet |PANIC|FAILED|events dropped|events not logged" "$log"; then
+        pass "[1.3] $label: the key session's window and menu lines as the model predicts, in order; no mouse packet; no panic, FAILED line or drop"
+    else
+        fail "[1.3] $label: the key session's lines: $(grep -E '^(EVENTS|MENUS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    # Boot 3: no mouse.
+    log=$OUT/serial-desktop-nomouse-$name.log
+    desktop_iso "nomouse-$name" "test=desktop test=mousefail=4 desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" ready windowed "type:{meta_l}" wshot "type:{ret}" wshot \
+            "type:{esc}" wshot
+    else : > "$log"; fi
+    grep -E "^Mouse|^Desktop|^desktop: (menu|open|close)" "$log" | head -n 16 | sed 's/^/      /'
+    if grep -qE "^Mouse fault test: start-up step 4 failed on purpose" "$log" &&
+       ! grep -qE "^(mouse: packet |pointer: drawn)" "$log" &&
+       grep -qE "^desktop: menu M opened by the Windows key at .*, About selected$" "$log" && ws 1; then
+        pass "[1.3] $label, no mouse (test=mousefail=4): the mouse never starts (no packet, no pointer); meta_l opens the M menu with About selected; the screen pixel for pixel"
+    else
+        fail "[1.3] $label, no mouse: $(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see $log)"
+    fi
+    if grep -qxF "desktop: menu M: About chosen" "$log" && grep -qE "^desktop: open About at " "$log" && ws 2; then
+        pass "[1.3] $label, no mouse: Enter opens the About window (logged); the screen pixel for pixel"
+    else
+        fail "[1.3] $label, no mouse: Enter on About: $(grep -E '^(WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -qxF "desktop: close About (Esc)" "$log" && ws 3 &&
+       grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+       grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+       ! grep -qE "^mouse: packet |PANIC|FAILED|events dropped" "$log"; then
+        pass "[1.3] $label, no mouse: Esc closes the About window; the screen back to the plain desktop pixel for pixel; every line as predicted; no mouse packet, panic or FAILED line"
+    else
+        fail "[1.3] $label, no mouse: Esc: $(grep -E '^(WSCREEN 3|EVENTS|MENUS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+}
+
+# ---- 1.3 stage 8: the splash-to-desktop handover on the default path ----
+
+# desktop_handover_case <name> <mode WxHxD> <percent> <label> <the first
+# check's tag> [a limine.conf line]: the handover's 7 checks in one mode, one
+# boot of a test ISO whose one entry has no test= option ("cmdline: still
+# desktoplog mouselog": the splash's lines, the desktop's frame log, the
+# mouse's packets), so it takes the default path (kernel/display/desktop.h).
+# With desktoplog the kernel holds the splash's ready state 3 s after its own
+# frame marker before the cut. tests/qmp_desktop.py takes that screen
+# (splash, against scripts/make-wallpaper.py's ready state), the desktop's
+# first frame (screen), and compares the two (handover: the M's box
+# identical, every other difference inside the wordmark, the ready line or
+# the taskbar; tests/desktop_ref.py's handover_check); then the pointer
+# after relative moves (parked at 0, 0 first), and a key that opens the
+# Console window without being typed (its frame drawn from vga_shadow). The
+# first check is 1.2's ready-state check (moved here from part 1's Esc
+# section in stage 8, where Esc now comes during the splash) in part 2, and
+# its [1.3] twin in the other mode.
+desktop_handover_case() {
+    local name=$1 mode=$2 pct=$3 label=$4 tag=$5 extra=${6:-} log w h first n shv shp ready_at hold_at hand_at shown_at
+    w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}
+    shv=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+    shp=$(printf '0x%x' $(( 0x${shv:-0} - 0xffffffff80000000 )))
+    log=$OUT/serial-handover-$name.log
+    desktop_iso "handover-$name" "still desktoplog mouselog" "$extra"
+    DT_OUT=""
+    if [ -n "$DT_ISO" ]; then
+        # shellcheck disable=SC2046
+        DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" splash screen handover \
+            $(desktop_moves -635 -635) $(desktop_moves 127 100) pointer windowed "type:x" wshot \
+            "type:{wait:1}echo handover-ok{ret}" "wait:handover-ok" --shadow "$shp"
+    else : > "$log"; fi
+    grep -E "^Splash|^System ready|^Desktop|^display: frame |^desktop: (clock|hold) " "$log" | head -n 16 | sed 's/^/      /'
+    grep -E "^(SPLASHSCREEN|HANDOVER) " <<< "$DT_OUT" | sed 's/^/      /'
+    n=$(sed -nE 's/^SPLASHSCREEN size=[0-9]+x[0-9]+ held=[a-z]+ differ=-?[0-9]+ \(frame ([0-9]+): .*/\1/p' <<< "$DT_OUT" | head -n 1)
+    if grep -qE "^SPLASHSCREEN size=${w}x${h} held=yes differ=0 \(" <<< "$DT_OUT" &&
+       grep -qxF "Splash: shown on $mode (scale $pct %, frame 1); the dots frozen (boot option 'still')" "$log" &&
+       grep -qxF "Splash: ready: the dots stopped, \"Press any key to open the console\" shown" "$log"; then
+        pass "[$tag] still at $mode: at System ready the splash shows its ready state (the dots stopped, \"Press any key to open the console\"), equal to make-wallpaper.py's rendering pixel for pixel (held before the cut to the desktop)"
+    else
+        fail "[$tag] still at $mode: no splash in its ready state at System ready, or it differs from make-wallpaper.py's rendering ($(grep -E '^(SPLASHSCREEN|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    first=$(sed -nE 's/^desktop: clock (.*)$/\1/p' "$log" | head -n 1)
+    if grep -qxF "Desktop: shown on $mode (scale $pct %): the wallpaper with the M, the taskbar, the clock $first; a key opens the Console window (the default path, 1.3 stage 8)" "$log" &&
+       grep -qE "^SCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: after the cut the desktop shows on the default path (Desktop: shown on $mode (scale $pct %) ... (the default path, 1.3 stage 8), with its first clock); its first frame equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] $label: no default-path Desktop: shown line with the first logged clock, or the first frame differs ($(grep -E '^(SCREEN 1|MARKER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fi
+    if grep -qE "^HANDOVER m_box=[0-9]+,[0-9]+,[0-9]+x[0-9]+ m_differ=0 outside=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: across the cut the M stays still (its box identical pixel for pixel) and the screens differ only where the splash's text was (the wordmark, the ready line) and on the taskbar"
+    else
+        fail "[1.3] $label: the handover: $(grep -E '^(HANDOVER|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    ready_at=$(grep -nxF "Splash: ready: the dots stopped, \"Press any key to open the console\" shown" "$log" | head -n 1 | cut -d: -f1)
+    hold_at=$(grep -nE "^desktop: hold ${n:-x} over: the splash's ready state held 3 s before the cut \(desktoplog\)$" "$log" | head -n 1 | cut -d: -f1)
+    hand_at=$(grep -nxF "Splash: handed over to the desktop: the M kept, the splash's text gone" "$log" | head -n 1 | cut -d: -f1)
+    shown_at=$(grep -nE "^Desktop: shown on .*\(the default path, 1\.3 stage 8\)$" "$log" | head -n 1 | cut -d: -f1)
+    if [ -n "$ready_at" ] && [ -n "$hold_at" ] && [ -n "$hand_at" ] && [ -n "$shown_at" ] &&
+       [ "$ready_at" -lt "$hold_at" ] && [ "$hold_at" -lt "$hand_at" ] && [ "$hand_at" -lt "$shown_at" ] &&
+       grep -qxF "display: frame $n" "$log" && ! grep -q "^Splash: closed" "$log" &&
+       grep -qE "^Desktop: the pointer shown from the first mouse movement: [0-9]+x[0-9]+ pixels \(scale $pct %\), first at \($((w / 2)), $((h / 2))\)$" "$log"; then
+        pass "[1.3] $label: the cut in order: the splash's ready state, its held frame (display: frame $n), Splash: handed over to the desktop, Desktop: shown (the default path); no Splash: closed line (the text boot screen never drawn); the pointer turned on"
+    else
+        fail "[1.3] $label: the handover's lines are missing or out of order, a Splash: closed line, or no pointer line (see $log)"
+    fi
+    if grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" && grep -qE "^mouse: packet 5: .* at \(0, 0\)$" "$log" &&
+       grep -qE "^SCREEN 2 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
+        pass "[1.3] $label: on the default path the pointer appears from the first mouse movement: parked at (0, 0), then moved to (127, 100); every packet exact; the screen equals the reference pixel for pixel"
+    else
+        fail "[1.3] $label: a packet not as predicted, not parked at (0, 0), or the pointer's screen at (127, 100) differs ($(grep -E '^(PACKETS|SCREEN 2|MISMATCH|qmp_desktop)' <<< "$DT_OUT" | head -n 3 | tr '\n' ' '))"
+    fi
+    if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$log" &&
+       grep -qxF "madire> echo handover-ok" "$log" && grep -qxF "handover-ok" "$log" && ! grep -qE "^madire> x" "$log" &&
+       grep -qE "^WSCREEN 1 size=${w}x${h} differ=0 " <<< "$DT_OUT" && grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT"; then
+        pass "[1.3] $label: a key opens the Console window, not typed (madire> echo handover-ok, no x); its first frame equals the reference drawn from vga_shadow pixel for pixel; every window line as the model predicts"
+    else
+        fail "[1.3] $label: the key that opens the Console window: $(grep -E '^(WSCREEN 1|EVENTS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+    fi
+    if grep -q "^System ready\." "$log" && ! grep -qE "PANIC|FAILED|MISMATCH|events dropped|bytes dropped" "$log"; then
+        pass "[1.3] $label: System ready; no FAILED status line, panic, mismatch or drop"
+    else
+        fail "[1.3] $label: no System ready, or a FAILED status line, panic, mismatch or drop (see $log)"
+    fi
 }

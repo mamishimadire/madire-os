@@ -24,16 +24,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "kernel/display/surface_core.h"
+#include "kernel/display/tokens.h"
 
 #define POINTER_DP_W   12
 #define POINTER_DP_H   18
 #define POINTER_MAX_W  24       /* at scale 8 (200 %) */
 #define POINTER_MAX_H  36
 
-/* The Design Guide's tokens (section 2). */
-#define POINTER_EDGE   0x011239u    /* bg.deep */
-#define POINTER_FILL   0xFAF9FEu    /* text */
-#define POINTER_SPINE  0x2987F3u    /* accent */
+/* The Design Guide's tokens (section 2), from tokens.h (1.3 stage 3). */
+#define POINTER_EDGE   UI_BG_DEEP       /* bg.deep */
+#define POINTER_FILL   UI_TEXT          /* text */
+#define POINTER_SPINE  UI_ACCENT        /* accent */
 
 extern const char *const pointer_shape[POINTER_DP_H];
 
