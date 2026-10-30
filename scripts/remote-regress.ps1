@@ -31,8 +31,12 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$snapshotRoots = @('Makefile', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'boot', 'drivers', 'include', 'iso', 'kernel', 'linker', 'scripts', 'tests', 'user') |
+# 1.3 stage 8b: third_party/ and THIRD_PARTY_ASSETS.md (the font and the ISO,
+# since 1.2) and docs/ (part static's UTF-8 check, make-wallpaper.py's colours).
+$snapshotRoots = @('Makefile', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'THIRD_PARTY_ASSETS.md', 'boot', 'docs', 'drivers', 'include', 'iso', 'kernel', 'linker', 'scripts', 'tests', 'third_party', 'user') |
     Where-Object { Test-Path -LiteralPath (Join-Path $repoRoot $_) }
+# Python's bytecode caches are never part of the snapshot (tracked files only).
+$snapshotExcludes = @('__pycache__', '*.pyc')
 $codespaceTouched = $false
 $codespaceAvailableAt = $null
 $kaliStarted = $false
@@ -191,7 +195,9 @@ function Get-HashLines {
             continue
         }
         Get-ChildItem -LiteralPath $full -File -Recurse -Force | ForEach-Object {
-            $relativePaths.Add($_.FullName.Substring($rootFull.Length + 1).Replace('\', '/'))
+            $relative = $_.FullName.Substring($rootFull.Length + 1).Replace('\', '/')
+            if ($relative -match '(^|/)__pycache__/' -or $relative -match '\.pyc$') { return }
+            $relativePaths.Add($relative)
         }
     }
     if ($relativePaths.Count -eq 0) { throw "No source files found under $Root" }
@@ -282,7 +288,7 @@ try {
         }
         if ($manifestBytes -contains 0x0D) { throw 'Snapshot manifest contains CR bytes; LF is required.' }
 
-        $tarArguments = @('-cf', $snapshotArchive, '-C', $repoRoot) + $snapshotRoots
+        $tarArguments = @('-cf', $snapshotArchive, '-C', $repoRoot) + @($snapshotExcludes | ForEach-Object { "--exclude=$_" }) + $snapshotRoots
         $tarOutput = & tar.exe @tarArguments 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Could not create source snapshot: $($tarOutput -join ' ')" }
 
