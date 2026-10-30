@@ -3,7 +3,8 @@
 
 /*
  * The Madire Design Guide's colour tokens (docs/design/design-guide.md,
- * section 2: the adopted column of both colour tables, v0.1 and v0.2), as
+ * section 2: the adopted column of its colour tables, v0.1, v0.2 and 1.3
+ * stage 5), as
  * 0xRRGGBB (1.3 stage 2). One define per token: `a.b.c` is UI_A_B_C. Part
  * static checks that this file equals the guide's tables exactly, and that
  * every colour constant of wallpaper_core.h and pointer_core.h equals its
@@ -37,5 +38,10 @@
 #define UI_SURFACE_BAR_EDGE 0x14213Fu
 #define UI_DANGER_PRESSED   0xC04141u
 #define UI_TEXT_ON_ACCENT   0x011239u
+
+/* 1.3 stage 5 (derived; the Restart dialog's button states) */
+#define UI_ACCENT_HOVER     0x5EA5F6u
+#define UI_ACCENT_PRESSED   0x206CC2u
+#define UI_SURFACE_HOVER    0x173C72u
 
 #endif

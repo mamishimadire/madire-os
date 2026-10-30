@@ -17,13 +17,24 @@
  *   - UI_TRACE_STATE: a button's fill in its hover or pressed state (a
  *     state mark), with the colour under the centre of the button's
  *     rectangle just before it is filled.
+ * 1.3 stage 5: also the marks and fills of the menus, the M button and the
+ * dialog:
+ *   - UI_TRACE_STATE also for an `accent` selection bar (a menu row's, the
+ *     M button's) and a focus ring, with the colour under the mark's
+ *     centre (the ring: the middle of its top side) just before;
+ *   - UI_TRACE_CARRIED_BAR: a fill that section 12 marks "fail alone",
+ *     whose state an `accent` bar carries (a selected menu row, the pressed
+ *     or open M button), with the colour under its centre just before;
+ *   - UI_TRACE_CARRIED_POINTER: a hover fill that section 12 marks "fail
+ *     alone", whose state the pointer over it shows (the M button's hover,
+ *     the dialog's Cancel on hover), likewise.
  * The logo in its gradient is not recorded: it is not under a rule (the
  * guide, section 12, "Not under a rule").
  */
 
 #include <stdint.h>
 
-enum { UI_TRACE_TEXT, UI_TRACE_ICON, UI_TRACE_STATE };
+enum { UI_TRACE_TEXT, UI_TRACE_ICON, UI_TRACE_STATE, UI_TRACE_CARRIED_BAR, UI_TRACE_CARRIED_POINTER };
 
 #ifdef UI_TRACE
 void ui_trace(int kind, uint32_t fg, uint32_t bg);

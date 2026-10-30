@@ -69,6 +69,22 @@
  * last marker, one report-only line before it: "desktop: burst: <n>
  * frames composed (frames <a> to <b>), the longest composition <us> us
  * (...)".
+ *
+ * 1.3 stage 5: the menus and the Restart dialog (ui_menus.h, ui_menu.h,
+ * ui_dialog.h; docs/plans/1.3.md, C5, decisions 9 and 20): the M button
+ * (hover, pressed, open) and the M menu (About, Console, Restart), the
+ * desktop menu on a right click (Open Console, About Madire OS), the
+ * Restart dialog (Cancel, Restart), and the Windows key, which toggles the
+ * M menu from anywhere and never reaches a window. They are painted above
+ * everything else, into the back buffer during composition. A row that
+ * opens the About window logs its values ("desktop: about ..."); one that
+ * opens the Console window logs "Desktop: a menu opened the Console
+ * window", and the console starts if it is not running. Restart in the
+ * dialog logs "Desktop: Restart chosen in the Restart dialog: restarting"
+ * and takes the existing reset path (kernel/arch/x86/reset.c, as the
+ * shell's reboot). With desktoplog, also a line for each change: "desktop:
+ * menu <M|desktop> opened|closed|...", "desktop: M button: <state>",
+ * "desktop: dialog Restart ...". desktopabout stays a test option.
  */
 
 #include <stdbool.h>
@@ -97,16 +113,23 @@ bool desktop_showing(void);
 void desktop_poll(void);
 
 /* 1.3 stage 4a: each mouse packet, after its move: the pointer's (clamped)
- * hot spot, the left button pressed or released in it. */
-void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up);
+ * hot spot, the left button pressed or released in it; 1.3 stage 5: the
+ * right button pressed in it (the menus first, ui_menus.h). */
+void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down);
+
+/* 1.3 stage 5: true once after a menu row chosen with the pointer opened
+ * the Console window (the idle loop then starts the console if it is not
+ * running). */
+bool desktop_take_console(void);
 
 /* 1.3 stage 4b (replacing stage 4a's desktop_key and stage 3's
  * desktop_close_key): every key event while the desktop shows, pressed or
- * released, Esc or not (ui_wm_key): DESKTOP_KEY_OPENED: the Console window
+ * released (1.3 stage 5: its key code, read by the menus and the dialog
+ * first, ui_menus.h; then ui_wm_key): DESKTOP_KEY_OPENED: the Console window
  * opened or shown (start the console if it is not running; the key is not
  * typed); DESKTOP_KEY_CONSOLE: the console takes the key; DESKTOP_KEY_TAKEN:
  * nothing more to do. */
 enum desktop_key_route { DESKTOP_KEY_TAKEN, DESKTOP_KEY_OPENED, DESKTOP_KEY_CONSOLE };
-enum desktop_key_route desktop_key(bool pressed, bool esc);
+enum desktop_key_route desktop_key(uint8_t keycode, bool pressed);
 
 #endif

@@ -8,7 +8,7 @@
 /* The close button: the guide's close style (ui_widget.c), filled at the
  * window's top-right corner only, with the window's radius. */
 static const struct ui_button_style window_close = {
-    { UI_COLOUR_NONE, UI_DANGER, UI_DANGER_PRESSED }, { UI_TEXT, UI_TEXT, UI_TEXT }, false, 6, UI_CORNER_TR,
+    { UI_COLOUR_NONE, UI_DANGER, UI_DANGER_PRESSED }, { UI_TEXT, UI_TEXT, UI_TEXT }, false, 6, UI_CORNER_TR, false,
 };
 
 int32_t ui_window_title_h(uint32_t s)
@@ -349,6 +349,21 @@ bool ui_wm_esc(struct ui_wm *m)
     close_window(m, w, UI_EV_CLOSE_ESC);
     update_close_states(m);
     return true;
+}
+
+void ui_wm_cancel(struct ui_wm *m)
+{
+    if (!m->left)
+        return;
+    m->left = false;
+    if (m->drag) {
+        struct ui_window *w = m->drag;
+        m->drag = 0;
+        if (w->r.x != m->grab_r.x || w->r.y != m->grab_r.y)
+            event(m, UI_EV_DRAG, w);
+    }
+    m->pressed = 0;
+    update_close_states(m);
 }
 
 enum ui_key_route ui_wm_key(struct ui_wm *m, struct ui_window *console, bool pressed, bool esc)

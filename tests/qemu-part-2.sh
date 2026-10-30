@@ -1356,3 +1356,8 @@ if sed -n '1,/^Desktop fault test: /p' "$LOG" | grep -qE "^display: frame [0-9]+
 else
     fail "[1.3] test=desktop desktoppanic: no frame or pointer before the panic, or the desktop drew after it (see $LOG)"
 fi
+
+section "[1.3] The menus at 1024x768x32: the M button and menu, the right-click menu, the Restart dialog, the Windows key, no mouse (stage 5)"
+# desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
+# ending with Restart; the decision 20 key session; test=mousefail=4).
+desktop_menu_case 1024 1024x768x32 100 "menus at 1024x768x32"

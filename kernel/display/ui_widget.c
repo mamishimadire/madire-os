@@ -8,25 +8,37 @@
 #include "kernel/display/ui_trace.h"
 
 /* Hover and pressed colours are set only where the Design Guide gives
- * them (section 8: the close button; the Calculator's pressed key). */
+ * them (section 8: the close button; the Calculator's pressed key; 1.3
+ * stage 5, section 9: the Restart dialog's buttons). */
 const struct ui_button_style ui_style_close = {
-    { UI_COLOUR_NONE, UI_DANGER, UI_DANGER_PRESSED }, { UI_TEXT, UI_TEXT, UI_TEXT }, false, 0, 0,
+    { UI_COLOUR_NONE, UI_DANGER, UI_DANGER_PRESSED }, { UI_TEXT, UI_TEXT, UI_TEXT }, false, 0, 0, false,
 };
 const struct ui_button_style ui_style_secondary = {
     { UI_SURFACE_ACTIVE, UI_COLOUR_UNSET, UI_COLOUR_UNSET }, { UI_TEXT, UI_COLOUR_UNSET, UI_COLOUR_UNSET },
-    false, 4, UI_CORNERS_ALL,
+    false, 4, UI_CORNERS_ALL, false,
 };
 const struct ui_button_style ui_style_primary = {
     { UI_ACCENT, UI_COLOUR_UNSET, UI_COLOUR_UNSET }, { UI_TEXT_ON_ACCENT, UI_COLOUR_UNSET, UI_COLOUR_UNSET },
-    true, 4, UI_CORNERS_ALL,
+    true, 4, UI_CORNERS_ALL, false,
 };
 const struct ui_button_style ui_style_key = {
     { UI_SURFACE_ACTIVE, UI_COLOUR_UNSET, UI_ACCENT }, { UI_TEXT, UI_COLOUR_UNSET, UI_TEXT_ON_ACCENT },
-    false, 4, UI_CORNERS_ALL,
+    false, 4, UI_CORNERS_ALL, false,
 };
 const struct ui_button_style ui_style_key_equals = {
     { UI_ACCENT, UI_COLOUR_UNSET, UI_ACCENT }, { UI_TEXT_ON_ACCENT, UI_COLOUR_UNSET, UI_TEXT_ON_ACCENT },
-    false, 4, UI_CORNERS_ALL,
+    false, 4, UI_CORNERS_ALL, false,
+};
+/* 1.3 stage 5: the Restart dialog's buttons (the Design Guide, section 9:
+ * hover surface.hover / accent.hover, labels unchanged; pressed
+ * accent.pressed with the label in text). */
+const struct ui_button_style ui_style_cancel = {
+    { UI_SURFACE_ACTIVE, UI_SURFACE_HOVER, UI_ACCENT_PRESSED }, { UI_TEXT, UI_TEXT, UI_TEXT },
+    false, 4, UI_CORNERS_ALL, true,
+};
+const struct ui_button_style ui_style_restart = {
+    { UI_ACCENT, UI_ACCENT_HOVER, UI_ACCENT_PRESSED }, { UI_TEXT_ON_ACCENT, UI_TEXT_ON_ACCENT, UI_TEXT },
+    true, 4, UI_CORNERS_ALL, false,
 };
 
 /* floor(a / 2) for any sign. */
@@ -68,7 +80,8 @@ bool ui_button_draw(const struct ui_canvas *c, const struct ui_button *b, const 
     int64_t cx = (int64_t)r.x + r.w / 2, cy = (int64_t)r.y + r.h / 2;
     if (st != UI_BUTTON_NORMAL && style->fill[st] != UI_COLOUR_NONE && cx >= 0 && cy >= 0 &&
         cx < c->s->width && cy < c->s->height)
-        UI_TRACE_PAIR(UI_TRACE_STATE, style->fill[st], surface_get(c->s, (uint32_t)cx, (uint32_t)cy));
+        UI_TRACE_PAIR(st == UI_BUTTON_HOVER && style->hover_by_pointer ? UI_TRACE_CARRIED_POINTER : UI_TRACE_STATE,
+                      style->fill[st], surface_get(c->s, (uint32_t)cx, (uint32_t)cy));
 #endif
     if (style->fill[st] != UI_COLOUR_NONE)
         ui_fill_round(c, r, radius, style->corners, style->fill[st]);
@@ -83,7 +96,14 @@ bool ui_button_draw(const struct ui_canvas *c, const struct ui_button *b, const 
     }
     if (focused) {
         int32_t g = ui_px(2, s), w = ui_px(2, s);
-        ui_frame_round(c, ui_rect_inflate(r, g + w), radius + g + w, w, style->corners, UI_ACCENT);
+        struct rect ring = ui_rect_inflate(r, g + w);
+#ifdef UI_TRACE
+        /* 1.3 stage 5: the focus ring is a state mark (ui_trace.h). */
+        int64_t rx = (int64_t)ring.x + ring.w / 2, ry = ring.y;
+        if (rx >= 0 && ry >= 0 && rx < c->s->width && ry < c->s->height)
+            UI_TRACE_PAIR(UI_TRACE_STATE, UI_ACCENT, surface_get(c->s, (uint32_t)rx, (uint32_t)ry));
+#endif
+        ui_frame_round(c, ring, radius + g + w, w, style->corners, UI_ACCENT);
     }
     return true;
 }

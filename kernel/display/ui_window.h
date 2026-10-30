@@ -153,6 +153,13 @@ void ui_wm_pointer(struct ui_wm *m, int32_t x, int32_t y, bool down, bool up);
 /* Esc: closes the focused window if it closes on Esc; true if it did. */
 bool ui_wm_esc(struct ui_wm *m);
 
+/* 1.3 stage 5: the menus take the pointer (the Windows key opened the M
+ * menu): a held left button is let go here as if released, except that a
+ * pressed close button closes nothing: a drag ends where the window is
+ * (its event if it moved), the close button is no longer pressed, and
+ * the release that follows is ignored (the button is no longer held). */
+void ui_wm_cancel(struct ui_wm *m);
+
 /* 1.3 stage 4b: where a key goes (decision 7, as amended in stage 3b; the
  * Design Guide, section 8), for one key event, pressed or released:
  *   - no window focused: a press opens the Console window `console` (or

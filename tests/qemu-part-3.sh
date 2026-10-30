@@ -878,3 +878,8 @@ desktop_about_case 800 800x600x24 100 "windows at 800x600x24" "resolution: 800x6
 section "[1.3] The Console window at 800x600x24: a key opens it, commands, Shift+PgUp, hide and show, focus, desktopnosurface (stage 4b)"
 # desktop_console_case (tests/qemu-lib.sh): 7 checks, two boots.
 desktop_console_case 800 800x600x24 100 "Console window at 800x600x24" "resolution: 800x600x24"
+
+section "[1.3] The menus at 800x600x24: the M button and menu, the right-click menu, the Restart dialog, the Windows key, no mouse (stage 5)"
+# desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
+# ending with Restart; the decision 20 key session; test=mousefail=4).
+desktop_menu_case 800 800x600x24 100 "menus at 800x600x24" "resolution: 800x600x24"

@@ -21,7 +21,13 @@
  * as ui_icon.h draws it; the clock "HH:MM" in the console's font in
  * `text`, its right edge 16 dp from the screen's, at y = the bar's top +
  * (bar - font height) / 2. The clock's box is the five cells. Sizes in
- * dp become pixels as (dp x s + 2) / 4.
+ * dp become pixels as (dp x s + 2) / 4. 1.3 stage 5: the M button's
+ * states (the Design Guide, section 10; ui_menu.h's enum ui_m_state): on
+ * hover, the cell below the bar's top edge line (from the edge's bottom to
+ * the bar's bottom, the cell's width) filled in `surface.active`; pressed
+ * and open, the same fill, then a 2 dp `accent` bar along the cell's
+ * bottom (its last ui_px(2) rows); the M drawn on top. Normal draws
+ * nothing under the M.
  *
  * Every drawing call paints only inside its clip, and each pixel gets the
  * same value whatever the clip (so a damaged rectangle drawn again gives
@@ -42,6 +48,7 @@
 #include <stdint.h>
 #include "kernel/display/font.h"
 #include "kernel/display/surface_core.h"
+#include "kernel/display/ui_menu.h"
 #include "kernel/display/wallpaper_core.h"
 
 #define DESKTOP_CLOCK_SIZE 6        /* "HH:MM" + NUL */
@@ -68,6 +75,11 @@ void desktop_draw_background(struct surface *s, const struct desktop_layout *l, 
 /* Draws the taskbar inside clip, the clock showing `clock` (5 characters). */
 void desktop_draw_taskbar(struct surface *s, const struct desktop_layout *l, struct rect clip,
                           const char *clock);
+
+/* 1.3 stage 5: the same, the M button in state m (desktop_draw_taskbar is
+ * this with UI_M_NORMAL). */
+void desktop_draw_taskbar_m(struct surface *s, const struct desktop_layout *l, struct rect clip,
+                            const char *clock, enum ui_m_state m);
 
 struct desktop_cache_plan {
     uint32_t pitch;                 /* width x bytes per pixel */

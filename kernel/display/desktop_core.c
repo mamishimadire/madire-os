@@ -8,6 +8,7 @@
 #include "kernel/display/ui_draw.h"
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_rect.h"
+#include "kernel/display/ui_trace.h"
 
 #define FB   8
 #define PAGE 4096u
@@ -57,6 +58,28 @@ void desktop_draw_background(struct surface *s, const struct desktop_layout *l, 
 void desktop_draw_taskbar(struct surface *s, const struct desktop_layout *l, struct rect clip,
                           const char *clock)
 {
+    desktop_draw_taskbar_m(s, l, clip, clock, UI_M_NORMAL);
+}
+
+/* The colour under (x, y) before a mark is drawn there, for the trace
+ * (ui_trace.h). */
+static void dcore_trace(const struct surface *s, int kind, uint32_t rgb, int64_t x, int64_t y)
+{
+#ifdef UI_TRACE
+    if (x >= 0 && y >= 0 && x < s->width && y < s->height)
+        UI_TRACE_PAIR(kind, rgb, surface_get(s, (uint32_t)x, (uint32_t)y));
+#else
+    (void)s;
+    (void)kind;
+    (void)rgb;
+    (void)x;
+    (void)y;
+#endif
+}
+
+void desktop_draw_taskbar_m(struct surface *s, const struct desktop_layout *l, struct rect clip,
+                            const char *clock, enum ui_m_state m)
+{
     struct ui_canvas c;
     ui_canvas_init(&c, s);
     ui_canvas_clip(&c, clip);
@@ -64,6 +87,19 @@ void desktop_draw_taskbar(struct surface *s, const struct desktop_layout *l, str
         return;
     ui_fill(&c, l->bar, UI_SURFACE_BAR);
     ui_fill(&c, l->bar_edge, UI_SURFACE_BAR_EDGE);
+    if (m != UI_M_NORMAL) {
+        int32_t top = l->bar_edge.y + l->bar_edge.h;
+        struct rect cell = { l->m_cell.x, top, l->m_cell.w, l->m_cell.y + l->m_cell.h - top };
+        dcore_trace(s, m == UI_M_HOVER ? UI_TRACE_CARRIED_POINTER : UI_TRACE_CARRIED_BAR, UI_SURFACE_ACTIVE,
+                   (int64_t)cell.x + cell.w / 2, (int64_t)cell.y + cell.h / 2);
+        ui_fill(&c, cell, UI_SURFACE_ACTIVE);
+        if (m != UI_M_HOVER) {
+            int32_t b = ui_px(2, l->scale);
+            struct rect bar = { cell.x, cell.y + cell.h - b, cell.w, b };
+            dcore_trace(s, UI_TRACE_STATE, UI_ACCENT, (int64_t)bar.x + bar.w / 2, (int64_t)bar.y + bar.h / 2);
+            ui_fill(&c, bar, UI_ACCENT);
+        }
+    }
     ui_icon_draw(&c, UI_ICON_M, l->m_x, l->m_y, l->m_px, UI_ACCENT);
     ui_text(&c, l->font, l->clock_box.x, l->clock_box.y, clock, UI_TEXT);
 }

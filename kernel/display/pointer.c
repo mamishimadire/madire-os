@@ -178,7 +178,8 @@ uint32_t pointer_poll(void)
         }
         /* 1.3 stage 4a: the desktop's windows (after the packet's line). */
         if (on_screen)
-            desktop_pointer(px, py, e.pressed & MOUSE_B0_LEFT, e.released & MOUSE_B0_LEFT);
+            desktop_pointer(px, py, e.pressed & MOUSE_B0_LEFT, e.released & MOUSE_B0_LEFT,
+                            e.pressed & MOUSE_B0_RIGHT);        /* 1.3 stage 5: the right button too */
     }
     if (taken && on_screen && thread_screen_allowed() && !panic_active) {
         draw_at(px, py);

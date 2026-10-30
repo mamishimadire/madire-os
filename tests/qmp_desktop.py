@@ -98,6 +98,27 @@ it (desktop_ref.console_window), and prints
                   full-screen rendering of the saved grid, the screen taken
                   again 1 s later (held: unchanged); prints
     CRASH size=<w>x<h> differ=<pixels> held=<yes|no> (<description>)
+
+1.3 stage 5: the menus, the M button and the Restart dialog. The model
+also follows them (desktop_ref.Menus, before the window manager: every
+packet and every key goes through it), each wshot draws the M button's
+state, an open menu and the dialog, and at the end the kernel's menu lines
+("desktop: menu|dialog|M button ...") are compared with the model's:
+    MENUS predicted=<n> logged=<n> same=<yes|no>[ first difference <i>: want '...' got '...']
+More steps:
+    to:m          the M button's centre;
+    to:row@LABEL  the centre of the open menu's row LABEL;
+    to:btn@Cancel, to:btn@Restart, to:dlgclose  the dialog's buttons' and
+                  close button's centres;
+    click         press, then release (the left button, no move);
+    rpress, rrelease  the right button, no move;
+    windowed      no input: the steps after it are in window mode (type:
+                  waits for its lines, wshot for a frame after them, the
+                  EVENTS and MENUS lines at the end), for a boot that
+                  begins with keys.
+type: keys go through the model's menus first (the Windows key is
+{meta_l}), and the step waits for the kernel's lines of what it changed
+(window and menu lines). to:desktop also avoids an open menu.
 """
 import argparse
 import os
@@ -178,6 +199,7 @@ def screen(qmp, serial, dump, n, pointer_at):
 # ---- 1.3 stage 4a: the windows ----
 
 WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close) ")
+MENU_EVENT = re.compile(r"^desktop: (menu|dialog|M button)[ :]")      # 1.3 stage 5
 ABOUT_VALUE = re.compile(r"^desktop: about (Version|Boot loader|Display|Memory|Mode): (.*)$")
 
 
@@ -196,16 +218,35 @@ class Windows:
         if about:
             aw, ah = desktop_ref.about_size(self.s)
             self.wm.open("About", aw, ah, True)
+        self.menus = desktop_ref.Menus(self.wm)            # 1.3 stage 5
 
     def changed(self, before):
         """True if the model's look changed since `before` (its state())."""
         return self.state() != before
 
     def state(self):
-        return [(w["name"], w["r"], w["close"], w is self.wm.focus) for w in self.wm.z]
+        return [(w["name"], w["r"], w["close"], w is self.wm.focus) for w in self.wm.z] + [self.menus.state()]
 
     def target(self, where):
         d = lambda n: desktop_ref.px(n, self.s)  # noqa: E731
+        mn = self.menus                                 # 1.3 stage 5
+        if where == "m":
+            c = mn.m_cell
+            return c[0] + c[2] // 2, c[1] + c[3] // 2
+        if where.startswith("row@"):
+            if not mn.menu:
+                raise RuntimeError("no open menu (model)")
+            labels = desktop_ref.MENU_DEFS[mn.menu["kind"]]["labels"]
+            r = desktop_ref.menu_row_rect(mn.menu, labels.index(where[4:].encode()))
+            return r[0] + r[2] // 2, r[1] + r[3] // 2
+        if where.startswith("btn@") or where == "dlgclose":
+            if not mn.dlg:
+                raise RuntimeError("no dialog (model)")
+            if where == "dlgclose":
+                c = self.wm.close_rect(mn.dlg["r"])
+            else:
+                c = desktop_ref.dialog_button(mn.dlg["r"], self.s, 0 if where == "btn@Cancel" else 1)
+            return c[0] + c[2] // 2, c[1] + c[3] // 2
         if "@" in where:                # 1.3 stage 4b: a named window's own visible point
             part, name = where.split("@")
             win = next((w for w in self.wm.z if w["name"] == name), None)
@@ -221,7 +262,7 @@ class Windows:
         if where == "desktop":
             for x, y in ((d(8), d(8)), (self.w - d(8), d(8)), (d(8), self.wm.bar - d(8)),
                          (self.w - d(8), self.wm.bar - d(8))):
-                if self.wm.hit(x, y)[0] == "desktop":
+                if self.wm.hit(x, y)[0] == "desktop" and not (mn.menu and self.wm.inside(mn.menu["r"], x, y)):
                     return x, y
             raise RuntimeError("no corner of the desktop outside every window")
         r = self.wm.z[-1]["r"]
@@ -236,8 +277,11 @@ class Windows:
             return r[0] + d(40), r[1] + d(250)
         raise ValueError("unknown place %r" % where)
 
-    def key(self, pressed, esc):
-        return self.wm.key(self.console_size, pressed, esc)
+    def key(self, qcode, pressed):
+        """One key event: the menus first (1.3 stage 5), then the window manager."""
+        if self.menus.key(qcode, pressed) == "wm":
+            return self.wm.key(self.console_size, pressed, qcode == "esc")
+        return "taken"
 
     def values(self, serial):
         serial.poll()
@@ -252,16 +296,18 @@ class Windows:
         return desktop_ref.about_values(self.s, *(got[k] for k in keys))
 
 
-def packet(m, win, serial, dx, dy, button=None):
+def packet(m, win, serial, dx, dy, button=None, which="left"):
     """One packet (a move, or a button with no move), checked, then given
-    to the model; a change moves the sync point to its line."""
+    to the model (1.3 stage 5: its menus first; `which` button, left or
+    right); a change moves the sync point to its line."""
     before = win.state()
     if button is None:
         n, want = m.move(dx, dy)
     else:
-        n, want = m.button("left", button)
+        n, want = m.button(which, button)
     m.check(n, want)
-    win.wm.pointer(m.x, m.y, button is True, button is False)
+    left = which == "left"
+    win.menus.pointer(m.x, m.y, left and button is True, left and button is False, not left and button is True)
     if win.changed(before):
         win.sync = m.last_line
 
@@ -289,6 +335,7 @@ def wtake(qmp, serial, dump, win, pointer_at):
         shadow = open(mem, "rb").read()
         os.remove(mem)
     win.last_shadow = shadow
+    shell = win.menus.view()                    # 1.3 stage 5
     if clock is None:
         return w, h, -1, None, "no 'desktop: clock' line after a frame marker", seen
     shown = []
@@ -300,11 +347,20 @@ def wtake(qmp, serial, dump, win, pointer_at):
                 raise RuntimeError("a Console window to draw but no --shadow")
             one["grid"] = desktop_ref.shadow_grid(shadow)
         shown.append(one)
-    want = desktop_ref.desktop_windows(w, h, clock.encode("ascii"), shown)
+    want = desktop_ref.desktop_windows(w, h, clock.encode("ascii"), shown, shell)
     desc = "the desktop with the clock %s (frame %d)" % (clock, frame)
     for x in win.wm.z:
         desc += "; %s at (%d, %d) %dx%d, %s, close %s" % (x["name"], x["r"][0], x["r"][1], x["r"][2], x["r"][3],
                                                        "active" if x is win.wm.focus else "inactive", x["close"])
+    if shell["m"] != "normal" or shell["menu"] or shell["dialog"]:
+        desc += "; M button %s" % shell["m"]
+        if shell["menu"]:
+            desc += ", %s menu row %d%s" % (shell["menu"]["kind"], shell["menu"]["sel"],
+                                            " (ring)" if shell["menu"]["ring"] else "")
+        if shell["dialog"]:
+            dl = shell["dialog"]
+            desc += ", dialog focus %d%s, %s/%s, close %s" % (dl["focus"], " (ring)" if dl["ring"] else "",
+                                                             dl["btn"][0], dl["btn"][1], dl["close"])
     if pointer_at is not None:
         want, pdesc = pointer_ref.paint(want, w, h, *pointer_at)
         desc += "; " + pdesc
@@ -373,19 +429,27 @@ def model_keys(win, actions):
     """1.3 stage 4b: what the keys of one send-key do in the model (each
     pressed in order, then released)."""
     for k in actions:
-        win.key(True, k == "esc")
+        win.key(k, True)
     for k in actions:
-        win.key(False, k == "esc")
+        win.key(k, False)
 
 
-def wait_events(serial, win, before):
+def wait_events(serial, win, before, mbefore=None):
     """The kernel's lines of the model's events since `before` (their
-    number then); the sync point moves to the last one."""
-    for want in win.wm.events[before:]:
-        i = serial.wait(lambda l, w=want: l == w, 20, win.sync)
-        if i is None:
-            raise RuntimeError("no line %r" % want)
-        win.sync = i
+    number then); 1.3 stage 5: and of its menus' since `mbefore` (each list
+    in its own order, from the same point: the kernel interleaves them);
+    the sync point moves to the last one."""
+    start = end = win.sync
+    lists = [win.wm.events[before:]] + ([win.menus.events[mbefore:]] if mbefore is not None else [])
+    for wants in lists:
+        at = start
+        for want in wants:
+            i = serial.wait(lambda l, w=want: l == w, 20, at)
+            if i is None:
+                raise RuntimeError("no line %r" % want)
+            at = i
+        end = max(end, at)
+    win.sync = end
 
 
 def drag_burst(qmp, serial, win, m, count, keys):
@@ -443,6 +507,11 @@ def window_step(step, qmp, serial, dump, win, m, shots):
         rel(m, win, serial, dx, dy)
     elif step in ("press", "release"):
         packet(m, win, serial, 0, 0, step == "press")
+    elif step == "click":                                       # 1.3 stage 5
+        packet(m, win, serial, 0, 0, True)
+        packet(m, win, serial, 0, 0, False)
+    elif step in ("rpress", "rrelease"):
+        packet(m, win, serial, 0, 0, step == "rpress", "right")
     elif step.startswith("drag:"):
         dx, dy = (int(v) for v in step[5:].split(","))
         packet(m, win, serial, 0, 0, True)
@@ -495,6 +564,17 @@ def events_report(serial, win):
         out += " first difference %d: want %r got %r" % (i, want[i] if i < len(want) else None,
                                                        got[i] if i < len(got) else None)
     print(out, flush=True)
+    # 1.3 stage 5: the menus' lines.
+    want = win.menus.events
+    serial.poll()
+    got = [line for line in serial.lines if MENU_EVENT.match(line)]
+    same = got == want
+    out = "MENUS predicted=%d logged=%d same=%s" % (len(want), len(got), "yes" if same else "no")
+    if not same:
+        i = next((k for k in range(min(len(want), len(got))) if want[k] != got[k]), min(len(want), len(got)))
+        out += " first difference %d: want %r got %r" % (i, want[i] if i < len(want) else None,
+                                                       got[i] if i < len(got) else None)
+    print(out, flush=True)
 
 
 def main():
@@ -530,7 +610,8 @@ def main():
         wshots = 0                      # 1.3 stage 4a: WSCREEN steps
         for step in a.steps:
             left = max(a.timeout - (time.monotonic() - t0), 1)
-            if win and (step in ("wshot", "press", "release", "esc") or step.split(":")[0] in
+            if win and (step in ("wshot", "press", "release", "esc", "click", "rpress", "rrelease") or
+                        step.split(":")[0] in
                         ("to", "rel", "drag", "key", "dragburst")):
                 windowed = True
                 wshots = window_step(step, qmp, serial, dump, win, m, wshots)
@@ -559,6 +640,10 @@ def main():
                     return 0
                 if windowed:
                     win.sync = max(win.sync, i)         # 1.3 stage 4b
+            elif step == "windowed":                            # 1.3 stage 5
+                if not win:
+                    raise ValueError("windowed needs --size")
+                windowed = True
             elif step == "ready":                               # 1.3 stage 4b
                 if serial.wait(lambda l: MARKER.match(l) is not None, left) is None:
                     print("MARKER not seen in %.0f s" % left, flush=True)
@@ -571,6 +656,7 @@ def main():
                 crash_screen(qmp, a, dump)
             elif step.startswith("type:"):
                 before = len(win.wm.events) if win else 0
+                mbefore = len(win.menus.events) if win else 0       # 1.3 stage 5
                 for kind, value in text_to_actions(step[5:]):
                     if kind == "wait":
                         time.sleep(value)
@@ -580,8 +666,8 @@ def main():
                     if win:
                         model_keys(win, value)          # 1.3 stage 4b
                     time.sleep(0.05)
-                if windowed and len(win.wm.events) > before:
-                    wait_events(serial, win, before)
+                if windowed and (len(win.wm.events) > before or len(win.menus.events) > mbefore):
+                    wait_events(serial, win, before, mbefore)
             else:
                 raise ValueError("unknown step %r" % step)
         print(f"PACKETS sent={m.sent} exact={m.exact}", flush=True)

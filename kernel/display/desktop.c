@@ -2,9 +2,11 @@
  * The desktop, the kernel side (1.3 stage 3); see desktop.h.
  */
 #include "kernel/display/desktop.h"
+#include "drivers/keyboard/scancode.h"
 #include "drivers/mouse/ps2mouse.h"
 #include "drivers/vga/vga_text.h"
 #include "kernel/arch/x86/cmos.h"
+#include "kernel/arch/x86/reset.h"
 #include "kernel/display/compositor.h"
 #include "kernel/display/desktop_core.h"
 #include "kernel/display/display.h"
@@ -14,6 +16,7 @@
 #include "kernel/display/ui_about.h"
 #include "kernel/display/ui_console.h"
 #include "kernel/display/ui_icon.h"
+#include "kernel/display/ui_menus.h"
 #include "kernel/display/ui_window.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
@@ -76,6 +79,13 @@ static bool desk_in_drag;
 static uint64_t desk_burst_longest, desk_tsc0, desk_tick0, desk_bytes_tick;
 static uint32_t desk_bytes_seen;
 
+/* 1.3 stage 5: the menus and the Restart dialog (ui_menus.h), the M
+ * menu's wordmark coverage, and the Console window opened from a menu by
+ * the pointer (the idle loop starts the console: desktop_take_console). */
+static struct ui_menus desk_menus;
+static uint16_t desk_menu_scratch[UI_ABOUT_SCRATCH];
+static bool desk_console_wanted;
+
 void desktop_options(bool w, bool l, bool n, bool ns, bool about_opt, bool panic_opt)
 {
     wanted = w;
@@ -137,7 +147,23 @@ static void windows_layer(void *ctx, struct surface *b, struct rect r)
 static void taskbar_layer(void *ctx, struct surface *b, struct rect r)
 {
     (void)ctx;
-    desktop_draw_taskbar(b, &lay, r, clock);
+    desktop_draw_taskbar_m(b, &lay, r, clock, desk_menus.m_state);    /* 1.3 stage 5: the M button's state */
+}
+
+/* 1.3 stage 5: an open menu and the Restart dialog, above everything else,
+ * painted into the back buffer, clipped to the damaged rectangle. */
+static void desk_overlay_layer(void *ctx, struct surface *b, struct rect r)
+{
+    (void)ctx;
+    struct ui_canvas c;
+    ui_canvas_init(&c, b);
+    ui_canvas_clip(&c, r);
+    if (ui_rect_empty(c.clip))
+        return;
+    if (desk_menus.menu_open)
+        ui_menu_draw(&c, &desk_menus.menu, &fonts, desk_menu_scratch, UI_ABOUT_SCRATCH);
+    if (desk_menus.dlg_open)
+        ui_dialog_draw(&c, &desk_menus.dlg);
 }
 
 /* The only copy to the framebuffer while the desktop shows; the pointer
@@ -270,8 +296,69 @@ static void compose(void)
 
 static const char *const close_states[UI_BUTTON_STATES] = { "normal", "hover", "pressed" };
 
+/* 1.3 stage 5: the menus' events (ui_menus.h), as "desktop: menu ...",
+ * "desktop: M button: ..." and "desktop: dialog ..." lines. */
+static const char *const desk_menu_names[2] = { "M", "desktop" };
+static const char *const desk_whys[] = { "the mouse", "the Windows key", "Esc", "a click outside", "the Windows key",
+                                         "the M button", "a row chosen", "Cancel", "the close button" };
+static const char *const desk_m_states[4] = { "normal", "hover", "pressed", "open" };
+static const char *const desk_dlg_parts[3] = { "Cancel", "Restart", "the close button" };
+
+static void desk_log_menus(void)
+{
+    for (uint32_t i = 0; logging && i < desk_menus.n_ev; i++) {
+        const struct ui_menus_event *e = &desk_menus.ev[i];
+        const char *menu = desk_menu_names[e->menu == UI_MENU_DESKTOP];
+        switch (e->kind) {
+        case UI_MEV_MENU_OPEN:
+            kserialf("desktop: menu %s opened by %s at (%d, %d) %dx%d%s\n", menu, desk_whys[e->why], e->r.x, e->r.y,
+                     e->r.w, e->r.h, e->why == UI_WHY_KEY ? ", About selected" : "");
+            break;
+        case UI_MEV_MENU_SELECT:
+            if (e->row < 0)
+                kserialf("desktop: menu %s: no row selected\n", menu);
+            else
+                kserialf("desktop: menu %s: %s selected (%s)\n", menu, ui_menu_label(e->menu, e->row),
+                         e->ring ? "the keyboard" : "the pointer");
+            break;
+        case UI_MEV_MENU_CHOSEN:
+            kserialf("desktop: menu %s: %s chosen\n", menu, ui_menu_label(e->menu, e->row));
+            break;
+        case UI_MEV_MENU_CLOSE:
+            kserialf("desktop: menu %s closed (%s)\n", menu, desk_whys[e->why]);
+            break;
+        case UI_MEV_M_STATE:
+            kserialf("desktop: M button: %s\n", desk_m_states[e->state & 3]);
+            break;
+        case UI_MEV_DLG_OPEN:
+            kserialf("desktop: dialog Restart opened at (%d, %d) %dx%d, Cancel focused%s\n", e->r.x, e->r.y, e->r.w,
+                     e->r.h, e->ring ? " (the focus ring on)" : "");
+            break;
+        case UI_MEV_DLG_FOCUS:
+            kserialf("desktop: dialog Restart: %s focused\n", desk_dlg_parts[e->row == 1]);
+            break;
+        case UI_MEV_DLG_STATE:
+            kserialf("desktop: dialog Restart: %s %s\n", desk_dlg_parts[e->row < 0 || e->row > 2 ? 2 : e->row],
+                     close_states[e->state < 0 || e->state > 2 ? 0 : e->state]);
+            break;
+        case UI_MEV_DLG_CLOSE:
+            kserialf("desktop: dialog Restart closed (%s)\n", desk_whys[e->why]);
+            break;
+        case UI_MEV_RESTART:
+            kserialf("desktop: dialog Restart: Restart chosen\n");
+            break;
+        }
+    }
+    if (logging && desk_menus.lost_ev) {
+        kserialf("desktop: %u menu events not logged (the list was full)\n", desk_menus.lost_ev);
+        desk_menus.lost_ev = 0;
+    }
+    ui_menus_clear_events(&desk_menus);
+}
+
 static void log_events(void)
 {
+    desk_log_menus();
     if (!logging) {
         ui_wm_clear_events(&wm);
         return;
@@ -492,18 +579,41 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
               (uint32_t)need, (uint32_t)UI_ABOUT_SCRATCH);
 }
 
-/* The test-only way to open a window in stage 4a (stage 5's menus open it). */
-static void open_about(void)
+/* The About window's values in full (the window may show them cut, ui_about.h). */
+static void desk_about_values(void)
 {
-    if (!ui_wm_open(&wm, &about_win.w))
-        return;
-    /* Each value in full (the window may show it cut, ui_about.h). */
     const char *full[UI_ABOUT_ROWS] = { MADIRE_OS_VERSION, loader_name, about_display, about_memory,
                                         UI_ABOUT_MODE };
     if (logging)
         for (int i = 0; i < UI_ABOUT_ROWS; i++)
             kserialf("desktop: about %s: %s\n", ui_about_labels[i], full[i]);
+}
+
+/* The test-only way to open a window in stage 4a (stage 5's menus open it). */
+static void open_about(void)
+{
+    if (!ui_wm_open(&wm, &about_win.w))
+        return;
+    desk_about_values();
     log_events();
+}
+
+/* 1.3 stage 5: after the menus had a packet or a key: the About values when
+ * a row opened the About window, a line when one opened the Console window
+ * (returned: the caller starts the console), and the restart when the
+ * dialog's Restart was pressed (kernel/arch/x86/reset.c, as "reboot"). */
+static enum ui_menu_action desk_menu_done(void)
+{
+    enum ui_menu_action a = ui_menus_take_done(&desk_menus);
+    if (a == UI_MENU_ABOUT)
+        desk_about_values();
+    else if (a == UI_MENU_CONSOLE)
+        klogf("Desktop: a menu opened the Console window\n");
+    if (desk_menus.restart) {
+        klogf("Desktop: Restart chosen in the Restart dialog: restarting\n");
+        reset_machine(true);                /* does not return */
+    }
+    return a;
 }
 
 /* ---- Start, poll, close ---- */
@@ -551,7 +661,13 @@ bool desktop_start(bool console_offered)
     comp_add_layer(&comp, background_layer, 0);
     comp_add_layer(&comp, windows_layer, 0);
     comp_add_layer(&comp, taskbar_layer, 0);
+    comp_add_layer(&comp, desk_overlay_layer, 0);                /* 1.3 stage 5 */
     ui_wm_init(&wm, (int32_t)fi->width, (int32_t)fi->height, lay.bar.y, scale, &comp.damage);
+    ui_menus_init(&desk_menus, &wm, &about_win.w, &console_win.w, lay.m_cell, &fonts);
+    size_t menu_need = ui_menu_scratch(scale, fi->width, fi->height);
+    if (menu_need > UI_ABOUT_SCRATCH)
+        klogf("Desktop: the M menu's wordmark needs %u coverage entries (%u kept): not drawn whole\n",
+              (uint32_t)menu_need, (uint32_t)UI_ABOUT_SCRATCH);
     showing = true;
     comp_damage(&comp, (struct rect){ 0, 0, (int32_t)fi->width, (int32_t)fi->height });
     if (about_at_start) {
@@ -589,22 +705,61 @@ void desktop_poll(void)
     compose();
 }
 
-void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up)
+void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down)
 {
     if (!showing)
         return;
-    ui_wm_pointer(&wm, x, y, left_down, left_up);
+    ui_menus_pointer(&desk_menus, x, y, left_down, left_up, right_down);   /* 1.3 stage 5 */
     log_events();
+    if (desk_menu_done() == UI_MENU_CONSOLE)
+        desk_console_wanted = true;
 }
 
-enum desktop_key_route desktop_key(bool pressed, bool esc)
+bool desktop_take_console(void)
+{
+    bool wanted_now = desk_console_wanted;
+    desk_console_wanted = false;
+    return wanted_now;
+}
+
+/* 1.3 stage 5: the keys the menus and the dialog read. */
+static enum ui_menus_key desk_key_of(uint8_t keycode)
+{
+    switch (keycode) {
+    case KEY_UP:
+        return UI_MKEY_UP;
+    case KEY_DOWN:
+        return UI_MKEY_DOWN;
+    case KEY_ENTER:
+    case KEY_KP_ENTER:
+        return UI_MKEY_ENTER;
+    case KEY_TAB:
+        return UI_MKEY_TAB;
+    case KEY_ESC:
+        return UI_MKEY_ESC;
+    case KEY_LGUI:
+    case KEY_RGUI:
+        return UI_MKEY_WINDOWS;
+    default:
+        return UI_MKEY_OTHER;
+    }
+}
+
+enum desktop_key_route desktop_key(uint8_t keycode, bool pressed)
 {
     if (!showing)
         return DESKTOP_KEY_TAKEN;
-    enum ui_key_route r = ui_wm_key(&wm, &console_win.w, pressed, esc);
-    if (r == UI_KEY_OPENED)
-        klogf("Desktop: a key opened the Console window (the key is not typed)\n");
+    enum desktop_key_route out = DESKTOP_KEY_TAKEN;
+    /* 1.3 stage 5: the dialog, the Windows key and an open menu first. */
+    if (ui_menus_key(&desk_menus, desk_key_of(keycode), pressed) == UI_MENUS_TO_WM) {
+        enum ui_key_route r = ui_wm_key(&wm, &console_win.w, pressed, keycode == KEY_ESC);
+        if (r == UI_KEY_OPENED)
+            klogf("Desktop: a key opened the Console window (the key is not typed)\n");
+        out = r == UI_KEY_OPENED ? DESKTOP_KEY_OPENED : r == UI_KEY_TO_CONSOLE ? DESKTOP_KEY_CONSOLE
+                                                                               : DESKTOP_KEY_TAKEN;
+    }
     log_events();
-    return r == UI_KEY_OPENED ? DESKTOP_KEY_OPENED : r == UI_KEY_TO_CONSOLE ? DESKTOP_KEY_CONSOLE
-                                                                            : DESKTOP_KEY_TAKEN;
+    if (desk_menu_done() == UI_MENU_CONSOLE)
+        out = DESKTOP_KEY_OPENED;
+    return out;
 }

@@ -37,6 +37,16 @@ rounded shape; a fixed grid, DUMP_GRID; the last scene is console_about,
 drawn by the C side through the exposure path); desktop_windows also
 draws Console windows (a window with a "grid": the cells, the palette and
 the cursor, as shadow_grid reads them from a saved vga_shadow).
+1.3 stage 5: the menus, the M button and the Restart dialog
+(kernel/display/ui_menu.h, ui_dialog.h, desktop_core.h's M button
+states): the scenes mbutton_hover, mbutton_pressed, menu_mouse, menu_key,
+menu_hover, menu_desktop, dialog, dialog_key, dialog_tab,
+dialog_pressed_cancel and dialog_pressed_restart (tests/desktopdump.c
+describes them; menu_tiles and dialog_tiles are menu_key and dialog_tab
+painted by the C side in tiles); Menus, the rules of ui_menus.h written
+again (what the pointer and the keys do to the menus and the dialog, and
+the desktoplog lines they give), which tests/qmp_desktop.py's model
+follows; desktop_windows draws its M button, menu and dialog too.
 --contrast reads the colour pairs tests/desktopdump.c recorded and checks
 each against the Design Guide's section 12 table, recomputing the ratios
 from tokens.h (CONTRAST lines; exit 1 on any failure).
@@ -656,10 +666,20 @@ def scene_background(scr, tok, s):
     return "the M at the splash's place (origin %d, %d in 1/256 px)" % (lox, loy)
 
 
-def taskbar(scr, tok, clock):
+def taskbar(scr, tok, clock, m="normal"):
+    """The taskbar; 1.3 stage 5: the M button in state m (desktop_core.h:
+    hover fills the cell below the edge line in surface.active; pressed and
+    open also draw a 2 dp accent bar along its bottom)."""
     L = layout(scr.w, scr.h)
     fill(scr, L["bar"], tok["surface.bar"])
     fill(scr, L["edge"], tok["surface.bar.edge"])
+    if m != "normal":
+        top = L["edge"][1] + L["edge"][3]
+        cell = (0, top, L["bar"][3], L["bar"][1] + L["bar"][3] - top)
+        fill(scr, cell, tok["surface.active"])
+        if m != "hover":
+            b = px(2, L["s"])
+            fill(scr, (cell[0], cell[1] + cell[3] - b, cell[2], b), tok["accent"])
     mx, my, mp = L["m"]
     icon(scr, "M", mx, my, mp, tok["accent"])
     text(scr, L["font"], L["clock"][0], L["clock"][1], clock, tok["text"])
@@ -1001,6 +1021,19 @@ class WM:
                     self.close(win, "the close button")
         self.states()
 
+    def cancel(self):
+        """1.3 stage 5 (ui_wm_cancel): a held left button let go, nothing
+        closed: a drag ends where it is, the close button not pressed."""
+        if not self.left:
+            return
+        self.left = False
+        if self.drag:
+            win, self.drag = self.drag, None
+            if win["r"][:2] != self.grab[2][:2]:
+                self.ev("drag %s to (%d, %d) %dx%d" % ((win["name"],) + win["r"]))
+        self.pressed = None
+        self.states()
+
     def esc(self):
         win = self.focus
         if not win or not win["esc"]:
@@ -1048,10 +1081,12 @@ def scene_windows(scr, tok, s, close="normal"):
         close, a["r"][0], a["r"][1], b["r"][0], b["r"][1], w, h, values[1].decode("latin-1"))
 
 
-def desktop_windows(w, h, clock, windows):
+def desktop_windows(w, h, clock, windows, shell=None):
     """The desktop (desktop()) with windows on it, bottom to top: each a
     dict r, active, close, values (the About window, the only one in 4a);
-    1.3 stage 4b: a dict with a "grid" (shadow_grid's) is a Console window."""
+    1.3 stage 4b: a dict with a "grid" (shadow_grid's) is a Console window.
+    1.3 stage 5: shell (Menus.view()): the M button's state, then an open
+    menu and the dialog above everything."""
     tok = colours()
     s = scale_of(w, h)
     scr = Screen(w, h, tok["bg.deep"])
@@ -1061,6 +1096,13 @@ def desktop_windows(w, h, clock, windows):
             console_window(scr, tok, s, win["r"], win["active"], win["close"], win["grid"])
         else:
             about_window(scr, tok, s, win["r"], win["active"], win["close"], win["values"])
+    if shell is not None:
+        if shell["m"] != "normal":
+            taskbar(scr, tok, clock, shell["m"])
+        if shell["menu"] is not None:
+            menu_draw(scr, tok, shell["menu"])
+        if shell["dialog"] is not None:
+            dialog_draw(scr, tok, s, shell["dialog"])
     return bytes(scr.pix)
 
 
@@ -1083,6 +1125,442 @@ def scene_console(scr, tok, s, kind):
     about_window(scr, tok, s, a["r"], True, "normal", values)
     return "the Console window at (%d, %d), %dx%d, under the About window at (%d, %d)" % (
         c["r"][0], c["r"][1], cw, chh, a["r"][0], a["r"][1])
+
+
+# ---- The menus, the M button and the Restart dialog (1.3 stage 5) ----
+
+# kernel/display/ui_menu.h: size in dp, a header, the rows' tops and the
+# dividers in dp, each row's label, icon and action.
+MENU_DEFS = {
+    "M": {"w": 288, "h": 182, "header": True, "rows": [61, 97, 142], "dividers": [56, 137],
+          "labels": [b"About", b"Console", b"Restart"], "icons": ["about", "console", "restart"],
+          "actions": ["about", "console", "restart"]},
+    "desktop": {"w": 224, "h": 80, "header": False, "rows": [4, 40], "dividers": [],
+                "labels": [b"Open Console", b"About Madire OS"], "icons": ["console", "about"],
+                "actions": ["console", "about"]},
+}
+
+
+def menu_place_m(s, bar):
+    d = MENU_DEFS["M"]
+    return (px(8, s), max(bar - px(8, s) - px(d["h"], s), 0), px(d["w"], s), px(d["h"], s))
+
+
+def menu_place_at(s, width, bar, x, y):
+    d = MENU_DEFS["desktop"]
+    w, h = px(d["w"], s), px(d["h"], s)
+    return (max(min(x, width - w), 0), max(min(y, bar - h), 0), w, h)
+
+
+def menu_new(kind, s, r):
+    return {"kind": kind, "s": s, "r": r, "sel": -1, "ring": False}
+
+
+def menu_row_rect(m, row):
+    d, s, r = MENU_DEFS[m["kind"]], m["s"], m["r"]
+    if not 0 <= row < len(d["rows"]):
+        return (0, 0, 0, 0)
+    e, t = px(1, s), d["rows"][row]
+    y0, y1 = r[1] + px(t, s), r[1] + px(t + 36, s)
+    return (r[0] + e, y0, r[2] - 2 * e, y1 - y0)
+
+
+def menu_row_at(m, x, y):
+    for i in range(len(MENU_DEFS[m["kind"]]["rows"])):
+        if WM.inside(menu_row_rect(m, i), x, y):
+            return i
+    return -1
+
+
+def menu_next(m, d):
+    n = len(MENU_DEFS[m["kind"]]["rows"])
+    if not 0 <= m["sel"] < n:
+        return 0 if d > 0 else n - 1
+    return (m["sel"] + (1 if d > 0 else n - 1)) % n
+
+
+def wordmark(scr, tok, pen, top, ts, r_heavy, r_light):
+    """The wordmark "MADIRE OS" in text (make-wallpaper.py's capsule
+    letters, the About window's way), its pen and cap top in 24.8."""
+    track = K.fx(6)
+    text_c = K.rgb(rgb3(tok["text"]))
+    for i, ch in enumerate(MW.WORDMARK):
+        a, polys = MW.kernel_glyph(ch)
+        cov = {}
+        placed = [[(pen + K.mul(qx, ts), top + K.mul(qy, ts)) for qx, qy in poly] for poly in polys]
+        MW.polys_coverage(K, cov, placed, r_heavy if i < 6 else r_light, scr.w, scr.h)
+        paint_k(scr, cov, lambda x: text_c)
+        pen += K.mul(a + track, ts)
+
+
+def menu_draw(scr, tok, m):
+    """A menu (ui_menu.h's rules)."""
+    d, s, r = MENU_DEFS[m["kind"]], m["s"], m["r"]
+    R, e = px(6, s), px(1, s)
+    fill_round(scr, r, R, 15, tok["surface"])
+    if d["header"]:
+        P, hy, hh = px(24, s), r[1] + px(4, s), px(52, s) - px(4, s)
+        icon(scr, "M", r[0] + px(16, s), hy + (hh - P) // 2, P, tok["accent"])
+        wordmark(scr, tok, (r[0] + px(52, s)) << 8, (hy + (hh - px(10, s)) // 2) << 8, K.fx(10 * s, 56),
+                 K.fx(500 * s, 2576), K.fx(250 * s, 2576))
+    for dv in d["dividers"]:
+        y0, y1 = r[1] + px(dv, s), r[1] + px(dv + 1, s)
+        x0, x1 = r[0] + px(16, s), r[0] + px(d["w"] - 16, s)
+        fill(scr, (x0, y0, x1 - x0, y1 - y0), tok["border"])
+    f = font(s, False)
+    for i, label_text in enumerate(d["labels"]):
+        row = menu_row_rect(m, i)
+        if i == m["sel"]:
+            keep = scr.clip
+            scr.clip = meet(keep, row)
+            if scr.clip is not None:
+                fill_round(scr, inflate(r, -e), max(R - e, 0), 15, tok["surface.active"])
+            scr.clip = keep
+            g, inset_px = px(2, s), px(4, s)
+            fill(scr, (row[0], row[1] + inset_px, g, row[3] - 2 * inset_px), tok["accent"])
+            if m["ring"]:
+                frame_round(scr, (row[0] + g, row[1], row[2] - 2 * g, row[3]), px(4, s), g, 15, tok["accent"])
+        ip = px(16, s)
+        icon(scr, d["icons"][i], r[0] + px(16, s), row[1] + (row[3] - ip) // 2, ip, tok["text"])
+        text(scr, f, r[0] + px(44, s), row[1] + (row[3] - f[2]) // 2, label_text, tok["text"])
+    frame_round(scr, r, R, e, 15, tok["border.panel"])
+
+
+DIALOG_LINES = (b"Restart Madire OS now?", b"Files in Live mode are lost.")
+DIALOG_PARTS = ("Cancel", "Restart", "the close button")
+
+
+def dialog_new(w, h, s, ring):
+    """The Restart dialog (ui_dialog.h) on a w x h screen: centred above
+    the taskbar, Cancel focused, the ring as given, every button normal."""
+    dw, dh, bar = px(360, s), px(172, s), h - px(40, s)
+    return {"r": ((w - dw) // 2, max((bar - dh) // 2, 0), dw, dh), "s": s, "focus": 0, "ring": ring,
+            "btn": ["normal", "normal"], "close": "normal"}
+
+
+def dialog_button(r, s, b):
+    x0, x1 = (px(136, s), px(232, s)) if b == 0 else (px(240, s), px(336, s))
+    return (r[0] + x0, r[1] + px(116, s), x1 - x0, px(148, s) - px(116, s))
+
+
+def dialog_hit(dlg, x, y):
+    r, s = dlg["r"], dlg["s"]
+    if not WM.inside(r, x, y):
+        return None
+    tb = px(32, s)
+    if WM.inside((r[0] + r[2] - tb, r[1], tb, tb), x, y):
+        return "close"
+    for b, name in ((0, "cancel"), (1, "restart")):
+        if WM.inside(dialog_button(r, s, b), x, y):
+            return name
+    return "body"
+
+
+def dialog_draw(scr, tok, s, dlg):
+    """The dialog: a window (always active) with its text and buttons."""
+    t = tok
+    st = [([t["surface.active"], t["surface.hover"], t["accent.pressed"]], [t["text"]] * 3, False, 4, 15),
+          ([t["accent"], t["accent.hover"], t["accent.pressed"]], [t["text.on.accent"], t["text.on.accent"], t["text"]],
+           True, 4, 15)]
+
+    def client(scr_, r):
+        f = font(s, False)
+        text(scr_, f, r[0] + px(24, s), r[1] + px(56, s), DIALOG_LINES[0], tok["text"])
+        text(scr_, f, r[0] + px(24, s), r[1] + px(76, s), DIALOG_LINES[1], tok["text"])
+        for b in (0, 1):
+            button(scr_, tok, dialog_button(r, s, b), st[b], dlg["btn"][b], dlg["ring"] and dlg["focus"] == b, s,
+                   lab=(b"Cancel", b"Restart")[b])
+    window(scr, tok, s, dlg["r"], b"Restart", "restart", True, dlg["close"], client)
+
+
+MENU_NAMES = {"M": "M", "desktop": "desktop"}
+WHY = {"mouse": "the mouse", "key": "the Windows key", "esc": "Esc", "outside": "a click outside",
+       "windows": "the Windows key", "m": "the M button", "chosen": "a row chosen", "cancel": "Cancel",
+       "close": "the close button"}
+KEYS = {"up": "up", "down": "down", "ret": "enter", "kp_enter": "enter", "tab": "tab", "esc": "esc",
+        "meta_l": "windows", "meta_r": "windows"}
+
+
+class Menus:
+    """ui_menus.h's rules written again: the pointer and the keys on the
+    menus and the dialog, before the window manager (WM); each change kept
+    as the kernel's desktoplog line would say it, in the kernel's order."""
+
+    def __init__(self, wm):
+        self.wm = wm
+        bar = px(40, wm.s)
+        self.m_cell = (0, wm.h - bar, bar, bar)
+        self.menu, self.dlg = None, None
+        self.x, self.y = wm.x, wm.y
+        self.left, self.press = False, None
+        self.m_state = "normal"
+        self.done, self.restart = None, False
+        self.events = []
+
+    def ev(self, line):
+        self.events.append("desktop: " + line)
+
+    def view(self):
+        return {"m": self.m_state, "menu": dict(self.menu) if self.menu else None,
+                "dialog": {**self.dlg, "btn": list(self.dlg["btn"])} if self.dlg else None}
+
+    def state(self):
+        m = self.menu
+        d = self.dlg
+        return (self.m_state, (m["kind"], m["r"], m["sel"], m["ring"]) if m else None,
+                (d["focus"], d["ring"], tuple(d["btn"]), d["close"]) if d else None)
+
+    def over_m(self):
+        return WM.inside(self.m_cell, self.x, self.y)
+
+    def name(self):
+        return MENU_NAMES[self.menu["kind"]]
+
+    def open_menu(self, kind, by_key):
+        s = self.wm.s
+        r = menu_place_m(s, self.wm.bar) if kind == "M" else menu_place_at(s, self.wm.w, self.wm.bar, self.x, self.y)
+        self.menu = menu_new(kind, s, r)
+        if by_key:
+            self.menu["sel"], self.menu["ring"] = 0, True
+        self.ev("menu %s opened by %s at (%d, %d) %dx%d%s" % ((MENU_NAMES[kind], WHY["key" if by_key else "mouse"])
+                                                             + r + (", About selected" if by_key else "",)))
+
+    def wm_follows(self):
+        self.wm.pointer(self.x, self.y)
+
+    def close_menu(self, why):
+        if not self.menu:
+            return
+        self.ev("menu %s closed (%s)" % (self.name(), WHY[why]))
+        self.menu = None
+        self.wm_follows()
+
+    def select(self, row, ring):
+        m = self.menu
+        if m["sel"] == row and m["ring"] == ring:
+            return
+        m["sel"], m["ring"] = row, ring
+        if row < 0:
+            self.ev("menu %s: no row selected" % self.name())
+        else:
+            self.ev("menu %s: %s selected (%s)" % (self.name(), MENU_DEFS[m["kind"]]["labels"][row].decode(),
+                                                   "the keyboard" if ring else "the pointer"))
+
+    def wm_open(self, name):
+        """ui_wm_open: open the window, or raise and focus it if it is open."""
+        win = next((w for w in self.wm.z if w["name"] == name), None)
+        if win is None:
+            w, h = about_size(self.wm.s) if name == "About" else console_size(self.wm.s)
+            self.wm.open(name, w, h, name == "About")
+        else:
+            self.wm.raise_(win)
+            self.wm.set_focus(win)
+            self.wm.states()
+
+    def choose(self, row, by_key):
+        d = MENU_DEFS[self.menu["kind"]]
+        action = d["actions"][row]
+        self.ev("menu %s: %s chosen" % (self.name(), d["labels"][row].decode()))
+        self.close_menu("chosen")
+        if action in ("about", "console"):
+            self.wm_open("About" if action == "about" else "Console")
+            self.done = action
+        else:
+            self.dlg_open(by_key)
+
+    def dlg_open(self, ring):
+        self.dlg = dialog_new(self.wm.w, self.wm.h, self.wm.s, ring)
+        self.ev("dialog Restart opened at (%d, %d) %dx%d, Cancel focused%s" % (
+            self.dlg["r"] + (" (the focus ring on)" if ring else "",)))
+        self.dlg_states()
+
+    def dlg_close(self, why):
+        self.dlg = None
+        self.ev("dialog Restart closed (%s)" % WHY[why])
+        self.wm_follows()
+
+    def do_restart(self):
+        self.restart = True
+        self.ev("dialog Restart: Restart chosen")
+
+    def dlg_states(self):
+        at = dialog_hit(self.dlg, self.x, self.y)
+        for i, part in enumerate(("cancel", "restart", "close")):
+            over = at == part
+            if self.left and self.press == part:
+                st = "pressed" if over else "normal"
+            else:
+                st = "hover" if over and not self.left else "normal"
+            now = self.dlg["btn"][i] if i < 2 else self.dlg["close"]
+            if st == now:
+                continue
+            if i < 2:
+                self.dlg["btn"][i] = st
+            else:
+                self.dlg["close"] = st
+            self.ev("dialog Restart: %s %s" % (DIALOG_PARTS[i], st))
+
+    def update_m(self):
+        over = self.over_m()
+        if self.menu and self.menu["kind"] == "M":
+            st = "open"
+        elif self.left and self.press == "m":
+            st = "pressed" if over else "normal"
+        elif over and not self.left and not self.wm.left and not self.menu and not self.dlg:
+            st = "hover"
+        else:
+            st = "normal"
+        if st != self.m_state:
+            self.m_state = st
+            self.ev("M button: %s" % st)
+
+    def release(self):
+        press, self.left, self.press = self.press, False, None
+        if press == "m" and self.over_m():
+            if self.menu and self.menu["kind"] == "M":
+                self.close_menu("m")
+            elif not self.menu:
+                self.open_menu("M", False)
+        elif press == "menu" and self.menu:
+            row = menu_row_at(self.menu, self.x, self.y)
+            if row >= 0:
+                self.choose(row, False)
+
+    def pointer(self, x, y, down=False, up=False, right=False):
+        self.x, self.y = x, y
+        if self.dlg:
+            at = dialog_hit(self.dlg, x, y)
+            if down and not self.left:
+                self.left = True
+                self.press = at if at in ("cancel", "restart", "close") else "outside"
+            closed = False
+            if up and self.left:
+                press, self.left, self.press = self.press, False, None
+                if press == "cancel" and at == "cancel":
+                    self.dlg_close("cancel")
+                    closed = True
+                elif press == "close" and at == "close":
+                    self.dlg_close("close")
+                    closed = True
+                elif press == "restart" and at == "restart":
+                    self.do_restart()
+            if not closed:
+                self.dlg_states()
+        elif self.menu:
+            row = menu_row_at(self.menu, x, y)
+            if row >= 0:
+                self.select(row, False)
+            elif not self.menu["ring"]:
+                self.select(-1, False)
+            inside = WM.inside(self.menu["r"], x, y)
+            if down and not self.left:
+                self.left = True
+                if self.menu["kind"] == "M" and self.over_m():
+                    self.press = "m"
+                elif inside:
+                    self.press = "menu"
+                else:
+                    self.press = "outside"
+                    self.close_menu("outside")
+            elif right and not inside:
+                self.close_menu("outside")
+            if up and self.left:
+                self.release()
+        elif self.left:
+            if up:
+                self.release()
+        elif down and self.over_m() and not self.wm.left:
+            self.left, self.press = True, "m"
+        else:
+            self.wm.pointer(x, y, down, up)
+            if right and not self.wm.left and self.wm.hit(x, y)[0] == "desktop":
+                self.open_menu("desktop", False)
+        self.update_m()
+
+    def key(self, qcode, pressed=True):
+        """One key event (its qcode); "wm" if the window manager takes it."""
+        k = KEYS.get(qcode, "other")
+        route = "taken"
+        if self.dlg:
+            if pressed and k == "enter":
+                if self.dlg["focus"] == 0:
+                    self.dlg_close("cancel")
+                else:
+                    self.do_restart()
+            elif pressed and k == "tab":
+                self.dlg["focus"], self.dlg["ring"] = 1 - self.dlg["focus"], True
+                self.ev("dialog Restart: %s focused" % DIALOG_PARTS[self.dlg["focus"]])
+            elif pressed and k == "esc":
+                self.dlg_close("esc")
+        elif k == "windows":
+            if pressed and self.menu and self.menu["kind"] == "M":
+                self.close_menu("windows")
+            elif pressed:
+                self.close_menu("windows")
+                self.left, self.press = False, None
+                self.wm.cancel()
+                self.open_menu("M", True)
+        elif self.menu:
+            if pressed and k in ("up", "down"):
+                self.select(menu_next(self.menu, 1 if k == "down" else -1), True)
+            elif pressed and k == "enter" and self.menu["sel"] >= 0:
+                self.choose(self.menu["sel"], True)
+            elif pressed and k == "esc":
+                self.close_menu("esc")
+        else:
+            route = "wm"
+        self.update_m()
+        return route
+
+
+def scene_menus(scr, tok, s, name):
+    """tests/desktopdump.c's stage 5 scenes on bg.deep: the taskbar with the
+    clock 09:41 and the M button in its state, a menu or the dialog."""
+    W, H = scr.w, scr.h
+    bar = H - px(40, s)
+    m, menu, dlg = "normal", None, None
+    if name == "mbutton_hover":
+        m = "hover"
+    elif name == "mbutton_pressed":
+        m = "pressed"
+    elif name == "menu_desktop":
+        menu = menu_new("desktop", s, menu_place_at(s, W, bar, W - px(10, s), bar - px(10, s)))
+        menu["sel"] = 1
+    elif name.startswith("menu_"):
+        m = "open"
+        menu = menu_new("M", s, menu_place_m(s, bar))
+        if name == "menu_key":
+            menu["sel"], menu["ring"] = 0, True
+        elif name == "menu_hover":
+            menu["sel"] = 2
+    else:
+        dlg = dialog_new(W, H, s, False)
+        if name == "dialog":
+            dlg["close"] = "hover"
+        elif name == "dialog_key":
+            dlg["ring"], dlg["btn"][1] = True, "hover"
+        elif name == "dialog_tab":
+            dlg["focus"], dlg["ring"], dlg["btn"][0] = 1, True, "hover"
+        elif name == "dialog_pressed_cancel":
+            dlg["focus"], dlg["ring"], dlg["btn"][0] = 1, True, "pressed"
+        elif name == "dialog_pressed_restart":
+            dlg["ring"], dlg["btn"][1] = True, "pressed"
+    taskbar(scr, tok, FIXED_CLOCK, m)
+    desc = "the M button %s" % m
+    if menu is not None:
+        menu_draw(scr, tok, menu)
+        desc += "; the %s menu at (%d, %d) %dx%d, row %d selected%s" % (
+            (menu["kind"],) + menu["r"] + (menu["sel"], ", the ring on" if menu["ring"] else ""))
+    if dlg is not None:
+        dialog_draw(scr, tok, s, dlg)
+        desc += "; the dialog at (%d, %d) %dx%d, focus %s%s, buttons %s %s, close %s" % (
+            dlg["r"] + (DIALOG_PARTS[dlg["focus"]], " (ring)" if dlg["ring"] else "", dlg["btn"][0], dlg["btn"][1],
+                        dlg["close"]))
+    return desc
+
+
+MENU_SCENES = ("mbutton_hover", "mbutton_pressed", "menu_mouse", "menu_key", "menu_hover", "menu_desktop", "dialog",
+               "dialog_key", "dialog_tab", "dialog_pressed_cancel", "dialog_pressed_restart")
 
 
 # ---- The contrast check (1.3 stage 4a; the Design Guide, section 12) ----
@@ -1129,12 +1607,21 @@ def contrast_tables(root=ROOT):
     return tables
 
 
+CARRIED = ("carried-bar", "carried-pointer")     # 1.3 stage 5 (kernel/display/ui_trace.h)
+
+
 def contrast_check(path):
     """Every pair recorded by tests/desktopdump.c (PAIR lines) must be a row
     of section 12's table (Text for text, Icons for icons and state marks)
     whose result is pass, with its stated ratio equal to the ratio
     recomputed here from tokens.h's values (WCAG 2.x, two decimals), at or
-    above its rule's minimum."""
+    above its rule's minimum. 1.3 stage 5: a carried pair (a fill whose
+    state a bar or the pointer carries) must be a row of the Icons table
+    whose result starts with "**fail alone**", its stated ratio equal to
+    the recomputed one; carried-bar: the row's result names the `accent`
+    bar, and in every scene that recorded the pair, the same scene also
+    recorded the bar as a state pair (`accent` on that fill) that passes;
+    carried-pointer: the row's result names the pointer."""
     defs = c_defines("kernel/display/tokens.h")
     names = {}
     for t, _, _ in guide_tokens():
@@ -1143,6 +1630,7 @@ def contrast_check(path):
             names.setdefault(v, []).append(t)
     tables = contrast_tables()
     pairs, scenes, lost = {}, set(), 0
+    in_scene = {}                       # (kind, fg, bg) -> the scenes that recorded it
     for line in open(path, encoding="ascii"):
         w = line.split()
         if w[:2] == ["PAIRS", "LOST"]:
@@ -1152,7 +1640,10 @@ def contrast_check(path):
         key = (w[1], int(w[2], 16), int(w[3], 16))
         pairs[key] = pairs.get(key, 0) + int(w[4])
         scenes.add(w[5])
+        in_scene.setdefault(key, set()).add(w[5])
     bad = lost
+    state_ok = {}                       # (fg, bg) of a state pair -> it passes
+    carried = []
     print("CONTRAST tables: %s; %d distinct pairs from %d scenes (%s)" % (
         ", ".join("%s %d rows" % (k, len(v)) for k, v in sorted(tables.items())), len(pairs), len(scenes),
         " ".join(sorted(scenes))))
@@ -1174,9 +1665,29 @@ def contrast_check(path):
         fname, bname, (_, bgs, ratios, rule, result, where) = found
         got = contrast(fg, bg)
         stated = ratios[bgs.index(bname)]
+        if kind in CARRIED:
+            carried.append((kind, fg, bg, desc, fname, bname, rule, got, stated, result, where))
+            continue
         ok = (rule in RULES and result.startswith("pass") and round(got, 2) == stated and got >= RULES[rule])
         print("CONTRAST %s %s: %s on %s, rule %s, ratio %.2f (the table: %.2f, %s): %s" % (
             "pass" if ok else "FAIL", desc, fname, bname, rule, got, stated, result, where))
+        bad += not ok
+        if kind == "state":
+            state_ok[(fg, bg)] = ok
+    accent = defs.get("UI_ACCENT")
+    for kind, fg, bg, desc, fname, bname, rule, got, stated, result, where in carried:
+        ok = result.startswith("**fail alone**") and round(got, 2) == stated
+        why = ""
+        if kind == "carried-bar":
+            missing = sorted(sc for sc in in_scene[(kind, fg, bg)]
+                             if sc not in in_scene.get(("state", accent, fg), set()))
+            ok = ok and "`accent` bar" in result and state_ok.get((accent, fg), False) and not missing
+            why = "; its accent bar recorded and passing in every scene" if ok else \
+                  "; no passing accent bar on it in: %s" % (" ".join(missing) or "(the bar's pair fails)")
+        else:
+            ok = ok and "pointer" in result
+        print("CONTRAST carried %s %s: %s on %s, rule %s, ratio %.2f (the table: %.2f, %s)%s: %s" % (
+            "pass" if ok else "FAIL", desc, fname, bname, rule, got, stated, result, why, where))
         bad += not ok
     if not pairs:
         print("CONTRAST FAIL: no pair recorded")
@@ -1192,6 +1703,7 @@ SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, 
           "console": lambda scr, tok, s: scene_console(scr, tok, s, "active"),
           "console_inactive": lambda scr, tok, s: scene_console(scr, tok, s, "inactive"),
           "console_about": lambda scr, tok, s: scene_console(scr, tok, s, "about")}
+SCENES.update({name: (lambda scr, tok, s, n=name: scene_menus(scr, tok, s, n)) for name in MENU_SCENES})
 
 
 def scale_of(w, h):

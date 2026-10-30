@@ -792,8 +792,9 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                  * opens the Console window and is not typed (the first
                  * one starts the console); with the Console window
                  * focused the console takes it; with the About window
-                 * focused Esc closes it. */
-                enum desktop_key_route r = desktop_key(e.flags & KEY_PRESSED, e.keycode == KEY_ESC);
+                 * focused Esc closes it. 1.3 stage 5: the menus, the
+                 * Restart dialog and the Windows key read it first. */
+                enum desktop_key_route r = desktop_key(e.keycode, e.flags & KEY_PRESSED);
                 if (r == DESKTOP_KEY_OPENED && !console_active()) {
                     BOOTSCREEN_SAFE(bootscreen_last_key(&e));
                     console_start(mem);
@@ -818,6 +819,10 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
 
         splash_tick();                      /* 1.2 stage 8: the dots, every 400 ms */
         pointer_poll();                     /* 1.2 stage 7: nothing without a mouse */
+        /* 1.3 stage 5: a menu row chosen with the pointer opened the Console
+         * window: start the console, as a key that opens it does. */
+        if (desktop_take_console() && !console_active())
+            console_start(mem);
         desktop_poll();                     /* 1.3 stage 3: the clock, then one composition */
 
         /* 1.1: the lights follow the lock keys; a change is logged only

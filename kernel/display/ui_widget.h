@@ -23,6 +23,14 @@
  *     UI_COLOUR_UNSET in the style: such a button is not drawn at all
  *     (ui_button_draw returns false), so no colour is ever drawn that the
  *     guide's contrast table (section 12) does not list.
+ * 1.3 stage 5: the Restart dialog's buttons with all three states
+ * (ui_style_cancel, ui_style_restart; the Design Guide, sections 2 and 9);
+ * the stage 2 styles ui_style_secondary and ui_style_primary keep their
+ * normal state only. A style's hover_by_pointer marks a hover fill whose
+ * state the pointer carries (section 12: Cancel's hover, "fail alone"):
+ * it is recorded as UI_TRACE_CARRIED_POINTER (ui_trace.h), any other hover
+ * or pressed fill as UI_TRACE_STATE; a focus ring is recorded as
+ * UI_TRACE_STATE.
  */
 
 #include <stdbool.h>
@@ -43,6 +51,7 @@ struct ui_button_style {
     bool bold;
     int32_t radius_dp;
     uint32_t corners;
+    bool hover_by_pointer;      /* 1.3 stage 5: the hover fill's state shown by the pointer */
 };
 
 struct ui_button {
@@ -58,6 +67,8 @@ extern const struct ui_button_style ui_style_secondary;     /* the dialog's Canc
 extern const struct ui_button_style ui_style_primary;       /* the dialog's Restart */
 extern const struct ui_button_style ui_style_key;           /* a Calculator key */
 extern const struct ui_button_style ui_style_key_equals;    /* the Calculator's = key */
+extern const struct ui_button_style ui_style_cancel;        /* 1.3 stage 5: the dialog's Cancel, all states */
+extern const struct ui_button_style ui_style_restart;       /* 1.3 stage 5: the dialog's Restart, all states */
 
 /* Draws a label (the rules above). */
 void ui_label_draw(const struct ui_canvas *c, struct rect r, const struct font *f, const char *text,

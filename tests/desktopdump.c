@@ -41,8 +41,9 @@
  * column (cut, ui_about.h), 2560x1440x32, 127 MB. Built with -DUI_TRACE: with
  * the environment variable DESKTOP_PAIRS set to a file, every scene
  * appends to it the colour pairs it drew (kernel/display/ui_trace.h), one
- * line each: PAIR <text|icon|state> <foreground RRGGBB> <background
- * RRGGBB> <pixels>.
+ * line each: PAIR <text|icon|state|carried-bar|carried-pointer>
+ * <foreground RRGGBB> <background RRGGBB> <pixels> <scene> (the carried
+ * kinds since 1.3 stage 5).
  *
  * 1.3 stage 4b: the Console window's scenes (kernel/display/ui_console.h):
  * on bg.deep, the Console window placed by the window manager with a fixed
@@ -55,6 +56,24 @@
  * inactive, the About window active), each painted on its own surface and
  * composed through ui_blit_round; console_exposed: console_about painted
  * directly in tiles of 97 x 61 pixels from (-7, -13) (the exposure path).
+ *
+ * 1.3 stage 5: the menus, the M button and the Restart dialog
+ * (kernel/display/ui_menu.h, ui_dialog.h, desktop_core.h), each on bg.deep
+ * with the taskbar (the clock 09:41) and its M button: mbutton_hover,
+ * mbutton_pressed (the button alone); menu_mouse (the M menu as the mouse
+ * opens it, no row selected, the M button open), menu_key (About selected
+ * with the focus ring, as the Windows key opens it), menu_hover (Restart
+ * selected by the pointer); menu_desktop (the desktop menu for a hot spot
+ * 10 dp left of the screen's right edge and above the taskbar, so moved
+ * left and up, its second row selected); the dialog: dialog (Cancel
+ * focused, no ring, its close button on hover), dialog_key (the ring on
+ * Cancel, Restart on hover), dialog_tab (Restart focused with the ring,
+ * Cancel on hover), dialog_pressed_cancel (Cancel pressed, the ring on
+ * Restart), dialog_pressed_restart (Restart pressed, the ring on Cancel).
+ * menu_tiles and dialog_tiles are menu_key and dialog_tab painted in tiles
+ * of 97 x 61 pixels from (-7, -13) (as the compositor paints them, clipped
+ * to each damaged rectangle); they record no colour pair (a mark's colour
+ * under it is read before the tile that holds it is drawn).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,9 +83,11 @@
 #include "kernel/display/tokens.h"
 #include "kernel/display/ui_about.h"
 #include "kernel/display/ui_console.h"
+#include "kernel/display/ui_dialog.h"
 #include "kernel/display/ui_draw.h"
 #include "kernel/display/ui_font.h"
 #include "kernel/display/ui_icon.h"
+#include "kernel/display/ui_menu.h"
 #include "kernel/display/ui_rect.h"
 #include "kernel/display/ui_trace.h"
 #include "kernel/display/ui_widget.h"
@@ -81,9 +102,12 @@ struct pair {
 };
 static struct pair pairs[512];
 static int n_pairs, pairs_lost;
+static bool trace_off;                  /* 1.3 stage 5: the tiled scenes record nothing */
 
 void ui_trace(int kind, uint32_t fg, uint32_t bg)
 {
+    if (trace_off)
+        return;
     for (int i = 0; i < n_pairs; i++)
         if (pairs[i].kind == kind && pairs[i].fg == fg && pairs[i].bg == bg) {
             pairs[i].n++;
@@ -99,7 +123,7 @@ void ui_trace(int kind, uint32_t fg, uint32_t bg)
 static int write_pairs(const char *scene)
 {
     const char *path = getenv("DESKTOP_PAIRS");
-    static const char *const kinds[3] = { "text", "icon", "state" };
+    static const char *const kinds[5] = { "text", "icon", "state", "carried-bar", "carried-pointer" };
     if (!path)
         return 0;
     FILE *f = fopen(path, "a");
@@ -544,6 +568,94 @@ static int scene_console(struct surface *s, const struct fbcon_layout *cl, int k
     return n == 2 && about.short_scratch ? 1 : 0;
 }
 
+/* ---- 1.3 stage 5: the menus, the M button and the Restart dialog ---- */
+
+static uint16_t menu_scratch[UI_ABOUT_SCRATCH];
+static struct ui_dialog dump_dialog;            /* its window paints it: not copied */
+
+static int scene_menus(struct surface *s, const struct fbcon_layout *cl, const char *name)
+{
+    struct desktop_layout l;
+    struct ui_fonts f;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font) || !ui_fonts_for_scale(cl->scale, &f))
+        return 1;
+    uint32_t sc = cl->scale;
+    int32_t W = (int32_t)s->width;
+    bool tiled = strcmp(name, "menu_tiles") == 0 || strcmp(name, "dialog_tiles") == 0;
+    enum ui_m_state m = UI_M_NORMAL;
+    struct ui_menu menu;
+    bool has_menu = false, has_dialog = false;
+    ui_menu_init(&menu, UI_MENU_M, sc, (struct rect){ 0, 0, 0, 0 });
+    if (strcmp(name, "mbutton_hover") == 0) {
+        m = UI_M_HOVER;
+    } else if (strcmp(name, "mbutton_pressed") == 0) {
+        m = UI_M_PRESSED;
+    } else if (strcmp(name, "menu_desktop") == 0) {
+        ui_menu_init(&menu, UI_MENU_DESKTOP, sc,
+                     ui_menu_place_at(sc, W, l.bar.y, W - ui_px(10, sc), l.bar.y - ui_px(10, sc)));
+        menu.sel = 1;
+        has_menu = true;
+    } else if (strncmp(name, "menu_", 5) == 0) {
+        m = UI_M_OPEN;
+        ui_menu_init(&menu, UI_MENU_M, sc, ui_menu_place_m(sc, l.bar.y));
+        if (strcmp(name, "menu_key") == 0 || strcmp(name, "menu_tiles") == 0) {
+            menu.sel = 0;
+            menu.ring = true;
+        } else if (strcmp(name, "menu_hover") == 0) {
+            menu.sel = 2;
+        }
+        has_menu = true;
+    } else {
+        struct ui_dialog *d = &dump_dialog;
+        ui_dialog_init(d, sc, &f, W, l.bar.y, false);
+        if (strcmp(name, "dialog") == 0) {
+            d->w.close = UI_BUTTON_HOVER;
+        } else if (strcmp(name, "dialog_key") == 0) {
+            d->ring = true;
+            d->btn[UI_DLG_RESTART] = UI_BUTTON_HOVER;
+        } else if (strcmp(name, "dialog_tab") == 0 || strcmp(name, "dialog_tiles") == 0) {
+            d->focus = UI_DLG_RESTART;
+            d->ring = true;
+            d->btn[UI_DLG_CANCEL] = UI_BUTTON_HOVER;
+        } else if (strcmp(name, "dialog_pressed_cancel") == 0) {
+            d->focus = UI_DLG_RESTART;
+            d->ring = true;
+            d->btn[UI_DLG_CANCEL] = UI_BUTTON_PRESSED;
+        } else if (strcmp(name, "dialog_pressed_restart") == 0) {
+            d->ring = true;
+            d->btn[UI_DLG_RESTART] = UI_BUTTON_PRESSED;
+        } else {
+            return 2;
+        }
+        has_dialog = true;
+    }
+    bool whole = true;
+    trace_off = tiled;
+    for (int32_t y = tiled ? -13 : 0; y < (int32_t)s->height; y += tiled ? 61 : (int32_t)s->height)
+        for (int32_t x = tiled ? -7 : 0; x < W; x += tiled ? 97 : W) {
+            struct rect clip = tiled ? (struct rect){ x, y, 97, 61 } : (struct rect){ 0, 0, W, (int32_t)s->height };
+            struct ui_canvas c;
+            ui_canvas_init(&c, s);
+            ui_canvas_clip(&c, clip);
+            desktop_draw_taskbar_m(s, &l, clip, "09:41", m);
+            if (has_menu)
+                whole &= ui_menu_draw(&c, &menu, &f, menu_scratch, UI_ABOUT_SCRATCH);
+            if (has_dialog)
+                ui_dialog_draw(&c, &dump_dialog);
+        }
+    trace_off = false;
+    printf("SCENE %s: scale %u %%, %s, the M button %d", name, sc * 25, tiled ? "painted in tiles" : "drawn whole",
+           (int)m);
+    if (has_menu)
+        printf("; the menu at (%d, %d) %dx%d, row %d selected%s", menu.r.x, menu.r.y, menu.r.w, menu.r.h, menu.sel,
+               menu.ring ? ", the ring on" : "");
+    if (has_dialog)
+        printf("; the dialog at (%d, %d) %dx%d", dump_dialog.w.r.x, dump_dialog.w.r.y, dump_dialog.w.r.w,
+               dump_dialog.w.r.h);
+    printf("\n");
+    return whole ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -590,6 +702,13 @@ int main(int argc, char **argv)
         rc = scene_console(&s, &cl, 2, false);
     } else if (strcmp(argv[4], "console_exposed") == 0) {
         rc = scene_console(&s, &cl, 2, true);
+    } else if (strncmp(argv[4], "mbutton_", 8) == 0 || strncmp(argv[4], "menu_", 5) == 0 ||
+               strncmp(argv[4], "dialog", 6) == 0) {          /* 1.3 stage 5 */
+        rc = scene_menus(&s, &cl, argv[4]);
+        if (rc == 2) {
+            fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
+            return 1;
+        }
     } else {
         fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
         return 1;

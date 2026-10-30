@@ -451,8 +451,8 @@ splash_static 1280 1024 4 ready 125
 # ---- 1.3 stage 2: the desktop toolkit (pure, not linked into the kernel) ----
 
 section "[1.3] kernel/display/tokens.h against the Design Guide (stage 2)"
-# tests/desktop_ref.py --tokens: every adopted token of the guide's two
-# colour tables (section 2, v0.1 and v0.2) is a UI_* define of tokens.h with
+# tests/desktop_ref.py --tokens: every adopted token of the guide's three
+# colour tables (section 2: v0.1, v0.2 and 1.3 stage 5) is a UI_* define of tokens.h with
 # the same value and tokens.h has no other; the colour constants that
 # predate it (wallpaper_core.h's WP_*, pointer_core.h's POINTER_*) each
 # equal their token (the list is desktop_ref.py's TOKEN_TWINS).
@@ -460,9 +460,9 @@ DREF=$(dirname "$0")/desktop_ref.py
 TOK=$(python3 "$DREF" --tokens 2>&1)
 printf '%s\n' "$TOK" | sed 's/^/      /'
 if [ "$(printf '%s\n' "$TOK" | tail -n 1)" = "TOKENS result: PASS" ] &&
-   printf '%s\n' "$TOK" | grep -q '^TOKENS guide: 24 tokens in 2 tables .*; tokens.h: 24 defines$' &&
+   printf '%s\n' "$TOK" | grep -q '^TOKENS guide: 27 tokens in 3 tables .*; tokens.h: 27 defines$' &&
    [ "$(printf '%s\n' "$TOK" | grep -c '^TOKENS twin .* equal$')" -eq 12 ]; then
-    pass "[1.3] kernel/display/tokens.h equals the Design Guide's two colour tables (24 tokens), and the 12 colour constants of wallpaper_core.h and pointer_core.h equal their tokens"
+    pass "[1.3] kernel/display/tokens.h equals the Design Guide's three colour tables (27 tokens), and the 12 colour constants of wallpaper_core.h and pointer_core.h equal their tokens"
 else
     fail "[1.3] kernel/display/tokens.h or a 1.2 colour constant differs from the Design Guide's colour tables"
 fi
@@ -700,6 +700,84 @@ if [ "$(printf '%s\n' "$CONTRAST4B" | tail -n 1)" = "CONTRAST result: PASS" ] &&
 else
     fail "[1.3] contrast: a colour pair the Console window scenes draw is not in the Design Guide's section 12 table, or its ratio does not pass (see the CONTRAST lines)"
 fi
+
+# ---- 1.3 stage 5: the menus, the M button and the Restart dialog ----
+
+section "[1.3] The menus, the M button and the Restart dialog against tests/desktop_ref.py, and their contrast check (stage 5)"
+# kernel/display/ui_menu.c, ui_dialog.c and desktop_core.c's M button
+# states built into the host tool (build/desktopdump) draw, each on bg.deep
+# with the taskbar: the M button on hover and pressed; the M menu as the
+# mouse opens it (no row selected), as the Windows key opens it (About
+# selected, the focus ring) and with Restart selected by the pointer; the
+# desktop menu moved left and up to stay on the screen and above the
+# taskbar, its second row selected; the Restart dialog with its close button
+# on hover, the ring on Cancel with Restart on hover, the ring on Restart
+# with Cancel on hover, Cancel pressed, Restart pressed. menu_tiles and
+# dialog_tiles are the key-opened M menu and the Tab-focused dialog painted
+# in tiles (as the compositor paints them, clipped to each damaged
+# rectangle) and must equal the same references. desktop_ref.py draws them
+# from ui_menu.h's, ui_dialog.h's and desktop_core.h's rules. Five modes,
+# both pixel formats, every scale but 125 %. The colour pairs the eleven
+# whole scenes draw are checked against the Design Guide's section 12 table
+# as in stage 4a (their own pairs file); a fill the table marks "fail alone"
+# is recorded as carried: by its accent bar (which the same scene must have
+# recorded, passing) or by the pointer.
+PAIRS5=$OUT/desktop-pairs-menus.txt
+rm -f "$PAIRS5"
+desktop5_static() {   # desktop5_static <W> <H> <bytes per pixel> <scene> [reference scene]
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS5 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "${5:-$4}" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.3] the menu scene $4 at $1x$2x$(($3 * 8)) (ui_menu.c, ui_dialog.c, desktop_core.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.3] the menu scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in mbutton_hover mbutton_pressed menu_mouse menu_key menu_hover menu_desktop dialog dialog_key \
+                 dialog_tab dialog_pressed_cancel dialog_pressed_restart; do
+        # shellcheck disable=SC2086
+        desktop5_static $mode $scene
+    done
+    # shellcheck disable=SC2086
+    desktop5_static $mode menu_tiles menu_key
+    # shellcheck disable=SC2086
+    desktop5_static $mode dialog_tiles dialog_tab
+done
+CONTRAST5=$(python3 "$DREF" --contrast "$PAIRS5" 2>&1)
+printf '%s\n' "$CONTRAST5" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST5" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST5" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 11 scenes \(dialog dialog_key dialog_pressed_cancel dialog_pressed_restart dialog_tab mbutton_hover mbutton_pressed menu_desktop menu_hover menu_key menu_mouse\)$' &&
+   [ "$(printf '%s\n' "$CONTRAST5" | grep -c '^CONTRAST carried pass ')" -eq 4 ]; then
+    pass "[1.3] contrast: every colour pair the menus, the M button and the dialog draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; each fill marked fail alone is carried by its passing accent bar in the same scene, or by the pointer"
+else
+    fail "[1.3] contrast: a colour pair the menus, the M button or the dialog draw is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its bar (see the CONTRAST lines)"
+fi
+# The contrast check's own self-test (the owner's mutation test, made
+# permanent): two fixture pairs files (tests/contrast-fixtures/) that it
+# must FAIL, each for the missing bar: a selected row's fill with no accent
+# bar recorded, and one whose bar was recorded only in another scene.
+for fx in row-no-bar:fixture_nobar bar-other-scene:fixture_row; do
+    FXOUT=$(python3 "$DREF" --contrast "$(dirname "$0")/contrast-fixtures/${fx%%:*}.txt" 2>&1)
+    printf '%s\n' "$FXOUT" | grep -E '^CONTRAST (carried|result)' | sed 's/^/      /'
+    if [ "$(printf '%s\n' "$FXOUT" | tail -n 1)" = "CONTRAST result: FAIL (1)" ] &&
+       printf '%s\n' "$FXOUT" | grep -qE "^CONTRAST carried FAIL carried-bar 112447 on 0C182A .*; no passing accent bar on it in: ${fx##*:}: "; then
+        pass "[1.3] contrast self-test: the fixture ${fx%%:*} (a selected row's fill without its accent bar in the same scene) makes the contrast check FAIL, for the missing bar"
+    else
+        fail "[1.3] contrast self-test: the fixture ${fx%%:*} did not make the contrast check fail for the missing bar"
+    fi
+done
 
 # ---- 1.2: the size report (decides no check) ----
 
