@@ -5,7 +5,8 @@
 # lines, every line below was moved unchanged from the single script.
 # 0.13 stage 3a adds limine_iso and limine_tree, and builds the keylog test
 # ISO with Limine instead of GRUB. 1.2 stage 7 adds the mouse sessions'
-# helpers at the end (parts 1 and stress).
+# helpers at the end (parts 1 and stress). 1.3 stage 7a bounds boot_until's
+# stop and adds boot_until_below.
 
 # limine_iso <dir> <iso> (0.13): makes a bootable ISO from <dir> as `make iso`
 # does (xorriso, then limine bios-install). <dir> must hold boot/limine/ with
@@ -106,9 +107,26 @@ owner_check() {
 # text), so a deliberate halt need not wait for its time limit (0.12 stage
 # 2b). If the line never comes, QEMU runs to its time limit as with boot, and
 # the checks on the log fail.
+# 1.3 stage 7a: the stop is bounded (run 41001624985: test=fileio ran to its
+# 240 s limit although "System ready." came at about 1.5 s). 0.5 s after the
+# line, SIGTERM to timeout; if timeout has not ended within 5 s, SIGKILL to
+# its process group (GNU timeout makes itself a group leader, as it is not
+# run with --foreground) and to every process below it, listed before the
+# kill: tests/qemu-watch.sh starts the real QEMU with setsid, outside that
+# group (pgrep lists them; its absence is a FAIL, checked once). Report
+# only (decides no check): "BOOT_UNTIL <log> line_seen=<s>
+# stop=term|forced|limit|exited"; without the line, line_seen=none and
+# stop=limit if timeout ended the boot at its time limit (status 124),
+# stop=exited if QEMU ended by itself. Part static's self-test proves the
+# four paths with a fake QEMU (tests/boot-until-fake-qemu.sh).
 boot_until() {
-    local log=$1 secs=$2 line=$3 t0
+    local log=$1 secs=$2 line=$3 t0 seen=none stop="" ms i rc
     shift 3
+    if [ -z "${BOOT_UNTIL_PGREP:-}" ]; then
+        BOOT_UNTIL_PGREP=checked
+        command -v pgrep >/dev/null 2>&1 ||
+            fail "[1.3] boot_until: pgrep not found (it lists the processes below timeout for a forced stop)"
+    fi
     rm -f "$log"
     t0=$(date +%s%N)
     timeout "$secs" qemu-system-x86_64 -display none -no-reboot \
@@ -116,15 +134,44 @@ boot_until() {
     local qpid=$!
     while kill -0 "$qpid" 2>/dev/null; do
         if [ -f "$log" ] && grep -qxF -- "$line" "$log"; then
+            ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+            seen=$((ms / 1000)).$((ms % 1000 / 100))
             sleep 0.5                   # anything still in flight reaches the log
             kill "$qpid" 2>/dev/null
+            stop=term
+            for ((i = 0; i < 50; i++)); do
+                kill -0 "$qpid" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$qpid" 2>/dev/null; then
+                local below
+                below=$(boot_until_below "$qpid")
+                kill -KILL -- -"$qpid" 2>/dev/null
+                kill -KILL "$qpid" $below 2>/dev/null
+                stop=forced
+            fi
             break
         fi
         sleep 0.2
     done
     wait "$qpid" 2>/dev/null
+    rc=$?
+    if [ -z "$stop" ]; then
+        if [ "$rc" -eq 124 ]; then stop=limit; else stop=exited; fi
+    fi
     [ -f "$log" ] || : > "$log"
     boot_seconds "$log" "$t0"           # 1.0 stage 3: report only
+    echo "BOOT_UNTIL ${log##*/} line_seen=$seen stop=$stop"
+}
+
+# boot_until_below <pid> (1.3 stage 7a): the pids of every process below
+# <pid> (children, their children, ...), one per line.
+boot_until_below() {
+    local c
+    for c in $(pgrep -P "$1"); do
+        echo "$c"
+        boot_until_below "$c"
+    done
 }
 
 # thread_diag <name> <seconds>: boots test=<name> into serial-<name>.log.

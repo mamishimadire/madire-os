@@ -162,6 +162,10 @@
 # ending with Restart; the decision 20 key session; no mouse, with
 # test=mousefail=4); 3 unit suites (ui_menu, ui_dialog, ui_menus). Changed,
 # not added: the token check expects the guide's three colour tables (27
-# tokens, the stage's three derived ones; it was 24 in two).
-1.3 234
+# tokens, the stage's three derived ones; it was 24 in two). Stage 7a: 4
+# more, in part static: boot_until's stop with a fake QEMU, through the
+# real wrapper chain (SIGTERM ends it; it ignores SIGTERM and is killed;
+# it never writes the line and timeout ends it; it ends by itself), each
+# with no process of it left. Its BOOT_UNTIL lines are report only.
+1.3 238
 unit-suites 93

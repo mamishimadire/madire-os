@@ -22,7 +22,8 @@
 # tests/desktop_ref.py in five modes). 1.3 stage 3b: after them, the
 # desktop's background and taskbar against desktop_ref.py in five modes.
 # 1.3 stage 4a: the windows and the contrast check; stage 4b: the Console
-# window's scenes and their contrast check.
+# window's scenes and their contrast check. 1.3 stage 7a: before the size
+# report, the self-test of boot_until's stop with a fake QEMU.
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -776,6 +777,42 @@ for fx in row-no-bar:fixture_nobar bar-other-scene:fixture_row; do
         pass "[1.3] contrast self-test: the fixture ${fx%%:*} (a selected row's fill without its accent bar in the same scene) makes the contrast check FAIL, for the missing bar"
     else
         fail "[1.3] contrast self-test: the fixture ${fx%%:*} did not make the contrast check fail for the missing bar"
+    fi
+done
+
+# ---- 1.3 stage 7a: boot_until's stop ----
+
+section "[1.3] boot_until's stop: its four paths with a fake QEMU (stage 7a)"
+# The real boot_until (tests/qemu-lib.sh) through the real wrapper chain
+# (timeout -> qemu-system-x86_64 -> tests/qemu-watch.sh -> setsid), with
+# tests/boot-until-fake-qemu.sh as QEMU_REAL for these four boots only. Each
+# must report its path on its BOOT_UNTIL line, and afterwards no process may
+# name the self-test's folder on its command line (ps; the fake's own
+# "sleep 0.2" children name nothing and end within 0.2 s). The logs stay
+# outside serial-*.log (part final's every-boot checks keep their boots).
+BU_DIR=$OUT/boot-until-selftest
+rm -rf "$BU_DIR" && mkdir -p "$BU_DIR"
+printf '#!/bin/sh\nexec bash "%s" "$@"\n' "$(cd "$(dirname "$0")" && pwd)/boot-until-fake-qemu.sh" \
+    > "$BU_DIR/fake-qemu"
+chmod +x "$BU_DIR/fake-qemu"
+BU_REAL=$QEMU_REAL
+for bu in "term 20 line_seen=[0-9]+\.[0-9] stop=term:SIGTERM ends it" \
+          "ignore 20 line_seen=[0-9]+\.[0-9] stop=forced:it ignores SIGTERM, so SIGKILL ends it after 5 s" \
+          "limit 3 line_seen=none stop=limit:it never writes the line, so timeout ends it at its 3 s limit" \
+          "exited 20 line_seen=none stop=exited:it ends by itself without the line"; do
+    read -r bu_mode bu_secs bu_want <<< "${bu%%:*}"
+    export QEMU_REAL=$BU_DIR/fake-qemu BOOT_UNTIL_FAKE=$bu_mode
+    boot_until "$BU_DIR/$bu_mode.log" "$bu_secs" "System ready." -m 32M > "$BU_DIR/$bu_mode.out" 2>&1
+    export QEMU_REAL=$BU_REAL
+    unset BOOT_UNTIL_FAKE
+    sed 's/^/      /' "$BU_DIR/$bu_mode.out"
+    sleep 1                             # anything killed is reaped by now
+    bu_left=$(ps -eo pid=,args= | BU_DIR=$BU_DIR awk 'index($0, ENVIRON["BU_DIR"])')
+    [ -z "$bu_left" ] || printf '%s\n' "$bu_left" | sed 's/^/      left: /'
+    if grep -qxE "BOOT_UNTIL $bu_mode\.log $bu_want" "$BU_DIR/$bu_mode.out" && [ -z "$bu_left" ]; then
+        pass "[1.3] boot_until self-test, the fake QEMU's $bu_mode case (${bu#*:}): its BOOT_UNTIL line says ${bu_want##* }, and none of its processes is left"
+    else
+        fail "[1.3] boot_until self-test, the fake QEMU's $bu_mode case: its BOOT_UNTIL line does not say ${bu_want##* }, or one of its processes is left"
     fi
 done
 
