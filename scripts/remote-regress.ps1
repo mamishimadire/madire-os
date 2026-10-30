@@ -14,9 +14,9 @@ param(
     # 1.3 stage 8: the Kali hand-off (docs/plans/1.3.md, notes item 12 (B);
     # AGENTS.md section 6, owner-run VM steps): run by the owner from plain
     # PowerShell with VS Code closed, Kali only. Instead of the full suite:
-    # make all, make unit, part static (make test-shard SHARD=static) and
-    # tests/trial-default-boot.sh (one real-ISO default boot to the desktop's
-    # first frame). Never evidence. Measures the available host memory three
+    # make all, make unit and make repro (1.3 stage 9: no QEMU boot; Kali's
+    # QEMU stalled in part static's boots). Never evidence. Measures the
+    # available host memory three
     # times first and refuses unless all three are at or above -MinFreeMB;
     # refuses while MadireOS-Test or MadireOS-View runs and unless Kali's
     # memory is 3,072 MB (never changed); writes a transcript, the evidence
@@ -109,10 +109,15 @@ function Get-KaliSshOptions {
              '-o', 'BatchMode=yes', '-o', 'PasswordAuthentication=no', '-o', 'ConnectTimeout=10')
 }
 
+# -Poll (1.3 stage 9; Kali): the poll's ssh reads no stdin (-n) and ends a
+# connection that stops answering (ServerAliveInterval/ServerAliveCountMax:
+# after about 60 s) instead of waiting on it.
 function Invoke-Remote {
-    param([Parameter(Mandatory = $true)][string[]]$RemoteArguments, [switch]$AllowFailure)
+    param([Parameter(Mandatory = $true)][string[]]$RemoteArguments, [switch]$AllowFailure, [switch]$Poll)
     if ($Target -eq 'Kali') {
-        $arguments = @('-p', [string]$KaliPort) + (Get-KaliSshOptions) + @("$KaliUser@127.0.0.1") + $RemoteArguments
+        $pollOptions = @()
+        if ($Poll) { $pollOptions = @('-n', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4') }
+        $arguments = @('-p', [string]$KaliPort) + (Get-KaliSshOptions) + $pollOptions + @("$KaliUser@127.0.0.1") + $RemoteArguments
         return Invoke-Native -Exe 'ssh.exe' -Arguments $arguments -AllowFailure:$AllowFailure
     }
     $arguments = @('codespace', 'ssh', '-c', $Codespace, '--') + $RemoteArguments
@@ -270,7 +275,7 @@ New-Item -ItemType Directory -Path $resultsRoot | Out-Null
 $trialResult = 'FAIL'
 $makeCommand = 'make unit test iso'
 if ($Trial) {
-    $makeCommand = 'make all && make unit && make test-shard SHARD=static && bash tests/trial-default-boot.sh'
+    $makeCommand = 'make all && make unit && make repro'
     Start-Transcript -Path (Join-Path $tempRoot 'trial-transcript.txt') | Out-Null
     Write-Host "TRIAL_STARTED=$([DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz')) command='$makeCommand'"
     Write-Host "TRIAL_$trialMemLine"
@@ -550,15 +555,13 @@ tar -czf "$root/boot-logs.tar.gz" serial-*.log *.keys.txt *.irq1.txt helper-call
 echo "BOOT_LOGS_PACKED=$(tar -tzf "$root/boot-logs.tar.gz" | wc -l) files"
 '@
 
-        # 1.3 stage 8: the trial's evidence: tests/trial-default-boot.sh's
-        # folder and the boot logs part static made (boot_until's self-test).
+        # 1.3 stage 9: the trial's evidence: make repro's hashes and result.
         $trialEvidenceBody = @'
 #!/usr/bin/env bash
 set -euo pipefail
 root=__ROOT__
 cd "$root/source/build"
-shopt -s nullglob
-tar -cf "$root/trial-evidence.tar" trial $( [ -d boot-until-selftest ] && echo boot-until-selftest ) serial-*.log
+tar -cf "$root/trial-evidence.tar" repro/sha256.txt repro/result
 echo "TRIAL_EVIDENCE_PACKED=$(tar -tf "$root/trial-evidence.tar" | wc -l) files"
 '@
 
@@ -622,7 +625,7 @@ echo "TRIAL_EVIDENCE_PACKED=$(tar -tf "$root/trial-evidence.tar" | wc -l) files"
         $deadline = [DateTimeOffset]::UtcNow.AddMinutes(90)
         do {
             Start-Sleep -Seconds 60
-            $poll = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/poll.sh")
+            $poll = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/poll.sh") -Poll
             $lastLine = ([string]($poll.Output | Select-Object -Last 1)).Trim()
             Write-Host "[$([DateTimeOffset]::UtcNow.ToString('u'))] $lastLine"
             if ($lastLine -match '^MAKE EXIT (-?\d+)$') {
@@ -640,7 +643,7 @@ echo "TRIAL_EVIDENCE_PACKED=$(tar -tf "$root/trial-evidence.tar" | wc -l) files"
         $checks = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/checks.sh")
         $checks.Output | Where-Object { $_ -match '^(REPRO_BOOT|UNDEFINED|LIBGCC|SSE_X87|KERNEL_END|KERNEL_MARGIN|TWO_MIB)' } | ForEach-Object { Write-Host $_ }
         if ($Trial) {
-            # 1.3 stage 8: the trial's evidence (its boot and part static's logs).
+            # 1.3 stage 9: the trial's evidence (make repro's hashes).
             $evidence = Invoke-Remote -RemoteArguments @('bash', "$remoteRoot/trial-evidence.sh")
             $evidence.Output | ForEach-Object { Write-Host $_ }
             Copy-FromRemote -RemotePath "$remoteRoot/trial-evidence.tar" -LocalPath (Join-Path $resultsRoot 'trial-evidence.tar') | Out-Null
@@ -672,13 +675,10 @@ echo "TRIAL_EVIDENCE_PACKED=$(tar -tf "$root/trial-evidence.tar" | wc -l) files"
             # 1.3 stage 8: the trial's own result (never evidence).
             $logText = [IO.File]::ReadAllText((Join-Path $resultsRoot 'regression.log'))
             Write-Host "TRIAL_MAKE_EXIT=$makeExit"
-            Write-Host "TRIAL_STATIC=$([regex]::Match($logText, '(?m)^SHARD static[^\r\n]*').Value)"
             Write-Host "TRIAL_UNIT_SUITES_PASS=$(@([regex]::Matches($logText, '(?m)^.*-> PASS$')).Count)"
-            foreach ($m in [regex]::Matches($logText, '(?m)^TRIAL_[A-Z_]+[ =][^\r\n]*')) { Write-Host $m.Value }
+            Write-Host "TRIAL_REPRO=$([regex]::Match($logText, '(?m)^Reproducible build: [^\r\n]*').Value)"
             if ($makeExit -ne 0) { throw "Trial failed: MAKE EXIT $makeExit." }
-            if ($logText -notmatch '(?m)^SHARD static PASSED \(') { throw 'Trial: part static did not pass.' }
             if ($logText -notmatch '(?m)^Reproducible build: identical$') { throw 'Trial: the reproducibility check did not pass.' }
-            if ($logText -notmatch '(?m)^TRIAL_RESULT=PASS$') { throw 'Trial: the default boot did not pass.' }
             $trialResult = 'PASS'
             Write-Host 'TRIAL_RESULT=PASS'
             return
@@ -710,6 +710,16 @@ echo "TRIAL_EVIDENCE_PACKED=$(tar -tf "$root/trial-evidence.tar" | wc -l) files"
     }
 }
 finally {
+    # 1.3 stage 9: a trial that stopped after make started still brings its
+    # log back, before Kali is shut down.
+    $localLog = Join-Path $resultsRoot 'regression.log'
+    if ($Trial -and $null -ne $regressionStartedAt -and -not (Test-Path -LiteralPath $localLog)) {
+        try {
+            Copy-FromRemote -RemotePath "$remoteRoot/regression.log" -LocalPath $localLog | Out-Null
+            Write-Host "TRIAL_LOG_COPIED_AFTER_FAILURE=$localLog"
+        }
+        catch { Write-Host "TRIAL_LOG_COPY_ERROR=$($_.Exception.Message)" }
+    }
     if ($kaliStarted) {
         try {
             $null = Invoke-Native -Exe $script:vbox -Arguments @('controlvm', $KaliVM, 'acpipowerbutton') -AllowFailure

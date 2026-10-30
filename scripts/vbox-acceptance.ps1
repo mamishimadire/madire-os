@@ -29,18 +29,32 @@
 # -RestoreSha256) and records its SHA-256 and the medium as showvminfo
 # reads it. It closes no application and asks for no credential. The
 # summary's last line is its exit status.
+#
+# 1.3 stage 9: -IsoSha256 and -ModuleIsoSha256, when given, are checked
+# before anything starts (a difference refuses the run); the module ISO is
+# needed only when the module group runs. -Risk13 N adds the risk 13
+# sample (N normal boots, each to the desktop's first frame; the risk13
+# group, below); with -Risk13 0, the default, the run is unchanged.
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
+#       -ModuleIso <module iso> -ModuleIsoSha256 <sha256>          # every group
+#   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
+#       -Only risk13 -Risk13 30                                     # the risk 13 sample
 param(
     [string]$VM = "MadireOS-Test",
     [string]$VBoxManage = "",
     [string]$Iso = "",                  # default: build\madire-os.iso
+    [string]$IsoSha256 = "",            # 1.3 stage 9: checked before the run when given
     [string]$ModuleIso = "",            # default: build\madire-os-module.iso
+    [string]$ModuleIsoSha256 = "",      # 1.3 stage 9: checked before the run when given (module group only)
     [string]$OutDir = "",               # default: build\vbox-acceptance-<date>-<time> (1.3 stage 8: always a new folder)
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow
+    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13
     [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
     [int]$Repeat = 0,                   # extra normal boots (self-test result of each)
+    [int]$Risk13 = 0,                   # 1.3 stage 9: the risk 13 sample's boots (the risk13 group)
     [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64",  # must not be running (0.11)
     [string]$ViewVM = "MadireOS-View",  # 1.3 stage 8: must not be running (AGENTS.md section 6)
     [int]$MinFreeMB = 5500,             # 1.3 stage 8: the owner's threshold for this step (three samples)
@@ -167,12 +181,24 @@ $running = @(VBox list runningvms | ForEach-Object { if ($_ -match '^"(.+)" \{')
 if ($running -contains $KaliVM) { throw "The Kali build VM '$KaliVM' is running; refusing to run (power it off first)." }
 # 1.3 stage 8: only one VM at a time (AGENTS.md section 6).
 if ($running -contains $ViewVM) { throw "The VM '$ViewVM' is running; refusing to run (power it off first)." }
-foreach ($f in @($Iso, $ModuleIso, $RestoreIso)) { if (-not (Test-Path $f)) { throw "Not found: $f" } }
+# 1.3 stage 9: the module ISO only when the module group runs.
+$wantModule = ($Only.Count -eq 0) -or ($Only -contains "module")
+$isos = @($Iso)
+if ($wantModule) { $isos += $ModuleIso }
+foreach ($f in @($isos + $RestoreIso)) { if (-not (Test-Path $f)) { throw "Not found: $f" } }
 $Iso = (Get-Item $Iso).FullName
-$ModuleIso = (Get-Item $ModuleIso).FullName
+if ($wantModule) { $ModuleIso = (Get-Item $ModuleIso).FullName; $isos = @($Iso, $ModuleIso) } else { $isos = @($Iso) }
 $RestoreIso = (Get-Item $RestoreIso).FullName
 $restoreHash = (Get-FileHash $RestoreIso -Algorithm SHA256).Hash.ToLower()
 if ($restoreHash -ne $RestoreSha256.ToLower()) { throw "The resting medium's SHA-256 is $restoreHash (expected $RestoreSha256); refusing to run." }
+# 1.3 stage 9: the ISOs under test against their expected SHA-256, before anything starts.
+$isoHashes = @{}
+foreach ($f in $isos) { $isoHashes[$f] = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower() }
+$isoWanted = @{ $Iso = $IsoSha256.ToLower() }
+if ($wantModule) { $isoWanted[$ModuleIso] = $ModuleIsoSha256.ToLower() }
+foreach ($f in $isos) {
+    if ($isoWanted[$f] -and $isoHashes[$f] -ne $isoWanted[$f]) { throw "The SHA-256 of $f is $($isoHashes[$f]) (expected $($isoWanted[$f])); refusing to run." }
+}
 # 1.3 stage 8: one new result folder; an earlier one is never overwritten.
 if ((Test-Path $OutDir) -and @(Get-ChildItem $OutDir -Force).Count) { throw "The result folder $OutDir exists and is not empty; refusing to run (nothing is overwritten)." }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -187,8 +213,8 @@ $vmBefore | Set-Content -Path (Join-Path $OutDir "$Prefix-vminfo-before.txt") -E
 Note "resting medium (checked before the run): $restoreHash  $RestoreIso"
 
 Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else; display VBoxSVGA, 128 MB VRAM; pointing device USB tablet)"
-foreach ($f in @($Iso, $ModuleIso)) {
-    Note ("ISO: {0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf))
+foreach ($f in $isos) {
+    Note ("ISO: {0}  {1} ({2})" -f $isoHashes[$f], $f, $(if ($isoWanted[$f]) { "the expected SHA-256: checked" } else { "no expected SHA-256 given" }))
 }
 
 # ---- 1.2 stage 10b: the reference screens (made here, from this tree) ----
@@ -228,7 +254,7 @@ if (($Only.Count -eq 0) -or ($Only -contains "graphics")) {
 # references (tests/screen_ref.py, from tests/desktop_ref.py), the clock's
 # cells masked (decision 12: its time is not known here).
 $Mask = $null
-if (($Only.Count -eq 0) -or ($Only -contains "graphics") -or ($Only -contains "desktop")) {
+if (($Only.Count -eq 0) -or ($Only -contains "graphics") -or ($Only -contains "desktop") -or ($Only -contains "risk13")) {
     foreach ($kind in @("desktop", "desktop-console")) {
         foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") $kind 1024 768 (Join-Path $refDir "$kind.rgb"))) {
             Note "reference (report only): $l"
@@ -1633,6 +1659,84 @@ if ($Repeat -gt 0 -and ((Want "repeat") -or $Only.Count -eq 0)) {
               $(if ($pre) { $pre.Matches[0].Groups[1].Value } else { "?" }),
               $(if ($pp) { $pp.Matches[0].Groups[1].Value } else { "?" }))
     }
+}
+
+# 1.3 stage 9: the risk 13 sample (docs/plans/1.3.md, section J; 1.2's risk
+# 13, an intermittent hang before the kernel starts at 1024x768x32).
+# -Risk13 N normal boots of the ISO with no key, each to System ready and
+# the desktop's first frame: from startvm on a screenshot every 250 ms (the
+# first one's size and time reported); a boot passes when its serial log
+# has "System ready." and the default path's "Desktop: shown on" line, a
+# screenshot equal to the desktop's reference (tests/screen_ref.py desktop,
+# the clock's cells masked) follows within 15 s, and no PANIC or FAILED
+# (case-sensitive). A boot whose serial log stays empty for 60 s is a hang
+# before the kernel started: counted, with its (empty) log, its screenshot
+# and the CPU's registers (VBoxManage debugvm getregisters, read only).
+# Every boot's serial log and last screenshot are kept; one row per boot,
+# then a report-only summary.
+if ($Risk13 -gt 0 -and (Want "risk13")) {
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $sec = { param($x) if ($null -eq $x) { "none" } else { ([double]$x).ToString("0.0", $inv) } }
+    $deskRgb = Join-Path $refDir "desktop.rgb"
+    $r13 = New-Object System.Collections.Generic.List[object]
+    for ($n = 1; $n -le $Risk13; $n++) {
+        $name = "risk13-{0:D2}" -f $n
+        if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
+        VBox startvm $VM --type headless | Out-Null
+        $t0 = Get-Date
+        $first = $null; $readyAt = $null; $shownAt = $null; $frameAt = $null
+        $until = $t0.AddSeconds(60)
+        while ((Get-Date) -lt $until) {
+            $s = Get-Shot
+            $t = ((Get-Date) - $t0).TotalSeconds
+            if ($s -and -not $first) { $first = "{0}x{1} at {2} ms" -f $s.W, $s.H, [int]($t * 1000) }
+            if (Test-Path $serial) {
+                if (-not $readyAt -and (Select-String -Path $serial -Pattern '^System ready\.' -CaseSensitive -Quiet)) { $readyAt = $t }
+                if (-not $shownAt -and (Select-String -Path $serial -Pattern '^Desktop: shown on ' -CaseSensitive -Quiet)) {
+                    $shownAt = $t
+                    $until = (Get-Date).AddSeconds(15)
+                }
+            }
+            if ($shownAt -and $s -and $s.W -eq 1024 -and $s.H -eq 768) {
+                $d = ([MadireShot]::DifferMasked($s.Path, $deskRgb, 1024, 768, $Mask[0], $Mask[1], $Mask[2], $Mask[3])) -split ' '
+                if ([long]$d[0] -eq 0) { $frameAt = ((Get-Date) - $t0).TotalSeconds; break }
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        try { Shot $name } catch { Write-Host "${name}: no screenshot ($_)" }   # a hang may leave no screen
+        if (-not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0)) {
+            # As 1.2's sample: the CPU's registers (debugvm only reads them) before the power-off.
+            $regs = try { @(VBox debugvm $VM getregisters all) } catch { @("debugvm getregisters failed: $_") }
+            $regs | Set-Content -Path (Join-Path $OutDir "$Prefix-$name.registers.txt") -Encoding ascii
+        }
+        VBox controlvm $VM poweroff | Out-Null
+        Start-Sleep -Seconds 2
+        $copy = Join-Path $OutDir "$Prefix-$name.serial.log"
+        if (Test-Path $serial) { Copy-Item $serial $copy -Force } else { New-Item -ItemType File -Path $copy | Out-Null }
+        $bytes = (Get-Item $copy).Length
+        $bad = @(Select-String -Path $copy -Pattern 'PANIC|FAILED' -CaseSensitive).Count
+        $mode = ""
+        $m = Select-String -Path $copy -Pattern '^Display: framebuffer ([0-9]+x[0-9]+x[0-9]+) at ' | Select-Object -First 1
+        if ($m) { $mode = $m.Matches[0].Groups[1].Value }
+        $ok = $bytes -gt 0 -and $readyAt -and $shownAt -and $frameAt -and $bad -eq 0
+        $r13.Add([pscustomobject]@{ Bytes = $bytes; Ready = $readyAt; Frame = $frameAt; First = $first; Ok = $ok })
+        Note ("{0,-16} {1,-8} /System ready and the desktop's first frame: {2} serial bytes, mode {3}, ready {4} s, desktop shown {5} s, first frame {6} s; first screenshot {7}; PANIC or FAILED lines {8}{9}/" -f
+              $name, $(if ($ok) { "OK" } else { "MISSING" }), $bytes, $(if ($mode) { $mode } else { "none" }),
+              (& $sec $readyAt), (& $sec $shownAt), (& $sec $frameAt), $(if ($first) { $first } else { "none" }), $bad,
+              $(if ($bytes -eq 0) { "; a hang before the kernel started" } else { "" }))
+    }
+    $hangs = @($r13 | Where-Object { $_.Bytes -eq 0 }).Count
+    $noReady = @($r13 | Where-Object { -not $_.Ready }).Count
+    $noFrame = @($r13 | Where-Object { -not $_.Frame }).Count
+    $range = { param($list) if (@($list).Count) { $mm = @($list) | Measure-Object -Minimum -Maximum; "{0}-{1}" -f $mm.Minimum, $mm.Maximum } else { "none" } }
+    $rangeS = { param($list) if (@($list).Count) { $mm = @($list) | Measure-Object -Minimum -Maximum; "{0}-{1}" -f (& $sec $mm.Minimum), (& $sec $mm.Maximum) } else { "none" } }
+    $firsts = ($r13 | Where-Object { $_.First } | Group-Object { ($_.First -split ' ')[0] } | ForEach-Object { "{0} x{1}" -f $_.Name, $_.Count }) -join ", "
+    Note ("risk13 (report only): {0} boots of {1}; hangs before the kernel started (0 serial bytes) {2}; without System ready {3}; without the desktop's first frame {4}; serial bytes {5}; System ready {6} s; first frame {7} s; first screenshots {8}" -f
+          $r13.Count, $isoHashes[$Iso], $hangs, $noReady, $noFrame,
+          (& $range @($r13 | Where-Object { $_.Bytes -gt 0 } | ForEach-Object { $_.Bytes })),
+          (& $rangeS @($r13 | Where-Object { $_.Ready } | ForEach-Object { $_.Ready })),
+          (& $rangeS @($r13 | Where-Object { $_.Frame } | ForEach-Object { $_.Frame })),
+          $(if ($firsts) { $firsts } else { "none" }))
 }
 
 # 1.1: the key window: the 0.13 keyboard error repeated on this VM. Twelve
