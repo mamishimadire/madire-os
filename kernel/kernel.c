@@ -59,6 +59,7 @@
 #include "kernel/proc/syscall.h"
 #include "kernel/proc/usertest.h"
 #include "kernel/stackpeak.h"
+#include "kernel/storage/pci.h"
 #include "kernel/timer.h"
 
 /* The only IRQ lines 0.4 may unmask. */
@@ -1103,6 +1104,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
         klogf("Filesystem: NOT AVAILABLE (the kernel heap is off)\n");
     }
     splash_tick();
+
+    /* 1.4 stage 3: the PCI scan, read only, and its PCI: and Storage:
+     * lines, after the filesystem and before any diagnostic or System
+     * ready (docs/plans/1.4.md, sections C2 and C9). */
+    pci_boot();
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
     run_diagnostics();

@@ -283,6 +283,7 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
                  $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard drivers/mouse/*.h drivers/mouse/*_core.c) \
                  $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c) \
+                 $(wildcard kernel/storage/*.h kernel/storage/*_core.c) \
                  $(TOOLKIT_SRCS) kernel/display/compositor.c $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< $(UNIT_MODULES) -o $@

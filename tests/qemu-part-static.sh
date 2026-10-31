@@ -29,6 +29,7 @@
 # before the moved boot-menu section, the handover's rule on the references
 # and the VirtualBox desktop group's plan and references. 1.4 stage 2: at
 # the end, the test-image tools' probe and self-checks (tests/disk-lib.sh).
+# 1.4 stage 3: after them, the PCI scan's three -kernel boots (tests/qmp_pci.py).
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -1176,3 +1177,108 @@ else
     echo "SFDISK_CROSSCHECK skipped (sfdisk absent)"
 fi
 echo "      [1.4] test-image tools: $(( $(date +%s) - DISK_T0 )) s (report only)"
+
+# ---- 1.4 stage 3: the PCI scan ----
+
+section "[1.4] The PCI scan: the PCI: and Storage: lines against QEMU's own view (stage 3)"
+# Three -kernel boots at -m 128M (docs/plans/1.4.md, S3): (a) the default
+# pc machine, no AHCI controller; (b) -device ich9-ahci at 00:05.0; (c)
+# ich9-ahci at slot 2 behind a pci-bridge at 00:06.0 (the firmware gives
+# the bridge its secondary bus). Each boot types "mem" on the console
+# through qmp_keys.py (the first key, x, opens the console and is not
+# typed). tests/qmp_pci.py reads QEMU's own view over a second QMP socket
+# at System ready (query-pci): the kernel's PCI: and Storage: lines must
+# agree with it (the counts, the controller's bus:dev.fn, its BAR5 as the
+# firmware assigned it). The scan is read only and maps nothing in stage
+# 3, so the memory lines and mem's figures are the same on all three
+# boots. The two lines sit between "Filesystem self-test: PASS" and "Key
+# events:", outside every expect_lines window (risk 33).
+PCI_T0=$(date +%s)
+PCI_READY="System ready. Press any key to open the console."
+PCI_LINE_RE='^PCI: ([0-9]+) buses, ([0-9]+) devices, ([0-9]+) functions, ([0-9]+) PCI-to-PCI bridges \(([0-9]+) secondary buses refused\); storage: ([0-9]+) AHCI, ([0-9]+) other; configuration read only$'
+# pcitest_boot <name> <qemu args...>: the boot (log serial-pci-<name>.log);
+# PCI_Q holds qmp_pci.py's output (also kept in serial-pci-<name>.qpci.txt).
+pcitest_boot() {
+    local name=$1 log=$OUT/serial-pci-$1.log sock=$OUT/qmp-pci.sock qpid
+    shift
+    rm -f "$log" "$sock"
+    python3 "$(dirname "$0")/qmp_pci.py" "$sock" "$log" "$PCI_READY" --timeout 50 \
+        > "$OUT/serial-pci-$name.qpci.txt" 2>&1 &
+    qpid=$!
+    boot_text "$log" 60 "System ready." "x{wait:1}mem{ret}" 0.05 $'\nHeap free:' -m 128M -kernel "$KERNEL" \
+        -qmp unix:"$sock",server=on,wait=off "$@"
+    wait "$qpid"
+    PCI_Q=$(cat "$OUT/serial-pci-$name.qpci.txt")
+    sed 's/^/      /' <<< "$PCI_Q"
+    grep -E '^(PCI|Storage): ' "$log" | sed 's/^/      /'
+}
+# pcitest_agree <log> <qmp_pci.py output>: exactly one PCI: and one
+# Storage: line; the kernel's buses, devices, functions, bridges, AHCI
+# controllers and other mass-storage functions equal QEMU's, none refused.
+# Sets PK (the kernel's "buses devices functions bridges refused ahci
+# other"), PQ_AHCI and PQ_BAR5 (QEMU's controller and its BAR5).
+pcitest_agree() {
+    local q b d f r qa q5 qx qo
+    PK=$(sed -nE "s/$PCI_LINE_RE/\1 \2 \3 \4 \5 \6 \7/p" "$1")
+    read -r b d f r qa q5 <<< "$(sed -nE 's/^QPCI_SUMMARY buses=([0-9]+) devices=([0-9]+) functions=([0-9]+) bridges=([0-9]+) ahci=([^ ]+) bar5=([^ ]+)$/\1 \2 \3 \4 \5 \6/p' <<< "$2")"
+    qx=$(grep -cE '^QPCI .* class 01\.06 ' <<< "$2")
+    qo=$(( $(grep -cE '^QPCI .* class 01\.' <<< "$2") - qx ))
+    PQ_AHCI=${qa:-}; PQ_BAR5=${q5:-}
+    [ "$(grep -c '^PCI: ' "$1")" -eq 1 ] && [ "$(grep -c '^Storage: ' "$1")" -eq 1 ] && [ -n "$PK" ] &&
+        [ -n "${q5:-}" ] && [ "$PK" = "$b $d $f $r 0 $qx $qo" ]
+}
+pcitest_boot plain
+PCI_A=$OUT/serial-pci-plain.log
+if pcitest_agree "$PCI_A" "$PCI_Q" && [ "${PK%% *}" = 1 ] && [ "$PQ_AHCI" = none ] &&
+   grep -qxF "Storage: no AHCI controller (Live mode)" "$PCI_A"; then
+    pass "[1.4] PCI, the default pc machine: one PCI: line (1 bus, no bridge, no AHCI controller; its devices, functions and other storage functions as QEMU's query-pci lists them) and 'Storage: no AHCI controller (Live mode)'"
+else
+    fail "[1.4] PCI, the default pc machine: the PCI: or Storage: line differs from QEMU's view (kernel: ${PK:-no PCI: line}; $(grep -E '^QPCI_(SUMMARY|LINE)|ERROR' <<< "$PCI_Q" | tr '\n' ' '))"
+fi
+pcitest_boot ahci -device ich9-ahci,id=pcitest-ahci,addr=0x5
+PCI_B=$OUT/serial-pci-ahci.log
+if pcitest_agree "$PCI_B" "$PCI_Q" && [ "$(cut -d' ' -f1,4,6 <<< "$PK")" = "1 0 1" ] &&
+   [ "$PQ_AHCI" = 00:05.0 ] && grep -qE '^0x[0-9a-f]{8}$' <<< "$PQ_BAR5" &&
+   grep -qxF "Storage: AHCI controller at 00:05.0 (8086:2922, BAR5 $PQ_BAR5), not used yet (Live mode)" "$PCI_B"; then
+    pass "[1.4] PCI, -device ich9-ahci: the controller found at 00:05.0 (8086:2922) with BAR5 $PQ_BAR5, as QEMU's query-pci gives it; the PCI: line's counts as QEMU's; not used yet (Live mode)"
+else
+    fail "[1.4] PCI, -device ich9-ahci: the Storage: line does not name 00:05.0 with QEMU's BAR5, or the counts differ (kernel: ${PK:-no PCI: line}; $(grep -E '^QPCI_(SUMMARY|LINE)|ERROR' <<< "$PCI_Q" | tr '\n' ' '))"
+fi
+pcitest_boot bridge -device pci-bridge,id=pcitest-br,chassis_nr=1,addr=0x6 \
+    -device ich9-ahci,id=pcitest-ahci,bus=pcitest-br,addr=0x2
+PCI_C=$OUT/serial-pci-bridge.log
+if pcitest_agree "$PCI_C" "$PCI_Q" && [ "$(cut -d' ' -f1,4,6 <<< "$PK")" = "2 1 1" ] &&
+   grep -qE '^0[1-9a-f]:02\.0$' <<< "$PQ_AHCI" && grep -qE '^0x[0-9a-f]{8}$' <<< "$PQ_BAR5" &&
+   grep -qxF "Storage: AHCI controller at $PQ_AHCI (8086:2922, BAR5 $PQ_BAR5), not used yet (Live mode)" "$PCI_C"; then
+    pass "[1.4] PCI, ich9-ahci behind a pci-bridge: the bridge's secondary bus scanned (2 buses, 1 bridge); the controller found at $PQ_AHCI with BAR5 $PQ_BAR5, as QEMU's query-pci gives them"
+else
+    fail "[1.4] PCI, ich9-ahci behind a pci-bridge: the controller not found on the secondary bus as QEMU gives it, or the counts differ (kernel: ${PK:-no PCI: line}; $(grep -E '^QPCI_(SUMMARY|LINE)|ERROR' <<< "$PCI_Q" | tr '\n' ' '))"
+fi
+# pcitest_mem <log>: the boot's memory lines and mem's output.
+pcitest_mem() {
+    grep -E '^(Memory: |Free pages:|Paging tables:|Kernel half frozen:)' "$1"
+    awk '!on && $0 == "madire> mem" { on = 1; next } on { print } on && /^Heap free:/ { exit }' "$1"
+}
+PCI_MA=$(pcitest_mem "$PCI_A"); PCI_MB=$(pcitest_mem "$PCI_B"); PCI_MC=$(pcitest_mem "$PCI_C")
+grep -E '^(Free pages|Paging tables|Mapped pages|Page tables)' <<< "$PCI_MA" | sed 's/^/      plain: /'
+if [ "$(grep -cE '^(Memory: |Free pages:|Paging tables:|Kernel half frozen:|Free pages \(now\):|Mapped pages:|Page tables:|Heap free:)' <<< "$PCI_MA")" -eq 8 ] &&
+   [ "$PCI_MB" = "$PCI_MA" ] && [ "$PCI_MC" = "$PCI_MA" ]; then
+    pass "[1.4] PCI: the scan maps nothing: the memory lines (Memory, Free pages, Paging tables, Kernel half frozen) and mem's figures are the same with no controller, with one on bus 0 and with one behind a bridge"
+else
+    fail "[1.4] PCI: the memory lines or mem's figures differ between the three boots (or mem did not answer): $(diff <(echo "$PCI_MA") <(echo "$PCI_MB") | head -n 4 | tr '\n' ' ') $(diff <(echo "$PCI_MA") <(echo "$PCI_MC") | head -n 4 | tr '\n' ' ')"
+fi
+# pcitest_order <log>: the PCI: and Storage: lines right after "Filesystem
+# self-test: PASS" and right before "Key events:"; System ready; no PANIC or
+# FAILED (case-sensitive: boot lines say "panic_exception" and "panics").
+pcitest_order() {
+    awk '$0 == "Filesystem self-test: PASS" { f = NR } /^PCI: / { p = NR } /^Storage: / { s = NR }
+         /^Key events: / && !k { k = NR }
+         END { exit !(f && p == f + 1 && s == p + 1 && k == s + 1) }' "$1" &&
+        grep -qxF "$PCI_READY" "$1" && ! grep -qE 'PANIC|FAILED' "$1"
+}
+if pcitest_order "$PCI_A" && pcitest_order "$PCI_B" && pcitest_order "$PCI_C"; then
+    pass "[1.4] PCI: on all three boots the PCI: and Storage: lines come right after 'Filesystem self-test: PASS' and right before 'Key events:' (outside every expect_lines window); System ready; no PANIC or FAILED line"
+else
+    fail "[1.4] PCI: the PCI: and Storage: lines are not between 'Filesystem self-test: PASS' and 'Key events:', or a boot did not reach System ready, or a PANIC or FAILED line (see serial-pci-*.log)"
+fi
+echo "      [1.4] PCI boots: $(( $(date +%s) - PCI_T0 )) s (report only)"

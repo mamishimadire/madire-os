@@ -198,6 +198,11 @@
 # e2fsck -fn clean on the fresh image (unchanged by it) and in both disks'
 # partitions; debugfs's listing and contents; debugfs's pinned parameters;
 # both markers and the GPT CRC32s against zlib.crc32. The probe lines
-# (E2FSPROGS, SFDISK) and the sfdisk cross-check are report only.
-1.4 7
-unit-suites 94
+# (E2FSPROGS, SFDISK) and the sfdisk cross-check are report only. Stage 3:
+# 5 more in part static, the PCI scan in three -kernel boots against QEMU's
+# own view (query-pci): the default pc machine, ich9-ahci at 00:05.0 and
+# ich9-ahci behind a pci-bridge (1 each), the memory lines and mem's
+# figures the same on all three (1), the two lines' place, System ready
+# and no PANIC or FAILED line on all three (1); 1 unit suite (pci_core).
+1.4 12
+unit-suites 95
