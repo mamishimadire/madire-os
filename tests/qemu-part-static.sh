@@ -27,7 +27,8 @@
 # window's scenes and their contrast check. 1.3 stage 7a: before the size
 # report, the self-test of boot_until's stop with a fake QEMU. 1.3 stage 8:
 # before the moved boot-menu section, the handover's rule on the references
-# and the VirtualBox desktop group's plan and references.
+# and the VirtualBox desktop group's plan and references. 1.4 stage 2: at
+# the end, the test-image tools' probe and self-checks (tests/disk-lib.sh).
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -1012,3 +1013,159 @@ else
     fail "[1.1] no key: no System ready, a non-blank or other-size screen before the first serial byte, or a screen matching the menu wallpaper's header (see ${LOG%.log}.menu.txt)"
 fi
 echo "      [1.1] boot menu checks: $(( $(date +%s) - MENU_T0 )) s (report only)"
+
+# ---- 1.4 stage 2: the test-image tools ----
+
+section "[1.4] Test-image tools: mke2fs, e2fsck, debugfs and tests/disk_image.py (stage 2)"
+# docs/plans/1.4.md, D13 option A: e2fsprogs as unmodified outside programs
+# on the test machine only (tests/disk-lib.sh), the partition table and the
+# Madire test marker from tests/disk_image.py. The probe lines (E2FSPROGS,
+# SFDISK) and the sfdisk cross-check (SFDISK_CROSSCHECK) are report only;
+# the seven checks below prove the tools themselves: an image made twice is
+# the same byte for byte, e2fsck -fn finds nothing to change, debugfs reads
+# back the expected files and the pinned parameters, and the marker and
+# GPT CRC32s (disk_image.py's own, from the specification) equal zlib's. No
+# QEMU boot; everything stays under $OUT/disk-tools (not serial-*.log).
+DISK_T0=$(date +%s)
+disk_probe
+DISK_W=$OUT/disk-tools
+rm -rf "$DISK_W" && mkdir -p "$DISK_W"
+# The sample files, with fixed modes and times (ctime cannot be set: both
+# images are made from this one folder).
+DISK_WANT=$( { disk_image tree "$DISK_W/src"; echo "DIR /lost+found"; } | LC_ALL=C sort)
+find "$DISK_W/src" -type d -exec chmod 0755 {} +
+find "$DISK_W/src" -type f -exec chmod 0644 {} +
+find "$DISK_W/src" -exec touch -h -d "@$DISK_TIME" {} +
+sed 's/^/      want: /' <<< "$DISK_WANT"
+# An 8 MiB image, 1 KiB blocks (big.bin reaches the double indirect block),
+# 128-byte inodes, 256 inodes; made twice.
+DISK_MK=""
+for x in a b; do
+    disk_mkfs "$DISK_W/$x.img" 8192 1024 128 256 "$DISK_W/src" > "$DISK_W/mkfs-$x.txt" 2>&1
+    DISK_MK="$DISK_MK $?"
+    sed "s/^/      mke2fs ($x): /" "$DISK_W/mkfs-$x.txt"
+done
+DISK_SA=$(sha256sum < "$DISK_W/a.img" | cut -d' ' -f1)
+DISK_SB=$(sha256sum < "$DISK_W/b.img" | cut -d' ' -f1)
+echo "      mke2fs exit:$DISK_MK; a.img $DISK_SA; b.img $DISK_SB ($(stat -c%s "$DISK_W/a.img" 2>/dev/null) bytes)"
+echo "DISK_IMAGE_SHA256 ext2-1k-128 $DISK_SA (report only: the same tools give the same image in every run)"
+if [ "$DISK_MK" = " 0 0" ] && [ -s "$DISK_W/a.img" ] && [ "$DISK_SA" = "$DISK_SB" ]; then
+    pass "[1.4] disk tools: mke2fs with tests/mke2fs.conf, the fixed UUID, hash seed and time makes the same ext2 image twice (SHA-256 identical)"
+else
+    cmp -l "$DISK_W/a.img" "$DISK_W/b.img" 2>&1 | head -n 8 | sed 's/^/      differs (offset, octal bytes): /'
+    echo "      $(cmp -l "$DISK_W/a.img" "$DISK_W/b.img" 2>/dev/null | wc -l) bytes differ"
+    fail "[1.4] disk tools: mke2fs did not make the same ext2 image twice (exit:$DISK_MK)"
+fi
+# The partitioned disks, each made twice from a.img.
+DISK_RC=""
+for t in mbr gpt; do
+    for n in 1 2; do
+        disk_image "$t" "$DISK_W/a.img" "$DISK_W/$t-$n.img"
+        DISK_RC="$DISK_RC $?"
+    done
+done
+DISK_S=""
+for f in mbr-1 mbr-2 gpt-1 gpt-2; do
+    DISK_S="$DISK_S $(sha256sum < "$DISK_W/$f.img" 2>/dev/null | cut -d' ' -f1)"
+done
+read -r DISK_M1 DISK_M2 DISK_G1 DISK_G2 <<< "$DISK_S"
+echo "      disk_image.py exit:$DISK_RC; mbr $DISK_M1 / $DISK_M2; gpt $DISK_G1 / $DISK_G2"
+echo "DISK_IMAGE_SHA256 mbr $DISK_M1 gpt $DISK_G1 (report only)"
+if [ "$DISK_RC" = " 0 0 0 0" ] && [ -n "$DISK_M1" ] && [ "$DISK_M1" = "$DISK_M2" ] && [ "$DISK_G1" = "$DISK_G2" ] &&
+   [ "$DISK_M1" != "$DISK_G1" ]; then
+    pass "[1.4] disk tools: tests/disk_image.py makes the same MBR disk and the same GPT disk twice (SHA-256 identical)"
+else
+    fail "[1.4] disk tools: tests/disk_image.py did not make the same MBR and GPT disks twice (exit:$DISK_RC)"
+fi
+# e2fsck -fn on the fresh image: nothing to change, and the image unchanged.
+DISK_CK=$(disk_fsck "$DISK_W/a.img"); DISK_CKRC=$?
+sed 's/^/      e2fsck a.img: /' <<< "$DISK_CK"
+DISK_SA2=$(sha256sum < "$DISK_W/a.img" | cut -d' ' -f1)
+if [ "$DISK_CKRC" -eq 0 ] && [ -s "$DISK_W/a.img" ] && [ "$DISK_SA2" = "$DISK_SA" ]; then
+    pass "[1.4] disk tools: e2fsck -fn finds nothing to change on the fresh image (exit 0), and the image is unchanged by it"
+else
+    fail "[1.4] disk tools: e2fsck -fn on the fresh image: exit $DISK_CKRC, image $([ "$DISK_SA2" = "$DISK_SA" ] && echo unchanged || echo CHANGED)"
+fi
+# The partition of each disk: extracted, the same bytes as a.img after the
+# marker's sector, and e2fsck -fn clean with the marker in place.
+DISK_OK=1
+for t in mbr gpt; do
+    disk_image extract "$DISK_W/$t-1.img" "$DISK_W/part-$t.img" || DISK_OK=0
+    DISK_CK=$(disk_fsck "$DISK_W/part-$t.img"); DISK_CKRC=$?
+    sed "s/^/      e2fsck part-$t.img: /" <<< "$DISK_CK"
+    [ "$DISK_CKRC" -eq 0 ] || DISK_OK=0
+    cmp -s <(tail -c +513 "$DISK_W/a.img") <(tail -c +513 "$DISK_W/part-$t.img") || DISK_OK=0
+    [ -s "$DISK_W/part-$t.img" ] || DISK_OK=0
+done
+if [ "$DISK_OK" = 1 ]; then
+    pass "[1.4] disk tools: the ext2 partition of the MBR disk and of the GPT disk holds the image's bytes after the marker's sector, and e2fsck -fn finds nothing to change in either"
+else
+    fail "[1.4] disk tools: a partition could not be extracted, differs from the image, or e2fsck -fn found something in it"
+fi
+# debugfs: every expected folder and file (names, types, sizes, contents).
+DISK_GOT=$(disk_listing "$DISK_W/a.img" / $(awk '$1 == "DIR" { print $2 }' <<< "$DISK_WANT"))
+sed 's/^/      debugfs: /' <<< "$DISK_GOT"
+if [ -n "$DISK_GOT" ] && [ "$DISK_GOT" = "$DISK_WANT" ]; then
+    pass "[1.4] disk tools: debugfs lists exactly the expected folders and files (names, types, sizes) and reads back every file's contents (SHA-256)"
+else
+    diff <(echo "$DISK_WANT") <(echo "$DISK_GOT") | sed 's/^/      diff: /'
+    fail "[1.4] disk tools: debugfs's listing differs from the sample files"
+fi
+# debugfs stats: the pinned parameters (the label, the UUID, revision 1,
+# 1 KiB blocks, 128-byte inodes, no reserved blocks, the features of
+# tests/mke2fs.conf, the hash seed, the creation time from DISK_TIME).
+DISK_ST=$(TZ=UTC disk_debugfs "$DISK_W/a.img" stats)
+disk_field() { sed -n "s/^$1:[[:space:]]*//p" <<< "$DISK_ST" | head -n 1; }
+DISK_FEAT=$(disk_field "Filesystem features" | tr ' ' '\n' | grep -v '^$' | LC_ALL=C sort | tr '\n' ' ')
+DISK_WHEN=$(LC_ALL=C TZ=UTC date -u -d "@$DISK_TIME" '+%a %b %e %H:%M:%S %Y')
+for k in "Filesystem volume name" "Filesystem UUID" "Filesystem revision #" "Filesystem features" "Block size" \
+         "Inode size" "Reserved block count" "Inode count" "Directory Hash Seed" "Default directory hash" \
+         "Filesystem created" "Last write time" "Last mount time"; do
+    echo "      stats: $k: $(disk_field "$k")"
+done
+if [ "$(disk_field "Filesystem volume name")" = "$DISK_LABEL" ] && [ "$(disk_field "Filesystem UUID")" = "$DISK_UUID" ] &&
+   [ "$(disk_field "Filesystem revision #")" = "1 (dynamic)" ] && [ "$(disk_field "Block size")" = 1024 ] &&
+   [ "$(disk_field "Inode size")" = 128 ] && [ "$(disk_field "Reserved block count")" = 0 ] &&
+   [ "$(disk_field "Directory Hash Seed")" = "$DISK_HASH_SEED" ] &&
+   [ "$DISK_FEAT" = "dir_index ext_attr filetype large_file resize_inode sparse_super " ] &&
+   [ "$(disk_field "Filesystem created")" = "$DISK_WHEN" ]; then
+    pass "[1.4] disk tools: debugfs reads the pinned parameters (label madire-test, the fixed UUID and hash seed, revision 1, 1 KiB blocks, 128-byte inodes, no reserved blocks, exactly tests/mke2fs.conf's features, created at the fixed time)"
+else
+    fail "[1.4] disk tools: debugfs stats differ from the pinned parameters (features: $DISK_FEAT; created: $(disk_field "Filesystem created"), want $DISK_WHEN)"
+fi
+# The marker and the CRC32s: disk_image.py's own CRC32 against zlib.crc32.
+printf '123456789' > "$DISK_W/crc-check.txt"
+DISK_VM=$(disk_image verify "$DISK_W/mbr-1.img"); DISK_VMRC=$?
+DISK_VG=$(disk_image verify "$DISK_W/gpt-1.img"); DISK_VGRC=$?
+DISK_VC=$(disk_image crc "$DISK_W/crc-check.txt")
+sed 's/^/      mbr: /' <<< "$DISK_VM"; sed 's/^/      gpt: /' <<< "$DISK_VG"; sed 's/^/      /' <<< "$DISK_VC"
+DISK_MRE='^MARKER magic=MADIRE-TEST-DISK version=1 length=48 start=2048 sectors=16384 crc=(0x[0-9a-f]{8}) own=\1 zlib=\1$'
+if [ "$DISK_VMRC" -eq 0 ] && [ "$DISK_VGRC" -eq 0 ] &&
+   grep -qxE '^TABLE mbr start=2048 sectors=16384 type=0x83 .*' <<< "$DISK_VM" && grep -qE "$DISK_MRE" <<< "$DISK_VM" &&
+   grep -qx 'MARKER_RESULT ok' <<< "$DISK_VM" &&
+   grep -qxE '^TABLE gpt start=2048 sectors=16384 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4 name=madire-test .*' <<< "$DISK_VG" &&
+   grep -qE "$DISK_MRE" <<< "$DISK_VG" && grep -qx 'MARKER_RESULT ok' <<< "$DISK_VG" &&
+   grep -qE '^GPT header_crc=(0x[0-9a-f]{8}) own=\1 zlib=\1 entries_crc=(0x[0-9a-f]{8}) own=\2 zlib=\2$' <<< "$DISK_VG" &&
+   grep -qx 'GPT_RESULT ok' <<< "$DISK_VG" && grep -qE ' own=0xcbf43926 zlib=0xcbf43926$' <<< "$DISK_VC"; then
+    pass "[1.4] disk tools: both disks' marker reads back (MADIRE-TEST-DISK, version 1, start 2048 and 16384 sectors as in the partition table) with its CRC32 equal to zlib.crc32, as are the GPT header's and entry array's; the CRC32 of '123456789' is 0xCBF43926"
+else
+    fail "[1.4] disk tools: a marker, a partition table or a CRC32 does not read back as written (see the mbr: and gpt: lines)"
+fi
+# sfdisk's reading of the two tables (report only).
+if [ -n "$(disk_tool sfdisk)" ]; then
+    for t in mbr gpt; do
+        DISK_SF=$(disk_sfdisk_dump "$DISK_W/$t-1.img")
+        sed "s/^/      sfdisk $t: /" <<< "$DISK_SF"
+        if [ "$t" = mbr ]; then DISK_SFRE='start= *2048, size= *16384, type=83'; DISK_SFL=dos
+        else DISK_SFRE='start= *2048, size= *16384, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4'; DISK_SFL=gpt; fi
+        if grep -qx "label: $DISK_SFL" <<< "$DISK_SF" && grep -qiE "$DISK_SFRE" <<< "$DISK_SF" &&
+           [ "$(grep -c 'start=' <<< "$DISK_SF")" -eq 1 ]; then
+            echo "SFDISK_CROSSCHECK $t agrees (one partition, start 2048, 16384 sectors, its type)"
+        else
+            echo "SFDISK_CROSSCHECK $t DIFFERS (report only; see the sfdisk $t: lines)"
+        fi
+    done
+else
+    echo "SFDISK_CROSSCHECK skipped (sfdisk absent)"
+fi
+echo "      [1.4] test-image tools: $(( $(date +%s) - DISK_T0 )) s (report only)"
