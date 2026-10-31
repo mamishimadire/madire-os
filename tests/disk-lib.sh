@@ -101,7 +101,9 @@ disk_debugfs() {
 }
 
 # disk_listing <filesystem image> <folder>...: the files and folders in the
-# given folders as debugfs reads them (ls -p; "." and ".." left out): one line
+# given folders as debugfs reads them (ls -p; "." and "..", and the unused
+# slots, whose inode is 0, left out; an entry with an inode and no name is
+# listed, so it fails a comparison): one line
 # "DIR <path>" per folder and "FILE <path> <size> <sha256 of debugfs cat>"
 # per regular file, anything else "OTHER <path> <mode>"; LC_ALL=C sorted.
 disk_listing() {
@@ -109,7 +111,7 @@ disk_listing() {
     shift
     for d in "$@"; do
         disk_debugfs "$img" "ls -p $d" | awk -F/ -v d="$d" '
-            NF >= 7 && $6 != "." && $6 != ".." {
+            NF >= 7 && $2 != "0" && $6 != "." && $6 != ".." {
                 p = (d == "/" ? "" : d) "/" $6; m = $3
                 if (m ~ /^0?4/) print "DIR " p
                 else if (m ~ /^10/) print "FILE " p " " $7

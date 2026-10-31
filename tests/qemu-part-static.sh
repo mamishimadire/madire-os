@@ -1030,17 +1030,24 @@ DISK_T0=$(date +%s)
 disk_probe
 DISK_W=$OUT/disk-tools
 rm -rf "$DISK_W" && mkdir -p "$DISK_W"
-# The sample files, with fixed modes and times (ctime cannot be set: both
-# images are made from this one folder).
+# The sample files, with fixed modes (ctime cannot be set: both images are
+# made from this one folder).
 DISK_WANT=$( { disk_image tree "$DISK_W/src"; echo "DIR /lost+found"; } | LC_ALL=C sort)
 find "$DISK_W/src" -type d -exec chmod 0755 {} +
 find "$DISK_W/src" -type f -exec chmod 0644 {} +
-find "$DISK_W/src" -exec touch -h -d "@$DISK_TIME" {} +
 sed 's/^/      want: /' <<< "$DISK_WANT"
+# Every path of the tree, the root first, from the listing (not by reading
+# the tree). Stage 2 fix: mke2fs -d copies each source inode's access time,
+# and reading the tree changes it, so both times are reset just before each
+# mke2fs; touch sets them by path and reads no folder.
+DISK_TOUCH=("$DISK_W/src")
+while read -r _ p _; do [ "$p" = /lost+found ] || DISK_TOUCH+=("$DISK_W/src$p"); done <<< "$DISK_WANT"
+echo "      times reset before each mke2fs: ${#DISK_TOUCH[@]} paths"
 # An 8 MiB image, 1 KiB blocks (big.bin reaches the double indirect block),
 # 128-byte inodes, 256 inodes; made twice.
 DISK_MK=""
 for x in a b; do
+    touch -h -a -m -d "@$DISK_TIME" "${DISK_TOUCH[@]}"
     disk_mkfs "$DISK_W/$x.img" 8192 1024 128 256 "$DISK_W/src" > "$DISK_W/mkfs-$x.txt" 2>&1
     DISK_MK="$DISK_MK $?"
     sed "s/^/      mke2fs ($x): /" "$DISK_W/mkfs-$x.txt"
