@@ -58,8 +58,8 @@ param(
     [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64",  # must not be running (0.11)
     [string]$ViewVM = "MadireOS-View",  # 1.3 stage 8: must not be running (AGENTS.md section 6)
     [int]$MinFreeMB = 5500,             # 1.3 stage 8: the owner's threshold for this step (three samples)
-    [string]$RestoreIso = "",           # the resting medium; default: build\v1.2-release\madire-os.iso
-    [string]$RestoreSha256 = "2a2acbe599c003d4e3015a6ab7bfd1632d15c8741dbcffede07381cb8b7292c6"
+    [string]$RestoreIso = "",           # the resting medium; default: build\v1.3-release\madire-os.iso (1.4 stage 1)
+    [string]$RestoreSha256 = "e13054513342d65a133fbab36de1e92d82b6846d2f4b0120f85829adde430e74"
 )
 $ErrorActionPreference = "Stop"
 $root = (Get-Item (Split-Path $PSScriptRoot -Parent)).FullName
@@ -67,7 +67,7 @@ $build = Join-Path $root "build"
 if (-not $Iso) { $Iso = Join-Path $build "madire-os.iso" }
 if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
 if (-not $OutDir) { $OutDir = Join-Path $build ("vbox-acceptance-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
-if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.2-release\madire-os.iso" }
+if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.3-release\madire-os.iso" }
 
 # ---- 1.3 stage 8: host memory first (AGENTS.md section 6): three samples, 5 s apart ----
 $memSamples = @()
@@ -1739,21 +1739,28 @@ if ($Risk13 -gt 0 -and (Want "risk13")) {
           $(if ($firsts) { $firsts } else { "none" }))
 }
 
-# 1.1: the key window: the 0.13 keyboard error repeated on this VM. Twelve
-# boots; in each, Home is pressed every 300 ms from 0, 0.5, 1, ... 5 or 6 s
-# after startvm until the hidden menu shows (1.2 stage 10b: its header box,
-# Test-MenuShown; until then a screen 1024 wide). A
-# BIOS stopped by keys ("FATAL: Keyboard error") shows no menu and starts no
-# kernel: the row is MISSING, with a screenshot, if the screen stays
-# without the menu and the serial log empty for 30 s (or the kernel starts
-# first).
+# 1.1: the key window: the 0.13 keyboard error repeated on this VM. In each
+# boot, Home is pressed every 300 ms from a given time after startvm until
+# the hidden menu shows (1.2 stage 10b: its header box, Test-MenuShown;
+# until then a screen 1024 wide). A BIOS stopped by keys ("FATAL: Keyboard
+# error") shows no menu and starts no kernel.
+# 1.4 stage 1 (D20, docs/plans/1.4.md G3, an owner-approved exception):
+# eleven counted boots, keys from 0.5, 1, ... 5 or 5.5 s; the row is
+# MISSING, with a screenshot, if the screen stays without the menu and the
+# serial log empty for 30 s (or the kernel starts first). Two report-only
+# boots at the edges, keys from 0 s (the BIOS's keyboard self-test) and 6 s
+# (the end of Limine's 2 s key wait), record what happened (menu shown,
+# kernel started without the menu, or a BIOS keyboard error: no menu and no
+# kernel output for 30 s) and never count as MISSING.
 # A shown menu is held 4 s, then Enter boots the first entry to System ready
 # (report only, with the earliest reveal).
 if (Want "keywindow") {
     $reveals = New-Object System.Collections.Generic.List[int]
     $kwHeld = 0
     $kwReady = 0
-    foreach ($start in @(0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000)) {
+    $kwCounted = @(500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500)
+    foreach ($start in @(@(0) + $kwCounted + @(6000))) {
+        $counted = $kwCounted -contains $start
         $name = "keywindow-{0:D4}" -f $start
         if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
         VBox startvm $VM --type headless | Out-Null
@@ -1770,28 +1777,38 @@ if (Want "keywindow") {
             while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
         }
         $at = [int]((Get-Date) - $t0).TotalMilliseconds
+        $held = $false
+        $ready = $false
         if ($shown) {
-            $reveals.Add($at)
             Start-Sleep -Seconds 4
-            if (-not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Test-MenuShown)) { $kwHeld++ }
+            $held = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Test-MenuShown)
             Enter
-            if (Wait-Serial "System ready\." 40) { $kwReady++ }
+            $ready = Wait-Serial "System ready\." 40
         } else {
             Shot $name
         }
-        # A shown menu also proves "no BIOS keyboard error": that error halts
-        # the BIOS during its power-on self-test, before it loads Limine, so
-        # Limine's menu (its header box) can't appear after it.
-        Note ("{0,-16} {1,-8} /menu shown with keys from {2} ms; no BIOS keyboard error/" -f "keywindow",
-              $(if ($shown) { "OK" } else { "MISSING" }), $start)
-        Write-Host ("{0}: keys from {1} ms, {2} after {3} ms" -f $name, $start, $(if ($shown) { "menu shown" } elseif ($booted) { "kernel started without the menu" } else { "no menu, no kernel output" }), $at)
+        $what = $(if ($shown) { "menu shown" } elseif ($booted) { "kernel started without the menu" } else { "BIOS keyboard error (no menu and no kernel output for 30 s)" })
+        if ($counted) {
+            if ($shown) { $reveals.Add($at) }
+            if ($held) { $kwHeld++ }
+            if ($ready) { $kwReady++ }
+            # A shown menu also proves "no BIOS keyboard error": that error halts
+            # the BIOS during its power-on self-test, before it loads Limine, so
+            # Limine's menu (its header box) can't appear after it.
+            Note ("{0,-16} {1,-8} /menu shown with keys from {2} ms; no BIOS keyboard error/" -f "keywindow",
+                  $(if ($shown) { "OK" } else { "MISSING" }), $start)
+        } else {
+            Note ("keywindow (report only): keys from {0} ms: {1} after {2} ms{3}" -f $start, $what, $at,
+                  $(if ($shown) { "; held 4 s with no kernel output: {0}; System ready after Enter: {1}" -f $(if ($held) { "yes" } else { "no" }), $(if ($ready) { "yes" } else { "no" }) } else { "; screenshot $name" }))
+        }
+        Write-Host ("{0}: keys from {1} ms, {2} after {3} ms" -f $name, $start, $what, $at)
         VBox controlvm $VM poweroff | Out-Null
         Start-Sleep -Seconds 2
         if (Test-Path $serial) { Copy-Item $serial (Join-Path $OutDir "$Prefix-$name.serial.log") -Force }
     }
     $rv = $reveals | Measure-Object -Minimum -Maximum
-    Note ("keywindow (report only): menu shown in {0} of 12 boots; earliest reveal {1} ms after startvm, latest {2} ms; held 4 s with no kernel output in {3}; System ready after Enter in {4}" -f
-          $reveals.Count, $(if ($reveals.Count) { $rv.Minimum } else { "none" }), $(if ($reveals.Count) { $rv.Maximum } else { "none" }), $kwHeld, $kwReady)
+    Note ("keywindow (report only): menu shown in {0} of {1} counted boots; earliest reveal {2} ms after startvm, latest {3} ms; held 4 s with no kernel output in {4}; System ready after Enter in {5}" -f
+          $reveals.Count, $kwCounted.Count, $(if ($reveals.Count) { $rv.Minimum } else { "none" }), $(if ($reveals.Count) { $rv.Maximum } else { "none" }), $kwHeld, $kwReady)
 }
 
 # 0.13: which Diagnostics positions this run booted through the boot menu
