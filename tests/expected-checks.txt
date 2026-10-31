@@ -215,6 +215,8 @@
 # Storage: lines now "no disk", with the controller and BAR5 on the ahci:
 # line; mem's Page tables and Free pages (now) on those boots by exactly
 # the driver's slot 508 figures; the driver's lines between PCI: and
-# Storage:).
-1.4 22
+# Storage:). Stage 4's fix (after runs 41222612792 and 41222637807): 1
+# more in part static, the madire.elf scan's self-test on a test-only
+# sample (tests/ahci_opcode_sample.c: its 0x35 and 0xEA stores flagged).
+1.4 23
 unit-suites 97

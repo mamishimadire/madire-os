@@ -1321,11 +1321,12 @@ echo "      [1.4] PCI boots: $(( $(date +%s) - PCI_T0 )) s (report only)"
 # ---- 1.4 stage 4: AHCI reads and the block cache ----
 
 section "[1.4] AHCI reads and the block cache: read only (stage 4)"
-# docs/plans/1.4.md, S4 (D1, D2, D4, D8, D9). Two checks that boot
+# docs/plans/1.4.md, S4 (D1, D2, D4, D8, D9). Three checks that boot
 # nothing: the driver can send no command that writes, proved from the
 # source and from madire.elf (the opcode table's two bytes, read back from
 # the ELF; no write-type ATA opcode stored as an immediate byte in any
-# ahci_, blk_ or pci_ function). Then one -kernel boot with test=diskread
+# ahci_, blk_ or pci_ function), and the ELF scan's own self-test on a
+# test-only sample that it must flag. Then one -kernel boot with test=diskread
 # at -m 128M: ich9-ahci at 00:05.0 with a raw disk of fixed bytes on port
 # 0 (tests/disk_image.py pattern: 64 MiB and 3 sectors, so the last page
 # is partly filled) and an empty ATAPI CD drive on port 1. Its checks: the
@@ -1367,28 +1368,84 @@ fi
 # unprintable model character, and 0x06 (DATA SET MANAGEMENT), a small
 # number the compiler may store for other reasons; neither can be sent:
 # the table above is the only source of an opcode.
+# The S4 fix (after runs 41222612792 and 41222637807): an instruction line
+# is "<address>:" with or without leading spaces (objdump prints a 64-bit
+# kernel address with none, an object file's short one with some), and
+# the check cannot pass by finding nothing: it needs at least
+# AH_MIN_INSNS instructions in the storage functions and at least one in
+# every one of them. AH_MIN_INSNS: S3 and S4 added 20,064 bytes of text
+# (2,272 + 17,792; code and read-only data such as the log formats);
+# about half of it is instructions, at 3 to 5 bytes each on x86-64, so
+# roughly 2,000 to 3,300 are expected; 1,000 still fails a pattern that
+# matches nothing or only a few lines, without depending on the
+# compiler's exact choices. Then (3) proves the scan finds what it must.
+AH_MIN_INSNS=1000
+AH_WRITE_OPS='30|31|34|35|36|39|3a|3b|3c|3d|3e|45|57|61|64|92|93|c5|ca|cc|ce|e7|e8|ea|f1|f4|f9'
+# ah_table <object or ELF>: the bytes of its ahci_opcodes as hex ("ec25"),
+# its size from nm on AH_TSIZE; nothing if it has no such symbol.
+ah_table() {
+    local addr size
+    read -r addr size <<< "$(nm -S "$1" 2>/dev/null | awk '$4 == "ahci_opcodes" { print $1, $2; exit }')"
+    AH_TSIZE=${size:-}
+    [ -n "${addr:-}" ] || return 0
+    objdump -s -j .rodata --start-address=0x$addr --stop-address=$(printf '0x%x' $((16#$addr + 16#${size:-0}))) "$1" 2>/dev/null |
+        awk '$1 ~ /^[0-9a-f]+$/ && NF >= 2 { print $2; exit }'
+}
+# ah_scan <objdump -d output> <file for the flagged lines>: prints "<storage
+# functions> <their instructions> <those with none>"; every immediate byte
+# store of a write-type opcode in a storage function goes to the file.
+ah_scan() {
+    : > "$2"
+    awk -v badf="$2" -v ops="$AH_WRITE_OPS" '
+        /^[0-9a-f]+ <[^>]*>:$/ { if (fn && !cnt) empty++; fn = ($2 ~ /^<(ahci|blk|pci)_/); fns += fn; cnt = 0; next }
+        fn && /^[ \t]*[0-9a-f]+:[ \t]/ {
+            insns++; cnt++
+            if ($0 ~ ("movb[ \t]+[$]0x(" ops "),")) print > badf
+        }
+        END { if (fn && !cnt) empty++; print fns + 0, insns + 0, empty + 0 }' "$1"
+}
 AH_ELF=$OUT/madire.elf
-read -r AH_ADDR AH_SIZE <<< "$(nm -S "$AH_ELF" 2>/dev/null | awk '$4 == "ahci_opcodes" { print $1, $2; exit }')"
-AH_BYTES=""
-if [ -n "${AH_ADDR:-}" ]; then
-    AH_BYTES=$(objdump -s -j .rodata --start-address=0x$AH_ADDR --stop-address=$(printf '0x%x' $((16#$AH_ADDR + 16#${AH_SIZE:-0}))) "$AH_ELF" 2>/dev/null |
-               awk '$1 ~ /^[0-9a-f]+$/ && NF >= 2 && length($1) >= 8 { print $2; exit }')
-fi
+AH_BYTES=$(ah_table "$AH_ELF"); AH_SIZE=$AH_TSIZE
 AH_DIS=$OUT/ahci-objdump.txt
 objdump -d --no-show-raw-insn "$AH_ELF" > "$AH_DIS" 2>/dev/null
-AH_FNS=$(grep -cE '^[0-9a-f]+ <(ahci|blk|pci)_[A-Za-z0-9_.]*>:$' "$AH_DIS")
-AH_BAD=$(awk '/^[0-9a-f]+ <.*>:$/ { fn = ($2 ~ /^<(ahci|blk|pci)_/) } fn && /movb +\$0x(30|31|34|35|36|39|3a|3b|3c|3d|3e|45|57|61|64|92|93|c5|ca|cc|ce|e7|e8|ea|f1|f4|f9),/ { print }' "$AH_DIS")
-AH_INSNS=$(awk '/^[0-9a-f]+ <.*>:$/ { fn = ($2 ~ /^<(ahci|blk|pci)_/); next } fn && /^ +[0-9a-f]+:/ { n++ } END { print n + 0 }' "$AH_DIS")
-echo "      madire.elf: ahci_opcodes at 0x${AH_ADDR:-?}, ${AH_SIZE:-?} bytes: ${AH_BYTES:-?}; $AH_FNS storage functions, $AH_INSNS instructions; write-type opcode stores: $(grep -c . <<< "$AH_BAD")"
+read -r AH_FNS AH_INSNS AH_EMPTY <<< "$(ah_scan "$AH_DIS" "$OUT/ahci-objdump-flagged.txt")"
+AH_BAD=$(cat "$OUT/ahci-objdump-flagged.txt")
+echo "      madire.elf: ahci_opcodes ${AH_SIZE:-?} bytes: ${AH_BYTES:-?}; $AH_FNS storage functions, $AH_INSNS instructions examined (minimum $AH_MIN_INSNS), $AH_EMPTY with none; write-type opcode stores: $(grep -c . <<< "$AH_BAD")"
 [ -n "$AH_BAD" ] && sed 's/^/      store: /' <<< "$AH_BAD"
-if [ "${AH_SIZE:-}" = 0000000000000002 ] && [ "$AH_BYTES" = ec25 ] && [ "$AH_FNS" -ge 10 ] && [ "$AH_INSNS" -gt 500 ] &&
-   [ -z "$AH_BAD" ]; then
-    pass "[1.4] AHCI read only (madire.elf): ahci_opcodes is 2 bytes, EC 25, as linked; no ahci_, blk_ or pci_ function ($AH_FNS of them, $AH_INSNS instructions) stores a write-type ATA opcode as an immediate byte"
+if [ "${AH_SIZE:-}" = 0000000000000002 ] && [ "$AH_BYTES" = ec25 ] && [ "$AH_FNS" -ge 10 ] &&
+   [ "$AH_INSNS" -ge "$AH_MIN_INSNS" ] && [ "$AH_EMPTY" -eq 0 ] && [ -z "$AH_BAD" ]; then
+    pass "[1.4] AHCI read only (madire.elf): ahci_opcodes is 2 bytes, EC 25, as linked; no ahci_, blk_ or pci_ function ($AH_FNS of them, $AH_INSNS instructions examined, at least $AH_MIN_INSNS needed and one in each) stores a write-type ATA opcode as an immediate byte"
 else
-    fail "[1.4] AHCI read only (madire.elf): ahci_opcodes is not the 2 bytes EC 25 (${AH_SIZE:-no symbol}: ${AH_BYTES:-none}), too few storage functions were found ($AH_FNS, $AH_INSNS instructions), or a storage function stores a write-type opcode"
+    fail "[1.4] AHCI read only (madire.elf): ahci_opcodes is not the 2 bytes EC 25 (${AH_SIZE:-no symbol}: ${AH_BYTES:-none}), too few storage functions or instructions were examined ($AH_FNS functions, $AH_INSNS instructions, minimum $AH_MIN_INSNS, $AH_EMPTY with none), or a storage function stores a write-type opcode"
+fi
+# (3) The scan's self-test: tests/ahci_opcode_sample.c, compiled here with
+# the kernel's code-generation flags (test only, never linked), stores
+# WRITE DMA EXT (0x35) and FLUSH CACHE EXT (0xEA) as the driver stores an
+# opcode, and READ DMA EXT (0x25) in a third function; its opcode table is
+# EC 35. The same ah_table and ah_scan must flag exactly the two stores,
+# one in each function, not the read, and read the table as ec35.
+AH_SAMPLE=$OUT/ahci-sample.o
+rm -f "$AH_SAMPLE"
+gcc -std=gnu11 -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone -mgeneral-regs-only -mcmodel=kernel \
+    -fno-stack-protector -fno-asynchronous-unwind-tables -O2 -Wall -Wextra -Werror \
+    -c "$(dirname "$0")/ahci_opcode_sample.c" -o "$AH_SAMPLE" 2>&1 | sed 's/^/      gcc: /'
+AH_SDIS=$OUT/ahci-sample-objdump.txt
+objdump -d --no-show-raw-insn "$AH_SAMPLE" > "$AH_SDIS" 2>/dev/null
+AH_SBYTES=$(ah_table "$AH_SAMPLE")
+read -r AH_SFNS AH_SINSNS AH_SEMPTY <<< "$(ah_scan "$AH_SDIS" "$OUT/ahci-sample-flagged.txt")"
+AH_SBAD=$(cat "$OUT/ahci-sample-flagged.txt")
+AH_SFLAG=$(awk '/^[0-9a-f]+ <[^>]*>:$/ { fn = $2 } /movb[ \t]+[$]0x(35|ea),/ { print fn, ($0 ~ /[$]0x35,/ ? "0x35" : "0xea") }' "$AH_SDIS" | tr '\n' ' ')
+echo "      sample: table ${AH_SBYTES:-?}; $AH_SFNS functions, $AH_SINSNS instructions; flagged: $(grep -c . <<< "$AH_SBAD") ($AH_SFLAG)"
+sed 's/^/      flagged: /' <<< "$AH_SBAD"
+if [ -s "$AH_SAMPLE" ] && [ "$AH_SBYTES" = ec35 ] && [ "$AH_SFNS" -eq 3 ] && [ "$AH_SEMPTY" -eq 0 ] &&
+   [ "$(grep -c . <<< "$AH_SBAD")" -eq 2 ] && grep -qE '[$]0x35,' <<< "$AH_SBAD" && grep -qE '[$]0xea,' <<< "$AH_SBAD" &&
+   [ "$AH_SFLAG" = "<ahci_sample_write>: 0x35 <ahci_sample_flush>: 0xea " ] && ! grep -qE '[$]0x25,' <<< "$AH_SBAD"; then
+    pass "[1.4] AHCI read-only check, self-test: in a test-only sample compiled with the kernel's flags, the same scan flags the WRITE DMA EXT (0x35) and FLUSH CACHE EXT (0xEA) stores, one in each function, not the READ DMA EXT (0x25) one, and reads its opcode table as EC 35"
+else
+    fail "[1.4] AHCI read-only check, self-test: the scan did not flag exactly the sample's 0x35 and 0xEA stores, or did not read its table as EC 35 (table ${AH_SBYTES:-none}; $AH_SFNS functions; flagged: $AH_SFLAG)"
 fi
 
-# (3) The test=diskread boot.
+# (4) The test=diskread boot.
 AH_W=$OUT/ahci-read
 rm -rf "$AH_W" && mkdir -p "$AH_W"
 AH_IMG=$AH_W/disk.img
