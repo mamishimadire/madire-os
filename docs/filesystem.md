@@ -1,6 +1,6 @@
-# Madire Filesystem Layout v0.1
+# Madire Filesystem Layout v0.2
 
-**Versions:** v0.1 (Madire OS 1.1, stage 9b, docs only): the layout, the reason for it, what exists today and when each part arrives.
+**Versions:** v0.1 (Madire OS 1.1, stage 9b, docs only): the layout, the reason for it, what exists today and when each part arrives. v0.2 (Madire OS 1.4, stage 0, docs only): the home folders are `Desktop`, `Documents`, `Downloads`, `Pictures`, `Music`, `Videos` and `Trash` (`Projects` dropped, the owner's decision); in 1.4 the disk holds `/home` only, the rest of the tree stays in memory (the plan, [plans/1.4.md](plans/1.4.md), decision D15).
 
 This document sets where things live in Madire OS's file tree. It is a plan, not a commitment: every folder not marked as existing today arrives with its milestone, which still needs its own plan and approval. The commands that work on files are in the command standard ([commands.md](commands.md)).
 
@@ -13,7 +13,7 @@ Madire OS uses the standard Linux layout (the Filesystem Hierarchy Standard, as 
 | `/boot` | The boot loader's files and the kernel |
 | `/dev` | Devices, as files (disks, the console, `null`, random numbers) |
 | `/etc` | System-wide settings, as text files (for example `fstab` and `sudoers`, section 4) |
-| `/home/<user>` | Each user's own files, with the folders `Desktop`, `Documents`, `Downloads`, `Music`, `Pictures`, `Videos` and `Projects` |
+| `/home/<user>` | Each user's own files, with the folders `Desktop`, `Documents`, `Downloads`, `Pictures`, `Music`, `Videos` and `Trash` (since v0.2; `Trash` is a visible folder until the Files app (1.5) decides its layout) |
 | `/media` | Removable media (USB drives, discs), attached automatically |
 | `/mnt` | Filesystems attached by hand, for a while |
 | `/opt` | Optional add-on applications installed as one folder each |
@@ -38,13 +38,14 @@ Madire OS uses the standard Linux layout (the Filesystem Hierarchy Standard, as 
 
 ## 3. What exists today, and when each part arrives
 
-**Today (1.0, Live mode):** a RAM filesystem with `/`, `/home` and `/tmp`, made at boot; every file is in memory only and is lost at restart. The shell starts in `/home`. There are no users yet, so there is no `/home/<user>`.
+**Today (1.0, Live mode):** a RAM filesystem with `/`, `/home` and `/tmp`, made at boot; every file is in memory only and is lost at restart. The shell starts in `/home`. There are no users yet, so there is no `/home/<user>`. **Planned for 1.4 (Disk mode):** with a marked virtual test disk, `/home` is that disk's ext2 filesystem, holding `/home/user` and its folders, and the shell starts in `/home/user`; `/` and `/tmp` stay in memory.
 
 | Part | Arrives with | Note |
 |---|---|---|
 | `/`, `/home`, `/tmp` | 1.0 (done) | In memory (Live mode) |
-| The whole tree on disk (`/boot`, `/etc`, `/home`, `/opt`, `/root`, `/usr`, `/var`, `/var/log`, the `/bin` and `/lib` links, and the empty `/media`, `/mnt`, `/run`) | The storage milestone (likely v1.3, after graphics in v1.2) | The disk filesystem creates the tree; files kept across restarts. Live mode keeps the tree in memory |
-| `/home/<user>` and its folders, `/root` as the administrator's home | Users | Created when a user is created |
+| `/home` on disk (an ext2 filesystem mounted at `/home`), with `/home/user` and its seven folders | 1.4 (storage), **Disk mode only** | Only on a marked virtual test disk ([plans/1.4.md](plans/1.4.md)); everything else (`/`, `/tmp`) stays in memory exactly as in 1.0. While there are no user accounts the user is called `user`; the folders are made at the first mount if missing. Live mode is unchanged: `/home` stays an empty folder in memory, with no `/home/user` |
+| The whole tree on disk (`/boot`, `/etc`, `/opt`, `/root`, `/usr`, `/var`, `/var/log`, the `/bin` and `/lib` links, and the empty `/media`, `/mnt`, `/run`) | Later (the installer, which creates a disk to boot from) | The disk filesystem creates the tree; files kept across restarts. Live mode keeps the tree in memory |
+| `/home/<user>` for real users, `/root` as the administrator's home | Users | Created when a user is created (`user` is renamed or replaced then) |
 | `/dev` | A virtual filesystem for devices | Needs the disk and hardware drivers to have devices to show |
 | `/proc`, `/sys` | Virtual filesystems made by the kernel | Needed by many Linux programs; with or before the Linux-compatibility milestone |
 | `/etc` with real settings | Settings storage | Settings kept as text files under `/etc` |
