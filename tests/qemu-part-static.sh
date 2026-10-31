@@ -30,6 +30,8 @@
 # and the VirtualBox desktop group's plan and references. 1.4 stage 2: at
 # the end, the test-image tools' probe and self-checks (tests/disk-lib.sh).
 # 1.4 stage 3: after them, the PCI scan's three -kernel boots (tests/qmp_pci.py).
+# 1.4 stage 4: at the end, the AHCI driver's read-only checks (source and
+# madire.elf) and its test=diskread boot.
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -1193,6 +1195,16 @@ section "[1.4] The PCI scan: the PCI: and Storage: lines against QEMU's own view
 # 3, so the memory lines and mem's figures are the same on all three
 # boots. The two lines sit between "Filesystem self-test: PASS" and "Key
 # events:", outside every expect_lines window (risk 33).
+# 1.4 stage 4 (changed checks, not added): the AHCI driver now starts on
+# boots (b) and (c): the controller and its BAR5 are on the "ahci:
+# controller at ..." line, and the Storage: line says "Storage: AHCI
+# bb:dd.f, no disk (Live mode)" (no device on any port). The driver maps
+# its registers in slot 508, so on (b) and (c) mem's "Page tables" and
+# "Free pages (now)" differ from (a)'s by exactly the page tables its
+# "ahci: slot 508 now" line says it added (and the DMA and cache pages,
+# none without a device); everything else, the boot's memory lines
+# included, is the same on all three. The driver's own lines ("ahci:",
+# "blk:") come between the PCI: line and the Storage: line.
 PCI_T0=$(date +%s)
 PCI_READY="System ready. Press any key to open the console."
 PCI_LINE_RE='^PCI: ([0-9]+) buses, ([0-9]+) devices, ([0-9]+) functions, ([0-9]+) PCI-to-PCI bridges \(([0-9]+) secondary buses refused\); storage: ([0-9]+) AHCI, ([0-9]+) other; configuration read only$'
@@ -1239,18 +1251,20 @@ pcitest_boot ahci -device ich9-ahci,id=pcitest-ahci,addr=0x5
 PCI_B=$OUT/serial-pci-ahci.log
 if pcitest_agree "$PCI_B" "$PCI_Q" && [ "$(cut -d' ' -f1,4,6 <<< "$PK")" = "1 0 1" ] &&
    [ "$PQ_AHCI" = 00:05.0 ] && grep -qE '^0x[0-9a-f]{8}$' <<< "$PQ_BAR5" &&
-   grep -qxF "Storage: AHCI controller at 00:05.0 (8086:2922, BAR5 $PQ_BAR5), not used yet (Live mode)" "$PCI_B"; then
-    pass "[1.4] PCI, -device ich9-ahci: the controller found at 00:05.0 (8086:2922) with BAR5 $PQ_BAR5, as QEMU's query-pci gives it; the PCI: line's counts as QEMU's; not used yet (Live mode)"
+   grep -qxF "ahci: controller at 00:05.0 (8086:2922, BAR5 $PQ_BAR5)" "$PCI_B" &&
+   grep -qxF "Storage: AHCI 00:05.0, no disk (Live mode)" "$PCI_B"; then
+    pass "[1.4] PCI, -device ich9-ahci: the controller found at 00:05.0 (8086:2922) with BAR5 $PQ_BAR5, as QEMU's query-pci gives it; the PCI: line's counts as QEMU's; with no device on it, 'Storage: AHCI 00:05.0, no disk (Live mode)'"
 else
-    fail "[1.4] PCI, -device ich9-ahci: the Storage: line does not name 00:05.0 with QEMU's BAR5, or the counts differ (kernel: ${PK:-no PCI: line}; $(grep -E '^QPCI_(SUMMARY|LINE)|ERROR' <<< "$PCI_Q" | tr '\n' ' '))"
+    fail "[1.4] PCI, -device ich9-ahci: the ahci: line does not name 00:05.0 with QEMU's BAR5, the Storage: line differs, or the counts differ (kernel: ${PK:-no PCI: line}; $(grep -E '^QPCI_(SUMMARY|LINE)|ERROR' <<< "$PCI_Q" | tr '\n' ' '))"
 fi
 pcitest_boot bridge -device pci-bridge,id=pcitest-br,chassis_nr=1,addr=0x6 \
     -device ich9-ahci,id=pcitest-ahci,bus=pcitest-br,addr=0x2
 PCI_C=$OUT/serial-pci-bridge.log
 if pcitest_agree "$PCI_C" "$PCI_Q" && [ "$(cut -d' ' -f1,4,6 <<< "$PK")" = "2 1 1" ] &&
    grep -qE '^0[1-9a-f]:02\.0$' <<< "$PQ_AHCI" && grep -qE '^0x[0-9a-f]{8}$' <<< "$PQ_BAR5" &&
-   grep -qxF "Storage: AHCI controller at $PQ_AHCI (8086:2922, BAR5 $PQ_BAR5), not used yet (Live mode)" "$PCI_C"; then
-    pass "[1.4] PCI, ich9-ahci behind a pci-bridge: the bridge's secondary bus scanned (2 buses, 1 bridge); the controller found at $PQ_AHCI with BAR5 $PQ_BAR5, as QEMU's query-pci gives them"
+   grep -qxF "ahci: controller at $PQ_AHCI (8086:2922, BAR5 $PQ_BAR5)" "$PCI_C" &&
+   grep -qxF "Storage: AHCI $PQ_AHCI, no disk (Live mode)" "$PCI_C"; then
+    pass "[1.4] PCI, ich9-ahci behind a pci-bridge: the bridge's secondary bus scanned (2 buses, 1 bridge); the controller found at $PQ_AHCI with BAR5 $PQ_BAR5, as QEMU's query-pci gives them; with no device on it, 'Storage: AHCI $PQ_AHCI, no disk (Live mode)'"
 else
     fail "[1.4] PCI, ich9-ahci behind a pci-bridge: the controller not found on the secondary bus as QEMU gives it, or the counts differ (kernel: ${PK:-no PCI: line}; $(grep -E '^QPCI_(SUMMARY|LINE)|ERROR' <<< "$PCI_Q" | tr '\n' ' '))"
 fi
@@ -1261,24 +1275,218 @@ pcitest_mem() {
 }
 PCI_MA=$(pcitest_mem "$PCI_A"); PCI_MB=$(pcitest_mem "$PCI_B"); PCI_MC=$(pcitest_mem "$PCI_C")
 grep -E '^(Free pages|Paging tables|Mapped pages|Page tables)' <<< "$PCI_MA" | sed 's/^/      plain: /'
+# pcitest_memdiff <the plain boot's figures> <a controller boot's figures>
+# <its log>: 1.4 stage 4: the same but for mem's Page tables (more by the
+# page tables the driver's "ahci: slot 508 now" line says it added) and
+# Free pages (now) (fewer by those tables and its DMA and cache pages).
+pcitest_memdiff() {
+    local t d c pa pb fa fb
+    read -r t d c <<< "$(sed -nE 's/^ahci: slot 508 now: [0-9]+ page tables, [0-9]+ pages mapped \(walked\); ([0-9]+) page tables added, ([0-9]+) DMA pages, ([0-9]+) cache pages$/\1 \2 \3/p' "$3")"
+    echo "      $(basename "$3"): the driver added ${t:-?} page tables, ${d:-?} DMA pages, ${c:-?} cache pages"
+    [ -n "${t:-}" ] && [ -n "${d:-}" ] && [ -n "${c:-}" ] || return 1
+    [ "$(grep -vE '^(Page tables|Free pages \(now\)):' <<< "$1")" = "$(grep -vE '^(Page tables|Free pages \(now\)):' <<< "$2")" ] || return 1
+    pa=$(sed -nE 's/^Page tables: +([0-9]+).*/\1/p' <<< "$1"); pb=$(sed -nE 's/^Page tables: +([0-9]+).*/\1/p' <<< "$2")
+    fa=$(sed -nE 's/^Free pages \(now\): +([0-9]+).*/\1/p' <<< "$1"); fb=$(sed -nE 's/^Free pages \(now\): +([0-9]+).*/\1/p' <<< "$2")
+    [ -n "$pa" ] && [ -n "$pb" ] && [ -n "$fa" ] && [ -n "$fb" ] && [ "$t" -gt 0 ] &&
+        [ $((pb - pa)) -eq "$t" ] && [ $((fa - fb)) -eq $((t + d + c)) ]
+}
 if [ "$(grep -cE '^(Memory: |Free pages:|Paging tables:|Kernel half frozen:|Free pages \(now\):|Mapped pages:|Page tables:|Heap free:)' <<< "$PCI_MA")" -eq 8 ] &&
-   [ "$PCI_MB" = "$PCI_MA" ] && [ "$PCI_MC" = "$PCI_MA" ]; then
-    pass "[1.4] PCI: the scan maps nothing: the memory lines (Memory, Free pages, Paging tables, Kernel half frozen) and mem's figures are the same with no controller, with one on bus 0 and with one behind a bridge"
+   ! grep -q '^ahci: ' "$PCI_A" && pcitest_memdiff "$PCI_MA" "$PCI_MB" "$PCI_B" && pcitest_memdiff "$PCI_MA" "$PCI_MC" "$PCI_C"; then
+    pass "[1.4] PCI: the scan maps nothing: the memory lines (Memory, Free pages, Paging tables, Kernel half frozen) are the same with no controller, with one on bus 0 and with one behind a bridge, and so are mem's figures, but for Page tables and Free pages (now) with a controller, which differ by exactly the slot 508 page tables (and DMA and cache pages) the AHCI driver logs"
 else
-    fail "[1.4] PCI: the memory lines or mem's figures differ between the three boots (or mem did not answer): $(diff <(echo "$PCI_MA") <(echo "$PCI_MB") | head -n 4 | tr '\n' ' ') $(diff <(echo "$PCI_MA") <(echo "$PCI_MC") | head -n 4 | tr '\n' ' ')"
+    fail "[1.4] PCI: the memory lines or mem's figures differ between the three boots otherwise than by the AHCI driver's slot 508 figures (or mem did not answer): $(diff <(echo "$PCI_MA") <(echo "$PCI_MB") | head -n 6 | tr '\n' ' ') $(diff <(echo "$PCI_MA") <(echo "$PCI_MC") | head -n 6 | tr '\n' ' ')"
 fi
-# pcitest_order <log>: the PCI: and Storage: lines right after "Filesystem
-# self-test: PASS" and right before "Key events:"; System ready; no PANIC or
-# FAILED (case-sensitive: boot lines say "panic_exception" and "panics").
+# pcitest_order <log>: the PCI: line right after "Filesystem self-test:
+# PASS", the Storage: line right before "Key events:"; System ready; no
+# PANIC or FAILED (case-sensitive: boot lines say "panic_exception" and
+# "panics"). 1.4 stage 4: between the two lines only the AHCI driver's and
+# the block cache's own lines ("ahci: ", "blk: "); without a controller
+# none (the two lines next to each other, as in stage 3).
 pcitest_order() {
     awk '$0 == "Filesystem self-test: PASS" { f = NR } /^PCI: / { p = NR } /^Storage: / { s = NR }
          /^Key events: / && !k { k = NR }
-         END { exit !(f && p == f + 1 && s == p + 1 && k == s + 1) }' "$1" &&
+         p && !s && NR > p && !/^PCI: / && !/^(ahci|blk): / { other++ }
+         /^(ahci|blk): / && (!p || s) { other++ }
+         END { exit !(f && p == f + 1 && s > p && k == s + 1 && !other) }' "$1" &&
         grep -qxF "$PCI_READY" "$1" && ! grep -qE 'PANIC|FAILED' "$1"
 }
-if pcitest_order "$PCI_A" && pcitest_order "$PCI_B" && pcitest_order "$PCI_C"; then
-    pass "[1.4] PCI: on all three boots the PCI: and Storage: lines come right after 'Filesystem self-test: PASS' and right before 'Key events:' (outside every expect_lines window); System ready; no PANIC or FAILED line"
+if pcitest_order "$PCI_A" && pcitest_order "$PCI_B" && pcitest_order "$PCI_C" &&
+   [ "$(grep -cE '^(ahci|blk): ' "$PCI_A")" -eq 0 ]; then
+    pass "[1.4] PCI: on all three boots the PCI: line comes right after 'Filesystem self-test: PASS' and the Storage: line right before 'Key events:', with only the AHCI driver's ahci: lines between them (none without a controller), outside every expect_lines window; System ready; no PANIC or FAILED line"
 else
-    fail "[1.4] PCI: the PCI: and Storage: lines are not between 'Filesystem self-test: PASS' and 'Key events:', or a boot did not reach System ready, or a PANIC or FAILED line (see serial-pci-*.log)"
+    fail "[1.4] PCI: the PCI: and Storage: lines are not between 'Filesystem self-test: PASS' and 'Key events:', another line comes between them, or a boot did not reach System ready, or a PANIC or FAILED line (see serial-pci-*.log)"
 fi
 echo "      [1.4] PCI boots: $(( $(date +%s) - PCI_T0 )) s (report only)"
+
+# ---- 1.4 stage 4: AHCI reads and the block cache ----
+
+section "[1.4] AHCI reads and the block cache: read only (stage 4)"
+# docs/plans/1.4.md, S4 (D1, D2, D4, D8, D9). Two checks that boot
+# nothing: the driver can send no command that writes, proved from the
+# source and from madire.elf (the opcode table's two bytes, read back from
+# the ELF; no write-type ATA opcode stored as an immediate byte in any
+# ahci_, blk_ or pci_ function). Then one -kernel boot with test=diskread
+# at -m 128M: ich9-ahci at 00:05.0 with a raw disk of fixed bytes on port
+# 0 (tests/disk_image.py pattern: 64 MiB and 3 sectors, so the last page
+# is partly filled) and an empty ATAPI CD drive on port 1. Its checks: the
+# one configuration write and AHCI mode; IDENTIFY's model and size against
+# the image; the CD ignored; the attach's read check and every
+# test=diskread read against the CRC32s computed here from the image
+# (reads beyond the end end with EIO); the image's SHA-256 the same before
+# and after the boot; slot 508 against tests/pagetables.py's model (the
+# registers uncached); the lines' place and the boot's health. The read
+# speed and the longest turn are report only (risk 26).
+AH_T0=$(date +%s)
+AH_SRC=$(dirname "$0")/../kernel
+# (1) The source: the opcode table holds 0xEC and 0x25 only; the FIS's
+# command byte is set in one place, from it; a command header's first
+# word is set in one place, without the write bit; only ahci_core.c
+# issues commands (PxCI); no name of a write or flush command anywhere.
+AH_TABLE=$(awk '/^static const uint8_t ahci_opcodes\[AHCI_OPS\] __attribute__\(\(used\)\) = \{$/ { on = 1; next }
+                on && /^\};$/ { exit } on { print $1 }' "$AH_SRC/storage/ahci_core.c" | tr '\n' ' ')
+AH_OPS=$(awk '/^enum ahci_op \{$/ { on = 1; next } on && /^\};$/ { exit } on { print $1 }' "$AH_SRC/storage/ahci_core.h" | tr '\n' ' ')
+AH_FIS=$(grep -c 'fis\[2\]' "$AH_SRC/storage/ahci_core.c")
+AH_HDR=$(grep -cE 'hdr\[0\] *=' "$AH_SRC/storage/ahci_core.c")
+AH_CI=$(grep -rlE 'AHCI_PX_CI\b' "$AH_SRC" | grep -v 'storage/ahci_core\.[ch]$' | tr '\n' ' ')
+AH_NAMES=$(grep -rniE 'write_dma|flush_cache|op_write|op_flush|0x35u|0xeau' "$AH_SRC/storage" | tr '\n' ' ')
+echo "      opcode table: $AH_TABLE; enum ahci_op: $AH_OPS; fis[2] lines: $AH_FIS; hdr[0] lines: $AH_HDR; other files using PxCI: ${AH_CI:-none}"
+if [ "$AH_TABLE" = "0xECu, 0x25u, " ] && [ "$AH_OPS" = "AHCI_OP_IDENTIFY, AHCI_OP_READ, AHCI_OPS, " ] &&
+   [ "$AH_FIS" -eq 1 ] && grep -qxF '    fis[2] = code;' "$AH_SRC/storage/ahci_core.c" &&
+   [ "$(grep -cF 'ahci_opcode(op)' "$AH_SRC/storage/ahci_core.c")" -eq 1 ] &&
+   grep -qxF '    uint8_t code = ahci_opcode(op);' "$AH_SRC/storage/ahci_core.c" &&
+   [ "$AH_HDR" -eq 1 ] && grep -qF 'hdr[0] = AHCI_CFL_H2D | (n << 16);' "$AH_SRC/storage/ahci_core.c" &&
+   [ -z "$AH_CI" ] && [ -z "$AH_NAMES" ]; then
+    pass "[1.4] AHCI read only (source): the opcode table holds IDENTIFY DEVICE (0xEC) and READ DMA EXT (0x25) only, the FIS's command byte is set once and from it, the command header's first word once and without the write bit, only ahci_core.c issues commands, and no write or flush command is named"
+else
+    fail "[1.4] AHCI read only (source): the opcode table, the FIS's command byte, the header's write bit or the command issue is not as stage 4 allows (table: $AH_TABLE; ops: $AH_OPS; fis[2]: $AH_FIS; hdr[0]: $AH_HDR; PxCI elsewhere: ${AH_CI:-none}; names: ${AH_NAMES:-none})"
+fi
+# (2) madire.elf: the table's bytes as linked, and no immediate byte store
+# of a write-type ATA opcode (ACS-3: the WRITE, FLUSH, DOWNLOAD MICROCODE
+# and SECURITY commands) in the storage functions. Not in the list: 0x3F
+# (WRITE LOG EXT), which is also '?', stored by ahci_parse_identify for an
+# unprintable model character, and 0x06 (DATA SET MANAGEMENT), a small
+# number the compiler may store for other reasons; neither can be sent:
+# the table above is the only source of an opcode.
+AH_ELF=$OUT/madire.elf
+read -r AH_ADDR AH_SIZE <<< "$(nm -S "$AH_ELF" 2>/dev/null | awk '$4 == "ahci_opcodes" { print $1, $2; exit }')"
+AH_BYTES=""
+if [ -n "${AH_ADDR:-}" ]; then
+    AH_BYTES=$(objdump -s -j .rodata --start-address=0x$AH_ADDR --stop-address=$(printf '0x%x' $((16#$AH_ADDR + 16#${AH_SIZE:-0}))) "$AH_ELF" 2>/dev/null |
+               awk '$1 ~ /^[0-9a-f]+$/ && NF >= 2 && length($1) >= 8 { print $2; exit }')
+fi
+AH_DIS=$OUT/ahci-objdump.txt
+objdump -d --no-show-raw-insn "$AH_ELF" > "$AH_DIS" 2>/dev/null
+AH_FNS=$(grep -cE '^[0-9a-f]+ <(ahci|blk|pci)_[A-Za-z0-9_.]*>:$' "$AH_DIS")
+AH_BAD=$(awk '/^[0-9a-f]+ <.*>:$/ { fn = ($2 ~ /^<(ahci|blk|pci)_/) } fn && /movb +\$0x(30|31|34|35|36|39|3a|3b|3c|3d|3e|45|57|61|64|92|93|c5|ca|cc|ce|e7|e8|ea|f1|f4|f9),/ { print }' "$AH_DIS")
+AH_INSNS=$(awk '/^[0-9a-f]+ <.*>:$/ { fn = ($2 ~ /^<(ahci|blk|pci)_/); next } fn && /^ +[0-9a-f]+:/ { n++ } END { print n + 0 }' "$AH_DIS")
+echo "      madire.elf: ahci_opcodes at 0x${AH_ADDR:-?}, ${AH_SIZE:-?} bytes: ${AH_BYTES:-?}; $AH_FNS storage functions, $AH_INSNS instructions; write-type opcode stores: $(grep -c . <<< "$AH_BAD")"
+[ -n "$AH_BAD" ] && sed 's/^/      store: /' <<< "$AH_BAD"
+if [ "${AH_SIZE:-}" = 0000000000000002 ] && [ "$AH_BYTES" = ec25 ] && [ "$AH_FNS" -ge 10 ] && [ "$AH_INSNS" -gt 500 ] &&
+   [ -z "$AH_BAD" ]; then
+    pass "[1.4] AHCI read only (madire.elf): ahci_opcodes is 2 bytes, EC 25, as linked; no ahci_, blk_ or pci_ function ($AH_FNS of them, $AH_INSNS instructions) stores a write-type ATA opcode as an immediate byte"
+else
+    fail "[1.4] AHCI read only (madire.elf): ahci_opcodes is not the 2 bytes EC 25 (${AH_SIZE:-no symbol}: ${AH_BYTES:-none}), too few storage functions were found ($AH_FNS, $AH_INSNS instructions), or a storage function stores a write-type opcode"
+fi
+
+# (3) The test=diskread boot.
+AH_W=$OUT/ahci-read
+rm -rf "$AH_W" && mkdir -p "$AH_W"
+AH_IMG=$AH_W/disk.img
+AH_LEN=$((64 * 1024 * 1024 + 3 * 512))
+AH_N=$((AH_LEN / 512))
+disk_image pattern "$AH_IMG" "$AH_LEN"
+AH_SHA0=$(sha256sum < "$AH_IMG" | cut -d' ' -f1)
+AH_LOG=$OUT/serial-diskread.log
+boot_until "$AH_LOG" 120 "$PCI_READY" -m 128M -kernel "$KERNEL" -append "test=diskread" \
+    -drive file="$AH_IMG",if=none,id=drtest-disk,format=raw -device ich9-ahci,id=drtest-ahci,addr=0x5 \
+    -device ide-hd,drive=drtest-disk,bus=drtest-ahci.0 \
+    -drive if=none,id=drtest-cd,media=cdrom -device ide-cd,drive=drtest-cd,bus=drtest-ahci.1
+AH_SHA1=$(sha256sum < "$AH_IMG" | cut -d' ' -f1)
+grep -E '^(PCI|ahci|blk|Storage|diskread): ' "$AH_LOG" | sed 's/^/      /'
+# The configuration write and AHCI mode.
+AH_CMDV=$(sed -nE 's/^ahci: PCI 00:05\.0 command register 0x[0-9a-f]{4} -> 0x([0-9a-f]{4}) \(memory space on, bus master on, INTx off; read back as written\); the only configuration write$/\1/p' "$AH_LOG")
+AH_GHC=$(sed -nE 's/^ahci: AHCI version 0x[0-9a-f]{8}, CAP 0x[0-9a-f]{8}, CAP2 0x[0-9a-f]{8}, 6 ports implemented \(PI 0x0000003f\); BIOS hand-off: (not offered|done); GHC 0x[0-9a-f]{8} -> 0x([0-9a-f]{8}) \(AHCI mode on, interrupts off\); polling$/\2/p' "$AH_LOG")
+if [ -n "$AH_CMDV" ] && [ $((16#$AH_CMDV & 0x406)) -eq $((0x406)) ] && [ "$(grep -c 'configuration write' "$AH_LOG")" -eq 1 ] &&
+   [ -n "$AH_GHC" ] && [ $((16#$AH_GHC & 0x80000002)) -eq $((0x80000000)) ] &&
+   grep -qxF "ahci: controller at 00:05.0 (8086:2922, BAR5 $(sed -nE 's/^ahci: controller at 00:05\.0 \(8086:2922, BAR5 (0x[0-9a-f]{8})\)$/\1/p' "$AH_LOG"))" "$AH_LOG"; then
+    pass "[1.4] AHCI: one configuration write, the controller's command register (0x$AH_CMDV: memory space, bus master, INTx off), read back as written; AHCI mode on and interrupts off (GHC 0x$AH_GHC); 6 ports; polling"
+else
+    fail "[1.4] AHCI: the command register's write line, or the controller's AHCI mode line, is missing or wrong (command ${AH_CMDV:-?}, GHC ${AH_GHC:-?})"
+fi
+# IDENTIFY against the image; the Storage: line.
+if grep -qxF "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'QEMU HARDDISK', $AH_N sectors of 512 bytes (64 MiB), LBA48 yes, DMA yes; used read only" "$AH_LOG" &&
+   grep -qxF "Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 64 MiB, read only, not mounted (Live mode)" "$AH_LOG" &&
+   [ "$(grep -c '^Storage: ' "$AH_LOG")" -eq 1 ]; then
+    pass "[1.4] AHCI: IDENTIFY DEVICE on port 0 gives QEMU's model 'QEMU HARDDISK' and the image's $AH_N sectors of 512 bytes (LBA48, DMA); 'Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 64 MiB, read only, not mounted (Live mode)'"
+else
+    fail "[1.4] AHCI: the IDENTIFY line or the Storage: line differs from the image's model and size ($AH_N sectors)"
+fi
+# The CD on port 1: ignored, never sent a command; the other ports empty.
+if grep -qxF "ahci: port 1: signature 0xeb140101: ATAPI device, ignored (no command sent)" "$AH_LOG" &&
+   grep -qxF "ahci: 4 of 6 implemented ports empty (no device)" "$AH_LOG" &&
+   [ "$(grep -cE '^ahci: port [2-9]' "$AH_LOG")" -eq 0 ]; then
+    pass "[1.4] AHCI: the ATAPI CD drive on port 1 is found by its signature (0xEB140101) and ignored, never sent a command; ports 2-5 empty"
+else
+    fail "[1.4] AHCI: the ATAPI drive on port 1 was not found and ignored, or the other ports are not reported empty"
+fi
+# The CRC32s, computed here from the image.
+AH_RUNS="0:1 $((AH_N - 1)):1"
+while read -r l c; do AH_RUNS="$AH_RUNS $l:$c"; done < <(sed -nE 's/^diskread: read [0-9]+: LBA ([0-9]+), ([0-9]+) sectors: .*/\1 \2/p' "$AH_LOG")
+AH_HOST=$(disk_image sectors "$AH_IMG" $AH_RUNS)
+sed 's/^/      host: /' <<< "$AH_HOST"
+AH_C0=$(sed -n '1s/.* crc=\(0x[0-9a-f]*\)$/\1/p' <<< "$AH_HOST"); AH_C1=$(sed -n '2s/.* crc=\(0x[0-9a-f]*\)$/\1/p' <<< "$AH_HOST")
+if [ -n "$AH_C0" ] && [ -n "$AH_C1" ] &&
+   grep -qE "^blk: read check: LBA 0 CRC32 $AH_C0, LBA $((AH_N - 1)) CRC32 $AH_C1 \(2 commands, [0-9]+ ticks\)$" "$AH_LOG"; then
+    pass "[1.4] block cache: the attach's read check reads the disk's first and last sector with the image's CRC32s ($AH_C0, $AH_C1), one command each"
+else
+    fail "[1.4] block cache: the attach's read check is missing or its CRC32s differ from the image's (${AH_C0:-?}, ${AH_C1:-?})"
+fi
+# Every test=diskread read: the planned sectors; each read inside the disk
+# with the image's CRC32, each beyond the end EIO.
+AH_WANT="0 1|$((AH_N / 2)) 1|$((AH_N - 1)) 1|8 128|1001 300|4096 8192|0 1|$((AH_N - 11)) 11|$((AH_N - 3)) 3|8 128|$AH_N 1|$((AH_N - 2)) 4|281474976710655 1"
+AH_GOT=$(sed -nE 's/^diskread: read [0-9]+: LBA ([0-9]+), ([0-9]+) sectors: .*/\1 \2/p' "$AH_LOG" | paste -sd'|')
+AH_BADCRC=0
+AH_I=0
+while read -r line; do
+    AH_I=$((AH_I + 1))
+    h=$(sed -n "$((AH_I + 2))p" <<< "$AH_HOST")
+    case "$h" in
+    *beyond) grep -qE ': EIO \(.*\), as expected$' <<< "$line" || AH_BADCRC=$((AH_BADCRC + 1)) ;;
+    *crc=*) grep -qF "CRC32 ${h##*crc=} (" <<< "$line" && ! grep -q 'NOT EXPECTED' <<< "$line" || AH_BADCRC=$((AH_BADCRC + 1)) ;;
+    *) AH_BADCRC=$((AH_BADCRC + 1)) ;;
+    esac
+done < <(grep -E '^diskread: read [0-9]+: ' "$AH_LOG")
+if [ "$AH_GOT" = "$AH_WANT" ] && [ "$AH_I" -eq 13 ] && [ "$AH_BADCRC" -eq 0 ] &&
+   grep -qxF "diskread: DONE (13 reads; 3 beyond the end ended with EIO, as expected)" "$AH_LOG"; then
+    pass "[1.4] test=diskread: the first, middle and last sector, 16 pages in one command, an unaligned run, 4 MiB (twice the cache), the first sector again, the partly filled last page and the 16 pages again all read with the image's CRC32s; the 3 reads beyond the end end with EIO, no panic"
+else
+    fail "[1.4] test=diskread: the reads ($AH_GOT) are not the planned ones, $AH_BADCRC of $AH_I differ from the image or from the expected EIO, or no DONE line"
+fi
+# The image unchanged by the boot.
+echo "      disk.img SHA-256 before $AH_SHA0, after $AH_SHA1"
+if [ -n "$AH_SHA0" ] && [ "$AH_SHA0" = "$AH_SHA1" ] && [ "$(stat -c%s "$AH_IMG")" -eq "$AH_LEN" ]; then
+    pass "[1.4] AHCI read only: the test disk's SHA-256 is the same before and after the test=diskread boot ($AH_SHA0)"
+else
+    fail "[1.4] AHCI read only: the test disk's SHA-256 changed during the test=diskread boot ($AH_SHA0 -> ${AH_SHA1:-?})"
+fi
+# Slot 508 against the model: the registers uncached; after the start and
+# after the reads.
+AH_PT=$(python3 "$(dirname "$0")/pagetables.py" "$AH_LOG" --label diskread)
+grep -E '^PAGETABLES_(RESULT|STORAGE)|storage' <<< "$AH_PT" | sed 's/^/      /'
+if grep -qE '^PAGETABLES_RESULT .* MATCH$' <<< "$AH_PT" &&
+   grep -qE '^PAGETABLES_STORAGE label=diskread at=start registers=1 dma=2 cache=2 computed=([0-9]+/[0-9]+) logged=\1 MATCH$' <<< "$AH_PT" &&
+   grep -qE '^PAGETABLES_STORAGE label=diskread at=diskread registers=1 dma=2 cache=([0-9]+) computed=([0-9]+/[0-9]+) logged=\2 MATCH$' <<< "$AH_PT" &&
+   grep -qE '^diskread: cache: 512 of 512 pages made, [0-9]+ pages from the cache, [0-9]+ read, [0-9]+ commands, [1-9][0-9]* replaced, 3 reads refused \(beyond the end\), 0 errors$' "$AH_LOG"; then
+    pass "[1.4] slot 508: tests/pagetables.py models the registers (uncached: PCD and PWT in their entry), 2 DMA pages and the cache's pages (2 after the read check, 512 after the reads, pages replaced least recently used first): tables and pages equal the kernel's walk"
+else
+    fail "[1.4] slot 508: the model differs from the kernel's walk, the registers are not mapped uncached, or the cache did not fill and replace as expected: $(grep -E '^PAGETABLES_(RESULT|STORAGE)' <<< "$AH_PT" | tr '\n' ' ')"
+fi
+# The lines' place and the boot's health.
+if pcitest_order "$AH_LOG" && grep -qE '^diskread: speed \(report only\): ' "$AH_LOG" &&
+   grep -qE '^diskread: longest turn \(report only\): ' "$AH_LOG" && ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$AH_LOG"; then
+    pass "[1.4] test=diskread boot: the driver's lines between the PCI: and Storage: lines, no disk error, the speed and turn lines, System ready; no PANIC or FAILED line"
+else
+    fail "[1.4] test=diskread boot: the lines are out of place, a disk error was logged, a figure line is missing, or the boot did not reach System ready cleanly (see serial-diskread.log)"
+fi
+echo "      [1.4] $(grep -E '^diskread: (speed|longest turn)' "$AH_LOG" | tr '\n' ' ')"
+echo "      [1.4] AHCI reads: $(( $(date +%s) - AH_T0 )) s (report only)"

@@ -174,6 +174,28 @@ static void test_unaligned_flags_and_frames(void)
     CHECK_EQ(vm.page_tables, 0);                        /* refusals create nothing */
 }
 
+/* 1.4 stage 4: PCD and PWT may be asked for (a device's registers,
+ * uncached), with or without the others; they reach the leaf only. */
+static void test_uncached_flags(void)
+{
+    uint64_t phys = 0, flags = 0;
+    setup(FAKE_FRAMES);
+    CHECK_EQ(PTE_PWT, 0x008);
+    CHECK_EQ(PTE_PCD, 0x010);
+    CHECK_EQ(PTE_UNCACHED, 0x018);
+    CHECK_EQ(vmm_map(&vm, 0x00401000ull, 0xFEBB1000ull, PTE_WRITE | PTE_UNCACHED | PTE_NX), VMM_OK);
+    CHECK(vmm_translate(&vm, 0x00401000ull, &phys, &flags));
+    CHECK_EQ(phys, 0xFEBB1000ull);
+    CHECK_EQ(flags & (PTE_PRESENT | PTE_WRITE | PTE_PCD | PTE_PWT | PTE_USER | PTE_NX),
+             PTE_PRESENT | PTE_WRITE | PTE_PCD | PTE_PWT | PTE_NX);
+    CHECK_EQ(vmm_map(&vm, 0x00402000ull, 0x2000, PTE_PCD), VMM_OK);
+    CHECK(vmm_translate(&vm, 0x00402000ull, 0, &flags));
+    CHECK_EQ(flags & (PTE_WRITE | PTE_PCD | PTE_PWT), PTE_PCD);
+    CHECK_EQ(vmm_map(&vm, 0x00403000ull, 0x3000, PTE_UNCACHED | PTE_USER), VMM_ERR_FLAGS);
+    CHECK_EQ(vmm_map(&vm, 0x00403000ull, 0x3000, PTE_UNCACHED | PTE_LARGE), VMM_ERR_FLAGS);
+    CHECK_EQ(vm.mapped_pages, 2);
+}
+
 static void test_reserved_and_noncanonical(void)
 {
     uint64_t phys = 0;
@@ -379,6 +401,7 @@ int main(void)
     RUN(test_ensure_table);
     RUN(test_out_of_frames_at_each_level);
     RUN(test_unaligned_flags_and_frames);
+    RUN(test_uncached_flags);
     RUN(test_reserved_and_noncanonical);
     RUN(test_existing_mapping_not_replaced);
     RUN(test_unmap_not_mapped);

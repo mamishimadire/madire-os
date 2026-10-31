@@ -100,7 +100,7 @@ enum vmm_result vmm_map(struct vmm *vm, uint64_t va, uint64_t phys, uint64_t fla
         return r;
     if (!vm_aligned(va) || !vm_aligned(phys) || (phys & ~PTE_ADDR_MASK))
         return VMM_ERR_UNALIGNED;
-    if (flags & ~(PTE_WRITE | PTE_NX))
+    if (flags & ~(PTE_WRITE | PTE_NX | PTE_UNCACHED))     /* 1.4 stage 4: PCD, PWT */
         return VMM_ERR_FLAGS;
 
     /* Check first, so a refused map never creates a table. */

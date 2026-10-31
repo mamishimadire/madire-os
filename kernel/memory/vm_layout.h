@@ -25,7 +25,15 @@
  *   slot 507  (0.9) kernel thread stacks: VM_KSTACK_BASE, one 32 KiB slot
  *             per thread (16 KiB unmapped guard, then the 16 KiB stack);
  *             kernel/proc/sched_core.h
- *   slot 508  VM_TEST_PAGE (paging self-test), VM_WINDOW (physical access)
+ *   slot 508  VM_TEST_PAGE (paging self-test), VM_WINDOW (physical access);
+ *             1.4 stage 4, only on boots that find an AHCI controller
+ *             (docs/plans/1.4.md, D4, C3): its registers at VM_DEVREG_BASE
+ *             (uncached, PTE_PCD|PTE_PWT), and the storage area at
+ *             VM_STORAGE_BASE: the controller's DMA structures, then the
+ *             block cache's pages from VM_BLK_CACHE_BASE (frames of free
+ *             RAM, write-back); each area in its own 1 GiB (its own page
+ *             directory), mapped after the freeze (slot 508's PDPT exists
+ *             from paging_init(), so no PML4 entry is added)
  *   slot 509  VM_HEAP_BASE: kernel heap, grows up to VM_HEAP_MAX
  *   slot 510  the recursive mapping: every page table, and the PML4 itself
  *             at VM_PML4
@@ -52,6 +60,13 @@
 
 #define VM_TEST_PAGE          0xFFFFFE0000000000ull
 #define VM_WINDOW             0xFFFFFE0000001000ull
+#define VM_STORAGE_INDEX      508u                   /* 1.4 stage 4: slot 508's new areas */
+#define VM_DEVREG_BASE        0xFFFFFE0040000000ull  /* VM_TEST_PAGE + 1 GiB */
+#define VM_DEVREG_PAGES       4u                     /* the registers' pages, at most */
+#define VM_STORAGE_BASE       0xFFFFFE0080000000ull  /* VM_TEST_PAGE + 2 GiB */
+#define VM_STORAGE_DMA_PAGES  64u                    /* 2 per port, 32 ports */
+#define VM_BLK_CACHE_BASE     0xFFFFFE0080200000ull  /* VM_STORAGE_BASE + 2 MiB */
+#define VM_BLK_CACHE_PAGES    512u                   /* 2 MiB, the cache's most */
 
 #define VM_HEAP_BASE          0xFFFFFE8000000000ull
 #define VM_HEAP_INITIAL       (64u * 1024)

@@ -401,6 +401,21 @@ static void test_two_ahci(void)
     CHECK_EQ(fk.reads, 32 + 2 * 2 + 1); /* only the first one's BAR5 is read */
 }
 
+/* 1.4 stage 4: the AHCI controller's command register: memory space and
+ * bus master on, interrupt disable set, every other bit kept; written
+ * with the status half zero. */
+static void test_command_register(void)
+{
+    CHECK_EQ(PCI_REG_COMMAND, 0x04);
+    CHECK_EQ(pci_ahci_command(0x0000), 0x0406);
+    CHECK_EQ(pci_ahci_command(0x0007), 0x0407);       /* QEMU's, as the firmware leaves it */
+    CHECK_EQ(pci_ahci_command(0x0406), 0x0406);
+    CHECK_EQ(pci_ahci_command(0x0141), 0x0547);       /* I/O space, SERR, parity kept */
+    CHECK_EQ(pci_ahci_command(0xFFFF), 0xFFFF);
+    CHECK_EQ(pci_command_write(0x0407), 0x00000407u);
+    CHECK_EQ(pci_command_write(0xFFFF) >> 16, 0);     /* nothing written to the status bits */
+}
+
 int main(void)
 {
     printf("test_pci_core\n");
@@ -414,5 +429,6 @@ int main(void)
     RUN(test_bar5);
     RUN(test_not_ahci);
     RUN(test_two_ahci);
+    RUN(test_command_register);
     return unit_report("pci_core");
 }

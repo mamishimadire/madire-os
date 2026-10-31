@@ -1,5 +1,6 @@
 /* The PCI scan, the pure part (1.4 stage 3): see pci_core.h. Read only:
- * the access table has no write function. */
+ * the access table has no write function. 1.4 stage 4: the command
+ * register's value for the one write (pci.c makes it). */
 #include "kernel/storage/pci_core.h"
 
 /* The buses scanned or queued (one bit each) and the queue of buses still
@@ -52,6 +53,16 @@ const char *pci_bar_reason(enum pci_bar state)
     case PCI_BAR_NOT_DEVICE: return "not a device header (layout 0)";
     }
     return "unknown";
+}
+
+uint16_t pci_ahci_command(uint16_t old)
+{
+    return (uint16_t)(old | PCI_CMD_MEMORY | PCI_CMD_MASTER | PCI_CMD_INTX_OFF);
+}
+
+uint32_t pci_command_write(uint16_t cmd)
+{
+    return (uint32_t)cmd;
 }
 
 /* One present function: counts it, queues a bridge's secondary bus, and

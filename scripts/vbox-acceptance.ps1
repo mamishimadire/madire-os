@@ -49,7 +49,7 @@ param(
     [string]$ModuleIsoSha256 = "",      # 1.3 stage 9: checked before the run when given (module group only)
     [string]$OutDir = "",               # default: build\vbox-acceptance-<date>-<time> (1.3 stage 8: always a new folder)
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13
+    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13, storageprobe (1.4 stage 4)
     [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
@@ -1816,6 +1816,61 @@ if (Want "keywindow") {
 if ($script:DiagBooted.Count) {
     $pos = ($script:DiagBooted.Values | Sort-Object) -join ","
     Note ("boot menu (report only): {0} of 27 Diagnostics positions booted through the menu: {1}" -f $script:DiagBooted.Count, $pos)
+}
+
+# 1.4 stage 4: the read-only storage probe (docs/plans/1.4.md, S4, risk
+# 29), on the "empty" disk, the resting state (nothing restored, nothing
+# attached but the ISO under test). One normal boot to System ready; its
+# serial log's driver lines: the controller and the one configuration
+# write, AHCI mode, the disk on port 0 (VBOX HARDDISK, and its size from
+# IDENTIFY equal to the VDI's capacity as showmediuminfo reads it), the
+# optical drive on port 1 ignored (ATAPI), the attach's read check (the
+# empty disk's first and last sector: zero bytes, CRC32 0xb2aa7578), the
+# Storage: line, no disk error, no PANIC or FAILED. test=diskread itself
+# needs a Diagnostics entry (none in 1.4, D21) or a changed command line,
+# so the read check is the probe's read. MadireOS-Test.vdi's SHA-256 and
+# size before and after (report only): Madire has no write command; if
+# they differ, VirtualBox itself rewrote the file (for example the VDI's
+# header when it opens the disk), which the result folder's two values
+# and the driver's lines tell apart. Every storage line and the VDI's
+# figures are also saved to <Prefix>-storageprobe-lines.txt.
+if (Want "storageprobe") {
+    $vdi = $disk
+    $vdiInfo = @(VBox showmediuminfo disk $vdi)
+    $vdiInfo | Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-mediuminfo-before.txt") -Encoding ascii
+    $capLine = @($vdiInfo | Where-Object { $_ -match '^Capacity:\s+([0-9]+) MBytes' })
+    $sectorsRe = "[0-9]+"
+    if ($capLine.Count -and $capLine[0] -match '^Capacity:\s+([0-9]+) MBytes') { $sectorsRe = [string]([long]$Matches[1] * 2048) }
+    $vdiHash0 = (Get-FileHash $vdi -Algorithm SHA256).Hash.ToLower()
+    $vdiLen0 = (Get-Item $vdi).Length
+    Note ("storage (report only): MadireOS-Test.vdi before the boot: SHA-256 {0}, {1} bytes; {2}; IDENTIFY expected: {3} sectors" -f
+          $vdiHash0, $vdiLen0, $(if ($capLine.Count) { $capLine[0].Trim() } else { "no Capacity line" }), $sectorsRe)
+    Start-Run
+    Wait-Serial "^System ready\." 120 | Out-Null
+    Start-Sleep -Seconds 2
+    Shot "storageprobe"
+    Stop-Run "storageprobe" @("^ahci: controller at [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] \([0-9a-f]{4}:[0-9a-f]{4}, BAR5 0x[0-9a-f]{8}\)$",
+        "^ahci: PCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] command register 0x[0-9a-f]{4} -> 0x[0-9a-f]{4} \(memory space on, bus master on, INTx off; read back as written\); the only configuration write$",
+        "^ahci: AHCI version 0x[0-9a-f]{8}, CAP 0x[0-9a-f]{8}, CAP2 0x[0-9a-f]{8}, [0-9]+ ports implemented \(PI 0x[0-9a-f]{8}\); BIOS hand-off: .*; GHC 0x[0-9a-f]{8} -> 0x8[0-9a-f]{7} \(AHCI mode on, interrupts off\); polling$",
+        "^ahci: port 0: signature 0x00000101 \(ATA disk\); IDENTIFY DEVICE: model 'VBOX HARDDISK', $sectorsRe sectors of 512 bytes \([0-9.]+ [MG]iB\), LBA48 yes, DMA yes; used read only$",
+        "^ahci: port 1: signature 0xeb140101: ATAPI device, ignored \(no command sent\)$",
+        "^blk: read check: LBA 0 CRC32 0xb2aa7578, LBA [0-9]+ CRC32 0xb2aa7578 \(2 commands, [0-9]+ ticks\)$",
+        "^Storage: AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7], port 0 disk VBOX HARDDISK [0-9.]+ [MG]iB, read only, not mounted \(Live mode\)$",
+        "^System ready\.")
+    Absent "storageprobe" "^ahci: port [0-9]+: .* failed: "
+    Absent "storageprobe" "PANIC"
+    Absent "storageprobe" "FAILED"
+    $probeLog = Join-Path $OutDir "$Prefix-storageprobe.serial.log"
+    $lines = @()
+    if (Test-Path $probeLog) { $lines = @(Select-String -Path $probeLog -Pattern '^(PCI|ahci|blk|Storage): ' -CaseSensitive | ForEach-Object { $_.Line }) }
+    foreach ($l in $lines) { Note "storage (report only): $l" }
+    $vdiHash1 = (Get-FileHash $vdi -Algorithm SHA256).Hash.ToLower()
+    $vdiLen1 = (Get-Item $vdi).Length
+    @(VBox showmediuminfo disk $vdi) | Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-mediuminfo-after.txt") -Encoding ascii
+    Note ("storage (report only): MadireOS-Test.vdi after the boot: SHA-256 {0}, {1} bytes: {2}" -f $vdiHash1, $vdiLen1,
+          $(if ($vdiHash1 -eq $vdiHash0 -and $vdiLen1 -eq $vdiLen0) { "the same as before" } else { "DIFFERENT from before (see the report)" }))
+    @($lines + @("vdi before $vdiHash0 $vdiLen0", "vdi after $vdiHash1 $vdiLen1")) |
+        Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-lines.txt") -Encoding ascii
 }
 
 # 1.0 (stage 11): how long the screen took to exist after startvm (report only).

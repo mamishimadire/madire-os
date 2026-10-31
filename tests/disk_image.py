@@ -16,6 +16,16 @@ back and extracts the partition again. Run it with PYTHONDONTWRITEBYTECODE=1
   disk_image.py extract <disk image> <fs image>  the partition's bytes
   disk_image.py crc <file>...                    CRC32 of each file (own, zlib)
   disk_image.py tree <dir>                       the fixed sample files; prints their listing
+  disk_image.py pattern <disk image> <bytes>     a raw disk of fixed bytes (1.4 stage 4)
+  disk_image.py sectors <disk image> <lba>:<count>...   the CRC32 of each run of sectors
+
+1.4 stage 4: "pattern" writes a raw disk of the given size (a multiple of
+512) for test=diskread: fixed pseudo-random bytes (Python's random module
+seeded with 1404, so the same every time), each sector starting with its
+own LBA (8 bytes, little-endian), so a sector read from the wrong place
+differs. "sectors" prints "SECTORS lba=<lba> count=<count> crc=0x<crc32>"
+for each run inside the disk (zlib.crc32 of its bytes), or "... beyond"
+for a run past its end.
 
 The sample tree (for mke2fs -d) has a file in the root, an empty file, a
 file of five 1 KiB blocks and one of 300,000 bytes (at 1 KiB blocks it
@@ -42,6 +52,7 @@ sector is zero:
 """
 import hashlib
 import os
+import random
 import struct
 import sys
 import uuid
@@ -286,6 +297,29 @@ def main(argv):
             return 1
         with open(argv[3], "wb") as f:
             f.write(disk[first * SECTOR:(first + count) * SECTOR])
+        return 0
+    if len(argv) == 4 and argv[1] == "pattern":
+        size = int(argv[3])
+        if size <= 0 or size % SECTOR:
+            sys.stderr.write("pattern: the size must be a positive multiple of 512\n")
+            return 2
+        data = bytearray(random.Random(1404).randbytes(size))
+        for lba in range(size // SECTOR):
+            data[lba * SECTOR:lba * SECTOR + 8] = struct.pack("<Q", lba)
+        with open(argv[2], "wb") as f:
+            f.write(data)
+        return 0
+    if len(argv) >= 4 and argv[1] == "sectors":
+        with open(argv[2], "rb") as f:
+            disk = f.read()
+        total = len(disk) // SECTOR
+        for run in argv[3:]:
+            lba, count = (int(x) for x in run.split(":"))
+            if lba + count > total:
+                print("SECTORS lba=%d count=%d beyond" % (lba, count))
+            else:
+                part = disk[lba * SECTOR:(lba + count) * SECTOR]
+                print("SECTORS lba=%d count=%d crc=0x%08x" % (lba, count, zlib.crc32(part) & 0xFFFFFFFF))
         return 0
     if len(argv) >= 3 and argv[1] == "crc":
         for p in argv[2:]:

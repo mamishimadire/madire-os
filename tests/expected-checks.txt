@@ -204,5 +204,17 @@
 # ich9-ahci behind a pci-bridge (1 each), the memory lines and mem's
 # figures the same on all three (1), the two lines' place, System ready
 # and no PANIC or FAILED line on all three (1); 1 unit suite (pci_core).
-1.4 12
-unit-suites 95
+# Stage 4: 10 more in part static: the driver read only, from the source
+# and from madire.elf (2); one test=diskread boot with a disk and an ATAPI
+# drive on ich9-ahci (8: the configuration write and AHCI mode, IDENTIFY
+# against the image, the ATAPI drive ignored, the attach's read check,
+# every test=diskread read against the image's CRC32s, the image's SHA-256
+# unchanged, slot 508 against tests/pagetables.py, the boot's health); 2
+# unit suites (ahci_core, blk_core), new cases in pci_core and vmm.
+# Changed, not added: four of stage 3's checks (the two controller boots'
+# Storage: lines now "no disk", with the controller and BAR5 on the ahci:
+# line; mem's Page tables and Free pages (now) on those boots by exactly
+# the driver's slot 508 figures; the driver's lines between PCI: and
+# Storage:).
+1.4 22
+unit-suites 97

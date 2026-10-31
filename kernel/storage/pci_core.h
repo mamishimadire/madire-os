@@ -13,7 +13,9 @@
  * READ ONLY: the scan only reads configuration registers. The access
  * table has no write function at all, so the scan cannot change a
  * command register, turn on bus mastering or size a BAR (sizing needs a
- * write). Those writes come with the AHCI driver (1.4 stage 4).
+ * write). 1.4 stage 4: the one configuration write is the AHCI
+ * controller's command register, after the scan, by kernel/storage/pci.c
+ * (its value from pci_ahci_command() below); no BAR is ever sized.
  *
  * The order: bus 0 first, then each bridge's secondary bus in the order
  * the bridges are found (a queue); on each bus devices 0-31; on each
@@ -47,6 +49,7 @@
 
 /* Configuration registers read (offsets, each a 32-bit register). */
 #define PCI_REG_ID        0x00u     /* vendor ID (bits 15-0), device ID (31-16) */
+#define PCI_REG_COMMAND   0x04u     /* command (15-0), status (31-16); 1.4 stage 4 */
 #define PCI_REG_CLASS     0x08u     /* class (31-24), subclass (23-16), interface (15-8) */
 #define PCI_REG_HEADER    0x0Cu     /* header type (23-16) */
 #define PCI_REG_BUSES     0x18u     /* layout 1: primary (7-0), secondary (15-8) */
@@ -60,6 +63,11 @@
 #define PCI_CLASS_STORAGE 0x01u
 #define PCI_SUB_SATA      0x06u
 #define PCI_IF_AHCI       0x01u
+
+/* 1.4 stage 4: command-register bits (the PCI configuration mechanism). */
+#define PCI_CMD_MEMORY    0x0002u   /* memory space: the BARs' memory answers */
+#define PCI_CMD_MASTER    0x0004u   /* bus master: the function may do DMA */
+#define PCI_CMD_INTX_OFF  0x0400u   /* interrupt disable: no INTx (D2, polling) */
 
 /* Reads the 32-bit configuration register at `offset` (a multiple of 4)
  * of bus:dev.fn; an absent function reads 0xFFFFFFFF. */
@@ -106,5 +114,14 @@ enum pci_bar pci_bar5_state(uint32_t bar5);
 
 /* Why a BAR state is refused, for the log ("" for PCI_BAR_OK). */
 const char *pci_bar_reason(enum pci_bar state);
+
+/* 1.4 stage 4: the AHCI controller's new command register: memory space
+ * and bus master on, interrupt disable set, every other bit as read. */
+uint16_t pci_ahci_command(uint16_t old);
+
+/* The 32-bit value written to register 0x04 for command `cmd`: the
+ * command in bits 15-0, zero in the status half (bits 31-16), whose bits
+ * are read only or cleared by writing 1: writing 0 changes none of them. */
+uint32_t pci_command_write(uint16_t cmd);
 
 #endif

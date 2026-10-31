@@ -59,6 +59,7 @@
 #include "kernel/proc/syscall.h"
 #include "kernel/proc/usertest.h"
 #include "kernel/stackpeak.h"
+#include "kernel/storage/blk.h"
 #include "kernel/storage/pci.h"
 #include "kernel/timer.h"
 
@@ -634,6 +635,9 @@ static void run_diagnostics(void)
         diag_message("Big I/O test: large reads and writes from bigio...");
         diag_message(fsiotest_bigio() ? "Big I/O test: done"
                                       : "Big I/O test: FAIL (see serial log)");
+    } else if (cmdline_has("test=diskread")) {    /* 1.4 stage 4 */
+        diag_message("Disk read test: chosen sectors through the block cache (read only)...");
+        blk_diskread();
     } else if (cmdline_has("test=filecontend")) { /* 1.0 stage 5 */
         diag_message("File contention test: the busy mark and the VFS lock under load...");
         diag_message(fsiotest_contend() ? "File contention test: done"
@@ -1107,7 +1111,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
 
     /* 1.4 stage 3: the PCI scan, read only, and its PCI: and Storage:
      * lines, after the filesystem and before any diagnostic or System
-     * ready (docs/plans/1.4.md, sections C2 and C9). */
+     * ready (docs/plans/1.4.md, sections C2 and C9). 1.4 stage 4: with an
+     * AHCI controller, the driver's start and the block cache between
+     * them (after vfs_boot(), so the RAM filesystem's budget is as
+     * before, C3). */
     pci_boot();
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
