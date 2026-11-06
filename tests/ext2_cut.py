@@ -113,11 +113,21 @@ RULES = [
     ("A12", re.compile(r"^\S+ was not cleanly unmounted, check forced\.$")),
     ("A13", re.compile(r"^Extended attribute block (\d+) has reference count (\d+), should be (\d+)\.(  .*)?$")),
 ]
+RULES_BY_NAME = {name: rx for name, rx in RULES if name != "A8"}
 
 
 def classify(lines, ctx):
-    """(counts per rule, bad lines). ctx: touched sets and the strict flag."""
-    counts, bad = {}, []
+    """(counts per rule, bad lines, accepted A8-A11 lines as (rule, inode,
+    window), every accepted line verbatim as (rule, inode or None, text)). ctx: the
+    inode sets of the cut save and the save before, and the strict flag. A11 needs
+    to know which folders A9 accepted in the same output, so A9 is judged first."""
+    counts, bad, accepts, raws = {}, [], [], []
+    a9 = set()
+    for line in lines:
+        m = RULES_BY_NAME["A9"].match(line)
+        if m and context_ok("A9", m, ctx)[0]:
+            a9.add(int(m.group(1)))
+    ctx = dict(ctx, a9_ok=a9)
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -134,6 +144,7 @@ def classify(lines, ctx):
             rule = "A1" if m.group(1) == "Block" else "A2"
             if items and all(ITEM.match(t) and t.startswith("-") for t in items):
                 counts[rule] = counts.get(rule, 0) + 1
+                raws.append((rule, None, line))
             else:
                 bad.append(line + "   [not only '-' items: something in use is marked free]")
             continue
@@ -141,43 +152,69 @@ def classify(lines, ctx):
             m = rx.match(line)
             if not m:
                 continue
-            ok, why = context_ok(rule, m, ctx)
+            ok, why, window = context_ok(rule, m, ctx)
             if ok:
                 counts[rule] = counts.get(rule, 0) + 1
+                ino = int(m.group(1)) if rule in ("A8", "A9", "A10", "A11", "A13") else None
+                if rule in ("A8", "A9", "A10", "A11"):
+                    accepts.append((rule, ino, window))
+                raws.append((rule, ino, line))
             else:
                 bad.append(line + "   [" + why + "]")
             break
         else:
             bad.append(line)
-    return counts, bad
+    return counts, bad, accepts, raws
 
 
 def context_ok(rule, m, ctx):
+    """(accepted, why not, the window that accepted it)."""
     if rule in ("A3", "A4", "A5", "A6", "A7", "A12"):
-        return True, ""
+        return True, "", "always"
     if ctx["strict"]:
-        return False, "after saves 3-4 only leaks and counts are allowed"
+        return False, "after saves 3-4 only leaks and counts are allowed", ""
     if rule == "A8":
+        # changed in the cut save or the save before
         ino = int(m.group(1))
-        return ino in ctx["t_cut"] or ino in ctx["t_before"], "inode not changed in the cut save or the save before"
+        if ino in ctx["t_cut"]:
+            return True, "", "cut save"
+        if ino in ctx["t_before"]:
+            return True, "", "save before"
+        return False, "inode not changed in the cut save or the save before", ""
     if rule == "A9":
         # the folder was changed in the cut save, or its name was removed in
         # the save before (R3)
         ino = int(m.group(1))
-        return ino in ctx["t_cut"] or ino in ctx["r3_dir_before"], \
-            "folder not changed in the cut save, nor its name removed in the save before"
+        if ino in ctx["t_cut"]:
+            return True, "", "cut save"
+        if ino in ctx["r3_dir_before"]:
+            return True, "", "R3 set, save before"
+        return False, "folder not changed in the cut save, nor its name removed in the save before", ""
     if rule == "A10":
         # the inode was changed in the cut save, or it belongs to an R3 step
         # started in the save before (a hard-linked name removed, a folder
         # removed, or that folder's parent)
         ino = int(m.group(1))
-        return ino in ctx["t_cut"] or ino in ctx["r3_before"], \
-            "inode not changed in the cut save, nor in an R3 step started in the save before"
+        if ino in ctx["t_cut"]:
+            return True, "", "cut save"
+        if ino in ctx["r3_before"]:
+            return True, "", "R3 set, save before"
+        return False, "inode not changed in the cut save, nor in an R3 step started in the save before", ""
     if rule == "A11":
-        return int(m.group(1)) in ctx["t_cut"], "folder not moved in the cut save"
+        # (approved by the owner in S9) the folder was moved to another
+        # folder in the cut save, or the same output reports that folder as
+        # unconnected under A9 (no folder names it, so its ".." cannot match)
+        ino = int(m.group(1))
+        if ino in ctx.get("moved_cut", set()):
+            return True, "", "moved in the cut save"
+        if ino in ctx.get("a9_ok", set()):
+            return True, "", "the same folder accepted under A9"
+        return False, "folder not moved to another folder in the cut save, nor unconnected (A9) in this output", ""
     if rule == "A13":
-        return int(m.group(2)) > int(m.group(3)), "reference count lower than the uses"
-    return False, "unknown rule"
+        if int(m.group(2)) > int(m.group(3)):
+            return True, "", "always"
+        return False, "reference count lower than the uses", ""
+    return False, "unknown rule", ""
 
 
 # ---- the tool's log ----
@@ -192,6 +229,8 @@ class Log:
         self.r3 = {}                # save -> set(ino): R3 steps started (hard, dir, parent)
         self.r3_dir = {}            # save -> set(ino): folders whose name was removed
         self.blocks = {}            # path -> [blocks]
+        self.moved = {}             # save -> set(ino): folders moved to another folder
+        self.paths = {}             # ino -> path (as the tool reports it)
         self.want = {}
         self.done = None
         self.cut = None
@@ -215,6 +254,10 @@ class Log:
                 self.r3.setdefault(int(f[1]), set()).add(int(f[3]))
                 if f[2] == "dir":
                     self.r3_dir.setdefault(int(f[1]), set()).add(int(f[3]))
+            elif f[0] == "M":
+                self.moved.setdefault(int(f[1]), set()).add(int(f[2]))
+            elif f[0] == "I":
+                self.paths.setdefault(int(f[1]), f[2])
             elif f[0] == "B":
                 self.blocks[f[1]] = [int(x) for x in f[2:]]
             elif f[0] == "DONE":
@@ -324,8 +367,8 @@ def check_final(exe, pristine, seq, work, tag):
     if rc != 0 or log.done is None:
         problems.append("ext2write exit %d: %s %s" % (rc, log.fail or "", err.strip()[:300]))
     frc, flines = fsck(img)
-    counts, bad = classify(flines, {"strict": True, "t_cut": set(), "t_before": set(), "r3_before": set(),
-                                    "r3_dir_before": set()})
+    counts, bad, _, _ = classify(flines, {"strict": True, "t_cut": set(), "t_before": set(), "r3_before": set(),
+                                       "r3_dir_before": set(), "moved_cut": set()})
     if frc != 0 or bad or counts:
         problems.append("e2fsck -fn exit %d: %s" % (frc, " | ".join(bad + ["%s x%d" % kv for kv in counts.items()])))
     v = view(img)
@@ -354,12 +397,13 @@ def check_cut(exe, pristine, seq, work, log, n):
     s = log.wsave.get(n + 1)
     if s is None:
         reasons.append("no write %d in the uncut log" % (n + 1))
-        return reasons, {}, sha_file(img)
+        return reasons, {}, sha_file(img), [], []
     strict = seq == "owner" and s >= 4
     ctx = {"strict": strict, "t_cut": log.touched.get(s, set()), "t_before": log.touched.get(s - 1, set()),
-           "r3_before": log.r3.get(s - 1, set()), "r3_dir_before": log.r3_dir.get(s - 1, set())}
+           "r3_before": log.r3.get(s - 1, set()), "r3_dir_before": log.r3_dir.get(s - 1, set()),
+           "moved_cut": log.moved.get(s, set())}
     frc, flines = fsck(img)
-    counts, bad = classify(flines, ctx)
+    counts, bad, accepts, raws = classify(flines, ctx)
     if frc not in (0, 4):
         reasons.append("e2fsck exit %d" % frc)
     for b in bad:
@@ -388,21 +432,30 @@ def check_cut(exe, pristine, seq, work, log, n):
             g = got.get(ino)
             if g is None or str(g[0]) != size or g[1] != sha:
                 reasons.append("%s does not read back exactly (%s, saved size %s)" % (p, g, size))
-    # The owner's case: A exact or gone; gone once save 2 has finished; B
-    # never holds a block of A.
+    # The owner's case: before save 1 has finished, A is absent or exactly
+    # its intended content; from save 1's last write until save 2 begins, A
+    # is present (exact: the general check above); gone once save 2 has
+    # finished; B never holds a block of A.
     if seq == "owner":
+        s_new = next((k for k, c in sorted(log.changed.items()) if "new" in c.get("/A", set())), None)
         s_del = next((k for k, c in sorted(log.changed.items()) if "del" in c.get("/A", set())), None)
+        _, last_new = log.save_writes(s_new) if s_new is not None else (None, None)
         first, last = log.save_writes(s_del) if s_del is not None else (None, None)
         if last is not None and n >= last and "/A" in tree:
             reasons.append("/A still there after save %d finished (cut after %d >= %d)" % (s_del, n, last))
-        if first is not None and n < first and "/A" not in tree:
-            reasons.append("/A gone before save %d began" % s_del)
+        if last_new is not None and first is not None and last_new <= n < first and "/A" not in tree:
+            reasons.append("/A gone between save %d's end and save %d's start" % (s_new, s_del))
+        if last_new is not None and n < last_new and "/A" in tree:
+            want = log.state.get(s_new, {}).get("/A")
+            g = contents(img, [tree["/A"][0]], work).get(tree["/A"][0])
+            if want is None or g is None or str(g[0]) != want[1] or g[1] != want[3]:
+                reasons.append("/A present before save %d finished but not exactly its content (%s)" % (s_new, g))
         a_blocks = set(log.blocks.get("/A", []))
         if "/B" in tree and a_blocks:
             shared = blocks_of(img, tree["/B"][0]) & a_blocks
             if shared:
                 reasons.append("/B holds blocks of /A: %s" % sorted(shared))
-    return reasons, counts, sha_file(img)
+    return reasons, counts, sha_file(img), accepts, raws
 
 
 def sweep(exe, pristine, seq, work, san):
@@ -413,10 +466,14 @@ def sweep(exe, pristine, seq, work, san):
         print("SWEEP %s: the uncut run failed; no cuts run" % seq)
         return False
     shas = {total: sha_file(uncut_img)}
-    allc, bad_n, nbad = {}, [], 0
+    allc, bad_n, nbad, acc, first = {}, [], 0, {}, {}
     for n in range(total):
-        reasons, counts, h = check_cut(exe, pristine, seq, work, log, n)
+        reasons, counts, h, accepts, raws = check_cut(exe, pristine, seq, work, log, n)
         shas[n] = h
+        for rule, ino, window in accepts:
+            acc.setdefault((rule, window, ino), []).append(n)
+        for rule, ino, text in raws:
+            first.setdefault(rule, (n, ino, text))
         for k, v in counts.items():
             allc[k] = allc.get(k, 0) + v
         if reasons:
@@ -432,6 +489,16 @@ def sweep(exe, pristine, seq, work, san):
     for n, rs in bad_n:
         for r in rs:
             print("  N=%d: %s" % (n, r))
+    # Every accepted A8-A11 line: the inode, its path, the window.
+    for (rule, window, ino), ns in sorted(acc.items(), key=lambda kv: (int(kv[0][0][1:]), kv[0][2], kv[0][1])):
+        print("ACCEPT %s %s ino=%d path=%s window=%s lines=%d N=%s" % (
+            seq, rule, ino, log.paths.get(ino, "?"), window.replace(" ", "_"), len(ns),
+            ",".join(str(x) for x in ns[:12]) + (",..." if len(ns) > 12 else "")))
+    # The first raw e2fsck text of each allowed line that appeared (verbatim).
+    for rule in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12", "A13"):
+        if rule in first:
+            n, ino, text = first[rule]
+            print("FIRST %s %s N=%d ino=%s | %s" % (seq, rule, n, "-" if ino is None else ino, text))
     good = nbad == 0
     if san:
         t1 = time.time()

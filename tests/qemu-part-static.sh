@@ -2479,7 +2479,12 @@ E9_FLAGS0=$(disk_debugfs "$E9_W/dirindex.img" "stat /many" | sed -nE 's/.*Flags:
 E9_WARN=$(cat "$E9_W"/mkfs-*.txt 2>/dev/null | grep -c 'is not defined in mke2fs.conf')
 E9_ISZ=""
 for e9_n in b1k b4k rev0 dirindex xattr small hard; do
-    E9_ISZ="$E9_ISZ $e9_n=$(disk_debugfs "$E9_W/$e9_n.img" stats 2>/dev/null | sed -nE 's/^Inode size:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)"
+    e9_st=$(disk_debugfs "$E9_W/$e9_n.img" stats 2>/dev/null)
+    e9_sz=$(sed -nE 's/^Inode size:[[:space:]]*([0-9]+).*/\1/p' <<< "$e9_st" | head -n 1)
+    # Revision 0 has no inode-size field (fixed at 128) and debugfs prints
+    # none; a missing line on any other revision still fails.
+    if [ -z "$e9_sz" ] && grep -qE '^Filesystem revision #:[[:space:]]*0( |$)' <<< "$e9_st"; then e9_sz=128; fi
+    E9_ISZ="$E9_ISZ $e9_n=$e9_sz"
 done
 echo "      images:$E9_ISZ (inode sizes); 'not defined' warnings: $E9_WARN; e2fsck -fyD exit $E9_DRC; attribute blocks a.txt=${E9_ACL_A:-?} folder=${E9_ACL_F:-?}; /many flags ${E9_FLAGS0:-?}"
 if [ "$E9_WARN" -eq 0 ] && [ "$E9_ISZ" = " b1k=256 b4k=256 rev0=128 dirindex=256 xattr=256 small=256 hard=256" ]; then
@@ -2487,6 +2492,31 @@ if [ "$E9_WARN" -eq 0 ] && [ "$E9_ISZ" = " b1k=256 b4k=256 rev0=128 dirindex=256
 else
     fail "[1.4] mke2fs: $E9_WARN 'not defined' warnings, or inode sizes differ:$E9_ISZ"
 fi
+
+# Diagnostic (report only, decides no check): the stage 2 image
+# ext2-1k-128 made with stage 8's tests/mke2fs.conf and with this stage's,
+# the same command line (stage 2's tree, times and options): dumpe2fs -h of
+# both, their differences and the first differing bytes. Stage 8's file is
+# rebuilt from this one (its stage 9 comment and madire setting left out,
+# inode_size 128) and must have stage 8's SHA-256 (575c9805...).
+E9_D=$E9_W/conf-diag
+mkdir -p "$E9_D"
+awk '/^# 1\.4 stage 9:/ { skip = 1 } /^\[fs_types\]/ { skip = 0 } skip { next } /^\t\tinode_ratio = 4096$/ { next } { sub(/^\tinode_size = 256$/, "\tinode_size = 128"); print }' \
+    "$DISK_CONF" > "$E9_D/mke2fs-s8.conf"
+echo "      conf diagnostic: stage 8 conf rebuilt, SHA-256 $(sha256sum < "$E9_D/mke2fs-s8.conf" | cut -c1-16)... (stage 8's: 575c98052557...)"
+E9_CONF_SAVE=$DISK_CONF
+for e9_c in s8 s9; do
+    if [ "$e9_c" = s8 ]; then DISK_CONF=$E9_D/mke2fs-s8.conf; else DISK_CONF=$E9_CONF_SAVE; fi
+    touch -h -a -m -d "@$DISK_TIME" "${DISK_TOUCH[@]}"
+    disk_mkfs "$E9_D/$e9_c.img" 8192 1024 128 256 "$DISK_W/src" > "$E9_D/mkfs-$e9_c.txt" 2>&1
+    echo "      conf diagnostic: $e9_c conf: mke2fs exit $?, image $(sha256sum < "$E9_D/$e9_c.img" | cut -d' ' -f1)"
+    sed "s/^/      conf diagnostic: mke2fs ($e9_c): /" "$E9_D/mkfs-$e9_c.txt"
+    LC_ALL=C "$(disk_tool dumpe2fs)" -h "$E9_D/$e9_c.img" > "$E9_D/dumpe2fs-$e9_c.txt" 2>&1
+done
+DISK_CONF=$E9_CONF_SAVE
+diff "$E9_D/dumpe2fs-s8.txt" "$E9_D/dumpe2fs-s9.txt" | sed 's/^/      conf diagnostic: dumpe2fs -h diff: /'
+echo "      conf diagnostic: $(cmp -l "$E9_D/s8.img" "$E9_D/s9.img" 2>/dev/null | wc -l) bytes differ; the first (offset, octal s8, octal s9):"
+cmp -l "$E9_D/s8.img" "$E9_D/s9.img" 2>/dev/null | head -n 24 | sed 's/^/      conf diagnostic:   /'
 
 # (3-7) The host sequence "all" on each image.
 declare -A E9_FRC=()
@@ -2581,7 +2611,8 @@ for e9_s in owner:small hardlink:hard dirs:small rmdir:small indirect:small grow
     "${E9_PY[@]}" sweep "$E9_TOOL" "$E9_W/${e9_s#*:}.img" "$e9_seq" "$E9_W/sweep-$e9_seq" "${E9_SANARG[@]}" \
         > "$E9_W/sweep-$e9_seq.txt" 2>&1
     E9_SRC[$e9_seq]=$?
-    grep -vE '^  e2fsck: (e2fsck [0-9]|Pass [1-5]:|madire-test: [0-9]|$)' "$E9_W/sweep-$e9_seq.txt" | head -n 40 | sed "s/^/      $e9_seq: /"
+    grep -vE '^  e2fsck: (e2fsck [0-9]|Pass [1-5]:|madire-test: [0-9]|$)|^(ACCEPT|FIRST) ' "$E9_W/sweep-$e9_seq.txt" | head -n 40 | sed "s/^/      $e9_seq: /"
+    grep -E '^(ACCEPT|FIRST) ' "$E9_W/sweep-$e9_seq.txt" | sed 's/^/      /'
 done
 e9_sweep_ok() { [ "${E9_SRC[$1]:-1}" -eq 0 ] && grep -qE "^SWEEP $1: ok;" "$E9_W/sweep-$1.txt"; }
 e9_cuts() { sed -nE "s/^SWEEP $1: .*cuts N=0\.\.[0-9]+ \(([0-9]+)\).*/\1/p" "$E9_W/sweep-$1.txt"; }
