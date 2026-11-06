@@ -558,8 +558,7 @@ static void ew_create_e(const char *path, int want)
     int r = EW_RETRY(ext2_write_create(&ew_w, dir, leaf, (uint32_t)strlen(leaf), 0100644, &ino));
     ew_expect(r, want, "create", path);
     if (r == EXT2_OK) {
-        printf("I %u %s
-", ino, path);
+        printf("I %u %s\n", ino, path);
         ew_add_path(path, ew_new_ino(0100644));
     }
     ew_chg_done();
@@ -577,8 +576,7 @@ static void ew_mkdir(const char *path)
     ew_chg("new", path);
     int r = EW_RETRY(ext2_write_mkdir(&ew_w, dir, leaf, (uint32_t)strlen(leaf), 0755, &ino));
     ew_expect(r, EXT2_OK, "mkdir", path);
-    printf("I %u %s
-", ino, path);
+    printf("I %u %s\n", ino, path);
     ew_add_path(path, ew_new_ino(0040755));
     ew_chg_done();
 }
@@ -731,8 +729,7 @@ static void ew_rename_e(const char *from, const char *to, int want)
     if (r == EXT2_OK) {
         /* A folder moved to another folder (A11's window). */
         if (od != nd && ew_is_dir_mode(ew_ino_t[ew_path_t[spi].mi].mode))
-            printf("M %u %u
-", ew_w.saves_done, src);
+            printf("M %u %u\n", ew_w.saves_done, src);
         /* The paths inside a moved folder (dated after any save the
          * operation needed). */
         for (int i = 0; i < EW_PATHS; i++)
@@ -846,8 +843,7 @@ static void ew_import_dir(uint32_t dino, const char *dpath, int depth)
             }
         }
         ew_add_path(p, mi);
-        printf("I %u %s
-", de.ino, p);
+        printf("I %u %s\n", de.ino, p);
         if (ew_is_dir_mode(ew_ino_t[mi].mode))
             ew_import_dir(de.ino, p, depth + 1);
     }
