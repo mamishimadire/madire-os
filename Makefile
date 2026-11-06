@@ -54,8 +54,15 @@ TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
 # EXT2_SRCS names the core alone, for the host tool and those checks.
 EXT2_SRCS := kernel/fs/ext2_core.c
 EXT2_OBJS := $(EXT2_SRCS:%.c=$(BUILD)/%.o)
+# 1.4 stage 9: the ext2 write core and the block layer's save order are pure
+# code, NOT linked into the kernel yet (left out of C_SRCS, so madire.kernel
+# stays byte-identical to stage 8's); compiled with the kernel's flags (make
+# ext2core) for part static's checks, and built into the host tool
+# tests/ext2write.c and the unit suites. Stage 10 links them.
+EXT2_WRITE_SRCS := kernel/fs/ext2_write.c kernel/storage/blk_core_save.c
+EXT2_WRITE_OBJS := $(EXT2_WRITE_SRCS:%.c=$(BUILD)/%.o)
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
-C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
+C_SRCS   := $(filter-out $(EXT2_WRITE_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # 1.2 stage 6: the console fonts, converted at build time from the pinned
@@ -366,11 +373,24 @@ $(EXT2DUMP): tests/ext2dump.c $(EXT2_SRCS) $(wildcard kernel/fs/ext2_*.h)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) tests/ext2dump.c $(EXT2_SRCS) -o $@
 
-ext2core: $(EXT2_OBJS) $(EXT2DUMP)
+# 1.4 stage 9: the write core as a host tool (tests/ext2write.c, built from
+# the write core, the read core and the block layer's save order); part
+# static runs its sequences and the cut sweep (tests/ext2_cut.py), and builds
+# it a second time with the sanitizers.
+EXT2WRITE := $(BUILD)/ext2write
+$(EXT2WRITE): tests/ext2write.c $(EXT2_SRCS) $(EXT2_WRITE_SRCS) $(wildcard kernel/fs/ext2_*.h) kernel/storage/blk_core.h \
+              kernel/storage/blk_core_save.h
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/ext2write.c $(EXT2_SRCS) $(EXT2_WRITE_SRCS) -o $@
+
+ext2core: $(EXT2_OBJS) $(EXT2DUMP) $(EXT2_WRITE_OBJS) $(EXT2WRITE)
 
 $(BUILD)/unit/test_ext2_core: $(EXT2_SRCS)
 # 1.4 stage 8: the VFS adapter's suite includes it and the core.
 $(BUILD)/unit/test_ext2_vfs: $(EXT2_SRCS) kernel/fs/ext2_vfs.c
+# 1.4 stage 9: the write core's and the save order's suites include them.
+$(BUILD)/unit/test_ext2_write: $(EXT2_SRCS) $(EXT2_WRITE_SRCS)
+$(BUILD)/unit/test_blk_core_save: kernel/storage/blk_core_save.c
 
 toolkit: $(TOOLKIT_OBJS)
 
@@ -434,4 +454,4 @@ run: $(ISO)
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d) $(EXT2_OBJS:.o=.d)
+-include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d) $(EXT2_OBJS:.o=.d) $(EXT2_WRITE_OBJS:.o=.d)

@@ -254,5 +254,14 @@
 # read-only on /home) and pcitest_order (the ext2: and mount: lines
 # allowed between the PCI: and Storage: lines; also counted as none on
 # the boot without a controller).
-1.4 88
-unit-suites 102
+# Stage 9: 16 more in part static, the ext2 write core and the block
+# layer's save order (pure, not linked): compiled with the kernel's flags,
+# none of their symbols in madire.elf (1); mke2fs's madire type defined and
+# 256-byte inodes in the stage's images but revision 0 (1); the host
+# sequence on mke2fs images at 1 and 4 KiB blocks, dir_index, ext_attr and
+# revision 0, e2fsck -fn clean and debugfs's view exact (5); D12's recount
+# (1); the policy for writes (1); the host cut sweep at every N for six
+# sequences, the owner's case and removed folders included (6); the sweep
+# under the sanitizers (1); 2 unit suites (blk_core_save, ext2_write). No existing check changed.
+1.4 104
+unit-suites 104

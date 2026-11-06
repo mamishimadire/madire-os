@@ -2366,3 +2366,259 @@ e8_results s4k "4 KiB blocks" 4096
 echo "      [1.4] read sessions: $(( $(date +%s) - E8_T1 )) s (report only)"
 echo "      [1.4] $(grep -hE '^console: cat: from the disk' "$OUT/serial-ext2-s1k.log" "$OUT/serial-ext2-s4k.log" | sed 's/^console: cat: from the disk (report only): //' | tr '\n' ';')"
 echo "      [1.4] ext2 at /home: $(( $(date +%s) - E8_T0 )) s (report only)"
+
+# ---- 1.4 stage 9: the ext2 write core and the host cut sweep ----
+
+section "[1.4] The ext2 write core and the save order: host sequences, the cut sweep, e2fsck and debugfs (stage 9)"
+# docs/plans/1.4.md, S9 (C5 with the owner's R1-R4, section D's allowed
+# list A1-A13; risks 25, 37, 38, 42). The write core (kernel/fs/ext2_write.c)
+# and the block layer's save order (kernel/storage/blk_core_save.c) are pure
+# and NOT linked into the kernel. (1) Compiled with the kernel's flags they
+# need no symbol but the read core's and each other's, use no SSE/x87
+# register, and madire.elf holds none of their symbols; tests/ext2write.c is
+# built from them (its SHA-256 self-test passes). (2) mke2fs (tests/
+# mke2fs.conf, stage 9 fix) no longer warns that the madire type is not
+# defined, and this section's images have 256-byte inodes but the revision-0
+# one (risk 42). (3-7) The host sequence "all" (every operation: folders,
+# files through the direct, single, double and, at 1 KiB, triple indirect
+# blocks, overwrites, truncates, renames across folders and replacing,
+# folder growth, refusals) on mke2fs images: 1 KiB and 4 KiB blocks (the
+# fixed "full" tree of tests/ext2_view.py), dir_index (the indexed folder
+# changed: its index flag cleared), ext_attr (a file and a folder with an
+# attribute block removed: both blocks freed) and revision 0; after the full
+# save and the unmount, e2fsck -fn reports NOTHING and debugfs's view equals
+# the tool's own expected tree (paths, modes, sizes, link counts, SHA-256s).
+# (8) D12: a volume not cleanly unmounted with a wrong free count is
+# recounted at the mount and checks clean. (9) The policy: an unknown COMPAT
+# or RO_COMPAT flag or the error bit: read-only, nothing written. (10-15)
+# THE HOST CUT SWEEP (section D (a)): six fixed sequences (the owner's case;
+# a hard-linked file's names removed; folders: mkdir, a file and a folder
+# moved to other folders, a file replaced, rmdir; folders removed (the end of
+# save E and save E+1 of R3); indirect blocks copied and freed by writes and
+# truncates; a folder grown past its blocks), each cut
+# after write N for EVERY N: e2fsck -fn may report only the allowed list
+# (A8-A11 only for inodes the tool reports changed in the cut save, or the
+# save before where the list says so), every file saved before the cut reads
+# back exactly (debugfs), and in the owner's case A is exact or gone, gone
+# once save 2 has finished, B never holds a block of A, and after saves 3-4
+# only leaks and counts. (16) The sweep again with the tool built with
+# -fsanitize=address,undefined: no report, byte-identical images. Nothing
+# boots; everything stays under $OUT/ext2-write.
+E9_T0=$(date +%s)
+E9_ROOT=$(dirname "$0")/..
+E9_W=$OUT/ext2-write
+rm -rf "${E9_W:?}" && mkdir -p "$E9_W"
+E9_TOOL=$OUT/ext2write
+E9_PY=(python3 -I -B "$(dirname "$0")/ext2_cut.py")
+E9_VIEW=(python3 -I -B "$(dirname "$0")/ext2_view.py")
+
+# (1) The objects with the kernel's flags, not linked.
+E9_OBJW=$OUT/kernel/fs/ext2_write.o
+E9_OBJS=$OUT/kernel/storage/blk_core_save.o
+E9_DEF=$(nm --defined-only "$OUT/kernel/fs/ext2_core.o" "$E9_OBJW" "$E9_OBJS" 2>/dev/null | awk 'NF == 3 { print $3 }' | LC_ALL=C sort -u)
+E9_UNDEF=$(nm -u "$E9_OBJW" "$E9_OBJS" 2>/dev/null | awk 'NF == 2 { print $2 }' | LC_ALL=C sort -u | grep -vxFf <(echo "$E9_DEF") | tr '\n' ' ' | sed 's/ *$//')
+E9_SSE=$(objdump -d "$E9_OBJW" "$E9_OBJS" 2>/dev/null | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]')
+E9_MINE=$(nm --defined-only "$E9_OBJW" "$E9_OBJS" 2>/dev/null | awk 'NF == 3 { print $3 }' | LC_ALL=C sort -u)
+E9_ELFSYMS=$(nm "$OUT/madire.elf" 2>/dev/null | awk '{ print $NF }')
+E9_INELF=$(grep -xFf <(echo "$E9_MINE") <<< "$E9_ELFSYMS" | tr '\n' ' ' | sed 's/ *$//')
+E9_PREFIX=$(grep -cE '^(ext2_w_|ext2_write_|blk_sv_)' <<< "$E9_ELFSYMS")
+E9_SELF=$("$E9_TOOL" -t 2>&1)
+echo "      ext2_write.o text $(size "$E9_OBJW" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes, blk_core_save.o text $(size "$E9_OBJS" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes (report only); $(grep -c . <<< "$E9_MINE") symbols; undefined outside the cores: ${E9_UNDEF:-none}; SSE/x87: $E9_SSE; in madire.elf: ${E9_INELF:-none} (prefixed: $E9_PREFIX); $E9_SELF"
+if [ -s "$E9_OBJW" ] && [ -s "$E9_OBJS" ] && [ -z "$E9_UNDEF" ] && [ "$E9_SSE" -eq 0 ] && [ -z "$E9_INELF" ] &&
+   [ "$E9_PREFIX" -eq 0 ] && [ "$(grep -c . <<< "$E9_MINE")" -ge 40 ] && [ "$E9_SELF" = "SHA256_SELFTEST ok" ]; then
+    pass "[1.4] ext2 write core: kernel/fs/ext2_write.c and kernel/storage/blk_core_save.c compiled with the kernel's flags need no symbol but the read core's and each other's, use no SSE/x87 register, and madire.elf holds none of their symbols (not linked, stage 9); tests/ext2write.c is built from them (SHA-256 self-test ok)"
+else
+    fail "[1.4] ext2 write core: an object is missing, needs other symbols (${E9_UNDEF:-none}), uses SSE/x87 ($E9_SSE), is in madire.elf (${E9_INELF:-none}; prefixed $E9_PREFIX), or the tool's self-test failed ($E9_SELF)"
+fi
+echo "      mke2fs fix (report only): the stage 2 image ext2-1k-128 is ${DISK_SA:-?} (stage 8's run 42226698091: 20516434eba0496fedb74c0980b03ec64b55b3d9aa13d77c185fcc5287e0a349)"
+
+# The images. e9_mkimg <name> <tree: a tests/ext2_view.py kind, "hard",
+# or "-" for none> <KiB> <block size> <inode size> <inodes> [more mke2fs
+# options...]; a failure leaves no image.
+e9_mkimg() {
+    local name=$1 kind=$2 tree="" rc=0
+    if [ "$kind" = hard ]; then
+        tree=$E9_W/tree-hard
+        if [ ! -d "$tree" ]; then
+            mkdir -p "$tree"
+            printf 'one inode, two names (stage 9)\n' > "$tree/h1"
+            ln "$tree/h1" "$tree/h2"
+            for i in $(seq 1 30); do printf 'kept line %02d\n' "$i"; done > "$tree/keep.txt"
+            chmod 0644 "$tree/h1" "$tree/keep.txt"
+            touch -h -a -m -d "@$DISK_TIME" "$tree" "$tree/h1" "$tree/h2" "$tree/keep.txt"
+        fi
+    elif [ "$kind" != - ]; then
+        tree=$E9_W/tree-$kind
+        [ -d "$tree" ] || "${E9_VIEW[@]}" tree "$tree" "$kind" || rc=1
+    fi
+    [ "$rc" -eq 0 ] && { disk_mkfs "$E9_W/$name.img" "$3" "$4" "$5" "$6" "$tree" "${@:7}" > "$E9_W/mkfs-$name.txt" 2>&1 || rc=$?; }
+    sed "s/^/      mke2fs ($name): /" "$E9_W/mkfs-$name.txt" 2>/dev/null
+    [ "$rc" -eq 0 ] || rm -f "${E9_W:?}/${name:?}.img"
+}
+e9_mkimg b1k full 16384 1024 256 512
+e9_mkimg b4k full 163840 4096 256 512
+e9_mkimg rev0 full 16384 1024 128 512 -r 0 -O none
+e9_mkimg dirindex dirindex 8192 1024 256 512
+e9_mkimg xattr xattr 8192 1024 256 64
+e9_mkimg small - 4096 1024 256 256
+e9_mkimg hard hard 4096 1024 256 256
+# dir_index: e2fsck -fyD indexes the 400-entry folder (as in stage 6).
+LC_ALL=C E2FSCK_CONFIG=/dev/null "$(disk_tool e2fsck)" -fyD "$E9_W/dirindex.img" > "$E9_W/fsck-dirindex.txt" 2>&1
+E9_DRC=$?
+# ext_attr: attributes too long for a 256-byte inode's spare room, so each
+# goes into an attribute block (debugfs -w, on this test image only).
+E9_LONG=$(printf 'madire-stage-nine-%.0s' $(seq 1 16))
+printf '%s\n' "ea_set /attr/a.txt user.madire $E9_LONG" "ea_set /attr/folder user.madire folder-$E9_LONG" \
+    "ea_set /attr/b.txt user.madire b-$E9_LONG" > "$E9_W/xattr.cmd"
+LC_ALL=C "$(disk_tool debugfs)" -w -f "$E9_W/xattr.cmd" "$E9_W/xattr.img" > "$E9_W/xattr-set.txt" 2>&1
+E9_ACL_A=$(disk_debugfs "$E9_W/xattr.img" "stat /attr/a.txt" | sed -nE 's/.*File ACL: ([0-9]+).*/\1/p' | head -n 1)
+E9_ACL_F=$(disk_debugfs "$E9_W/xattr.img" "stat /attr/folder" | sed -nE 's/.*File ACL: ([0-9]+).*/\1/p' | head -n 1)
+E9_FLAGS0=$(disk_debugfs "$E9_W/dirindex.img" "stat /many" | sed -nE 's/.*Flags: (0x[0-9a-f]+).*/\1/p' | head -n 1)
+
+# (2) The mke2fs fix and the inode sizes.
+E9_WARN=$(cat "$E9_W"/mkfs-*.txt 2>/dev/null | grep -c 'is not defined in mke2fs.conf')
+E9_ISZ=""
+for e9_n in b1k b4k rev0 dirindex xattr small hard; do
+    E9_ISZ="$E9_ISZ $e9_n=$(disk_debugfs "$E9_W/$e9_n.img" stats 2>/dev/null | sed -nE 's/^Inode size:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)"
+done
+echo "      images:$E9_ISZ (inode sizes); 'not defined' warnings: $E9_WARN; e2fsck -fyD exit $E9_DRC; attribute blocks a.txt=${E9_ACL_A:-?} folder=${E9_ACL_F:-?}; /many flags ${E9_FLAGS0:-?}"
+if [ "$E9_WARN" -eq 0 ] && [ "$E9_ISZ" = " b1k=256 b4k=256 rev0=128 dirindex=256 xattr=256 small=256 hard=256" ]; then
+    pass "[1.4] mke2fs (tests/mke2fs.conf, stage 9 fix): no 'fs_type madire is not defined' warning for any image, and 256-byte inodes in every image of this section but the revision-0 one (128)"
+else
+    fail "[1.4] mke2fs: $E9_WARN 'not defined' warnings, or inode sizes differ:$E9_ISZ"
+fi
+
+# (3-7) The host sequence "all" on each image.
+declare -A E9_FRC=()
+for e9_n in b1k b4k dirindex xattr rev0; do
+    "${E9_PY[@]}" final "$E9_TOOL" "$E9_W/$e9_n.img" all "$E9_W/run-$e9_n" > "$E9_W/final-$e9_n.txt" 2>&1
+    E9_FRC[$e9_n]=$?
+    head -n 12 "$E9_W/final-$e9_n.txt" | sed "s/^/      $e9_n: /"
+done
+e9_final_ok() { [ "${E9_FRC[$1]:-1}" -eq 0 ] && grep -qE "^FINAL all: ok;" "$E9_W/final-$1.txt"; }
+e9_paths() { sed -nE 's/^FINAL .* view ([0-9]+) paths.*/\1/p' "$E9_W/final-$1.txt"; }
+if e9_final_ok b1k; then
+    pass "[1.4] ext2 write core, host sequence on 1 KiB blocks (256-byte inodes, the full tree): every operation through the triple indirect block, a full save and the unmount; e2fsck -fn reports nothing and debugfs's view equals the expected tree ($(e9_paths b1k) paths: names, modes, sizes, link counts, SHA-256s)"
+else
+    fail "[1.4] ext2 write core, host sequence on 1 KiB blocks: e2fsck -fn reported something, or debugfs's view differs (see $E9_W/final-b1k.txt)"
+fi
+if e9_final_ok b4k; then
+    pass "[1.4] ext2 write core, host sequence on 4 KiB blocks (256-byte inodes, the full tree): e2fsck -fn reports nothing and debugfs's view equals the expected tree ($(e9_paths b4k) paths)"
+else
+    fail "[1.4] ext2 write core, host sequence on 4 KiB blocks: e2fsck -fn reported something, or debugfs's view differs (see $E9_W/final-b4k.txt)"
+fi
+E9_FLAGS1=$(disk_debugfs "$E9_W/run-dirindex/uncut.img" "stat /many" | sed -nE 's/.*Flags: (0x[0-9a-f]+).*/\1/p' | head -n 1)
+echo "      dirindex: /many flags before ${E9_FLAGS0:-?}, after ${E9_FLAGS1:-?}"
+if e9_final_ok dirindex && [ "$E9_DRC" -le 1 ] && [ -n "$E9_FLAGS0" ] && [ $(( E9_FLAGS0 & 0x1000 )) -ne 0 ] &&
+   [ -n "$E9_FLAGS1" ] && [ $(( E9_FLAGS1 & 0x1000 )) -eq 0 ]; then
+    pass "[1.4] ext2 write core, dir_index: the folder indexed by e2fsck -D (flag 0x1000) changed (an entry added, one removed, one renamed): its index flag cleared, e2fsck -fn reports nothing, debugfs's view equals the expected tree"
+else
+    fail "[1.4] ext2 write core, dir_index: the indexed folder was not indexed before, kept its flag, or the check failed (flags ${E9_FLAGS0:-?} -> ${E9_FLAGS1:-?}; see $E9_W/final-dirindex.txt)"
+fi
+E9_TA=$(disk_debugfs "$E9_W/run-xattr/uncut.img" "testb ${E9_ACL_A:-0}")
+E9_TF=$(disk_debugfs "$E9_W/run-xattr/uncut.img" "testb ${E9_ACL_F:-0}")
+echo "      xattr: block ${E9_ACL_A:-?}: $E9_TA; block ${E9_ACL_F:-?}: $E9_TF"
+if e9_final_ok xattr && [ "${E9_ACL_A:-0}" -gt 0 ] && [ "${E9_ACL_F:-0}" -gt 0 ] && grep -q 'not in use' <<< "$E9_TA" &&
+   grep -q 'not in use' <<< "$E9_TF"; then
+    pass "[1.4] ext2 write core, ext_attr: a file and a folder with an attribute block removed (unlink, rmdir) and a third file renamed: both attribute blocks free after the full save, e2fsck -fn reports nothing, debugfs's view equals the expected tree"
+else
+    fail "[1.4] ext2 write core, ext_attr: no attribute blocks were made, one is still in use, or the check failed (see $E9_W/final-xattr.txt)"
+fi
+if e9_final_ok rev0; then
+    pass "[1.4] ext2 write core, revision 0 (no features: 16-bit name lengths, no file types, 128-byte inodes): e2fsck -fn reports nothing and debugfs's view equals the expected tree ($(e9_paths rev0) paths)"
+else
+    fail "[1.4] ext2 write core, revision 0: e2fsck -fn reported something, or debugfs's view differs (see $E9_W/final-rev0.txt)"
+fi
+
+# (8) D12: not cleanly unmounted, a wrong free count.
+"${E9_VIEW[@]}" set "$E9_W/small.img" "$E9_W/dirty-1.img" $((1024 + 58)) 2 0x0 | sed 's/^/      /'
+"${E9_VIEW[@]}" set "$E9_W/dirty-1.img" "$E9_W/dirty.img" $((1024 + 12)) 4 0x10 | sed 's/^/      /'
+"${E9_PY[@]}" final "$E9_TOOL" "$E9_W/dirty.img" recount "$E9_W/run-dirty" > "$E9_W/final-dirty.txt" 2>&1
+E9_RRC=$?
+head -n 6 "$E9_W/final-dirty.txt" | sed 's/^/      recount: /'
+if [ "$E9_RRC" -eq 0 ] && grep -qx 'MOUNT rw=1 why=- recounted=1' "$E9_W/run-dirty/uncut.log"; then
+    pass "[1.4] ext2 write core, D12: a volume not cleanly unmounted (state 0x0) with a wrong free-block count mounted read-write after the recount from the bitmaps; after a write, the full save and the unmount e2fsck -fn reports nothing"
+else
+    fail "[1.4] ext2 write core, D12: no recount at the mount, or the volume does not check clean afterwards (see $E9_W/final-dirty.txt)"
+fi
+
+# (9) The policy: read-only, nothing written.
+E9_ROK=1
+for e9_spec in "ro-compat $((1024 + 92)) 4 0x1000 or" "ro-rocompat $((1024 + 100)) 4 0x8 or" "ro-error $((1024 + 58)) 2 0x3"; do
+    read -r e9_x e9_off e9_len e9_val e9_how <<< "$e9_spec"
+    # shellcheck disable=SC2086
+    "${E9_VIEW[@]}" set "$E9_W/small.img" "$E9_W/$e9_x.img" "$e9_off" "$e9_len" "$e9_val" ${e9_how:-} > /dev/null
+    "${E9_PY[@]}" readonly "$E9_TOOL" "$E9_W/$e9_x.img" "$E9_W/run-$e9_x" > "$E9_W/$e9_x.txt" 2>&1
+    sed 's/^/      /' "$E9_W/$e9_x.txt"
+    grep -q '^READONLY .*: ok;' "$E9_W/$e9_x.txt" || E9_ROK=0
+done
+if [ "$E9_ROK" -eq 1 ] && grep -q 'why=an unknown COMPAT flag' "$E9_W/ro-compat.txt" &&
+   grep -q 'why=an unknown RO_COMPAT flag' "$E9_W/ro-rocompat.txt" && grep -q 'why=the error bit is set' "$E9_W/ro-error.txt"; then
+    pass "[1.4] ext2 write core, the policy for writes (D11, D9): an unknown COMPAT flag (0x1000), an unknown RO_COMPAT flag (0x8) or the error bit: mounted read-only, a create refused (EROFS), no write, the image unchanged"
+else
+    fail "[1.4] ext2 write core, the policy for writes: a volume was not read-only, or something was written (see $E9_W/ro-*.txt)"
+fi
+
+# (10-16) The cut sweep, then the sanitizers.
+E9_SAN=$E9_W/ext2write-san
+gcc -std=gnu11 -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -Wall -Wextra -Werror -I"$E9_ROOT" "$E9_ROOT/tests/ext2write.c" "$E9_ROOT/kernel/fs/ext2_core.c" \
+    "$E9_ROOT/kernel/fs/ext2_write.c" "$E9_ROOT/kernel/storage/blk_core_save.c" -o "$E9_SAN" > "$E9_W/san-build.txt" 2>&1
+E9_SANB=$?
+head -n 20 "$E9_W/san-build.txt" | sed 's/^/      sanitizer build: /'
+E9_SANRUN=$E9_W/ext2write-san.sh
+if command -v setarch > /dev/null 2>&1 && setarch "$(uname -m)" -R true 2>/dev/null; then
+    printf '#!/bin/sh\nexec setarch %s -R %s "$@"\n' "$(uname -m)" "$E9_SAN" > "$E9_SANRUN"
+else
+    printf '#!/bin/sh\nexec %s "$@"\n' "$E9_SAN" > "$E9_SANRUN"
+fi
+chmod +x "$E9_SANRUN"
+E9_SANARG=()
+[ "$E9_SANB" -eq 0 ] && E9_SANARG=(--san "$E9_SANRUN")
+declare -A E9_SRC=()
+for e9_s in owner:small hardlink:hard dirs:small rmdir:small indirect:small grow:small; do
+    e9_seq=${e9_s%%:*}
+    "${E9_PY[@]}" sweep "$E9_TOOL" "$E9_W/${e9_s#*:}.img" "$e9_seq" "$E9_W/sweep-$e9_seq" "${E9_SANARG[@]}" \
+        > "$E9_W/sweep-$e9_seq.txt" 2>&1
+    E9_SRC[$e9_seq]=$?
+    grep -vE '^  e2fsck: (e2fsck [0-9]|Pass [1-5]:|madire-test: [0-9]|$)' "$E9_W/sweep-$e9_seq.txt" | head -n 40 | sed "s/^/      $e9_seq: /"
+done
+e9_sweep_ok() { [ "${E9_SRC[$1]:-1}" -eq 0 ] && grep -qE "^SWEEP $1: ok;" "$E9_W/sweep-$1.txt"; }
+e9_cuts() { sed -nE "s/^SWEEP $1: .*cuts N=0\.\.[0-9]+ \(([0-9]+)\).*/\1/p" "$E9_W/sweep-$1.txt"; }
+if e9_sweep_ok owner; then
+    pass "[1.4] host cut sweep, the owner's case (save 1 writes A; save 2 deletes A and creates B with no save between; save 3 deletes A's inode; save 4 clears the bitmaps), cut after every write ($(e9_cuts owner) cuts): e2fsck -fn reports only the allowed list (A1-A13 in their contexts; after saves 3-4 only leaks and counts), every saved file reads back exactly, A is exact or gone and gone once save 2 has finished, B never holds a block of A"
+else
+    fail "[1.4] host cut sweep, the owner's case: a cut left something not on the allowed list, a saved file damaged, or A or B wrong (see $E9_W/sweep-owner.txt)"
+fi
+if e9_sweep_ok hardlink; then
+    pass "[1.4] host cut sweep, a hard-linked file ($(e9_cuts hardlink) cuts): one name removed (its count lowered one save later, R3), then the other (the inode deleted): only the allowed list, every saved file exact"
+else
+    fail "[1.4] host cut sweep, a hard-linked file: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-hardlink.txt)"
+fi
+if e9_sweep_ok dirs; then
+    pass "[1.4] host cut sweep, folders ($(e9_cuts dirs) cuts): mkdir, a file in a fresh folder (R4), a file replaced by rename, a file and a folder moved to other folders (\"..\", both parents), rmdir: only the allowed list, every saved file exact"
+else
+    fail "[1.4] host cut sweep, folders: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-dirs.txt)"
+fi
+if e9_sweep_ok rmdir; then
+    pass "[1.4] host cut sweep, folders removed ($(e9_cuts rmdir) cuts): a top-level and a nested folder removed (save E the names and the parents' counts, save E+1 the folders' inodes, save E+2 the bits; R3), cuts at the end of save E and inside save E+1 included: only the allowed list (A9 and A10 for the removed folders and their parents only in their R3 windows), every saved file exact"
+else
+    fail "[1.4] host cut sweep, folders removed: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-rmdir.txt)"
+fi
+if e9_sweep_ok indirect; then
+    pass "[1.4] host cut sweep, indirect blocks ($(e9_cuts indirect) cuts): writes and truncates through the single and double indirect blocks, each changed indirect block copied (R2): only the allowed list (never a wrong i_size or i_blocks), every saved file exact"
+else
+    fail "[1.4] host cut sweep, indirect blocks: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-indirect.txt)"
+fi
+if e9_sweep_ok grow; then
+    pass "[1.4] host cut sweep, a folder grown past its blocks ($(e9_cuts grow) cuts): 45 names (the empty block added, then a save, R4), 15 removed, one renamed: only the allowed list, every saved file exact"
+else
+    fail "[1.4] host cut sweep, a growing folder: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-grow.txt)"
+fi
+E9_SANOK=$(cat "$E9_W"/sweep-*.txt 2>/dev/null | grep -cE '^SANITIZE [a-z]+: ok;')
+if [ "$E9_SANB" -eq 0 ] && [ "$E9_SANOK" -eq 6 ]; then
+    pass "[1.4] host cut sweep under -fsanitize=address,undefined: all six sequences at every cut and uncut, no sanitizer report, every image byte-identical to the plain build's"
+else
+    fail "[1.4] host cut sweep under the sanitizers: build exit $E9_SANB, $E9_SANOK of 6 sequences clean (see $E9_W/sweep-*.txt)"
+fi
+echo "      [1.4] ext2 write core and cut sweep: $(( $(date +%s) - E9_T0 )) s (report only)"
