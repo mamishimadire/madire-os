@@ -301,9 +301,12 @@ static uint8_t iused[8192];
 static uint16_t refs[65536];
 static uint16_t subdirs[65536];
 
+/* Block 0 exists only on a volume whose first data block is 0 (2 and 4 KiB
+ * blocks: it holds the superblock); it is claimed only by check()'s
+ * metadata loop, since a pointer of 0 is a hole and never reaches here. */
 static void claim(struct chk *c, uint32_t b)
 {
-    if (b == 0 || b >= NB) {
+    if ((b == 0 && FDB != 0) || b >= NB) {
         c->bad++;
         return;
     }
@@ -593,13 +596,14 @@ static void test_create_write(void)
     CHECK_EQ(in.links, 1);
     CHECK_EQ(write_all(ino, 0, 5000, 1), 5000);
     CHECK(reads_back(ino, 0, 5000, 1));
+    uint32_t file = ino, out = 0;                   /* the refused creates below set ino to 0 */
     CHECK_EQ(ext2_write_create(&w, 2, "hello.txt", 9, 0644, &ino), EXT2_EEXIST);
     CHECK_EQ(ext2_write_create(&w, 2, ".", 1, 0644, &ino), EXT2_EINVAL);
     CHECK_EQ(ext2_write_create(&w, 2, "a/b", 3, 0644, &ino), EXT2_EINVAL);
     char longname[300];
     memset(longname, 'n', sizeof longname);
     CHECK_EQ(ext2_write_create(&w, 2, longname, 256, 0644, &ino), EXT2_ENAMETOOLONG);
-    CHECK_EQ(ext2_write_create(&w, ino, "x", 1, 0644, &ino), EXT2_ENOTDIR);
+    CHECK_EQ(ext2_write_create(&w, file, "x", 1, 0644, &out), EXT2_ENOTDIR);
     CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
     CHECK(!ext2_write_busy(&w));
     CHECK(clean());
@@ -1113,6 +1117,34 @@ static void test_failed_save(void)
     CHECK_EQ(g16(1024 + 58) & EXT2_STATE_ERROR, EXT2_STATE_ERROR);
 }
 
+/* The checker itself, on a 2 KiB image (block 0 the superblock, block 1
+ * the group descriptors): a direct or an indirect pointer that names a
+ * metadata block is still reported (claimed twice). */
+static void test_checker_negative(void)
+{
+    mkimg(2048, 256, 1, 1, 1024, 64, 0);
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    uint32_t f = 0;
+    CHECK_EQ(ext2_write_create(&w, 2, "f", 1, 0644, &f), EXT2_OK);
+    CHECK_EQ(write_all(f, 0, 14 * 2048, 22), 14 * 2048);  /* 12 direct + the single indirect */
+    CHECK_EQ(ext2_write_unmount(&w), EXT2_OK);
+    CHECK(clean());                                 /* block 0 claimed once, by the metadata loop */
+    uint32_t d1 = g32(ioff(f) + 40 + 4), ind = g32(ioff(f) + 40 + 48), e0 = g32(boff(ind));
+    p32(ioff(f) + 40 + 4, 1);                       /* direct pointer -> the descriptor block */
+    struct chk c = check();
+    CHECK(c.dup >= 1);
+    p32(ioff(f) + 40 + 4, d1);
+    p32(boff(ind), 1);                              /* indirect pointer -> the descriptor block */
+    c = check();
+    CHECK(c.dup >= 1);
+    p32(boff(ind), e0);
+    p32(ioff(f) + 40 + 4, NB);                      /* beyond the last block */
+    c = check();
+    CHECK(c.bad >= 1);
+    p32(ioff(f) + 40 + 4, d1);
+    CHECK(clean());                                 /* restored: clean again */
+}
+
 static void test_pending_merge(void)
 {
     mkimg(1024, 256, 1, 1, 2048, 64, 0);
@@ -1149,6 +1181,7 @@ int main(void)
     RUN(test_policy);
     RUN(test_recount);
     RUN(test_failed_save);
+    RUN(test_checker_negative);
     RUN(test_pending_merge);
     return unit_report("ext2_write");
 }
