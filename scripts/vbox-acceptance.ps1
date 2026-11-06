@@ -1826,7 +1826,10 @@ if ($script:DiagBooted.Count) {
 # IDENTIFY equal to the VDI's capacity as showmediuminfo reads it), the
 # optical drive on port 1 ignored (ATAPI), the attach's read check (the
 # empty disk's first and last sector: zero bytes, CRC32 0xb2aa7578), the
-# Storage: line, no disk error, no PANIC or FAILED. test=diskread itself
+# Storage: line, no disk error, no PANIC or FAILED. 1.4 stage 5 (two rows
+# added, one changed; not run in stage 5): the empty disk has no partition
+# table, so the part: and guard: lines say so, writes would be REFUSED,
+# and the Storage: line names both. test=diskread itself
 # needs a Diagnostics entry (none in 1.4, D21) or a changed command line,
 # so the read check is the probe's read. MadireOS-Test.vdi's SHA-256 and
 # size before and after (report only): Madire has no write command; if
@@ -1855,14 +1858,16 @@ if (Want "storageprobe") {
         "^ahci: port 0: signature 0x00000101 \(ATA disk\); IDENTIFY DEVICE: model 'VBOX HARDDISK', $sectorsRe sectors of 512 bytes \([0-9.]+ [MG]iB\), LBA48 yes, DMA yes; used read only$",
         "^ahci: port 1: signature 0xeb140101: ATAPI device, ignored \(no command sent\)$",
         "^blk: read check: LBA 0 CRC32 0xb2aa7578, LBA [0-9]+ CRC32 0xb2aa7578 \(2 commands, [0-9]+ ticks\)$",
-        "^Storage: AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7], port 0 disk VBOX HARDDISK [0-9.]+ [MG]iB, read only, not mounted \(Live mode\)$",
+        "^part: port 0: no partition table \(LBA 0 has no 0x55AA signature\)$",
+        "^guard: port 0: writes would be REFUSED: no partition table$",
+        "^Storage: AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7], port 0 disk VBOX HARDDISK [0-9.]+ [MG]iB, no partition table, writes would be REFUSED: no partition table; read only, not mounted \(Live mode\)$",
         "^System ready\.")
     Absent "storageprobe" "^ahci: port [0-9]+: .* failed: "
     Absent "storageprobe" "PANIC"
     Absent "storageprobe" "FAILED"
     $probeLog = Join-Path $OutDir "$Prefix-storageprobe.serial.log"
     $lines = @()
-    if (Test-Path $probeLog) { $lines = @(Select-String -Path $probeLog -Pattern '^(PCI|ahci|blk|Storage): ' -CaseSensitive | ForEach-Object { $_.Line }) }
+    if (Test-Path $probeLog) { $lines = @(Select-String -Path $probeLog -Pattern '^(PCI|ahci|blk|part|guard|Storage): ' -CaseSensitive | ForEach-Object { $_.Line }) }
     foreach ($l in $lines) { Note "storage (report only): $l" }
     $vdiHash1 = (Get-FileHash $vdi -Algorithm SHA256).Hash.ToLower()
     $vdiLen1 = (Get-Item $vdi).Length

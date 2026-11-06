@@ -406,6 +406,8 @@ void ahci_start(struct ahci_hba *h, const struct ahci_ops *ops)
         pt->last.sectors = 0;
         pt->last.is = pt->last.tfd = pt->last.serr = pt->last.ci = 0;
         pt->last.reset = pt->last.recovered = false;
+        pt->guard_decided = pt->guard_allows = false;
+        pt->guard_first = pt->guard_sectors = 0;
     }
     h->cap = ahci_rd(h, AHCI_REG_CAP);
     h->vs = ahci_rd(h, AHCI_REG_VS);
@@ -451,6 +453,25 @@ int ahci_read(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, co
     for (uint32_t i = 0; i < pages; i++)
         bytes[i] = i + 1 < pages ? AHCI_PAGE : (sectors - (pages - 1) * per) * AHCI_SECTOR;
     return ahci_command(h, p, AHCI_OP_READ, lba, sectors, phys, bytes, pages) == AHCI_END_DONE ? 0 : -AHCI_EIO;
+}
+
+bool ahci_guard_decide(struct ahci_hba *h, uint32_t p, bool allows, uint64_t first, uint64_t sectors)
+{
+    if (p >= AHCI_PORTS || h->port[p].state != AHCI_PORT_DISK || h->port[p].guard_decided)
+        return false;
+    struct ahci_port *pt = &h->port[p];
+    bool inside = sectors > 0 && first < pt->disk.sectors && sectors <= pt->disk.sectors - first;
+    pt->guard_decided = true;
+    pt->guard_allows = allows && inside;
+    pt->guard_first = first;
+    pt->guard_sectors = sectors;
+    return true;
+}
+
+bool ahci_guard_allows(const struct ahci_hba *h, uint32_t p)
+{
+    return p < AHCI_PORTS && h->port[p].state == AHCI_PORT_DISK && h->port[p].guard_decided &&
+           h->port[p].guard_allows;
 }
 
 const char *ahci_end_str(enum ahci_end end)

@@ -18,6 +18,17 @@ back and extracts the partition again. Run it with PYTHONDONTWRITEBYTECODE=1
   disk_image.py tree <dir>                       the fixed sample files; prints their listing
   disk_image.py pattern <disk image> <bytes>     a raw disk of fixed bytes (1.4 stage 4)
   disk_image.py sectors <disk image> <lba>:<count>...   the CRC32 of each run of sectors
+  disk_image.py variant <disk image> <what> <out>        a changed copy (1.4 stage 5)
+
+1.4 stage 5: "variant" copies a disk made by "mbr" or "gpt" and changes
+one thing, for the write guard's refusals (docs/plans/1.4.md, C4):
+  nomarker       the marker's sector zeroed (an unmarked ext2 partition)
+  badcrc         the marker's CRC32 field plus 1
+  start          the marker's first LBA plus 1, its CRC32 made valid again
+  sectors        the marker's sector count minus 1, its CRC32 made valid
+  label=<text>   the ext2 volume label (the superblock's 16 bytes at
+                 partition byte 1144) set to <text>, zero-padded
+It prints "VARIANT <what> start=<lba> sectors=<count>" (the partition).
 
 1.4 stage 4: "pattern" writes a raw disk of the given size (a multiple of
 512) for test=diskread: fixed pseudo-random bytes (Python's random module
@@ -270,7 +281,40 @@ def sample_tree(root):
     return lines
 
 
+def make_variant(src, what, out):
+    with open(src, "rb") as f:
+        disk = bytearray(f.read())
+    try:
+        _, (first, count), ok = parse(bytes(disk))
+    except Bad as e:
+        raise SystemExit("variant: %s" % e)
+    if not ok:
+        raise SystemExit("variant: %s does not hold a valid marker" % src)
+    off = first * SECTOR
+    if what == "nomarker":
+        disk[off:off + SECTOR] = bytes(SECTOR)
+    elif what == "badcrc":
+        crc = struct.unpack_from("<I", disk, off + 40)[0]
+        struct.pack_into("<I", disk, off + 40, (crc + 1) & 0xFFFFFFFF)
+    elif what in ("start", "sectors"):
+        mfirst, mcount = first + (what == "start"), count - (what == "sectors")
+        disk[off:off + SECTOR] = marker(mfirst, mcount)
+    elif what.startswith("label="):
+        label = what[len("label="):].encode("ascii")
+        if len(label) > 16:
+            raise SystemExit("variant: a label has at most 16 bytes")
+        disk[off + 1144:off + 1160] = label + bytes(16 - len(label))
+    else:
+        raise SystemExit("variant: unknown change %r" % what)
+    with open(out, "wb") as f:
+        f.write(disk)
+    print("VARIANT %s start=%d sectors=%d" % (what, first, count))
+
+
 def main(argv):
+    if len(argv) == 5 and argv[1] == "variant":
+        make_variant(argv[2], argv[3], argv[4])
+        return 0
     if len(argv) == 3 and argv[1] == "tree":
         print("\n".join(sample_tree(argv[2])))
         return 0

@@ -7,6 +7,7 @@
 #include "kernel/memory/vm_layout.h"
 #include "kernel/storage/ahci_core.h"
 #include "kernel/storage/blk.h"
+#include "kernel/storage/guard.h"
 #include "kernel/timer.h"
 
 typedef unsigned long long ull;
@@ -159,6 +160,16 @@ int ahci_disk_read(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_t
     return r;
 }
 
+bool ahci_disk_guard(uint32_t port, bool allows, uint64_t first, uint64_t sectors)
+{
+    return ahci_guard_decide(&ahci_hba, port, allows, first, sectors);
+}
+
+bool ahci_disk_guard_allows(uint32_t port)
+{
+    return ahci_guard_allows(&ahci_hba, port);
+}
+
 void ahci_figures(uint64_t *commands, uint64_t *polls_longest, uint64_t *ticks_longest)
 {
     *commands = ahci_hba.commands;
@@ -220,8 +231,14 @@ void ahci_boot(const struct pci_ahci *a)
             refused = (int32_t)p;
         }
     }
-    if (disk >= 0)
+    struct guard_summary gs;
+    gs.allows = false;
+    gs.partition = 0;
+    gs.table[0] = gs.result[0] = 0;
+    if (disk >= 0) {
         blk_attach((uint32_t)disk, h->port[disk].disk.sectors);
+        guard_attach((uint32_t)disk, h->port[disk].disk.model, h->port[disk].disk.sectors, &gs);
+    }
     uint32_t tables, mapped;
     paging_slot_figures(VM_STORAGE_INDEX, &tables, &mapped);
     klogf("ahci: slot 508 now: %u page tables, %u pages mapped (walked); %u page tables added, %u DMA pages, "
@@ -230,8 +247,9 @@ void ahci_boot(const struct pci_ahci *a)
     if (disk >= 0) {
         const struct ahci_port *pt = &h->port[disk];
         ahci_size(size, sizeof(size), pt->disk.sectors);
-        klogf("Storage: AHCI %s, port %d disk %s %s, read only, not mounted%s (Live mode)\n", where, disk,
-              pt->disk.model, size, disks > 1 ? "; more disks not used" : "");
+        klogf("Storage: AHCI %s, port %d disk %s %s, %s, writes would be %s; read only, not mounted%s (Live "
+              "mode)\n", where, disk, pt->disk.model, size, gs.table, gs.result,
+              disks > 1 ? "; more disks not used" : "");
     } else if (refused >= 0) {
         klogf("Storage: AHCI %s, no usable disk (port %d: %s) (Live mode)\n", where, refused,
               h->port[refused].why ? h->port[refused].why : "unknown");

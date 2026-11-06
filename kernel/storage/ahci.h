@@ -9,14 +9,18 @@
  * the block cache (blk.h), which reads its first and last sector, and ends
  * with the boot's Storage: line:
  *
- *   Storage: AHCI bb:dd.f, port P disk <model> <size>, read only, not
- *            mounted (Live mode)
+ *   Storage: AHCI bb:dd.f, port P disk <model> <size>, <table>, writes
+ *            would be ALLOWED on partition I | REFUSED: <condition>; read
+ *            only, not mounted (Live mode)
  *   Storage: AHCI bb:dd.f, no disk (Live mode)
  *   Storage: AHCI bb:dd.f, no usable disk (port P: <reason>) (Live mode)
  *   Storage: AHCI bb:dd.f, not used: <reason> (Live mode)
  *
  * Every other line of the driver starts with "ahci: " (blk.c's with
- * "blk: "), and they all come between the PCI: line and the Storage: line.
+ * "blk: ", 1.4 stage 5: part.c's with "part: ", guard.c's with "guard: "),
+ * and they all come between the PCI: line and the Storage: line. Stage 5:
+ * after the attach the disk's partition table is read and the write
+ * guard decided (guard.h); the decision is kept here (ahci_disk_guard).
  * READ ONLY: no command that writes exists in stage 4 (ahci_core.h).
  * Disk commands are for one caller at a time (stage 4: thread 0 at boot,
  * then the test=diskread reader; from stage 8 the VFS lock's holder).
@@ -34,6 +38,12 @@ void ahci_boot(const struct pci_ahci *a);
  * logged once ("ahci: port P: READ DMA EXT ... failed: ..."). 0 or
  * -AHCI_EIO. */
 int ahci_disk_read(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages);
+
+/* 1.4 stage 5: the write guard's decision for port `port`'s disk, recorded
+ * once (ahci_guard_decide, ahci_core.h): true if recorded. */
+bool ahci_disk_guard(uint32_t port, bool allows, uint64_t first, uint64_t sectors);
+/* The decision as kept: writes would be allowed on port `port`'s disk. */
+bool ahci_disk_guard_allows(uint32_t port);
 
 /* The driver's figures (report only): commands sent, the longest
  * command's register reads and ticks. */

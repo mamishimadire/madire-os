@@ -1301,17 +1301,21 @@ fi
 # PANIC or FAILED (case-sensitive: boot lines say "panic_exception" and
 # "panics"). 1.4 stage 4: between the two lines only the AHCI driver's and
 # the block cache's own lines ("ahci: ", "blk: "); without a controller
-# none (the two lines next to each other, as in stage 3).
+# none (the two lines next to each other, as in stage 3). 1.4 stage 5: also
+# the partition table's and the write guard's ("part: ", "guard: "), which
+# come after the attach, still between the two lines and never elsewhere
+# (changed: the two prefixes added to both patterns; without a controller
+# there are still none of any of the four).
 pcitest_order() {
     awk '$0 == "Filesystem self-test: PASS" { f = NR } /^PCI: / { p = NR } /^Storage: / { s = NR }
          /^Key events: / && !k { k = NR }
-         p && !s && NR > p && !/^PCI: / && !/^(ahci|blk): / { other++ }
-         /^(ahci|blk): / && (!p || s) { other++ }
+         p && !s && NR > p && !/^PCI: / && !/^(ahci|blk|part|guard): / { other++ }
+         /^(ahci|blk|part|guard): / && (!p || s) { other++ }
          END { exit !(f && p == f + 1 && s > p && k == s + 1 && !other) }' "$1" &&
         grep -qxF "$PCI_READY" "$1" && ! grep -qE 'PANIC|FAILED' "$1"
 }
 if pcitest_order "$PCI_A" && pcitest_order "$PCI_B" && pcitest_order "$PCI_C" &&
-   [ "$(grep -cE '^(ahci|blk): ' "$PCI_A")" -eq 0 ]; then
+   [ "$(grep -cE '^(ahci|blk|part|guard): ' "$PCI_A")" -eq 0 ]; then
     pass "[1.4] PCI: on all three boots the PCI: line comes right after 'Filesystem self-test: PASS' and the Storage: line right before 'Key events:', with only the AHCI driver's ahci: lines between them (none without a controller), outside every expect_lines window; System ready; no PANIC or FAILED line"
 else
     fail "[1.4] PCI: the PCI: and Storage: lines are not between 'Filesystem self-test: PASS' and 'Key events:', another line comes between them, or a boot did not reach System ready, or a PANIC or FAILED line (see serial-pci-*.log)"
@@ -1464,7 +1468,7 @@ boot_until "$AH_LOG" 120 "$PCI_READY" -m 128M -kernel "$KERNEL" -append "test=di
     -device ide-hd,drive=drtest-disk,bus=drtest-ahci.0 \
     -drive if=none,id=drtest-cd,media=cdrom -device ide-cd,drive=drtest-cd,bus=drtest-ahci.1
 AH_SHA1=$(sha256sum < "$AH_IMG" | cut -d' ' -f1)
-grep -E '^(PCI|ahci|blk|Storage|diskread): ' "$AH_LOG" | sed 's/^/      /'
+grep -E '^(PCI|ahci|blk|part|guard|Storage|diskread): ' "$AH_LOG" | sed 's/^/      /'
 # The configuration write and AHCI mode.
 AH_CMDV=$(sed -nE 's/^ahci: PCI 00:05\.0 command register 0x[0-9a-f]{4} -> 0x([0-9a-f]{4}) \(memory space on, bus master on, INTx off; read back as written\); the only configuration write$/\1/p' "$AH_LOG")
 AH_GHC=$(sed -nE 's/^ahci: AHCI version 0x[0-9a-f]{8}, CAP 0x[0-9a-f]{8}, CAP2 0x[0-9a-f]{8}, 6 ports implemented \(PI 0x0000003f\); BIOS hand-off: (not offered|done); GHC 0x[0-9a-f]{8} -> 0x([0-9a-f]{8}) \(AHCI mode on, interrupts off\); polling$/\2/p' "$AH_LOG")
@@ -1475,11 +1479,16 @@ if [ -n "$AH_CMDV" ] && [ $((16#$AH_CMDV & 0x406)) -eq $((0x406)) ] && [ "$(grep
 else
     fail "[1.4] AHCI: the command register's write line, or the controller's AHCI mode line, is missing or wrong (command ${AH_CMDV:-?}, GHC ${AH_GHC:-?})"
 fi
-# IDENTIFY against the image; the Storage: line.
+# IDENTIFY against the image; the Storage: line. 1.4 stage 5 (changed): the
+# Storage: line also names the partition table and the guard's result; the
+# pattern disk has no 0x55AA signature in LBA 0, so "no partition table,
+# writes would be REFUSED: no partition table" (the same disk, model and
+# size as before; the table and the guard are checked in stage 5's boots).
+AH_STORAGE="Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 64 MiB, no partition table, writes would be REFUSED: no partition table; read only, not mounted (Live mode)"
 if grep -qxF "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'QEMU HARDDISK', $AH_N sectors of 512 bytes (64 MiB), LBA48 yes, DMA yes; used read only" "$AH_LOG" &&
-   grep -qxF "Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 64 MiB, read only, not mounted (Live mode)" "$AH_LOG" &&
+   grep -qxF "$AH_STORAGE" "$AH_LOG" &&
    [ "$(grep -c '^Storage: ' "$AH_LOG")" -eq 1 ]; then
-    pass "[1.4] AHCI: IDENTIFY DEVICE on port 0 gives QEMU's model 'QEMU HARDDISK' and the image's $AH_N sectors of 512 bytes (LBA48, DMA); 'Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 64 MiB, read only, not mounted (Live mode)'"
+    pass "[1.4] AHCI: IDENTIFY DEVICE on port 0 gives QEMU's model 'QEMU HARDDISK' and the image's $AH_N sectors of 512 bytes (LBA48, DMA); '$AH_STORAGE'"
 else
     fail "[1.4] AHCI: the IDENTIFY line or the Storage: line differs from the image's model and size ($AH_N sectors)"
 fi
@@ -1552,3 +1561,195 @@ else
 fi
 echo "      [1.4] $(grep -E '^diskread: (speed|longest turn)' "$AH_LOG" | tr '\n' ' ')"
 echo "      [1.4] AHCI reads: $(( $(date +%s) - AH_T0 )) s (report only)"
+
+# ---- 1.4 stage 5: partition tables and the write guard ----
+
+section "[1.4] Partition tables and the write guard: read only (stage 5)"
+# docs/plans/1.4.md, S5 (D5, D10, C4, C6, C9). Eight -kernel boots at
+# -m 128M to System ready, no test= option (every boot with a disk reads
+# its partition table and decides the guard at attach), each with
+# ich9-ahci at 00:05.0 and one raw disk on port 0. The disks: an 8 MiB
+# ext2 filesystem made by mke2fs (tests/disk-lib.sh, label madire-test) in
+# an MBR disk and in a GPT disk, both with the Madire test marker
+# (tests/disk_image.py), so writes would be ALLOWED; copies of the MBR
+# disk with one thing changed (disk_image.py variant): no marker, a bad
+# marker CRC32, a wrong label, the marker's start not the partition's;
+# the marked MBR disk with a model that is not a virtual disk's (ide-hd
+# model=); and an empty disk of zero bytes (no partition table: the path
+# of MadireOS-Test's resting "empty" disk). Each boot: (1) its part:,
+# guard: and Storage: lines exactly as expected from the image
+# (disk_image.py verify gives the partition, the GPT fields and the
+# marker's CRC32s), no more part: or guard: lines, no disk error; the
+# guard's line names the first failed condition; (2) the image's SHA-256
+# the same before and after the boot. Then one check of the eight boots'
+# line order and health. Stage 5 has no write command (the read-only
+# checks above still hold); the hashes show no boot changed its disk.
+GD_T0=$(date +%s)
+GD_W=$OUT/guard-disks
+rm -rf "$GD_W" && mkdir -p "$GD_W"
+declare -A GD_SHA0=() GD_SHA1=()
+GD_OK=1
+disk_mkfs "$GD_W/fs.img" 8192 1024 128 256 "" > "$GD_W/mkfs.txt" 2>&1 || GD_OK=0
+disk_image mbr "$GD_W/fs.img" "$GD_W/mbr.img" || GD_OK=0
+disk_image gpt "$GD_W/fs.img" "$GD_W/gpt.img" || GD_OK=0
+for v in nomarker badcrc label=other-disk start; do
+    disk_image variant "$GD_W/mbr.img" "$v" "$GD_W/mbr-${v%%=*}.img" > "$GD_W/variant-${v%%=*}.txt" || GD_OK=0
+    sed 's/^/      /' "$GD_W/variant-${v%%=*}.txt"
+done
+truncate -s 16M "$GD_W/empty.img" || GD_OK=0
+GD_VM=$(disk_image verify "$GD_W/mbr.img")
+GD_VG=$(disk_image verify "$GD_W/gpt.img")
+GD_VC=$(disk_image verify "$GD_W/mbr-badcrc.img")
+sed 's/^/      mbr: /' <<< "$GD_VM"
+sed 's/^/      gpt: /' <<< "$GD_VG"
+read -r GD_S GD_N <<< "$(sed -nE 's/^TABLE mbr start=([0-9]+) sectors=([0-9]+) .*/\1 \2/p' <<< "$GD_VM")"
+read -r GD_GS GD_GN GD_FU GD_LU <<< "$(sed -nE 's/^TABLE gpt start=([0-9]+) sectors=([0-9]+) .* first_usable=([0-9]+) last_usable=([0-9]+)$/\1 \2 \3 \4/p' <<< "$GD_VG")"
+read -r GD_HC GD_AC <<< "$(sed -nE 's/^GPT header_crc=(0x[0-9a-f]{8}) .* entries_crc=(0x[0-9a-f]{8}) .*/\1 \2/p' <<< "$GD_VG")"
+GD_ALT=$(sed -nE 's/^GPT backup at=([0-9]+) .*/\1/p' <<< "$GD_VG")
+read -r GD_CS GD_CO <<< "$(sed -nE 's/^MARKER .* crc=(0x[0-9a-f]{8}) own=(0x[0-9a-f]{8}) .*/\1 \2/p' <<< "$GD_VC")"
+[ -n "${GD_S:-}" ] && [ -n "${GD_GS:-}" ] && [ -n "${GD_HC:-}" ] && [ -n "$GD_ALT" ] && [ -n "${GD_CS:-}" ] || GD_OK=0
+GD_MIB_M=$(( $(stat -c%s "$GD_W/mbr.img") / 512 >> 11 ))
+GD_MIB_G=$(( $(stat -c%s "$GD_W/gpt.img") / 512 >> 11 ))
+echo "      images: ok=$GD_OK; MBR partition $GD_S+$GD_N (${GD_MIB_M} MiB disk); GPT partition $GD_GS+$GD_GN, usable $GD_FU-$GD_LU, CRC32s $GD_HC $GD_AC, backup at $GD_ALT (${GD_MIB_G} MiB disk); bad marker CRC32 $GD_CS (computed $GD_CO)"
+
+# gd_boot <name> <image> [model]: one boot into serial-guard-<name>.log, the
+# image's SHA-256 before and after.
+gd_boot() {
+    local name=$1 img=$2 model=${3:-} log=$OUT/serial-guard-$1.log
+    GD_SHA0[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
+    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" \
+        -drive file="$img",if=none,id=gdtest-disk,format=raw -device ich9-ahci,id=gdtest-ahci,addr=0x5 \
+        -device "ide-hd,drive=gdtest-disk,bus=gdtest-ahci.0${model:+,model=$model}"
+    GD_SHA1[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
+    grep -E '^(part|guard|Storage): ' "$log" | sed "s/^/      $name: /"
+}
+# gd_lines <name> <expected lines>: each expected line exactly once; as many
+# part: and guard: lines as expected, one Storage: line, no disk error.
+gd_lines() {
+    local log=$OUT/serial-guard-$1.log l np ng
+    [ "$GD_OK" -eq 1 ] && [ -f "$log" ] || return 1
+    while IFS= read -r l; do
+        [ "$(grep -cxF -- "$l" "$log")" -eq 1 ] || { echo "      $1: missing or repeated: $l"; return 1; }
+    done <<< "$2"
+    np=$(grep -c '^part: ' <<< "$2"); ng=$(grep -c '^guard: ' <<< "$2")
+    [ "$(grep -c '^part: ' "$log")" -eq "$np" ] && [ "$(grep -c '^guard: ' "$log")" -eq "$ng" ] &&
+        [ "$(grep -c '^Storage: ' "$log")" -eq 1 ] && ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log"
+}
+# gd_hash <name> <what>: the counted hash check of one boot.
+gd_hash() {
+    echo "      $1: SHA-256 before ${GD_SHA0[$1]:-?}, after ${GD_SHA1[$1]:-?}"
+    if [ -n "${GD_SHA0[$1]:-}" ] && [ "${GD_SHA0[$1]}" = "${GD_SHA1[$1]:-}" ]; then
+        pass "[1.4] write guard, $2: the disk image's SHA-256 is the same before and after the boot (${GD_SHA0[$1]})"
+    else
+        fail "[1.4] write guard, $2: the disk image's SHA-256 changed during the boot (${GD_SHA0[$1]:-?} -> ${GD_SHA1[$1]:-?})"
+    fi
+}
+GD_DEC_ALLOW="guard: port 0: decided once, kept by the AHCI driver: writes would be ALLOWED on partition 1 (LBA %s, %s sectors); no write command exists in stage 5"
+GD_DEC_REFUSE="guard: port 0: decided once, kept by the AHCI driver: writes would be REFUSED; no write command exists in stage 5"
+GD_PART_MBR="part: port 0: MBR (disk signature 0x4d414452), 1 partition
+part: port 0: partition 1: MBR type 0x83 (Linux), LBA $GD_S, $GD_N sectors"
+GD_ST_MBR="Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_M MiB, MBR, 1 partition, writes would be"
+GD_TAIL="; read only, not mounted (Live mode)"
+
+# (1) The marked MBR disk: ALLOWED.
+gd_boot mbr "$GD_W/mbr.img"
+if gd_lines mbr "$GD_PART_MBR
+guard: port 0 partition 1: writes would be ALLOWED (virtual disk 'QEMU HARDDISK'; test marker for LBA $GD_S, $GD_N sectors; ext2 label 'madire-test')
+$(printf "$GD_DEC_ALLOW" "$GD_S" "$GD_N")
+$GD_ST_MBR ALLOWED on partition 1$GD_TAIL"; then
+    pass "[1.4] write guard, the marked MBR disk: the MBR's one Linux partition (LBA $GD_S, $GD_N sectors) read as the image holds it; all three conditions hold (QEMU HARDDISK, the marker matching the partition, label madire-test): writes would be ALLOWED on partition 1, decided once and kept by the AHCI driver; the Storage: line says so"
+else
+    fail "[1.4] write guard, the marked MBR disk: the part:, guard: or Storage: lines differ from the image's (see serial-guard-mbr.log)"
+fi
+gd_hash mbr "the marked MBR disk"
+# (2) The marked GPT disk: ALLOWED; the backup header checked and reported.
+gd_boot gpt "$GD_W/gpt.img"
+if gd_lines gpt "part: port 0: GPT (protective MBR 0xEE): revision 1.0, header 92 bytes, 128 entries of 128 bytes at LBA 2, usable LBA $GD_FU-$GD_LU, header and entry-array CRC32 valid ($GD_HC, $GD_AC), 1 partition
+part: port 0: partition 1: GPT Linux filesystem data, LBA $GD_GS, $GD_GN sectors, name 'madire-test'
+part: port 0: GPT backup header at LBA $GD_ALT: valid (report only)
+guard: port 0 partition 1: writes would be ALLOWED (virtual disk 'QEMU HARDDISK'; test marker for LBA $GD_GS, $GD_GN sectors; ext2 label 'madire-test')
+$(printf "$GD_DEC_ALLOW" "$GD_GS" "$GD_GN")
+Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_G MiB, GPT, 1 partition, writes would be ALLOWED on partition 1$GD_TAIL"; then
+    pass "[1.4] write guard, the marked GPT disk: the protective MBR, the GPT header and its entry array with their CRC32s as tests/disk_image.py wrote them ($GD_HC, $GD_AC), the Linux filesystem data partition (LBA $GD_GS, $GD_GN sectors, name madire-test) and the backup header at LBA $GD_ALT valid (report only); writes would be ALLOWED on partition 1"
+else
+    fail "[1.4] write guard, the marked GPT disk: the part:, guard: or Storage: lines differ from the image's (see serial-guard-gpt.log)"
+fi
+gd_hash gpt "the marked GPT disk"
+# (3) No marker: REFUSED at (b).
+gd_boot nomarker "$GD_W/mbr-nomarker.img"
+if gd_lines nomarker "$GD_PART_MBR
+guard: port 0 partition 1: writes would be REFUSED: (b) no Madire test marker (MADIRE-TEST-DISK) in the partition's first sector
+$GD_DEC_REFUSE
+$GD_ST_MBR REFUSED: (b) no valid test marker$GD_TAIL"; then
+    pass "[1.4] write guard, an unmarked ext2 disk: writes would be REFUSED at condition (b), no Madire test marker in the partition's first sector"
+else
+    fail "[1.4] write guard, an unmarked ext2 disk: not refused at (b) as expected (see serial-guard-nomarker.log)"
+fi
+gd_hash nomarker "the unmarked disk"
+# (4) A bad marker CRC32: REFUSED at (b), both values named.
+gd_boot badcrc "$GD_W/mbr-badcrc.img"
+if gd_lines badcrc "$GD_PART_MBR
+guard: port 0 partition 1: writes would be REFUSED: (b) test marker CRC32 $GD_CS does not match its record (computed $GD_CO)
+$GD_DEC_REFUSE
+$GD_ST_MBR REFUSED: (b) no valid test marker$GD_TAIL"; then
+    pass "[1.4] write guard, a marker with a bad CRC32: writes would be REFUSED at condition (b), the stored CRC32 $GD_CS and the computed $GD_CO (as tests/disk_image.py's own and zlib's) named"
+else
+    fail "[1.4] write guard, a marker with a bad CRC32: not refused at (b) with the image's values (see serial-guard-badcrc.log)"
+fi
+gd_hash badcrc "the bad marker CRC32"
+# (5) A wrong label: REFUSED at (c).
+gd_boot label "$GD_W/mbr-label.img"
+if gd_lines label "$GD_PART_MBR
+guard: port 0 partition 1: writes would be REFUSED: (c) ext2 label 'other-disk', not 'madire-test'
+$GD_DEC_REFUSE
+$GD_ST_MBR REFUSED: (c) not labelled madire-test$GD_TAIL"; then
+    pass "[1.4] write guard, a valid marker and the ext2 label 'other-disk': writes would be REFUSED at condition (c)"
+else
+    fail "[1.4] write guard, a wrong ext2 label: not refused at (c) as expected (see serial-guard-label.log)"
+fi
+gd_hash label "the wrong label"
+# (6) A model that is not a virtual disk's (the marked disk): REFUSED at (a).
+gd_boot model "$GD_W/mbr.img" MADIRE-REAL-DISK-TEST
+if gd_lines model "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'MADIRE-REAL-DISK-TEST', $((GD_S + GD_N)) sectors of 512 bytes ($GD_MIB_M MiB), LBA48 yes, DMA yes; used read only
+$GD_PART_MBR
+guard: port 0: writes would be REFUSED: (a) model 'MADIRE-REAL-DISK-TEST' is not QEMU HARDDISK or VBOX HARDDISK
+$GD_DEC_REFUSE
+Storage: AHCI 00:05.0, port 0 disk MADIRE-REAL-DISK-TEST $GD_MIB_M MiB, MBR, 1 partition, writes would be REFUSED: (a) not a virtual disk$GD_TAIL"; then
+    pass "[1.4] write guard, the marked disk with the model 'MADIRE-REAL-DISK-TEST' (ide-hd model=): writes would be REFUSED at condition (a), before its partitions are examined, though its marker and label are valid"
+else
+    fail "[1.4] write guard, a model that is not a virtual disk's: not refused at (a) as expected (see serial-guard-model.log)"
+fi
+gd_hash model "the non-virtual model"
+# (7) The marker's start not the partition's (its CRC32 valid): REFUSED at (b).
+gd_boot start "$GD_W/mbr-start.img"
+if gd_lines start "$GD_PART_MBR
+guard: port 0 partition 1: writes would be REFUSED: (b) test marker start LBA $((GD_S + 1)), the partition starts at LBA $GD_S
+$GD_DEC_REFUSE
+$GD_ST_MBR REFUSED: (b) no valid test marker$GD_TAIL"; then
+    pass "[1.4] write guard, a marker whose start LBA ($((GD_S + 1))) is not the partition's ($GD_S), its CRC32 valid: writes would be REFUSED at condition (b)"
+else
+    fail "[1.4] write guard, the marker's start not the partition's: not refused at (b) as expected (see serial-guard-start.log)"
+fi
+gd_hash start "the marker's start mismatch"
+# (8) The empty disk: no partition table, REFUSED.
+gd_boot empty "$GD_W/empty.img"
+if gd_lines empty "part: port 0: no partition table (LBA 0 has no 0x55AA signature)
+guard: port 0: writes would be REFUSED: no partition table
+$GD_DEC_REFUSE
+Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 16 MiB, no partition table, writes would be REFUSED: no partition table$GD_TAIL"; then
+    pass "[1.4] write guard, an empty disk of zero bytes (as MadireOS-Test's resting disk): no partition table, writes would be REFUSED, Live mode"
+else
+    fail "[1.4] write guard, the empty disk: the lines differ from 'no partition table' and REFUSED (see serial-guard-empty.log)"
+fi
+gd_hash empty "the empty disk"
+# The eight boots' line order and health.
+GD_BAD=""
+for n in mbr gpt nomarker badcrc label model start empty; do
+    pcitest_order "$OUT/serial-guard-$n.log" || GD_BAD="$GD_BAD $n"
+done
+if [ -z "$GD_BAD" ]; then
+    pass "[1.4] write guard boots: on all eight the part: and guard: lines come with the driver's own between the PCI: and Storage: lines (Storage: right before 'Key events:'), System ready; no PANIC or FAILED line"
+else
+    fail "[1.4] write guard boots: lines out of place, no System ready, or a PANIC or FAILED line in:$GD_BAD"
+fi
+echo "      [1.4] partition and guard boots: $(( $(date +%s) - GD_T0 )) s (report only)"

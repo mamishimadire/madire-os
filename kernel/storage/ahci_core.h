@@ -208,6 +208,11 @@ struct ahci_port {
     uint32_t errors, resets;
     uint32_t commands;      /* commands sent to this port */
     struct ahci_error last;
+    /* 1.4 stage 5: the write guard's decision for this disk (C4), made
+     * once at attach (ahci_guard_decide) and kept here only. */
+    bool guard_decided;
+    bool guard_allows;
+    uint64_t guard_first, guard_sectors;    /* the partition it was made for */
 };
 
 struct ahci_hba {
@@ -241,6 +246,18 @@ int ahci_read(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, co
 /* IDENTIFY DEVICE's 256 words: the disk's model, size and features; false
  * (with *why) if Madire does not use it. */
 bool ahci_parse_identify(const uint16_t *w, struct ahci_disk *d, const char **why);
+
+/* 1.4 stage 5: the write guard's decision for port `p`'s disk (guard_core.h),
+ * recorded once: true if recorded; false, and nothing changed, if `p` is
+ * not a disk in use or its decision was already made. A decision to allow
+ * needs a partition [first, first + sectors) inside the disk, else it is
+ * recorded as refused. Stage 5 has no write command: nothing reads the
+ * decision but the boot's log; from stage 10 the command that writes
+ * refuses unless ahci_guard_allows. */
+bool ahci_guard_decide(struct ahci_hba *h, uint32_t p, bool allows, uint64_t first, uint64_t sectors);
+
+/* True only if port `p`'s disk is in use and its decision allows writing. */
+bool ahci_guard_allows(const struct ahci_hba *h, uint32_t p);
 
 /* The opcode Madire sends for `op` (0 for none). */
 uint8_t ahci_opcode(enum ahci_op op);
