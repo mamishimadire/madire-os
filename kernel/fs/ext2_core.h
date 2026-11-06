@@ -230,6 +230,13 @@ int ext2_lookup(struct ext2_fs *fs, const struct ext2_inode *dir, const char *na
 /* A fast symbolic link: its target is in i_block[] (no data block). */
 bool ext2_fast_link(const struct ext2_fs *fs, const struct ext2_inode *in);
 
+/* Forgets every kept block (the group descriptors', the inode table's, the
+ * folder's and the three indirect levels'), so the next access reads the
+ * disk again. For a caller that changed the disk under the core: the host
+ * tests in stage 6; the write stages (S9, S10) update or drop the blocks
+ * they write. */
+void ext2_cache_drop(struct ext2_fs *fs);
+
 /* The largest file size the block map can address (bytes). */
 uint64_t ext2_max_size(const struct ext2_fs *fs);
 

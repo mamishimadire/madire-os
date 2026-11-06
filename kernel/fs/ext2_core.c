@@ -43,6 +43,15 @@ static int ext2_load(struct ext2_fs *fs, uint32_t blk, uint8_t *buf, bool *valid
     return EXT2_OK;
 }
 
+void ext2_cache_drop(struct ext2_fs *fs)
+{
+    fs->gdt_valid = false;
+    fs->itb_valid = false;
+    fs->dirb_valid = false;
+    for (uint32_t d = 0; d < 3; d++)
+        fs->ind_valid[d] = false;
+}
+
 uint64_t ext2_max_size(const struct ext2_fs *fs)
 {
     return fs->max_blocks * fs->block_size;

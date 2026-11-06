@@ -411,17 +411,20 @@ static void test_links(void)
     /* A fast link with an attribute block counted in i_blocks. */
     p32(ioff(15) + 104, 200);
     p32(ioff(15) + 28, 2);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(15), 0);
     CHECK(ext2_fast_link(&fs, &in));
     /* i_blocks says a data block: read through the map, where "hell" is a
      * block number far beyond the last. */
     p32(ioff(15) + 104, 0);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(15), 0);
     CHECK(!ext2_fast_link(&fs, &in));
     CHECK_EQ(ext2_read(&fs, &in, 0, buf, sizeof buf), EXT2_ECORRUPT);
     /* A link of 60 bytes or more is never fast. */
     inode(15, 0xA1FF, 60, 1);
     p32(ioff(15) + 28, 0);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(15), 0);
     CHECK(!ext2_fast_link(&fs, &in));
 }
@@ -614,13 +617,16 @@ static void test_inode_bounds(void)
     CHECK_EQ(get(IPG), EXT2_OK);
     /* The size's high 32 bits: a regular file in revision 1 only. */
     p32(ioff(12) + 108, 1);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(12), 0);
     CHECK_EQ(in.size, (1ull << 32) + 5);
     p32(ioff(13) + 108, 1);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(13), 0);
     CHECK_EQ(in.size, 1024);
     /* A size beyond the map's reach. */
     p32(ioff(12) + 108, 0x7FFFFFFF);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(12), 0);
     CHECK_EQ(ext2_read(&fs, &in, 0, buf, 4), EXT2_ECORRUPT);
     p32(ioff(12) + 108, 0);
@@ -634,18 +640,22 @@ static void test_inode_bounds(void)
     CHECK_EQ(t_mount(), EXT2_OK);
     uint64_t p = 256;
     iblock(12, 0, NBLK);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(12), 0);
     CHECK_EQ(ext2_bmap(&fs, &in, 0, &pb), EXT2_ECORRUPT);
     CHECK_EQ(ext2_read(&fs, &in, 0, buf, 4), EXT2_ECORRUPT);
     iblock(12, 0, 0xFFFFFFFF);
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(12), 0);
     CHECK_EQ(ext2_read(&fs, &in, 0, buf, 4), EXT2_ECORRUPT);
     iblock(14, 12, NBLK);                                   /* the single indirect block itself */
+    ext2_cache_drop(&fs);
     CHECK_EQ(get(14), 0);
     CHECK_EQ(ext2_bmap(&fs, &in, 12, &pb), EXT2_ECORRUPT);
     CHECK_EQ(ext2_bmap(&fs, &in, 0, &pb), EXT2_OK);          /* the direct block unaffected */
     CHECK_EQ(pb, B_D0);
     iblock(14, 12, B_IND);
+    ext2_cache_drop(&fs);
     p32(boff(B_IND), NBLK);                                 /* an entry of it */
     fs.ind_valid[0] = false;
     CHECK_EQ(get(14), 0);
@@ -821,6 +831,76 @@ static void test_dir_index(void)
     CHECK_EQ(bad_reads, 0);
 }
 
+/* The kept blocks (1.4 stage 6 fix): a repeated inode, folder or indirect
+ * lookup reads nothing from the device; after ext2_cache_drop it reads
+ * exactly the blocks it needs again. `reads` counts every device read. */
+static void test_cache(void)
+{
+    struct ext2_dir_iter it = { 0 };
+    struct ext2_dirent de;
+    memset(&de, 0, sizeof de);
+    uint32_t pb = 0;
+    int r0 = 0;
+    std_image(1024, 128, 1);
+    bad_reads = 0;
+    CHECK_EQ(t_mount(), EXT2_OK);
+    CHECK_EQ(reads, 3);                     /* the superblock, the descriptors, the root's inode block */
+    /* Inodes: 12 and 13 share an inode-table block (inodes 9-16). */
+    CHECK_EQ(get(12), 0);
+    CHECK_EQ(reads, 4);                     /* that block, once */
+    r0 = reads;
+    CHECK_EQ(get(12), 0);
+    CHECK_EQ(get(13), 0);
+    CHECK_EQ(reads, r0);                    /* no new device read */
+    ext2_cache_drop(&fs);
+    CHECK_EQ(get(12), 0);
+    CHECK_EQ(reads, r0 + 2);                /* the descriptors' block and the inode block */
+    CHECK_EQ(in.size, 5);
+    /* A folder: its block is read once for a whole walk, and not again. */
+    CHECK_EQ(get(2), 0);
+    r0 = reads;
+    it.off = 0;
+    while (ext2_dir_next(&fs, &in, &it, &de) == 1)
+        ;
+    CHECK_EQ(reads, r0 + 1);
+    r0 = reads;
+    it.off = 0;
+    while (ext2_dir_next(&fs, &in, &it, &de) == 1)
+        ;
+    uint32_t ino = 0;
+    CHECK_EQ(ext2_lookup(&fs, &in, "slow", 4, &ino), EXT2_OK);
+    CHECK_EQ(ino, 16);
+    CHECK_EQ(reads, r0);
+    ext2_cache_drop(&fs);
+    it.off = 0;
+    CHECK_EQ(ext2_dir_next(&fs, &in, &it, &de), 1);
+    CHECK_EQ(reads, r0 + 1);                /* the folder's block again */
+    /* Indirect blocks: the triple path keeps its three levels. */
+    CHECK_EQ(get(14), 0);
+    uint64_t lb = 12 + 256 + 256 * 256;
+    r0 = reads;
+    CHECK_EQ(ext2_bmap(&fs, &in, lb, &pb), EXT2_OK);
+    CHECK_EQ(pb, B_D3);
+    CHECK_EQ(reads, r0 + 3);                /* TIND, its DIND, its IND */
+    r0 = reads;
+    CHECK_EQ(ext2_bmap(&fs, &in, lb, &pb), EXT2_OK);
+    CHECK_EQ(ext2_bmap(&fs, &in, lb + 1, &pb), EXT2_OK);
+    CHECK_EQ(reads, r0);
+    ext2_cache_drop(&fs);
+    CHECK_EQ(ext2_bmap(&fs, &in, lb, &pb), EXT2_OK);
+    CHECK_EQ(pb, B_D3);
+    CHECK_EQ(reads, r0 + 3);
+    /* Without a drop, a change on the device is not seen (the kept copy is
+     * used); with one, it is. */
+    p32(boff(B_TIND2), B_D2);
+    CHECK_EQ(ext2_bmap(&fs, &in, lb, &pb), EXT2_OK);
+    CHECK_EQ(pb, B_D3);
+    ext2_cache_drop(&fs);
+    CHECK_EQ(ext2_bmap(&fs, &in, lb, &pb), EXT2_OK);
+    CHECK_EQ(pb, B_D2);
+    CHECK_EQ(bad_reads, 0);
+}
+
 static void test_misc(void)
 {
     CHECK(strcmp(ext2_err_str(EXT2_EINCOMPAT), "EINCOMPAT") == 0);
@@ -840,6 +920,7 @@ int main(void)
     RUN(test_inode_bounds);
     RUN(test_dirs);
     RUN(test_dir_index);
+    RUN(test_cache);
     RUN(test_misc);
     return unit_report("ext2_core");
 }
