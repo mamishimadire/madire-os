@@ -216,8 +216,12 @@ uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64
 /* getcwd: the path of folder cwd into buf (size bytes), with its NUL:
  * its length with the NUL, or -FS_ENOENT (cwd removed: no name left) or
  * -FS_ENAMETOOLONG (the path and its NUL need more than size bytes). The
- * VFS lock held. 1.4 stage 7: from v's root, across mounts (a mounted
- * root is named by the folder it is mounted on). */
-int64_t fsys_cwd_path(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size);
+ * VFS lock held. 1.4 stage 7: fsys_cwd_path_v does it from v's root,
+ * across mounts (a mounted root is named by the folder it is mounted on;
+ * the kernel's getcwd and the shell); fsys_cwd_path is its RAM-filesystem
+ * form from root (a folder of the RAM filesystem alone), as before
+ * (tests/unit/test_syscall_dir.c). */
+int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size);
+int64_t fsys_cwd_path_v(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size);
 
 #endif

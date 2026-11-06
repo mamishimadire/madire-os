@@ -311,7 +311,20 @@ uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64
     return cur;
 }
 
-int64_t fsys_cwd_path(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size)
+int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size)
+{
+    /* The RAM filesystem alone, at number 0 (as fsys_dir_fill), with root
+     * as "/". Zeroed as static data and only its root set here: a local
+     * one would need a memset, which the kernel has none of. The VFS lock
+     * held, as for every caller. */
+    static struct vfs ram_only = {
+        .mounts = { .m = { { .ops = &ramfs_ops } }, .count = 1 },
+    };
+    ram_only.root = (struct vnode *)root;       /* only read through v */
+    return fsys_cwd_path_v(&ram_only, cwd, buf, size);
+}
+
+int64_t fsys_cwd_path_v(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size)
 {
     const struct vnode *root = v->root;
     if (cwd->nlink == 0)

@@ -460,17 +460,17 @@ static void test_dir_list_and_cwd(void)
     CHECK_EQ(fsys_dir_fill(R, 0, b2, sizeof(b2), &next2, &more2), used);
     CHECK(memcmp(b, b2, sizeof(b)) == 0 && next == next2 && more == more2);
     char path[64];
-    CHECK_EQ(fsys_cwd_path(&v, broot, path, sizeof(path)), 7);
+    CHECK_EQ(fsys_cwd_path_v(&v, broot, path, sizeof(path)), 7);
     CHECK(strcmp(path, "/a/mnt") == 0);
-    CHECK_EQ(fsys_cwd_path(&v, croot, path, sizeof(path)), 10);
+    CHECK_EQ(fsys_cwd_path_v(&v, croot, path, sizeof(path)), 10);
     CHECK(strcmp(path, "/a/mnt/bd") == 0);
     struct vnode *cd = NULL;
     CHECK_EQ(vfs_create(&v, R, "/a/mnt/bd/cd", VNODE_DIR, 0755, &cd), 0);
-    CHECK_EQ(fsys_cwd_path(&v, cd, path, sizeof(path)), 13);
+    CHECK_EQ(fsys_cwd_path_v(&v, cd, path, sizeof(path)), 13);
     CHECK(strcmp(path, "/a/mnt/bd/cd") == 0);
-    CHECK_EQ(fsys_cwd_path(&v, R, path, sizeof(path)), 2);
+    CHECK_EQ(fsys_cwd_path_v(&v, R, path, sizeof(path)), 2);
     CHECK(strcmp(path, "/") == 0);
-    CHECK_EQ(fsys_cwd_path(&v, cd, path, 12), -FS_ENAMETOOLONG);
+    CHECK_EQ(fsys_cwd_path_v(&v, cd, path, 12), -FS_ENAMETOOLONG);
 }
 
 /* Everything removed again: no node, heap block or page left in any of the

@@ -297,7 +297,7 @@ static int64_t fs_cwd_path(void *ctx, char *buf, uint32_t size)
 {
     (void)ctx;
     fd_vfs_acquire();
-    int64_t r = fsys_cwd_path(vfs_root(), cwd_node(), buf, size);
+    int64_t r = fsys_cwd_path_v(vfs_root(), cwd_node(), buf, size);
     fd_vfs_release();
     return r;
 }

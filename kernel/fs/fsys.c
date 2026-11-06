@@ -410,7 +410,7 @@ int64_t fsys_sys_getcwd(uint64_t ubuf, uint64_t size)
 {
     char path[PATH_MAX_BYTES];
     fd_vfs_acquire();
-    int64_t len = fsys_cwd_path(vfs_root(), cwd_node(), path, sizeof(path));
+    int64_t len = fsys_cwd_path_v(vfs_root(), cwd_node(), path, sizeof(path));
     fd_vfs_release();
     if (len < 0)
         return len;                             /* ENOENT, ENAMETOOLONG */
