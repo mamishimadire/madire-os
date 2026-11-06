@@ -228,5 +228,12 @@
 # not added: the test=diskread boot's Storage: line (now also naming the
 # partition table and the guard's result) and pcitest_order (the part:
 # and guard: lines allowed between the PCI: and Storage: lines).
-1.4 40
-unit-suites 99
+# Stage 6: 12 more in part static, the ext2 read core (pure, not linked):
+# compiled with the kernel's flags, not in madire.elf (1); tests/ext2dump.c
+# against debugfs on mke2fs images at 1, 2 and 4 KiB blocks, revision 0,
+# large_file, dir_index and ext_attr (7); the feature policy and the states
+# (3: unknown INCOMPAT refused, unknown RO_COMPAT read only, the states
+# reported); the sanitizers over 104 corrupted images (1); 1 unit suite
+# (ext2_core), and a new case in test_guard_core (the label madire-test2).
+1.4 52
+unit-suites 100

@@ -31,7 +31,9 @@
 # the end, the test-image tools' probe and self-checks (tests/disk-lib.sh).
 # 1.4 stage 3: after them, the PCI scan's three -kernel boots (tests/qmp_pci.py).
 # 1.4 stage 4: at the end, the AHCI driver's read-only checks (source and
-# madire.elf) and its test=diskread boot.
+# madire.elf) and its test=diskread boot. 1.4 stage 6: at the end, the ext2
+# read core's checks (tests/ext2dump.c against debugfs, the feature policy,
+# the sanitizers over corrupted images); no boot.
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -1753,3 +1755,250 @@ else
     fail "[1.4] write guard boots: lines out of place, no System ready, or a PANIC or FAILED line in:$GD_BAD"
 fi
 echo "      [1.4] partition and guard boots: $(( $(date +%s) - GD_T0 )) s (report only)"
+
+# ---- 1.4 stage 6: the ext2 read core ----
+
+section "[1.4] The ext2 read core: tests/ext2dump.c against debugfs, the feature policy, corrupted images (stage 6)"
+# docs/plans/1.4.md, S6 (D11, D12, C7; risks 25, 31, 37). The core
+# (kernel/fs/ext2_core.c) is pure and not linked into the kernel. (1)
+# Compiled with the kernel's flags it needs no symbol (no libgcc or libc
+# helper) and uses no SSE/x87 register, and madire.elf holds none of its
+# symbols. (2-8) ext2 images made by mke2fs (tests/disk-lib.sh,
+# tests/mke2fs.conf) from the fixed sample trees of tests/ext2_view.py: 1, 2
+# and 4 KiB blocks, 128- and 256-byte inodes, revision 1 and revision 0, a
+# sparse file above 2 GiB, a folder indexed by e2fsck -D (dir_index), files
+# with an attribute block (debugfs ea_set; ext_attr); resize_inode is in
+# every revision-1 image. For each, tests/ext2dump.c (built from the core)
+# must list exactly what debugfs reads (tests/ext2_view.py view): every path
+# with its inode number, mode, size, link count, flags, attribute block and
+# the SHA-256 of its contents (of a link's target), and the same superblock
+# figures. (9-11) The feature policy (D11) on copies of the 1 KiB image with
+# one superblock field changed: an unknown INCOMPAT flag is not mounted, an
+# unknown RO_COMPAT flag is read only (and still read exactly), the clean
+# and error states are reported (D12 decides at the mount, stage 8). (12)
+# ext2dump built again with -fsanitize=address,undefined over the fixed set
+# of corrupted copies of a small image (tests/ext2_view.py corrupt: seeded
+# bit flips and chosen bad values in the superblock, the group descriptors,
+# the inode table, folder blocks and indirect blocks): no sanitizer report,
+# no crash, no hang (10 s each), no read outside the image; only the exit
+# codes 0, 1 or 2. Nothing boots; everything stays under $OUT/ext2-core.
+E2_T0=$(date +%s)
+E2_ROOT=$(dirname "$0")/..
+E2_W=$OUT/ext2-core
+rm -rf "$E2_W" && mkdir -p "$E2_W"
+E2_DUMP=$OUT/ext2dump
+E2_PY=(python3 -I -B "$(dirname "$0")/ext2_view.py")
+
+# (1) The core with the kernel's flags, not linked.
+E2_OBJ=$OUT/kernel/fs/ext2_core.o
+E2_UNDEF=$(nm -u "$E2_OBJ" 2>/dev/null | awk '{ print $2 }' | tr '\n' ' ' | sed 's/ *$//')
+E2_SSE=$(objdump -d "$E2_OBJ" 2>/dev/null | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]')
+E2_INELF=$(nm "$OUT/madire.elf" 2>/dev/null | grep -cE ' ext2_')
+echo "      ext2_core.o: text $(size "$E2_OBJ" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes (report only); undefined: ${E2_UNDEF:-none}; SSE/x87: $E2_SSE; ext2_ symbols in madire.elf: $E2_INELF"
+if [ -s "$E2_OBJ" ] && [ -z "$E2_UNDEF" ] && [ "$E2_SSE" -eq 0 ] && [ "$E2_INELF" -eq 0 ] && [ -x "$E2_DUMP" ]; then
+    pass "[1.4] ext2 read core: kernel/fs/ext2_core.c compiled with the kernel's flags needs no symbol (no libgcc or libc helper) and uses no SSE/x87 register; madire.elf holds none of its symbols (not linked); tests/ext2dump.c is built from it"
+else
+    fail "[1.4] ext2 read core: the object is missing, needs symbols (${E2_UNDEF:-none}), uses SSE/x87 ($E2_SSE), madire.elf has ext2_ symbols ($E2_INELF), or no ext2dump"
+fi
+
+# The images. e2_mkimg <name> <tree kind> <KiB> <block size> <inode size>
+# <inodes> [more mke2fs options...]; its exit status in E2_MKRC.
+declare -A E2_MKRC=()
+e2_mkimg() {
+    local name=$1 tree=$E2_W/tree-$2 rc=0
+    [ -d "$tree" ] || "${E2_PY[@]}" tree "$tree" "$2" || rc=1
+    [ "$rc" -eq 0 ] && { disk_mkfs "$E2_W/$name.img" "$3" "$4" "$5" "$6" "$tree" "${@:7}" > "$E2_W/mkfs-$name.txt" 2>&1 || rc=$?; }
+    sed "s/^/      mke2fs ($name): /" "$E2_W/mkfs-$name.txt" 2>/dev/null
+    E2_MKRC[$name]=$rc
+}
+e2_mkimg b1k full 16384 1024 128 512
+e2_mkimg b2k full 81920 2048 256 512
+e2_mkimg b4k full 163840 4096 256 512
+e2_mkimg rev0 full 16384 1024 128 512 -r 0 -O none
+e2_mkimg large large 32768 1024 128 64
+e2_mkimg dirindex dirindex 8192 1024 128 512
+e2_mkimg xattr xattr 8192 1024 128 64
+e2_mkimg corpus corpus 2048 1024 128 128
+# dir_index: e2fsck -fyD indexes the 400-entry folder (exit 0 or 1: changed).
+E2_FSCK=$(disk_tool e2fsck)
+LC_ALL=C E2FSCK_CONFIG=/dev/null "$E2_FSCK" -fyD "$E2_W/dirindex.img" > "$E2_W/fsck-dirindex.txt" 2>&1
+E2_DRC=$?
+[ "$E2_DRC" -le 1 ] || E2_MKRC[dirindex]=$E2_DRC
+# ext_attr: two attributes on a file and one on a folder (debugfs -w, on
+# this test image only); with 128-byte inodes they go into an attribute block.
+printf '%s\n' "ea_set /attr/a.txt user.madire madire-os" "ea_set /attr/a.txt user.stage six" \
+    "ea_set /attr/folder user.madire folder" > "$E2_W/xattr.cmd"
+LC_ALL=C "$(disk_tool debugfs)" -w -f "$E2_W/xattr.cmd" "$E2_W/xattr.img" > "$E2_W/xattr-set.txt" 2>&1 || E2_MKRC[xattr]=1
+echo "      images: $(for e2_n in b1k b2k b4k rev0 large dirindex xattr corpus; do printf '%s=%s ' "$e2_n" "${E2_MKRC[$e2_n]}"; done)(e2fsck -fyD exit $E2_DRC)"
+
+# e2_compare <name>: ext2dump against debugfs's view of the same image: the
+# same P lines (sorted), the same "EXT2 rev=" line, exit 0, read-write.
+e2_compare() {
+    local img=$E2_W/$1.img d v n rc
+    "$E2_DUMP" "$img" > "$E2_W/$1.dump" 2> "$E2_W/$1.dump-err"
+    rc=$?
+    "${E2_PY[@]}" view "$img" > "$E2_W/$1.view" 2> "$E2_W/$1.view-err"
+    "${E2_PY[@]}" blocks "$img" > "$E2_W/$1.blocks" 2>/dev/null
+    d=$(grep '^P ' "$E2_W/$1.dump" | LC_ALL=C sort)
+    v=$(grep '^P ' "$E2_W/$1.view" | LC_ALL=C sort)
+    n=$(grep -c . <<< "$d")
+    grep -E '^EXT2 ' "$E2_W/$1.dump" | sed "s/^/      $1: /"
+    echo "      $1: ext2dump exit $rc, $n paths; debugfs $(grep -c . <<< "$v") paths; $(grep -E '^DONE' "$E2_W/$1.dump"); image SHA-256 $(sha256sum < "$img" | cut -c1-16)..."
+    diff <(echo "$d") <(echo "$v") | head -n 10 | sed "s/^/      $1 differs: /"
+    [ "${E2_MKRC[$1]}" = 0 ] && [ "$rc" -eq 0 ] && [ "$n" -gt 1 ] && [ "$d" = "$v" ] &&
+        [ "$(grep -m1 '^EXT2 rev=' "$E2_W/$1.dump")" = "$(grep -m1 '^EXT2 rev=' "$E2_W/$1.view")" ] &&
+        grep -qxF "EXT2 policy: read-write" "$E2_W/$1.dump"
+}
+# e2_rev1 <name>: revision 1 with resize_inode: reserved descriptor blocks
+# (as debugfs reads them, in the compared line) and inode 7 read.
+e2_rev1() {
+    grep -qE '^EXT2 rev=1 .* reserved_gdt=[1-9][0-9]*$' "$E2_W/$1.dump" &&
+        grep -qE '^EXT2 resize_inode: inode 7 mode 100600 ' "$E2_W/$1.dump"
+}
+# e2_line <name> <path> <regex>: the path's P line in the dump matches.
+e2_line() { grep -E "^P $2 " "$E2_W/$1.dump" | grep -qE "$3"; }
+e2_groups() { sed -nE 's/^EXT2 groups=([0-9]+) .*/\1/p' "$E2_W/$1.dump"; }
+
+if e2_compare b1k && e2_rev1 b1k && [ "$(e2_groups b1k)" -ge 2 ] &&
+   grep -qE '^BLOCKMAP /sparse-tind.bin [0-9]+ ind=[0-9]+ dind=[0-9]+ tind=1$' "$E2_W/b1k.blocks" &&
+   grep -qE '^BLOCKMAP /big.bin [0-9]+ ind=[0-9]+ dind=1 tind=0$' "$E2_W/b1k.blocks" &&
+   e2_line b1k /link-fast 'mode=120777 size=38 ' && e2_line b1k /link-slow 'mode=120777 size=87 ' &&
+   e2_line b1k /hard-1.txt 'links=2 ' && e2_line b1k /pipe 'mode=010644 '; then
+    pass "[1.4] ext2 read core, 1 KiB blocks, 128-byte inodes, revision 1, $(e2_groups b1k) groups: ext2dump lists exactly debugfs's paths with their inode numbers, modes, sizes, link counts, flags, attribute blocks and SHA-256s ($(grep -c '^P ' "$E2_W/b1k.dump") paths: files through the double indirect block, a sparse file through the triple indirect block, a 255-byte name, a fast and a slow link, a hard link, a FIFO, a multi-block folder), and debugfs's superblock figures (resize_inode's reserved blocks included)"
+else
+    fail "[1.4] ext2 read core, 1 KiB blocks: ext2dump's listing differs from debugfs's, or the image lacks its triple indirect file, links or groups (see $E2_W/b1k.*)"
+fi
+if e2_compare b2k && e2_rev1 b2k && [ "$(e2_groups b2k)" -ge 2 ] && grep -qE '^EXT2 rev=1 block=2048 inode=256 ' "$E2_W/b2k.dump" &&
+   grep -qE '^BLOCKMAP /double.bin [0-9]+ ind=[0-9]+ dind=1 tind=0$' "$E2_W/b2k.blocks"; then
+    pass "[1.4] ext2 read core, 2 KiB blocks, 256-byte inodes, revision 1, $(e2_groups b2k) groups: ext2dump lists exactly what debugfs reads ($(grep -c '^P ' "$E2_W/b2k.dump") paths, double.bin through the double indirect block)"
+else
+    fail "[1.4] ext2 read core, 2 KiB blocks: ext2dump's listing differs from debugfs's (see $E2_W/b2k.*)"
+fi
+if e2_compare b4k && e2_rev1 b4k && [ "$(e2_groups b4k)" -ge 2 ] && grep -qE '^EXT2 rev=1 block=4096 inode=256 ' "$E2_W/b4k.dump" &&
+   grep -qE '^BLOCKMAP /double.bin [0-9]+ ind=[0-9]+ dind=1 tind=0$' "$E2_W/b4k.blocks"; then
+    pass "[1.4] ext2 read core, 4 KiB blocks, 256-byte inodes, revision 1, $(e2_groups b4k) groups: ext2dump lists exactly what debugfs reads ($(grep -c '^P ' "$E2_W/b4k.dump") paths, double.bin through the double indirect block)"
+else
+    fail "[1.4] ext2 read core, 4 KiB blocks: ext2dump's listing differs from debugfs's (see $E2_W/b4k.*)"
+fi
+if e2_compare rev0 && grep -qE '^EXT2 rev=0 block=1024 inode=128 .* first_ino=11 reserved_gdt=0$' "$E2_W/rev0.dump" &&
+   grep -qE '^EXT2 features compat=0x0 incompat=0x0 ro_compat=0x0;' "$E2_W/rev0.dump"; then
+    pass "[1.4] ext2 read core, revision 0 (no features: 16-bit name lengths, no file types, first inode 11, 128-byte inodes): ext2dump lists exactly what debugfs reads ($(grep -c '^P ' "$E2_W/rev0.dump") paths)"
+else
+    fail "[1.4] ext2 read core, revision 0: ext2dump's listing differs from debugfs's, or the image is not revision 0 without features (see $E2_W/rev0.*)"
+fi
+if e2_compare large && e2_rev1 large && e2_line large /large.bin 'size=2147484672 ' &&
+   grep -qE '^BLOCKMAP /large.bin [0-9]+ ind=[0-9]+ dind=[0-9]+ tind=1$' "$E2_W/large.blocks"; then
+    pass "[1.4] ext2 read core, large_file: a sparse file of 2 GiB + 1 KiB (its last block through the triple indirect block) read with the same size and SHA-256 as debugfs's"
+else
+    fail "[1.4] ext2 read core, large_file: the file above 2 GiB differs from debugfs's reading (see $E2_W/large.*)"
+fi
+if e2_compare dirindex && e2_rev1 dirindex && e2_line dirindex /many 'flags=0x1000 ' &&
+   [ "$(grep -c '^P /many/' "$E2_W/dirindex.dump")" -eq 400 ]; then
+    pass "[1.4] ext2 read core, dir_index: a folder of 400 entries indexed by e2fsck -D (flag 0x1000) read in its on-disk order, its index blocks skipped: exactly debugfs's 400 entries"
+else
+    fail "[1.4] ext2 read core, dir_index: the indexed folder's entries differ from debugfs's, or it is not indexed (see $E2_W/dirindex.*)"
+fi
+if e2_compare xattr && e2_rev1 xattr && e2_line xattr /attr/a.txt 'acl=[1-9][0-9]* ' && e2_line xattr /attr/folder 'acl=[1-9][0-9]* ' &&
+   e2_line xattr /attr/b.txt 'acl=0 '; then
+    pass "[1.4] ext2 read core, ext_attr: a file and a folder with an attribute block (debugfs ea_set) read as debugfs reads them, their attribute blocks reported, the contents unchanged"
+else
+    fail "[1.4] ext2 read core, ext_attr: the files with attribute blocks differ from debugfs's reading, or no attribute block was made (see $E2_W/xattr.*)"
+fi
+
+# (9-11) The feature policy and the states: copies of b1k.img.
+E2_B1K=$(grep '^P ' "$E2_W/b1k.dump" 2>/dev/null | LC_ALL=C sort)
+declare -A E2_PRC=()
+for e2_spec in "inc-meta $((1024 + 96)) 4 0x10 or" "inc-high $((1024 + 96)) 4 0x80000000 or" \
+               "ro-huge $((1024 + 100)) 4 0x8 or" "ro-high $((1024 + 100)) 4 0x80000000 or" \
+               "st-dirty $((1024 + 58)) 2 0x0" "st-error $((1024 + 58)) 2 0x3"; do
+    read -r e2_x e2_off e2_len e2_val e2_how <<< "$e2_spec"
+    # shellcheck disable=SC2086
+    "${E2_PY[@]}" set "$E2_W/b1k.img" "$E2_W/$e2_x.img" "$e2_off" "$e2_len" "$e2_val" $e2_how | sed 's/^/      /'
+    "$E2_DUMP" "$E2_W/$e2_x.img" > "$E2_W/$e2_x.dump" 2>&1
+    E2_PRC[$e2_x]=$?
+    grep -E '^EXT2 (mount|policy|state)' "$E2_W/$e2_x.dump" | sed "s/^/      $e2_x: /"
+    echo "      $e2_x: exit ${E2_PRC[$e2_x]}, $(grep -c '^P ' "$E2_W/$e2_x.dump") paths"
+done
+e2_plines() { grep '^P ' "$E2_W/$1.dump" | LC_ALL=C sort; }
+E2_INC_WHY="EXT2 mount: EINCOMPAT (features: an unknown INCOMPAT flag (not mounted))"
+if [ "${E2_PRC[inc-meta]}" = 1 ] && [ "${E2_PRC[inc-high]}" = 1 ] &&
+   grep -qxF "$E2_INC_WHY" "$E2_W/inc-meta.dump" && grep -qxF "$E2_INC_WHY" "$E2_W/inc-high.dump" &&
+   grep -qxF "EXT2 policy: not mounted (unknown INCOMPAT 0x10)" "$E2_W/inc-meta.dump" &&
+   grep -qxF "EXT2 policy: not mounted (unknown INCOMPAT 0x80000000)" "$E2_W/inc-high.dump" &&
+   ! grep -q '^P ' "$E2_W/inc-meta.dump" "$E2_W/inc-high.dump"; then
+    pass "[1.4] ext2 feature policy (D11): an unknown INCOMPAT flag (meta_bg 0x10, or 0x80000000) is not mounted: EINCOMPAT, nothing read"
+else
+    fail "[1.4] ext2 feature policy (D11): an image with an unknown INCOMPAT flag was not refused as expected (see $E2_W/inc-*.dump)"
+fi
+"${E2_PY[@]}" view "$E2_W/ro-huge.img" > "$E2_W/ro-huge.view" 2>/dev/null
+if [ "${E2_PRC[ro-huge]}" = 0 ] && [ "${E2_PRC[ro-high]}" = 0 ] &&
+   grep -qxF "EXT2 policy: read-only (unknown RO_COMPAT 0x8)" "$E2_W/ro-huge.dump" &&
+   grep -qxF "EXT2 policy: read-only (unknown RO_COMPAT 0x80000000)" "$E2_W/ro-high.dump" &&
+   [ -n "$E2_B1K" ] && [ "$(e2_plines ro-huge)" = "$E2_B1K" ] && [ "$(e2_plines ro-high)" = "$E2_B1K" ] &&
+   [ "$(grep '^P ' "$E2_W/ro-huge.view" | LC_ALL=C sort)" = "$E2_B1K" ]; then
+    pass "[1.4] ext2 feature policy (D11): an unknown RO_COMPAT flag (huge_file 0x8, or 0x80000000) is mounted read only, and every path still reads exactly as debugfs reads it"
+else
+    fail "[1.4] ext2 feature policy (D11): an image with an unknown RO_COMPAT flag was not read only, or not read exactly (see $E2_W/ro-*.dump)"
+fi
+if grep -qxF "EXT2 state: clean, error bit not set (0x1)" "$E2_W/b1k.dump" &&
+   [ "${E2_PRC[st-dirty]}" = 0 ] && grep -qxF "EXT2 state: not clean, error bit not set (0x0)" "$E2_W/st-dirty.dump" &&
+   [ "${E2_PRC[st-error]}" = 0 ] && grep -qxF "EXT2 state: clean, error bit set (0x3)" "$E2_W/st-error.dump" &&
+   [ -n "$E2_B1K" ] && [ "$(e2_plines st-dirty)" = "$E2_B1K" ] && [ "$(e2_plines st-error)" = "$E2_B1K" ]; then
+    pass "[1.4] ext2 states (D12, reported only in stage 6): clean (0x1), not clean (0x0) and the error bit (0x3) read and reported; every path read exactly in each (the mount's decisions come in stage 8)"
+else
+    fail "[1.4] ext2 states: the clean or error state was not reported as expected (see $E2_W/st-*.dump)"
+fi
+
+# (12) The sanitizers over the corrupted images.
+E2_SAN=$E2_W/ext2dump-san
+gcc -std=gnu11 -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -Wall -Wextra -Werror -I"$E2_ROOT" "$E2_ROOT/tests/ext2dump.c" "$E2_ROOT/kernel/fs/ext2_core.c" \
+    -o "$E2_SAN" > "$E2_W/san-build.txt" 2>&1
+E2_SANB=$?
+head -n 20 "$E2_W/san-build.txt" | sed 's/^/      sanitizer build: /'
+# Address-space randomisation off for these runs (setarch -R), where it is
+# available: some kernels' random mmap bits break ASan's shadow memory.
+E2_NOASLR=()
+command -v setarch > /dev/null 2>&1 && setarch "$(uname -m)" -R true 2>/dev/null && E2_NOASLR=(setarch "$(uname -m)" -R)
+# e2_san <image> <output>: one sanitized run (-l 65536: long files read at
+# both ends only), 10 s at most; its exit status.
+e2_san() {
+    ASAN_OPTIONS=detect_leaks=1:exitcode=70 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:exitcode=71 \
+        timeout 10 "${E2_NOASLR[@]}" "$E2_SAN" -l 65536 "$1" > "$2" 2> "$2.err" < /dev/null
+}
+e2_san "$E2_W/corpus.img" "$E2_W/corpus.san"
+E2_SANC=$?
+"$E2_DUMP" -l 65536 "$E2_W/corpus.img" > "$E2_W/corpus.plain" 2>&1
+E2_PLAINC=$?
+echo "      sanitizer build exit $E2_SANB (${E2_NOASLR[*]:-ASLR on}); the healthy image: sanitized exit $E2_SANC, plain exit $E2_PLAINC, $(grep -c '^P ' "$E2_W/corpus.san") paths"
+"${E2_PY[@]}" corrupt "$E2_W/corpus.img" "$E2_W/bad" > "$E2_W/bad.txt" 2> "$E2_W/bad-err.txt"
+sed 's/^/      corrupt: /' "$E2_W/bad-err.txt" | head -n 5
+E2_BN=0
+E2_BBAD=0
+declare -A E2_AREA=()
+while read -r _ e2_f e2_area e2_what; do
+    e2_san "$E2_W/bad/$e2_f" "$E2_W/bad/$e2_f.out"
+    e2_rc=$?
+    E2_BN=$((E2_BN + 1))
+    e2_ok=1
+    case $e2_rc in 0|1|2) ;; *) e2_ok=0 ;; esac
+    grep -qE 'Sanitizer|runtime error' "$E2_W/bad/$e2_f.out.err" && e2_ok=0
+    grep -qE '^DONE .* bad_reads=0$' "$E2_W/bad/$e2_f.out" || e2_ok=0
+    [ "$e2_ok" -eq 1 ] || E2_BBAD=$((E2_BBAD + 1))
+    E2_AREA[$e2_area]="${E2_AREA[$e2_area]:-}$e2_rc "
+    e2_first=$(grep -m1 -E '^(E |EXT2 mount: E)' "$E2_W/bad/$e2_f.out")
+    echo "      $e2_f ($e2_what): exit $e2_rc$([ "$e2_ok" -eq 1 ] || echo ' NOT ONLY AN ERROR CODE'): ${e2_first:-everything read}"
+done < "$E2_W/bad.txt"
+for e2_a in superblock groupdesc inodes folder indirect; do
+    e2_s=${E2_AREA[$e2_a]:-}
+    echo "      [1.4] corrupted $e2_a: $(wc -w <<< "$e2_s") images; exits (report only):$(tr ' ' '\n' <<< "$e2_s" | grep . | LC_ALL=C sort | uniq -c | awk '{ printf " %s x%s", $2, $1 }')"
+done
+if [ "$E2_SANB" -eq 0 ] && [ "$E2_SANC" -eq 0 ] && [ "$E2_PLAINC" -eq 0 ] &&
+   ! grep -qE 'Sanitizer|runtime error' "$E2_W/corpus.san.err" &&
+   [ "$(grep '^P ' "$E2_W/corpus.san")" = "$(grep '^P ' "$E2_W/corpus.plain")" ] &&
+   [ "$E2_BN" -eq 104 ] && [ "$E2_BBAD" -eq 0 ]; then
+    pass "[1.4] ext2 read core under -fsanitize=address,undefined: the healthy image read clean (as the plain build reads it), and all 104 corrupted images (bit flips and bad values in the superblock, group descriptors, inode table, folder blocks and indirect blocks) end with an error code (exit 0, 1 or 2): no sanitizer report, no crash, no hang, no read outside the image"
+else
+    fail "[1.4] ext2 read core under the sanitizers: build exit $E2_SANB, healthy image exit $E2_SANC, $E2_BBAD of $E2_BN corrupted images (104 expected) crashed, hung, read outside the image or raised a sanitizer report"
+fi
+echo "      [1.4] ext2 read core: $(( $(date +%s) - E2_T0 )) s (report only)"

@@ -176,6 +176,9 @@ static void test_c_alone(void)
     CHECK_EQ(v.label[0], 0);
     superblock("madire-test-2");
     CHECK_EQ(check("QEMU HARDDISK"), GUARD_C_LABEL);
+    superblock("madire-test2");             /* 1.4 stage 6: one character more, no separator */
+    CHECK_EQ(check("QEMU HARDDISK"), GUARD_C_LABEL);
+    CHECK(strcmp(v.label, "madire-test2") == 0);
     superblock("madire-test");
     sb[120 + 12] = 'x';                     /* the name, a zero, then more */
     CHECK_EQ(check("QEMU HARDDISK"), GUARD_C_LABEL);

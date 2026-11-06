@@ -46,8 +46,15 @@ ISO    := $(BUILD)/madire-os.iso
 # 1.3 stage 3b: the whole toolkit is linked (the desktop draws with it);
 # TOOLKIT_SRCS still names it for the host tools and part static's checks.
 TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
+# 1.4 stage 6: the ext2 read core (kernel/fs/ext2_*.c) is pure code that is
+# not linked into the kernel yet (stage 8 links it): left out of C_SRCS, so
+# madire.kernel stays byte-identical; compiled with the kernel's flags
+# (make ext2core) for part static's checks, and built into the host tool
+# tests/ext2dump.c and its unit suite.
+EXT2_SRCS := $(sort $(wildcard kernel/fs/ext2_*.c))
+EXT2_OBJS := $(EXT2_SRCS:%.c=$(BUILD)/%.o)
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
-C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
+C_SRCS   := $(filter-out $(EXT2_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # 1.2 stage 6: the console fonts, converted at build time from the pinned
@@ -135,7 +142,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core repro padkernel clean
 
 all: $(KERNEL)
 
@@ -349,6 +356,19 @@ $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.
 
 desktopdump: $(DESKTOPDUMP)
 
+# 1.4 stage 6: the ext2 read core as a host tool (tests/ext2dump.c, built
+# from kernel/fs/ext2_core.c itself); part static compares it with debugfs
+# and builds it a second time with the sanitizers. make ext2core also
+# compiles the core with the kernel's own flags (not linked).
+EXT2DUMP := $(BUILD)/ext2dump
+$(EXT2DUMP): tests/ext2dump.c $(EXT2_SRCS) $(wildcard kernel/fs/ext2_*.h)
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/ext2dump.c $(EXT2_SRCS) -o $@
+
+ext2core: $(EXT2_OBJS) $(EXT2DUMP)
+
+$(BUILD)/unit/test_ext2_core: $(EXT2_SRCS)
+
 toolkit: $(TOOLKIT_OBJS)
 
 # Reproducible build (0.8): copy the sources into two fresh trees and build
@@ -392,7 +412,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck splashdump desktopdump toolkit $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -401,7 +421,7 @@ test: unit user elfcheck splashdump desktopdump toolkit $(ISO) $(BUILD)/limine.c
 # only with SHARD=static, so a sharded run runs them once; the padded test
 # kernel (1.0) is built only for part 4, which boots it.
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit ext2core) \
             $(if $(filter 4,$(SHARD)),padkernel)
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
@@ -411,4 +431,4 @@ run: $(ISO)
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d)
+-include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d) $(EXT2_OBJS:.o=.d)
