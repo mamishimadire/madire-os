@@ -46,15 +46,16 @@ ISO    := $(BUILD)/madire-os.iso
 # 1.3 stage 3b: the whole toolkit is linked (the desktop draws with it);
 # TOOLKIT_SRCS still names it for the host tools and part static's checks.
 TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
-# 1.4 stage 6: the ext2 read core (kernel/fs/ext2_*.c) is pure code that is
-# not linked into the kernel yet (stage 8 links it): left out of C_SRCS, so
-# madire.kernel stays byte-identical; compiled with the kernel's flags
-# (make ext2core) for part static's checks, and built into the host tool
-# tests/ext2dump.c and its unit suite.
-EXT2_SRCS := $(sort $(wildcard kernel/fs/ext2_*.c))
+# 1.4 stage 6: the ext2 read core (kernel/fs/ext2_core.c) is pure code,
+# compiled with the kernel's flags (make ext2core) for part static's checks,
+# and built into the host tool tests/ext2dump.c and its unit suite. 1.4
+# stage 8: it is linked into the kernel (ext2 mounted read-only at /home),
+# with ext2_vfs.c (the VFS adapter) and ext2_disk.c (the mount at boot);
+# EXT2_SRCS names the core alone, for the host tool and those checks.
+EXT2_SRCS := kernel/fs/ext2_core.c
 EXT2_OBJS := $(EXT2_SRCS:%.c=$(BUILD)/%.o)
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
-C_SRCS   := $(filter-out $(EXT2_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
+C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # 1.2 stage 6: the console fonts, converted at build time from the pinned
@@ -368,6 +369,8 @@ $(EXT2DUMP): tests/ext2dump.c $(EXT2_SRCS) $(wildcard kernel/fs/ext2_*.h)
 ext2core: $(EXT2_OBJS) $(EXT2DUMP)
 
 $(BUILD)/unit/test_ext2_core: $(EXT2_SRCS)
+# 1.4 stage 8: the VFS adapter's suite includes it and the core.
+$(BUILD)/unit/test_ext2_vfs: $(EXT2_SRCS) kernel/fs/ext2_vfs.c
 
 toolkit: $(TOOLKIT_OBJS)
 

@@ -9,6 +9,7 @@ const char *fs_errno_name(int err)
 {
     switch (err < 0 ? -err : err) {
     case FS_ENOENT:       return "ENOENT";
+    case FS_EIO:          return "EIO";
     case FS_EBADF:        return "EBADF";
     case FS_ENOMEM:       return "ENOMEM";
     case FS_EFAULT:       return "EFAULT";
@@ -23,6 +24,7 @@ const char *fs_errno_name(int err)
     case FS_EFBIG:        return "EFBIG";
     case FS_ENOSPC:       return "ENOSPC";
     case FS_ESPIPE:       return "ESPIPE";
+    case FS_EROFS:        return "EROFS";
     case FS_ERANGE:       return "ERANGE";
     case FS_ENAMETOOLONG: return "ENAMETOOLONG";
     case FS_ENOSYS:       return "ENOSYS";

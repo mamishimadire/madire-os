@@ -238,8 +238,11 @@ uint32_t fsys_dirent_put(uint8_t *buf, uint32_t room, uint64_t ino, uint64_t off
 uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, uint32_t room,
                        uint64_t *next, bool *more)
 {
-    /* The RAM filesystem alone, at number 0 (its listing calls need no
-     * state, ramfs_core.c; no root is named, so ".." is dir's parent). */
+    /* RAM-only form for the existing tests; not re-entrant; never used by
+     * kernel paths (1.4 stage 8: part static checks that no kernel file
+     * calls it). The RAM filesystem alone, at number 0 (its listing calls
+     * need no state, ramfs_core.c; no root is named, so ".." is dir's
+     * parent). */
     static const struct vfs ram_only = {
         .mounts = { .m = { { .ops = &ramfs_ops } }, .count = 1 },
     };
@@ -313,7 +316,9 @@ uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64
 
 int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size)
 {
-    /* The RAM filesystem alone, at number 0 (as fsys_dir_fill), with root
+    /* RAM-only form for the existing tests; not re-entrant; never used by
+     * kernel paths (1.4 stage 8: part static checks that no kernel file
+     * calls it). The RAM filesystem alone, at number 0 (as fsys_dir_fill), with root
      * as "/". Zeroed as static data and only its root set here: a local
      * one would need a memset, which the kernel has none of. The VFS lock
      * held, as for every caller. */

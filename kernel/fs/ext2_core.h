@@ -3,9 +3,10 @@
 
 /*
  * ext2, the read core (1.4 stage 6; docs/plans/1.4.md, D11, D12, C7).
- * PURE and READ ONLY: no hardware access, printing or allocation, and NOT
- * LINKED into the kernel in stage 6 (the Makefile leaves kernel/fs/ext2_*.c
- * out of the kernel's sources; stage 8 mounts it read only at /home). Host
+ * PURE and READ ONLY: no hardware access, printing or allocation. Not
+ * linked into the kernel in stage 6; 1.4 stage 8 links it, and the kernel
+ * mounts a marked test disk's volume read only at /home through it
+ * (ext2_vfs.h, ext2_disk.h). Host
  * unit tests: tests/unit/test_ext2_core.c; the host tool tests/ext2dump.c is
  * built from this same file and compared with debugfs in part static.
  *

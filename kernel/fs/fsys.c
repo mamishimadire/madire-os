@@ -101,6 +101,13 @@ static int open_node(const struct fsys_open *o, struct vnode *start, const char 
     r = fsys_open_existing(o, n->type);
     if (r < 0)
         return r;
+    /* 1.4 stage 8: for writing (or O_TRUNC) on a read-only filesystem,
+     * EROFS (Linux), after the checks above. */
+    if ((o->access & OF_WRITE) || o->trunc) {
+        r = vfs_writable(v, n);
+        if (r < 0)
+            return r;
+    }
     *out = n;
     return 0;
 }
@@ -277,7 +284,7 @@ int64_t fsys_sys_ftruncate(uint64_t fd, uint64_t length)
     int64_t r;
     if (kind != OFILE_FILE || n->type != VNODE_FILE || !(access & OF_WRITE))
         r = -FS_EINVAL;                         /* not a file open for writing */
-    else if (length > RAMFS_FILE_MAX)
+    else if (length > vfs_file_max(vfs_root(), n))      /* 1.4 stage 8: the file's filesystem's limit */
         r = -FS_EFBIG;
     else
         r = fd_node_truncate(n, length);

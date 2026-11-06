@@ -238,5 +238,21 @@
 # Stage 7: none (the VFS refactor: every existing check unchanged); 1 unit
 # suite (mount_core: two fake filesystems mounted on the RAM tree's
 # folders, crossing, "..", EXDEV, nested mounts and the busy cases).
-1.4 52
-unit-suites 101
+# Stage 8: 36 more in part static, ext2 mounted read-only at /home: no
+# kernel caller of the RAM-only wrappers (1); the boot behaviour (D16): no
+# disk, unmarked, the guard's other refusals, not ext2, an unknown INCOMPAT
+# flag, an unknown RO_COMPAT flag, the error bit, not clean, an unknown
+# COMPAT flag, the marked clean disk (10), the six new boots' images
+# unchanged (6) and their line order and health (1); the read sessions at
+# 1 and 4 KiB blocks against debugfs (8 each: the mount and the session,
+# ls, cat, stat, du, cd, the refused writes, the image unchanged) and the
+# per-filesystem file-size limits (1); madire.elf holds no ext2 write-type
+# symbol but the adapter's refusing ops, which call and store nothing (1,
+# the owner's read-only proof); 1 unit suite (ext2_vfs). Changed, not
+# added: stage 6's "not linked" check (madire.elf now holds the core's
+# read calls), the marked MBR and GPT disks' Storage: lines (now mounted
+# read-only on /home) and pcitest_order (the ext2: and mount: lines
+# allowed between the PCI: and Storage: lines; also counted as none on
+# the boot without a controller).
+1.4 88
+unit-suites 102

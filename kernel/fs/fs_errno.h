@@ -10,6 +10,7 @@
  */
 
 #define FS_ENOENT        2
+#define FS_EIO           5              /* 1.4 stage 8: a disk read failed (ext2 at /home) */
 #define FS_EBADF         9
 #define FS_ENOMEM       12
 #define FS_EFAULT       14
@@ -24,6 +25,7 @@
 #define FS_EFBIG        27
 #define FS_ENOSPC       28
 #define FS_ESPIPE       29
+#define FS_EROFS        30              /* 1.4 stage 8: a change on a read-only filesystem */
 #define FS_ERANGE       34
 #define FS_ENAMETOOLONG 36
 #define FS_ENOSYS       38

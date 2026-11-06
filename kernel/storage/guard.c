@@ -70,6 +70,8 @@ static const char *guard_short(enum guard_cond cond)
         return "(a) not a virtual disk";
     if (l[0] && l[1] == 'b')
         return "(b) no valid test marker";
+    if (cond == GUARD_C_MAGIC)
+        return "(c) not ext2 (no superblock)";     /* 1.4 stage 8: D16's "not ext2" */
     if (l[0] && l[1] == 'c')
         return "(c) not labelled madire-test";
     return "unknown";
@@ -144,6 +146,8 @@ void guard_attach(uint32_t port, const char *model, uint64_t sectors, struct gua
     ahci_disk_guard(port, chosen != 0, chosen ? chosen->first : 0, chosen ? chosen->sectors : 0);
     s->allows = ahci_disk_guard_allows(port);
     s->partition = s->allows && chosen ? chosen->index : 0;
+    s->first = s->allows && chosen ? chosen->first : 0;
+    s->sectors = s->allows && chosen ? chosen->sectors : 0;
     if (s->allows) {
         ksnprintf(s->result, sizeof(s->result), "ALLOWED on partition %u", s->partition);
         klogf("guard: port %u: decided once, kept by the AHCI driver: writes would be ALLOWED on partition %u (LBA "

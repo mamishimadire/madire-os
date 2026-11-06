@@ -1,5 +1,6 @@
 /* The AHCI driver at boot (1.4 stage 4): see ahci.h. Read only. */
 #include "kernel/storage/ahci.h"
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/memory.h"
 #include "kernel/memory/paging.h"
@@ -234,10 +235,19 @@ void ahci_boot(const struct pci_ahci *a)
     struct guard_summary gs;
     gs.allows = false;
     gs.partition = 0;
+    gs.first = gs.sectors = 0;
     gs.table[0] = gs.result[0] = 0;
+    /* 1.4 stage 8: the Storage: line's end; a disk the guard refused is
+     * not mounted (Live mode, as before); one it allowed has its ext2
+     * volume mounted read-only on /home (ext2_disk.h, D16). */
+    char tail[96];
+    bool mounted = false;
+    ksnprintf(tail, sizeof(tail), "; read only, not mounted");
     if (disk >= 0) {
         blk_attach((uint32_t)disk, h->port[disk].disk.sectors);
         guard_attach((uint32_t)disk, h->port[disk].disk.model, h->port[disk].disk.sectors, &gs);
+        if (gs.allows)
+            mounted = ext2_disk_mount((uint32_t)disk, gs.partition, gs.first, gs.sectors, tail, sizeof(tail));
     }
     uint32_t tables, mapped;
     paging_slot_figures(VM_STORAGE_INDEX, &tables, &mapped);
@@ -247,9 +257,9 @@ void ahci_boot(const struct pci_ahci *a)
     if (disk >= 0) {
         const struct ahci_port *pt = &h->port[disk];
         ahci_size(size, sizeof(size), pt->disk.sectors);
-        klogf("Storage: AHCI %s, port %d disk %s %s, %s, writes would be %s; read only, not mounted%s (Live "
-              "mode)\n", where, disk, pt->disk.model, size, gs.table, gs.result,
-              disks > 1 ? "; more disks not used" : "");
+        klogf("Storage: AHCI %s, port %d disk %s %s, %s, writes would be %s%s%s (%s)\n", where, disk,
+              pt->disk.model, size, gs.table, gs.result, tail, disks > 1 ? "; more disks not used" : "",
+              mounted ? "Disk mode, read-only" : "Live mode");
     } else if (refused >= 0) {
         klogf("Storage: AHCI %s, no usable disk (port %d: %s) (Live mode)\n", where, refused,
               h->port[refused].why ? h->port[refused].why : "unknown");

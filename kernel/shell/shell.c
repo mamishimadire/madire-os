@@ -854,6 +854,8 @@ static const char *fs_reason(int err)
     case -FS_ENOSPC:       return "no room (1024 at most)";
     case -FS_ENOMEM:       return "out of kernel memory";
     case -FS_ENAMETOOLONG: return "name too long";
+    case -FS_EROFS:        return "the filesystem is read-only";    /* 1.4 stage 8 */
+    case -FS_EIO:          return "I/O error";                      /* 1.4 stage 8 */
     default:               return 0;
     }
 }
@@ -1193,6 +1195,26 @@ void shell_cat_end(struct shell_cat *s, const struct shell_output *o)
 {
     if (s->n)
         cat_emit(s, o);
+}
+
+/* 1.4 stage 8: "cat: '<path>': I/O error." (a read that failed part-way,
+ * after what was printed), as an error line. */
+void shell_cat_error(const char *path, int err, const struct shell_output *o)
+{
+    struct line l;
+    const char *why = fs_reason(err);
+    l_reset(&l);
+    l_str(&l, "cat: '");
+    l_shown(&l, path, str_len(path), FS_PATH_SHOWN);
+    l_str(&l, "': ");
+    if (why) {
+        l_str(&l, why);
+    } else {
+        l_str(&l, "error ");
+        l_uint(&l, (uint32_t)-err, 0, ' ');
+    }
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
 }
 
 /* ---- 1.0 stage 9: rm, cp, mv, df, du and output redirection (with storage) ---- */

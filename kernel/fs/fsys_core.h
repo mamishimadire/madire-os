@@ -201,6 +201,9 @@ uint32_t fsys_dirent_put(uint8_t *buf, uint32_t room, uint64_t ino, uint64_t off
  * at a mounted root names the parent of the folder it is mounted on.
  * fsys_dir_fill is its RAM-filesystem form (a folder of the RAM filesystem
  * alone, with no mount), as before (tests/unit/test_syscall_dir.c).
+ * 1.4 stage 8: RAM-only form for the existing tests; not re-entrant;
+ * never used by kernel paths (part static checks that no kernel file
+ * calls fsys_dir_fill or fsys_cwd_path).
  */
 uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, uint32_t room,
                        uint64_t *next, bool *more);
@@ -220,7 +223,9 @@ uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64
  * across mounts (a mounted root is named by the folder it is mounted on;
  * the kernel's getcwd and the shell); fsys_cwd_path is its RAM-filesystem
  * form from root (a folder of the RAM filesystem alone), as before
- * (tests/unit/test_syscall_dir.c). */
+ * (tests/unit/test_syscall_dir.c). 1.4 stage 8: fsys_cwd_path is the
+ * RAM-only form for the existing tests; not re-entrant; never used by
+ * kernel paths. */
 int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size);
 int64_t fsys_cwd_path_v(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size);
 

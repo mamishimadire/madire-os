@@ -1307,17 +1307,20 @@ fi
 # the partition table's and the write guard's ("part: ", "guard: "), which
 # come after the attach, still between the two lines and never elsewhere
 # (changed: the two prefixes added to both patterns; without a controller
-# there are still none of any of the four).
+# there are still none of any of the four). 1.4 stage 8 (changed): also
+# the ext2 volume's and the mount's ("ext2: ", "mount: "), which come after
+# the guard's on a boot whose disk the guard allowed, still between the
+# two lines and never elsewhere (the two prefixes added to both patterns).
 pcitest_order() {
     awk '$0 == "Filesystem self-test: PASS" { f = NR } /^PCI: / { p = NR } /^Storage: / { s = NR }
          /^Key events: / && !k { k = NR }
-         p && !s && NR > p && !/^PCI: / && !/^(ahci|blk|part|guard): / { other++ }
-         /^(ahci|blk|part|guard): / && (!p || s) { other++ }
+         p && !s && NR > p && !/^PCI: / && !/^(ahci|blk|part|guard|ext2|mount): / { other++ }
+         /^(ahci|blk|part|guard|ext2|mount): / && (!p || s) { other++ }
          END { exit !(f && p == f + 1 && s > p && k == s + 1 && !other) }' "$1" &&
         grep -qxF "$PCI_READY" "$1" && ! grep -qE 'PANIC|FAILED' "$1"
 }
 if pcitest_order "$PCI_A" && pcitest_order "$PCI_B" && pcitest_order "$PCI_C" &&
-   [ "$(grep -cE '^(ahci|blk|part|guard): ' "$PCI_A")" -eq 0 ]; then
+   [ "$(grep -cE '^(ahci|blk|part|guard|ext2|mount): ' "$PCI_A")" -eq 0 ]; then
     pass "[1.4] PCI: on all three boots the PCI: line comes right after 'Filesystem self-test: PASS' and the Storage: line right before 'Key events:', with only the AHCI driver's ahci: lines between them (none without a controller), outside every expect_lines window; System ready; no PANIC or FAILED line"
 else
     fail "[1.4] PCI: the PCI: and Storage: lines are not between 'Filesystem self-test: PASS' and 'Key events:', another line comes between them, or a boot did not reach System ready, or a PANIC or FAILED line (see serial-pci-*.log)"
@@ -1652,13 +1655,17 @@ GD_PART_MBR="part: port 0: MBR (disk signature 0x4d414452), 1 partition
 part: port 0: partition 1: MBR type 0x83 (Linux), LBA $GD_S, $GD_N sectors"
 GD_ST_MBR="Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_M MiB, MBR, 1 partition, writes would be"
 GD_TAIL="; read only, not mounted (Live mode)"
+# 1.4 stage 8 (changed): a disk the guard allows has its ext2 volume
+# mounted read-only on /home (D16), so the two marked disks' Storage:
+# lines end so (the refused disks' lines are unchanged, GD_TAIL).
+GD_TAIL_MOUNTED="; ext2 'madire-test' mounted read-only on /home (Disk mode, read-only)"
 
 # (1) The marked MBR disk: ALLOWED.
 gd_boot mbr "$GD_W/mbr.img"
 if gd_lines mbr "$GD_PART_MBR
 guard: port 0 partition 1: writes would be ALLOWED (virtual disk 'QEMU HARDDISK'; test marker for LBA $GD_S, $GD_N sectors; ext2 label 'madire-test')
 $(printf "$GD_DEC_ALLOW" "$GD_S" "$GD_N")
-$GD_ST_MBR ALLOWED on partition 1$GD_TAIL"; then
+$GD_ST_MBR ALLOWED on partition 1$GD_TAIL_MOUNTED"; then
     pass "[1.4] write guard, the marked MBR disk: the MBR's one Linux partition (LBA $GD_S, $GD_N sectors) read as the image holds it; all three conditions hold (QEMU HARDDISK, the marker matching the partition, label madire-test): writes would be ALLOWED on partition 1, decided once and kept by the AHCI driver; the Storage: line says so"
 else
     fail "[1.4] write guard, the marked MBR disk: the part:, guard: or Storage: lines differ from the image's (see serial-guard-mbr.log)"
@@ -1671,7 +1678,7 @@ part: port 0: partition 1: GPT Linux filesystem data, LBA $GD_GS, $GD_GN sectors
 part: port 0: GPT backup header at LBA $GD_ALT: valid (report only)
 guard: port 0 partition 1: writes would be ALLOWED (virtual disk 'QEMU HARDDISK'; test marker for LBA $GD_GS, $GD_GN sectors; ext2 label 'madire-test')
 $(printf "$GD_DEC_ALLOW" "$GD_GS" "$GD_GN")
-Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_G MiB, GPT, 1 partition, writes would be ALLOWED on partition 1$GD_TAIL"; then
+Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_G MiB, GPT, 1 partition, writes would be ALLOWED on partition 1$GD_TAIL_MOUNTED"; then
     pass "[1.4] write guard, the marked GPT disk: the protective MBR, the GPT header and its entry array with their CRC32s as tests/disk_image.py wrote them ($GD_HC, $GD_AC), the Linux filesystem data partition (LBA $GD_GS, $GD_GN sectors, name madire-test) and the backup header at LBA $GD_ALT valid (report only); writes would be ALLOWED on partition 1"
 else
     fail "[1.4] write guard, the marked GPT disk: the part:, guard: or Storage: lines differ from the image's (see serial-guard-gpt.log)"
@@ -1793,12 +1800,46 @@ E2_PY=(python3 -I -B "$(dirname "$0")/ext2_view.py")
 E2_OBJ=$OUT/kernel/fs/ext2_core.o
 E2_UNDEF=$(nm -u "$E2_OBJ" 2>/dev/null | awk '{ print $2 }' | tr '\n' ' ' | sed 's/ *$//')
 E2_SSE=$(objdump -d "$E2_OBJ" 2>/dev/null | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]')
+# 1.4 stage 8 (changed): the core is linked now (ext2 mounted read-only at
+# /home), so madire.elf must hold its public functions (ext2_mount,
+# ext2_read, ext2_dir_next, ext2_inode_get), where stage 6 checked it
+# held none; the object's own checks are unchanged.
 E2_INELF=$(nm "$OUT/madire.elf" 2>/dev/null | grep -cE ' ext2_')
-echo "      ext2_core.o: text $(size "$E2_OBJ" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes (report only); undefined: ${E2_UNDEF:-none}; SSE/x87: $E2_SSE; ext2_ symbols in madire.elf: $E2_INELF"
-if [ -s "$E2_OBJ" ] && [ -z "$E2_UNDEF" ] && [ "$E2_SSE" -eq 0 ] && [ "$E2_INELF" -eq 0 ] && [ -x "$E2_DUMP" ]; then
-    pass "[1.4] ext2 read core: kernel/fs/ext2_core.c compiled with the kernel's flags needs no symbol (no libgcc or libc helper) and uses no SSE/x87 register; madire.elf holds none of its symbols (not linked); tests/ext2dump.c is built from it"
+E2_LINKED=$(nm "$OUT/madire.elf" 2>/dev/null | grep -cE ' T ext2_(mount|read|dir_next|inode_get)$')
+echo "      ext2_core.o: text $(size "$E2_OBJ" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes (report only); undefined: ${E2_UNDEF:-none}; SSE/x87: $E2_SSE; ext2_ symbols in madire.elf: $E2_INELF (the four public read calls: $E2_LINKED)"
+if [ -s "$E2_OBJ" ] && [ -z "$E2_UNDEF" ] && [ "$E2_SSE" -eq 0 ] && [ "$E2_LINKED" -eq 4 ] && [ -x "$E2_DUMP" ]; then
+    pass "[1.4] ext2 read core: kernel/fs/ext2_core.c compiled with the kernel's flags needs no symbol (no libgcc or libc helper) and uses no SSE/x87 register; madire.elf holds its four public read calls (linked, stage 8); tests/ext2dump.c is built from it"
 else
-    fail "[1.4] ext2 read core: the object is missing, needs symbols (${E2_UNDEF:-none}), uses SSE/x87 ($E2_SSE), madire.elf has ext2_ symbols ($E2_INELF), or no ext2dump"
+    fail "[1.4] ext2 read core: the object is missing, needs symbols (${E2_UNDEF:-none}), uses SSE/x87 ($E2_SSE), madire.elf lacks the core's read calls ($E2_LINKED of 4), or no ext2dump"
+fi
+# 1.4 stage 8 (added, the owner's read-only proof): madire.elf holds no
+# ext2 write-type symbol. Every symbol (global or local, nm) named ext2_*
+# whose name contains write, alloc, free, trunc, unlink, mkdir, rmdir,
+# rename, create, move, sync, flush, dirty, bitmap, set_ or put_ must be one
+# of the VFS adapter's four refusing ops (ext2_vn_create, ext2_vn_move,
+# ext2_vn_write, ext2_vn_truncate_step, with any compiler suffix such as
+# .isra.0), and each of those present must call nothing, jump only within
+# itself and store nothing to memory (it can only return a value; the unit
+# suite ext2_vfs proves that value is EROFS, or EISDIR for a folder).
+E2_WPAT='^ext2_[A-Za-z0-9_.]*(write|alloc|free|trunc|unlink|mkdir|rmdir|rename|create|move|sync|flush|dirty|bitmap|set_|put_)'
+E2_WOK='^ext2_vn_(create|move|write|truncate_step)(\.[a-z]+\.[0-9]+)?$'
+E2_WSYMS=$(nm "$OUT/madire.elf" 2>/dev/null | awk '{ print $NF }' | grep -E "$E2_WPAT")
+E2_WBAD=$(grep -vE "$E2_WOK" <<< "$E2_WSYMS" | grep .)
+E2_WDIS=$OUT/ext2-refusing-ops.txt
+objdump -d --no-show-raw-insn "$OUT/madire.elf" 2>/dev/null |
+    awk '/^[0-9a-f]+ <[^>]*>:$/ { fn = substr($2, 2, length($2) - 3); on = fn ~ /^ext2_vn_(create|move|write|truncate_step)/ }
+         on { print fn "\t" $0 }' > "$E2_WDIS"
+E2_WSTUB=$(awk -F'\t' '{ fn = $1; n[fn]++; i = $NF; sub(/[ \t]*#.*$/, "", i) }
+         i ~ /^call/ { c[fn] = 1 }
+         i ~ /^j[a-z]+[ \t]/ && i ~ /</ && i !~ ("<" fn "(\\+0x[0-9a-f]+)?>") { c[fn] = 1 }
+         i ~ /^(mov|add|sub|and|or|xor|inc|dec|neg|not|stos|xchg|cmpxchg|set[a-z]+)[a-z]*[ \t]/ && i ~ /\(%/ &&
+             (i ~ /,[^,]*\(%[a-z0-9]+\)$/ || i ~ /^(inc|dec|neg|not|set[a-z]+)[a-z]*[ \t]+[^,]*\(%/) { c[fn] = 1 }
+         END { for (f in n) printf "%s:%s ", f, c[f] ? "NOT-ONLY-EROFS" : "returns-only" }' "$E2_WDIS")
+echo "      ext2 write-type symbols in madire.elf: $(tr '\n' ' ' <<< "${E2_WSYMS:-none}"); outside the refusing ops: ${E2_WBAD:-none}; the refusing ops: ${E2_WSTUB:-none present}"
+if [ -s "$OUT/madire.elf" ] && [ -z "$E2_WBAD" ] && ! grep -q 'NOT-ONLY-EROFS' <<< "$E2_WSTUB"; then
+    pass "[1.4] ext2 read only (madire.elf): no ext2_ symbol of a write-type name (write, alloc, free, trunc, unlink, mkdir, rmdir, rename, create, move, sync, flush, dirty, bitmap, set_, put_) but the adapter's refusing ops, and each of those calls nothing, jumps only within itself and stores nothing (the unit suite proves they return EROFS)"
+else
+    fail "[1.4] ext2 read only (madire.elf): a write-type ext2_ symbol (${E2_WBAD:-none}) or a refusing op that does more than return EROFS (${E2_WSTUB:-?})"
 fi
 
 # The images. e2_mkimg <name> <tree kind> <KiB> <block size> <inode size>
@@ -2002,3 +2043,326 @@ else
     fail "[1.4] ext2 read core under the sanitizers: build exit $E2_SANB, healthy image exit $E2_SANC, $E2_BBAD of $E2_BN corrupted images (104 expected) crashed, hung, read outside the image or raised a sanitizer report"
 fi
 echo "      [1.4] ext2 read core: $(( $(date +%s) - E2_T0 )) s (report only)"
+
+# ---- 1.4 stage 8: ext2 mounted read-only at /home ----
+
+section "[1.4] ext2 mounted read-only at /home: the boot behaviour, the read sessions against debugfs (stage 8)"
+# docs/plans/1.4.md, S8 (C8, C9, D11, D12, D15, D16, D22; risks 26, 33,
+# 34, 38, 39). The ext2 core is linked (kernel/fs/ext2_core.c), behind the
+# VFS (kernel/fs/ext2_vfs.c) and mounted at boot on the RAM /home through
+# the mount table (kernel/fs/ext2_disk.c), read only: every change is
+# EROFS. (1) No kernel file calls the RAM-only wrappers fsys_cwd_path and
+# fsys_dir_fill (kept for the existing unit tests). (2-11) The boot
+# behaviour (D16), -kernel boots at -m 128M to System ready with one disk on
+# ich9-ahci (as stage 5's): the boots with no disk, an unmarked disk and
+# disks the guard refused are stage 3's and 5's (their logs read again);
+# new boots on copies of stage 5's marked MBR disk with one superblock
+# field changed: no ext2 magic (not ext2: refused by the guard), an unknown
+# INCOMPAT flag (not mounted), an unknown RO_COMPAT flag, the error bit
+# and not clean (mounted read-only, with their lines), an unknown COMPAT
+# flag (mounted; reading allowed, logged); the marked clean disk is stage
+# 5's. Each: its ext2: and mount: lines and its Storage: line exactly.
+# (12-17) Each new boot's image SHA-256 unchanged; (18) the new boots' line
+# order and health. (19-35) The read sessions (moved here from part 1,
+# D22): one console session on a marked MBR disk with a 1 KiB-block and one
+# with a 4 KiB-block ext2 volume made by mke2fs from the same tree (text
+# files, a 14 KiB file through the single indirect block at 1 KiB, nested
+# folders, an empty folder): pwd, ls -l (in on-disk order), cat, stat, du,
+# cd across the mount, and the writes (touch, mkdir, rmdir, rm, the
+# redirections, cp, mv), each refused with the read-only message and
+# changing nothing; compared with debugfs on the partition extracted from
+# the disk after the boot (tests/ext2_session.py); the image's SHA-256
+# unchanged; the per-filesystem file-size limits logged at the mount.
+E8_T0=$(date +%s)
+E8_W=$OUT/ext2-mount
+rm -rf "$E8_W" && mkdir -p "$E8_W"
+declare -A E8_SHA0=() E8_SHA1=()
+E8_OK=$GD_OK
+
+# (1) The RAM-only wrappers: no caller in the kernel's sources (their own
+# definitions and declarations in fsys_core.c and fsys_core.h aside).
+E8_CALLS=$(grep -rnE '\bfsys_(cwd_path|dir_fill)[[:space:]]*\(' "$E2_ROOT/kernel" --include='*.c' --include='*.h' |
+           grep -vE '/kernel/fs/fsys_core\.(c|h):')
+E8_DEFS=$(grep -cE '^(int64_t fsys_cwd_path|uint32_t fsys_dir_fill)\(' "$E2_ROOT/kernel/fs/fsys_core.c")
+echo "      wrapper calls in kernel/: $(grep -c . <<< "$E8_CALLS"); definitions in fsys_core.c: $E8_DEFS"
+[ -n "$E8_CALLS" ] && sed 's/^/      call: /' <<< "$E8_CALLS"
+if [ -z "$E8_CALLS" ] && [ "$E8_DEFS" -eq 2 ] &&
+   grep -q "RAM-only form for the existing tests; not re-entrant; never used by" "$E2_ROOT/kernel/fs/fsys_core.c"; then
+    pass "[1.4] the RAM-only wrappers fsys_cwd_path and fsys_dir_fill (for the existing unit tests; not re-entrant): no kernel file calls them, and their comment says so"
+else
+    fail "[1.4] the RAM-only wrappers: a kernel file calls fsys_cwd_path or fsys_dir_fill, or their definitions or comment are missing"
+fi
+# Report only: the RAM node record's size (its compile-time check stays
+# "at most 128"), and the vnode's, as the kernel's compiler lays them out.
+printf '%s\n' '#include <stdio.h>' '#include "kernel/fs/ramfs_core.h"' \
+    'int main(void) { printf("SIZEOF struct ramfs_node=%zu struct vnode=%zu\n", sizeof(struct ramfs_node), sizeof(struct vnode)); return 0; }' \
+    > "$E8_W/sizeof.c"
+gcc -std=gnu11 -m64 -I"$E2_ROOT" "$E8_W/sizeof.c" -o "$E8_W/sizeof" > "$E8_W/sizeof.txt" 2>&1 && "$E8_W/sizeof" >> "$E8_W/sizeof.txt"
+sed 's/^/      [1.4] (report only) /' "$E8_W/sizeof.txt"
+
+# e8_boot <name> <image>: one boot into serial-ext2-<name>.log, the image's
+# SHA-256 before and after (as gd_boot).
+e8_boot() {
+    local name=$1 img=$2 log=$OUT/serial-ext2-$1.log
+    E8_SHA0[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
+    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" \
+        -drive file="$img",if=none,id=e8test-disk,format=raw -device ich9-ahci,id=e8test-ahci,addr=0x5 \
+        -device ide-hd,drive=e8test-disk,bus=e8test-ahci.0
+    E8_SHA1[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
+    grep -E '^(guard: port 0 partition|ext2|mount|Storage): ' "$log" | sed "s/^/      $name: /"
+}
+# e8_hash <name> <what>: the counted hash check of one boot.
+e8_hash() {
+    echo "      $1: SHA-256 before ${E8_SHA0[$1]:-?}, after ${E8_SHA1[$1]:-?}"
+    if [ -n "${E8_SHA0[$1]:-}" ] && [ "${E8_SHA0[$1]}" = "${E8_SHA1[$1]:-}" ]; then
+        pass "[1.4] ext2 at /home, $2: the disk image's SHA-256 is the same before and after the boot (${E8_SHA0[$1]})"
+    else
+        fail "[1.4] ext2 at /home, $2: the disk image's SHA-256 changed during the boot (${E8_SHA0[$1]:-?} -> ${E8_SHA1[$1]:-?})"
+    fi
+}
+# e8_lines <log> <expected lines>: each exactly once; the ext2: and mount:
+# lines exactly those expected (none when none is), one Storage: line, no
+# disk error.
+e8_lines() {
+    local log=$1 l ne nm
+    [ "$E8_OK" -eq 1 ] && [ -f "$log" ] || return 1
+    while IFS= read -r l; do
+        [ -z "$l" ] && continue
+        [ "$(grep -cxF -- "$l" "$log")" -eq 1 ] || { echo "      $(basename "$log"): missing or repeated: $l"; return 1; }
+    done <<< "$2"
+    ne=$(grep -c '^ext2: ' <<< "$2"); nm=$(grep -c '^mount: ' <<< "$2")
+    [ "$(grep -c '^ext2: ' "$log")" -eq "$ne" ] && [ "$(grep -c '^mount: ' "$log")" -eq "$nm" ] &&
+        [ "$(grep -c '^Storage: ' "$log")" -eq 1 ] && ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log"
+}
+# The superblock of stage 5's marked MBR disk (8 MiB, 1 KiB blocks, its
+# partition at LBA $GD_S): its fields' bytes in the disk image.
+E8_SB=$((GD_S * 512 + 1024))
+E8_ST="Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_M MiB, MBR, 1 partition, writes would be"
+E8_RO="; ext2 'madire-test' mounted read-only on /home (Disk mode, read-only)"
+E8_FS_RE="^ext2: port 0 partition 1: revision 1, 1024-byte blocks, [0-9]+ blocks \([0-9]+ free\), [0-9]+ inodes \([0-9]+ free\), [0-9]+ groups, 128-byte inodes, label 'madire-test'; features COMPAT 0x"
+# e8_fsline <log> <state text>: the volume's line, with its state.
+e8_fsline() { grep -E "$E8_FS_RE" "$1" | grep -qE "; state $2\$"; }
+# e8_mount <reason>: the mount line up to its read counts; e8_mounted <log>
+# <reason>: that line exactly once, with no failed read.
+e8_mount() { echo "mount: ext2 'madire-test' (port 0, partition 1) on /home as filesystem 1, read-only ($1); the RAM folder /home is under it, / and /tmp stay in memory; "; }
+e8_mounted() {
+    local want
+    want=$(e8_mount "$2")
+    [ "$(awk -v n="${#want}" -v w="$want" 'substr($0, 1, n) == w && substr($0, n + 1) ~ /^[0-9]+ disk reads, 0 failed$/' "$1" | grep -c .)" -eq 1 ]
+}
+for e8_spec in "notext2 $((E8_SB + 56)) 2 0x0" "incompat $((E8_SB + 96)) 4 0x10 or" "rocompat $((E8_SB + 100)) 4 0x8 or" \
+               "error $((E8_SB + 58)) 2 0x3" "dirty $((E8_SB + 58)) 2 0x0" "compat $((E8_SB + 92)) 4 0x1000 or"; do
+    read -r e8_x e8_off e8_len e8_val e8_how <<< "$e8_spec"
+    # shellcheck disable=SC2086
+    "${E2_PY[@]}" set "$GD_W/mbr.img" "$E8_W/$e8_x.img" "$e8_off" "$e8_len" "$e8_val" $e8_how | sed 's/^/      /' || E8_OK=0
+    [ -s "$E8_W/$e8_x.img" ] || E8_OK=0
+done
+for e8_x in notext2 incompat rocompat error dirty compat; do
+    e8_boot "$e8_x" "$E8_W/$e8_x.img"
+done
+E8_L=$OUT/serial-ext2
+
+# (2) No disk: Live mode exactly as before (stage 3's controller boots and
+# stage 4's pattern disk): no ext2: or mount: line.
+if [ -f "$PCI_B" ] && [ -f "$PCI_C" ] && [ -f "$AH_LOG" ] &&
+   [ "$(cat "$PCI_A" "$PCI_B" "$PCI_C" "$AH_LOG" | grep -cE '^(ext2|mount): ')" -eq 0 ] &&
+   grep -qxF "Storage: AHCI 00:05.0, no disk (Live mode)" "$PCI_B" && grep -qxF "$AH_STORAGE" "$AH_LOG"; then
+    pass "[1.4] ext2 at /home, no controller, no disk or no partition table: Live mode exactly as before (the Storage: lines unchanged, no ext2: or mount: line)"
+else
+    fail "[1.4] ext2 at /home, no disk: an ext2: or mount: line, or a changed Storage: line, on a boot without a usable disk"
+fi
+# (3) An unmarked ext2 disk (stage 5's): not mounted, Live mode.
+if e8_lines "$OUT/serial-guard-nomarker.log" "$GD_ST_MBR REFUSED: (b) no valid test marker$GD_TAIL"; then
+    pass "[1.4] ext2 at /home, an unmarked ext2 disk: the guard refuses it, nothing is mounted (no ext2: or mount: line), Live mode"
+else
+    fail "[1.4] ext2 at /home, an unmarked disk: an ext2: or mount: line, or not Live mode (see serial-guard-nomarker.log)"
+fi
+# (4) Disks the guard refused otherwise (stage 5's): a wrong label, a
+# model that is not a virtual disk's, a bad marker CRC32, the marker's
+# start, the empty disk: none mounted.
+E8_BAD=""
+for n in label model badcrc start empty; do
+    e8_lines "$OUT/serial-guard-$n.log" "" && grep -qE '^Storage: .*; read only, not mounted \(Live mode\)$' "$OUT/serial-guard-$n.log" ||
+        E8_BAD="$E8_BAD $n"
+done
+if [ -z "$E8_BAD" ]; then
+    pass "[1.4] ext2 at /home, every disk the guard refused (a wrong label, a non-virtual model, a bad marker CRC32, the marker's start, the empty disk): nothing mounted, Live mode"
+else
+    fail "[1.4] ext2 at /home, a disk the guard refused was mounted or not in Live mode:$E8_BAD"
+fi
+# (5) Not ext2 (the marked partition without the ext2 magic): the guard's
+# condition (c) refuses it; Live mode.
+if e8_lines "$E8_L-notext2.log" "guard: port 0 partition 1: writes would be REFUSED: (c) no ext2 superblock at partition byte 1024 (magic 0x0000, not 0xef53)
+$E8_ST REFUSED: (c) not ext2 (no superblock)$GD_TAIL"; then
+    pass "[1.4] ext2 at /home, a marked partition that is not ext2 (no magic): refused at the guard's condition (c), 'not ext2 (no superblock)', nothing mounted, Live mode"
+else
+    fail "[1.4] ext2 at /home, not ext2: not refused as expected (see serial-ext2-notext2.log)"
+fi
+# (6) An unknown INCOMPAT flag (meta_bg 0x10): allowed by the guard, not
+# mounted (D11), one ext2: line with the reason; Live mode.
+if e8_lines "$E8_L-incompat.log" "ext2: port 0 partition 1: not mounted: EINCOMPAT: features: an unknown INCOMPAT flag (not mounted) (INCOMPAT 0x12, unknown 0x10)
+$E8_ST ALLOWED on partition 1; read only, not mounted: unknown INCOMPAT flag (Live mode)"; then
+    pass "[1.4] ext2 at /home, an unknown INCOMPAT flag (0x10): not mounted (D11), the ext2: line names the flag, the Storage: line the reason; Live mode"
+else
+    fail "[1.4] ext2 at /home, an unknown INCOMPAT flag: not refused as expected (see serial-ext2-incompat.log)"
+fi
+# (7-9) An unknown RO_COMPAT flag, the error bit, not clean: mounted
+# read-only, each with its line (D11, C7, D12).
+# e8_ro <name> <its own ext2: line> <state regex> <the mount line's reason>:
+# the volume's line and that line (2 ext2: lines), the mount's three
+# lines, the Storage: line, no disk error.
+e8_ro() {
+    local log=$E8_L-$1.log
+    [ "$E8_OK" -eq 1 ] && [ -f "$log" ] &&
+        [ "$(grep -c '^ext2: ' "$log")" -eq 2 ] && [ "$(grep -c '^mount: ' "$log")" -eq 3 ] &&
+        [ "$(grep -cxF -- "$2" "$log")" -eq 1 ] && e8_fsline "$log" "$3" && e8_mounted "$log" "$4" &&
+        [ "$(grep -cxF -- "$E8_ST ALLOWED on partition 1$E8_RO" "$log")" -eq 1 ] &&
+        [ "$(grep -c '^Storage: ' "$log")" -eq 1 ] && ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log"
+}
+if e8_ro rocompat "ext2: unknown RO_COMPAT flags 0x8: mounted read-only (D11)" "0x1 \(clean, error bit not set\)" "an unknown RO_COMPAT flag"; then
+    pass "[1.4] ext2 at /home, an unknown RO_COMPAT flag (huge_file 0x8): mounted read-only on /home with its line (D11); 'Disk mode, read-only'"
+else
+    fail "[1.4] ext2 at /home, an unknown RO_COMPAT flag: not mounted read-only with its line (see serial-ext2-rocompat.log)"
+fi
+if e8_ro error "ext2: the error bit is set (state 0x3): mounted read-only (C7)" "0x3 \(clean, error bit set\)" "the error bit is set"; then
+    pass "[1.4] ext2 at /home, the error bit set (state 0x3): mounted read-only on /home with its line (C7); 'Disk mode, read-only'"
+else
+    fail "[1.4] ext2 at /home, the error bit: not mounted read-only with its line (see serial-ext2-error.log)"
+fi
+if e8_ro dirty "ext2: warning: the volume was not cleanly unmounted (state 0x0); mounted read-only in stage 8 (the recount of free blocks and inodes from the bitmaps comes with read-write in stage 10, D12)" "0x0 \(not clean, error bit not set\)" "not cleanly unmounted"; then
+    pass "[1.4] ext2 at /home, not cleanly unmounted (state 0x0): mounted read-only with the D12 warning line (the recount comes with read-write in stage 10)"
+else
+    fail "[1.4] ext2 at /home, not clean: not mounted read-only with the D12 warning (see serial-ext2-dirty.log)"
+fi
+# (10) An unknown COMPAT flag (0x1000): reading allowed, logged.
+if e8_ro compat "ext2: unknown COMPAT flags 0x1000: reading allowed (logged; the rule for writes comes in stage 10)" "0x1 \(clean, error bit not set\)" "stage 8 has no write path"; then
+    pass "[1.4] ext2 at /home, an unknown COMPAT flag (0x1000): mounted (reading allowed), the flag logged; read-only as every stage 8 mount"
+else
+    fail "[1.4] ext2 at /home, an unknown COMPAT flag: not mounted with its line (see serial-ext2-compat.log)"
+fi
+# (11) The marked, supported, clean disk (stage 5's MBR and GPT boots):
+# mounted read-only on /home, no warning line.
+E8_BAD=""
+for n in mbr gpt; do
+    log=$OUT/serial-guard-$n.log
+    [ "$(grep -c '^ext2: ' "$log")" -eq 1 ] && [ "$(grep -c '^mount: ' "$log")" -eq 3 ] &&
+        e8_fsline "$log" "0x1 \(clean, error bit not set\)" && e8_mounted "$log" "stage 8 has no write path" &&
+        grep -qxF "mount: file-size limits from each filesystem's ops table: / 2097152 bytes, /home 4294967295 bytes" "$log" &&
+        grep -qE '^mount: the mount held the VFS lock [0-9]+ us \([0-9]+ ticks\) \(report only; TSC [0-9]+ cycles per tick\)$' "$log" &&
+        [ "$(grep '^Storage: ' "$log" | grep -cF ", writes would be ALLOWED on partition 1$E8_RO")" -eq 1 ] ||
+        E8_BAD="$E8_BAD $n"
+done
+if [ -z "$E8_BAD" ]; then
+    pass "[1.4] ext2 at /home, the marked clean disk (MBR and GPT): its volume's line, mounted read-only on /home as filesystem 1 with no warning ('stage 8 has no write path'), 'Disk mode, read-only'"
+else
+    fail "[1.4] ext2 at /home, the marked clean disk: not mounted as expected:$E8_BAD"
+fi
+# (12-17) The new boots' images unchanged.
+e8_hash notext2 "the partition without the ext2 magic"
+e8_hash incompat "the unknown INCOMPAT flag"
+e8_hash rocompat "the unknown RO_COMPAT flag"
+e8_hash error "the error bit"
+e8_hash dirty "the volume not cleanly unmounted"
+e8_hash compat "the unknown COMPAT flag"
+# (18) Their line order and health.
+E8_BAD=""
+for n in notext2 incompat rocompat error dirty compat; do
+    pcitest_order "$E8_L-$n.log" || E8_BAD="$E8_BAD $n"
+done
+if [ -z "$E8_BAD" ]; then
+    pass "[1.4] ext2 at /home, the six boot-behaviour boots: the ext2: and mount: lines with the driver's own between the PCI: and Storage: lines (Storage: right before 'Key events:'), System ready; no PANIC or FAILED line"
+else
+    fail "[1.4] ext2 at /home, boot-behaviour boots: lines out of place, no System ready, or a PANIC or FAILED line in:$E8_BAD"
+fi
+echo "      [1.4] boot-behaviour boots: $(( $(date +%s) - E8_T0 )) s (report only)"
+
+# (19-35) The read sessions. The tree: text files (every line shorter than
+# 79 columns, so cat prints the file exactly), a 14 KiB file (through the
+# single indirect block with 1 KiB blocks), nested folders, an empty one.
+E8_T1=$(date +%s)
+E8_TREE=$E8_W/tree
+mkdir -p "$E8_TREE/docs/nested" "$E8_TREE/empty"
+for i in $(seq 1 40); do printf 'note %02d: the ext2 volume at /home, read only in stage 8\n' "$i"; done > "$E8_TREE/notes.txt"
+for i in $(seq 1 280); do printf 'big %04d: abcdefghijklmnopqrstuvwxyz0123456789ABCD\n' "$i"; done > "$E8_TREE/big.txt"
+printf 'first file in docs\nsecond line\n' > "$E8_TREE/docs/a.txt"
+printf 'b\n' > "$E8_TREE/docs/b.txt"
+printf 'nested c.txt\nline 2\nline 3\n' > "$E8_TREE/docs/nested/c.txt"
+printf 'last\n' > "$E8_TREE/z-last.txt"
+printf 'middle\n' > "$E8_TREE/m-middle.txt"
+E8_KEYS="x{wait:1}pwd{ret}ls -l{ret}ls -l docs{ret}ls -l /home/docs/nested{ret}"
+E8_KEYS+="cat notes.txt{ret}{wait:2}cat docs/a.txt{ret}{wait:1}cat big.txt{ret}{wait:4}"
+E8_KEYS+="stat notes.txt{ret}stat big.txt{ret}stat docs{ret}stat /home{ret}du{ret}du docs{ret}"
+E8_KEYS+="cd docs{ret}pwd {ret}cd ..{ret}pwd  {ret}cd ..{ret}pwd   {ret}cd{ret}pwd    {ret}"
+E8_KEYS+="touch new.txt{ret}touch notes.txt{ret}mkdir newdir{ret}mkdir docs{ret}rmdir empty{ret}"
+E8_KEYS+="rm -y notes.txt{ret}echo hi > out.txt{ret}echo hi >> notes.txt{ret}{wait:1}"
+E8_KEYS+="cp -y notes.txt copy.txt{ret}{wait:1}mv -y notes.txt n2.txt{ret}{wait:1}ls -l .{ret}"
+E8_KEYS+="echo end-of-ext2-session{ret}"
+E8_DEBUGFS=$(disk_tool debugfs)
+# e8_session <name> <block size> <inode size> <KiB>: the volume, the marked
+# disk, the boot with the session, then the comparison.
+e8_session() {
+    local name=$1 log=$OUT/serial-ext2-$1.log img=$E8_W/$1-disk.img
+    disk_mkfs "$E8_W/$1-fs.img" "$4" "$2" "$3" 256 "$E8_TREE" > "$E8_W/$1-mkfs.txt" 2>&1 &&
+        disk_image mbr "$E8_W/$1-fs.img" "$img" || E8_OK=0
+    sed "s/^/      mke2fs ($1): /" "$E8_W/$1-mkfs.txt"
+    E8_SHA0[$1]=$(sha256sum < "$img" | cut -d' ' -f1)
+    T0S=$(date +%s%N)
+    boot_text "$log" 150 "System ready." "$E8_KEYS" 0.05 $'\nend-of-ext2-session\n' -m 128M -kernel "$KERNEL" \
+        -drive file="$img",if=none,id=e8s-disk,format=raw -device ich9-ahci,id=e8s-ahci,addr=0x5 \
+        -device ide-hd,drive=e8s-disk,bus=e8s-ahci.0
+    boot_seconds "$log" "$T0S"
+    E8_SHA1[$1]=$(sha256sum < "$img" | cut -d' ' -f1)
+    disk_image extract "$img" "$E8_W/$1-part.img" > /dev/null || E8_OK=0
+    grep -E '^(ext2|mount|Storage|console: cat: from the disk): ' "$log" | sed "s/^/      $1: /"
+    DEBUGFS=$E8_DEBUGFS python3 -I -B "$(dirname "$0")/ext2_session.py" "$log" "$E8_W/$1-part.img" \
+        > "$E8_W/$1-session.txt" 2>&1
+    sed "s/^/      $1: /" "$E8_W/$1-session.txt"
+}
+# e8_results <name> <what>: the session's counted checks.
+e8_results() {
+    local name=$1 log=$OUT/serial-ext2-$1.log res=$E8_W/$1-session.txt c
+    if [ "$E8_OK" -eq 1 ] && grep -qE '^Storage: AHCI 00:05\.0, port 0 disk QEMU HARDDISK [0-9]+ MiB, MBR, 1 partition, ' "$log" &&
+       [ "$(grep '^Storage: ' "$log" | grep -cF ", writes would be ALLOWED on partition 1$E8_RO")" -eq 1 ] &&
+       e8_mounted "$log" "stage 8 has no write path" && grep -qxF "$PCI_READY" "$log" && ! grep -qE 'PANIC|FAILED' "$log" &&
+       ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log" && grep -qE '^ext2: port 0 partition 1: revision 1, '"$3"'-byte blocks' "$log" &&
+       [ "$(grep -cE '^console: cat: from the disk \(report only\): longest VFS lock hold [0-9]+ us ' "$log")" -eq 3 ]; then
+        pass "[1.4] ext2 read session, $2: the marked disk mounted read-only on /home at boot ('Disk mode, read-only'), System ready, the session typed, no disk error, no PANIC or FAILED line"
+    else
+        fail "[1.4] ext2 read session, $2: not mounted as expected, or the boot or the session failed (see serial-ext2-$1.log)"
+    fi
+    for c in ls cat stat du cd writes; do
+        if grep -qxF "CHECK $c OK" "$res"; then
+            case $c in
+            ls) pass "[1.4] ext2 read session, $2: ls -l of /home, /home/docs and /home/docs/nested lists debugfs's entries in their on-disk order, with their types and sizes" ;;
+            cat) pass "[1.4] ext2 read session, $2: cat of three files (one through the single indirect block at 1 KiB) prints them exactly: the SHA-256s of debugfs's cat, the byte counts on the console's cat lines" ;;
+            stat) pass "[1.4] ext2 read session, $2: stat of two files, a folder and /home: the size, pages (i_blocks), node (inode number) and links as debugfs reads them" ;;
+            du) pass "[1.4] ext2 read session, $2: du of /home and /home/docs: the pages, files and folders debugfs's tree gives" ;;
+            cd) pass "[1.4] ext2 read session, $2: the shell starts in the mounted /home; cd docs, cd .., cd .. (to /, the RAM root) and cd alone (the mounted /home again), as pwd shows" ;;
+            writes) pass "[1.4] ext2 read session, $2: touch (new and existing), mkdir, rmdir, rm, '>' and '>>', cp and mv are each refused with 'the filesystem is read-only' (mkdir of an existing folder: already exists), and the listing afterwards is the same" ;;
+            esac
+        else
+            fail "[1.4] ext2 read session, $2: $c differs from debugfs or from the expected text: $(grep "^CHECK $c " "$res" | cut -c1-300)"
+        fi
+    done
+    echo "      $1: SHA-256 before ${E8_SHA0[$1]:-?}, after ${E8_SHA1[$1]:-?}"
+    if [ -n "${E8_SHA0[$1]:-}" ] && [ "${E8_SHA0[$1]}" = "${E8_SHA1[$1]:-}" ]; then
+        pass "[1.4] ext2 read session, $2: the disk image's SHA-256 is the same before and after the boot and the session (${E8_SHA0[$1]})"
+    else
+        fail "[1.4] ext2 read session, $2: the disk image's SHA-256 changed (${E8_SHA0[$1]:-?} -> ${E8_SHA1[$1]:-?})"
+    fi
+}
+e8_session s1k 1024 128 8192
+e8_results s1k "1 KiB blocks" 1024
+# The per-filesystem file-size limit (from each filesystem's ops table):
+# the RAM filesystem's 2 MiB, the ext2 volume's 4 GiB - 1 (its block map
+# reaches further at 1 KiB blocks: capped, C7).
+if grep -qxF "mount: file-size limits from each filesystem's ops table: / 2097152 bytes, /home 4294967295 bytes" "$OUT/serial-ext2-s1k.log"; then
+    pass "[1.4] file-size limits per filesystem (from each ops table): / (RAM) 2097152 bytes, /home (ext2, 1 KiB blocks) 4294967295 bytes"
+else
+    fail "[1.4] file-size limits per filesystem: the mount: line does not give / 2097152 and /home 4294967295 bytes (see serial-ext2-s1k.log)"
+fi
+e8_session s4k 4096 256 16384
+e8_results s4k "4 KiB blocks" 4096
+echo "      [1.4] read sessions: $(( $(date +%s) - E8_T1 )) s (report only)"
+echo "      [1.4] $(grep -hE '^console: cat: from the disk' "$OUT/serial-ext2-s1k.log" "$OUT/serial-ext2-s4k.log" | sed 's/^console: cat: from the disk (report only): //' | tr '\n' ';')"
+echo "      [1.4] ext2 at /home: $(( $(date +%s) - E8_T0 )) s (report only)"

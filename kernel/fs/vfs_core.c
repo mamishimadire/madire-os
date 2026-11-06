@@ -11,6 +11,8 @@
  * table, and every node a filesystem hands back is given its folder's
  * number (vfs_raw_lookup, vfs_entry_from, vfs_entry_next, vfs_create). A
  * step onto a mount point lands on the mounted root; ".." crosses back.
+ * 1.4 stage 8: a read-only filesystem's changes end with EROFS
+ * (vfs_writable, at the places vfs_core.h names).
  */
 #include "kernel/fs/vfs_core.h"
 #include "kernel/fs/fs_errno.h"
@@ -67,8 +69,10 @@ static int step(struct vfs *v, struct vnode *cur, const char *name, size_t len,
         break;
     }
     struct vnode *n = vfs_raw_lookup(v, cur, name, len);
-    if (!n)
-        return -FS_ENOENT;
+    if (!n) {
+        int e = vfs_lookup_error(v, cur);   /* 1.4 stage 8: ENOMEM or EIO, not ENOENT */
+        return e ? e : -FS_ENOENT;
+    }
     *out = mount_enter(&v->mounts, n);  /* a mount point: the mounted root */
     return 0;
 }
@@ -141,10 +145,16 @@ int vfs_create(struct vfs *v, struct vnode *start, const char *path, enum vnode_
         return -FS_ENOTDIR;
     if (vfs_raw_lookup(v, l.dir, l.name, l.len))
         return -FS_EEXIST;
+    r = vfs_lookup_error(v, l.dir);     /* 1.4 stage 8: not found, or not readable */
+    if (r < 0)
+        return r;
     if (type == VNODE_FILE && l.trailing_slash)
         return -FS_EISDIR;
     if (l.dir->nlink == 0)
         return -FS_ENOENT;              /* the folder was removed */
+    r = vfs_writable(v, l.dir);         /* 1.4 stage 8: EROFS after EEXIST, as Linux */
+    if (r < 0)
+        return r;
     struct vnode *n;
     const struct mount *m = vfs_mnt(v, l.dir);
     r = m->ops->create(m->fs, l.dir, l.name, l.len, type, mode, &n);
@@ -176,9 +186,14 @@ int vfs_unlink(struct vfs *v, struct vnode *start, const char *path)
         return -FS_EISDIR;
     if (l.dir->type != VNODE_DIR)
         return -FS_ENOTDIR;
+    r = vfs_writable(v, l.dir);         /* 1.4 stage 8: before the lookup, as Linux */
+    if (r < 0)
+        return r;
     struct vnode *n = vfs_raw_lookup(v, l.dir, l.name, l.len);
-    if (!n)
-        return -FS_ENOENT;
+    if (!n) {
+        r = vfs_lookup_error(v, l.dir);
+        return r ? r : -FS_ENOENT;
+    }
     if (n->type == VNODE_DIR)
         return -FS_EISDIR;
     if (l.trailing_slash)
@@ -208,9 +223,14 @@ int vfs_rmdir(struct vfs *v, struct vnode *start, const char *path)
     }
     if (l.dir->type != VNODE_DIR)
         return -FS_ENOTDIR;
+    r = vfs_writable(v, l.dir);         /* 1.4 stage 8: before the lookup, as Linux */
+    if (r < 0)
+        return r;
     struct vnode *n = vfs_raw_lookup(v, l.dir, l.name, l.len);
-    if (!n)
-        return -FS_ENOENT;
+    if (!n) {
+        r = vfs_lookup_error(v, l.dir);
+        return r ? r : -FS_ENOENT;
+    }
     if (n->type != VNODE_DIR)
         return -FS_ENOTDIR;
     if (mount_is_point(&v->mounts, n))
@@ -255,12 +275,19 @@ int vfs_rename(struct vfs *v, struct vnode *ostart, const char *opath,
         return -FS_EBUSY;
     if (o.dir->type != VNODE_DIR || t.dir->type != VNODE_DIR)
         return -FS_ENOTDIR;
+    r = vfs_writable(v, o.dir);         /* 1.4 stage 8: after EXDEV and EBUSY, as Linux */
+    if (r < 0)
+        return r;
     struct vnode *n = vfs_raw_lookup(v, o.dir, o.name, o.len);
-    if (!n)
-        return -FS_ENOENT;
+    if (!n) {
+        r = vfs_lookup_error(v, o.dir);
+        return r ? r : -FS_ENOENT;
+    }
     if (n->type != VNODE_DIR && (o.trailing_slash || t.trailing_slash))
         return -FS_ENOTDIR;
     struct vnode *victim = vfs_raw_lookup(v, t.dir, t.name, t.len);
+    if (!victim && (r = vfs_lookup_error(v, t.dir)) < 0)
+        return r;
     if (victim == n)
         return 0;                       /* the same node: nothing to do */
     if (n->type == VNODE_DIR && within(t.dir, n))
@@ -362,11 +389,32 @@ uint64_t vfs_entry_pos(const struct vfs *v, const struct vnode *e)
 
 uint32_t vfs_subdirs(const struct vfs *v, const struct vnode *dir)
 {
+    const struct mount *m = vfs_mnt(v, dir);
+    if (m->ops->subdirs)
+        return m->ops->subdirs(m->fs, dir);     /* 1.4 stage 8: ext2 knows it from its link count */
     uint32_t count = 0;
     for (const struct vnode *e = vfs_entry_from(v, dir, 0); e; e = vfs_entry_next(v, dir, e))
         if (e->type == VNODE_DIR)
             count++;
     return count;
+}
+
+int vfs_lookup_error(const struct vfs *v, const struct vnode *dir)
+{
+    const struct mount *m = vfs_mnt(v, dir);
+    return m->ops->error ? m->ops->error(m->fs) : 0;
+}
+
+int vfs_writable(const struct vfs *v, const struct vnode *n)
+{
+    const struct mount *m = vfs_mnt(v, n);
+    return m->ops->writable ? m->ops->writable(m->fs) : 0;
+}
+
+uint64_t vfs_file_max(const struct vfs *v, const struct vnode *n)
+{
+    const struct mount *m = vfs_mnt(v, n);
+    return m->ops->file_max ? m->ops->file_max(m->fs) : 0;
 }
 
 struct vnode *vfs_enter(const struct vfs *v, struct vnode *n)

@@ -199,6 +199,10 @@ void shell_cat_init(struct shell_cat *s);
 void shell_cat_put(struct shell_cat *s, const uint8_t *bytes, uint32_t len,
                    const struct shell_output *o);
 void shell_cat_end(struct shell_cat *s, const struct shell_output *o);
+/* 1.4 stage 8: a read that failed during cat (err < 0, e.g. -FS_EIO from
+ * the disk): "cat: '<path>': I/O error." as an error line, after the text
+ * printed so far (shell_cat_end first). */
+void shell_cat_error(const char *path, int err, const struct shell_output *o);
 
 #define SHELL_CAT_CANCELLED     "cat: cancelled."
 

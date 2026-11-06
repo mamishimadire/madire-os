@@ -30,6 +30,7 @@
 struct guard_summary {
     bool allows;            /* as the AHCI driver keeps it */
     uint32_t partition;     /* allows: its index (1-based) */
+    uint64_t first, sectors;    /* 1.4 stage 8: allows: its first LBA and its sectors (ext2_disk.h) */
     char table[40];         /* "MBR, 1 partition", "no partition table", ... */
     char result[64];        /* "ALLOWED on partition 1", "REFUSED: (b) no valid test marker", ... */
 };

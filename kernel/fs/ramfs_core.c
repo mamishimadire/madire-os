@@ -537,6 +537,13 @@ static uint64_t r_pos(void *fsp, const struct vnode *e)
     return ramfs_seq(e);
 }
 
+/* 1.4 stage 8: the file-size limit (one index page of frames). */
+static uint64_t r_file_max(void *fsp)
+{
+    (void)fsp;
+    return RAMFS_FILE_MAX;
+}
+
 const struct vfs_ops ramfs_ops = {
     .lookup = r_lookup,
     .create = r_create,
@@ -552,4 +559,5 @@ const struct vfs_ops ramfs_ops = {
     .entry_next = r_entry_next,
     .name = r_name,
     .pos = r_pos,
+    .file_max = r_file_max,             /* 1.4 stage 8; writable and subdirs NULL */
 };

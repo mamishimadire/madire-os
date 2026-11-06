@@ -99,6 +99,20 @@ struct vfs_ops {
      * root) and its position there. */
     const char *(*name)(void *fs, const struct vnode *n, size_t *len);
     uint64_t (*pos)(void *fs, const struct vnode *e);
+
+    /* 1.4 stage 8 (each may be NULL, with the meaning given; the RAM
+     * filesystem leaves writable and subdirs NULL): */
+    /* 0, or -FS_EROFS when nothing on the filesystem may change (NULL: 0). */
+    int (*writable)(void *fs);
+    /* The largest size a file may have, in bytes (NULL: no file may grow). */
+    uint64_t (*file_max)(void *fs);
+    /* A folder's entries that are folders (NULL: counted by entry_from and
+     * entry_next). */
+    uint32_t (*subdirs)(void *fs, const struct vnode *dir);
+    /* Why the last lookup, entry_from or entry_next gave NULL: 0 (not
+     * there, or the end), or -FS_ENOMEM / -FS_EIO; read once, then cleared
+     * (NULL: always 0, as the RAM filesystem). */
+    int (*error)(void *fs);
 };
 
 #include "kernel/fs/mount_core.h"
@@ -134,7 +148,14 @@ int vfs_rmdir(struct vfs *v, struct vnode *start, const char *path);
  * "." or ".." on either side; EINVAL for a folder into its own subtree;
  * the same node: 0, nothing done. 1.4 stage 7: EXDEV when the two folders
  * are on different filesystems (checked first after the walks, as Linux);
- * EBUSY for a mount point on either side (also in vfs_rmdir). */
+ * EBUSY for a mount point on either side (also in vfs_rmdir).
+ *
+ * 1.4 stage 8: on a read-only filesystem (ops->writable) every change is
+ * -FS_EROFS, at Linux's place: vfs_create after the checks that make it
+ * EEXIST, EISDIR or ENOENT (a name that is taken stays EEXIST, as Linux's
+ * mkdir); vfs_unlink and vfs_rmdir before the last name is looked up
+ * (after EISDIR, EBUSY, EINVAL and ENOTEMPTY for "/", "." and ".."); and
+ * vfs_rename after EXDEV and EBUSY, before the old name is looked up. */
 int vfs_rename(struct vfs *v, struct vnode *ostart, const char *opath,
                struct vnode *nstart, const char *npath);
 
@@ -161,6 +182,16 @@ uint64_t vfs_entry_pos(const struct vfs *v, const struct vnode *e);
 
 /* A folder's entries that are folders (stat's link count: 2 + these). */
 uint32_t vfs_subdirs(const struct vfs *v, const struct vnode *dir);
+
+/* 1.4 stage 8: 0, or -FS_EROFS when node n's filesystem is read-only;
+ * and the largest size a file of n's filesystem may have (the RAM
+ * filesystem's RAMFS_FILE_MAX, ext2's from its block map). */
+int vfs_writable(const struct vfs *v, const struct vnode *n);
+/* Why the last lookup or listing step in folder dir's filesystem gave
+ * NULL: 0, or -FS_ENOMEM / -FS_EIO (ops->error; read once). A walk
+ * answers that error instead of ENOENT. */
+int vfs_lookup_error(const struct vfs *v, const struct vnode *dir);
+uint64_t vfs_file_max(const struct vfs *v, const struct vnode *n);
 
 /* What a walk sees at entry n (the root mounted on it, or n); the folder
  * a mounted root stands for (or n); ".." of folder n across mounts (NULL

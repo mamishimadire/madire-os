@@ -14,6 +14,7 @@
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
 #include "kernel/display/fbcon_core.h"
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/fsys_core.h"
 #include "kernel/fs/ramfs_core.h"
@@ -32,6 +33,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/shell/parser.h"
 #include "kernel/shell/shell.h"
+#include "kernel/storage/ahci.h"
 #include "kernel/timer.h"
 
 #define PROMPT_LEN   SHELL_PROMPT_WIDTH /* 0.12: the prompt is in the shell state */
@@ -78,6 +80,15 @@ static struct vnode *ls_dir;
 static struct vnode *cat_node;
 static bool catting;
 static uint64_t cat_off, cat_start;
+/* 1.4 stage 8: a cat of a file on the disk (ext2 at /home) measures its
+ * holds of the VFS lock (each one chunk read, perhaps from the disk) and
+ * the longest scheduler turn meanwhile, for one report-only line. */
+static bool cat_disk;
+static uint64_t cat_hold_cycles, cat_hold_ticks, cat_commands0;
+/* 1.4 stage 8: a read that failed during cat (-FS_EIO from the disk) ends
+ * it with "cat: '<path>': I/O error." (shell_cat_error). */
+static int cat_err;
+static char cat_path[256];
 static struct shell_cat cat_text;
 static uint8_t cat_chunk[4096];         /* 1.0 stage 9: also cp's chunk (never both at once) */
 /* 1.0 stage 9: rm's, cp's or mv's question waits for its answer; the copy
@@ -393,6 +404,8 @@ static int fs_touch(void *ctx, const char *path)
         struct vnode *n = 0;
         r = vfs_lookup(v, cwd_node(), path, &n);
         if (r == 0)
+            r = vfs_writable(v, n);         /* 1.4 stage 8: no time changes on a read-only disk */
+        if (r == 0)
             n->atime = n->mtime = n->ctime = v->now();
     }
     fd_vfs_release();
@@ -435,6 +448,9 @@ static int fs_list_next(void *ctx, uint64_t *cursor, struct shell_finfo *rows, u
             *cursor = vfs_entry_pos(v, e) + 1;
             r++;
         }
+        int err = vfs_lookup_error(v, ls_dir);  /* 1.4 stage 8: the listing stopped by ENOMEM or EIO */
+        if (err && r == 0)
+            r = err;
     }
     fd_vfs_release();
     return r;
@@ -460,6 +476,18 @@ static int fs_cat_open(void *ctx, const char *path)
         vfs_hold(n);
         cat_node = n;
         cat_off = 0;
+        cat_err = 0;
+        uint32_t k = 0;
+        for (; path[k] && k + 1 < sizeof(cat_path); k++)
+            cat_path[k] = path[k];
+        cat_path[k] = '\0';
+        cat_disk = n->fs_id != 0;           /* 1.4 stage 8: not the RAM filesystem */
+        if (cat_disk) {
+            uint64_t polls = 0, ticks = 0;
+            cat_hold_cycles = cat_hold_ticks = 0;
+            ahci_figures(&cat_commands0, &polls, &ticks);
+            thread_turn_reset();
+        }
     }
     fd_vfs_release();
     return r;
@@ -540,7 +568,7 @@ static int hold_target(const char *path, struct vnode **out, bool *existed)
     int r = vfs_lookup(v, cwd_node(), path, &n);
     if (r == 0 && n->type == VNODE_DIR)
         r = -FS_EISDIR;
-    else if (r == 0)
+    else if (r == 0 && (r = vfs_writable(v, n)) == 0)    /* 1.4 stage 8: EROFS, nothing emptied */
         *existed = true;
     else if (r == -FS_ENOENT)
         r = vfs_create(v, cwd_node(), path, VNODE_FILE, 0644, &n);
@@ -636,6 +664,9 @@ static int st_du_next(void *ctx, struct shell_du *t)
             break;
         }
         struct vnode *e = vfs_entry_from(v, du_cur, du_seq);
+        if (!e && (r = vfs_lookup_error(v, du_cur)) < 0)
+            break;                          /* 1.4 stage 8: ENOMEM or EIO, not the end */
+        r = 1;
         if (!e) {
             if (du_depth == 0) {
                 r = 0;
@@ -968,9 +999,26 @@ static void cat_finish(const char *why)
         klogf("console: Ctrl+C: cat cancelled after %llu bytes (%llu ticks)\n",
               (unsigned long long)cat_off, (unsigned long long)ticks);
         shell_sink(0, why, SHELL_TEXT);
+    } else if (cat_err) {                   /* 1.4 stage 8: a failed read, not the end */
+        klogf("console: cat: %s after %llu bytes (%llu ticks)\n", fs_errno_name(cat_err),
+              (unsigned long long)cat_off, (unsigned long long)ticks);
+        shell_cat_error(cat_path, cat_err, &sink);
+        cat_err = 0;
     } else {
         klogf("console: cat: %llu bytes in %llu ticks\n", (unsigned long long)cat_off,
               (unsigned long long)ticks);
+    }
+    if (cat_disk) {
+        uint64_t commands = 0, polls = 0, cmd_ticks = 0;
+        char owner[96];
+        ahci_figures(&commands, &polls, &cmd_ticks);
+        thread_turn_owner(owner, sizeof(owner));
+        klogf("console: cat: from the disk (report only): longest VFS lock hold %llu us (%llu ticks; one "
+              "chunk of at most 4096 bytes), %llu disk commands, the longest command of the boot %llu ticks; "
+              "longest turn %llu ticks (%s)\n", (unsigned long long)ext2_disk_us(cat_hold_cycles),
+              (unsigned long long)cat_hold_ticks, (unsigned long long)(commands - cat_commands0),
+              (unsigned long long)cmd_ticks, (unsigned long long)thread_turn_max(), owner);
+        cat_disk = false;
     }
     next_prompt();
 }
@@ -981,9 +1029,16 @@ static void cat_finish(const char *why)
 static void cat_step(void)
 {
     fd_vfs_acquire();
+    uint64_t c0 = fd_tsc(), t0 = timer_ticks();
     int64_t n = vfs_read(vfs_root(), cat_node, cat_off, cat_chunk, sizeof(cat_chunk));
+    uint64_t c1 = fd_tsc() - c0, t1 = timer_ticks() - t0;
     fd_vfs_release();
+    if (cat_disk && c1 > cat_hold_cycles)
+        cat_hold_cycles = c1;               /* 1.4 stage 8: report only */
+    if (cat_disk && t1 > cat_hold_ticks)
+        cat_hold_ticks = t1;
     if (n <= 0) {
+        cat_err = n < 0 ? (int)n : 0;       /* 1.4 stage 8: an error is said, not taken as the end */
         cat_finish(0);
         return;
     }
@@ -1045,7 +1100,7 @@ static void copy_step(void)
     if (put < 0)
         copy_finish((int)put, false);
     else if (put < n)
-        copy_finish(cp_off >= RAMFS_FILE_MAX ? -FS_EFBIG : -FS_ENOSPC, false);
+        copy_finish(cp_off >= vfs_file_max(vfs_root(), cp_dst) ? -FS_EFBIG : -FS_ENOSPC, false);
 }
 
 /* 0.9.1: the answer to "reboot". Only exactly "yes" restarts. */

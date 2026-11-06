@@ -677,7 +677,7 @@ int fd_node_truncate(struct vnode *n, uint64_t length)
 {
     if (n->type != VNODE_FILE)
         return -FS_EISDIR;
-    if (length > RAMFS_FILE_MAX)
+    if (length > vfs_file_max(vfs_root(), n))          /* 1.4 stage 8: per filesystem */
         return -FS_EFBIG;
     wmark_take(n);
     int r;
