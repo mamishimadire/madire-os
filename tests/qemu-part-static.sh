@@ -1381,15 +1381,18 @@ fi
 # compiler's exact choices. Then (3) proves the scan finds what it must.
 AH_MIN_INSNS=1000
 AH_WRITE_OPS='30|31|34|35|36|39|3a|3b|3c|3d|3e|45|57|61|64|92|93|c5|ca|cc|ce|e7|e8|ea|f1|f4|f9'
-# ah_table <object or ELF>: the bytes of its ahci_opcodes as hex ("ec25"),
-# its size from nm on AH_TSIZE; nothing if it has no such symbol.
+# ah_table <object or ELF>: sets AH_TBYTES to the bytes of its ahci_opcodes
+# as hex ("ec25") and AH_TSIZE to its size from nm (both empty if it has
+# no such symbol). It sets globals, so it is called directly, never inside
+# $(...) or a pipeline (the S4 runs 41229884288 and 41229897526).
 ah_table() {
     local addr size
     read -r addr size <<< "$(nm -S "$1" 2>/dev/null | awk '$4 == "ahci_opcodes" { print $1, $2; exit }')"
     AH_TSIZE=${size:-}
+    AH_TBYTES=""
     [ -n "${addr:-}" ] || return 0
-    objdump -s -j .rodata --start-address=0x$addr --stop-address=$(printf '0x%x' $((16#$addr + 16#${size:-0}))) "$1" 2>/dev/null |
-        awk '$1 ~ /^[0-9a-f]+$/ && NF >= 2 { print $2; exit }'
+    AH_TBYTES=$(objdump -s -j .rodata --start-address=0x$addr --stop-address=$(printf '0x%x' $((16#$addr + 16#${size:-0}))) "$1" 2>/dev/null |
+        awk '$1 ~ /^[0-9a-f]+$/ && NF >= 2 { print $2; exit }')
 }
 # ah_scan <objdump -d output> <file for the flagged lines>: prints "<storage
 # functions> <their instructions> <those with none>"; every immediate byte
@@ -1405,7 +1408,8 @@ ah_scan() {
         END { if (fn && !cnt) empty++; print fns + 0, insns + 0, empty + 0 }' "$1"
 }
 AH_ELF=$OUT/madire.elf
-AH_BYTES=$(ah_table "$AH_ELF"); AH_SIZE=$AH_TSIZE
+ah_table "$AH_ELF"
+AH_BYTES=$AH_TBYTES; AH_SIZE=$AH_TSIZE
 AH_DIS=$OUT/ahci-objdump.txt
 objdump -d --no-show-raw-insn "$AH_ELF" > "$AH_DIS" 2>/dev/null
 read -r AH_FNS AH_INSNS AH_EMPTY <<< "$(ah_scan "$AH_DIS" "$OUT/ahci-objdump-flagged.txt")"
@@ -1431,7 +1435,8 @@ gcc -std=gnu11 -m64 -ffreestanding -fno-pic -fno-pie -mno-red-zone -mgeneral-reg
     -c "$(dirname "$0")/ahci_opcode_sample.c" -o "$AH_SAMPLE" 2>&1 | sed 's/^/      gcc: /'
 AH_SDIS=$OUT/ahci-sample-objdump.txt
 objdump -d --no-show-raw-insn "$AH_SAMPLE" > "$AH_SDIS" 2>/dev/null
-AH_SBYTES=$(ah_table "$AH_SAMPLE")
+ah_table "$AH_SAMPLE"
+AH_SBYTES=$AH_TBYTES
 read -r AH_SFNS AH_SINSNS AH_SEMPTY <<< "$(ah_scan "$AH_SDIS" "$OUT/ahci-sample-flagged.txt")"
 AH_SBAD=$(cat "$OUT/ahci-sample-flagged.txt")
 AH_SFLAG=$(awk '/^[0-9a-f]+ <[^>]*>:$/ { fn = $2 } /movb[ \t]+[$]0x(35|ea),/ { print fn, ($0 ~ /[$]0x35,/ ? "0x35" : "0xea") }' "$AH_SDIS" | tr '\n' ' ')
