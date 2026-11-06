@@ -159,12 +159,8 @@ static void node_facts(const struct vnode *n, struct fsys_facts *f)
     f->size = n->size;
     f->mode = n->mode;
     f->nlink = n->nlink;
-    f->subdirs = 0;
-    if (n->type == VNODE_DIR)
-        for (const struct vnode *e = ramfs_first(n); e; e = ramfs_next(e))
-            if (e->type == VNODE_DIR)
-                f->subdirs++;
-    f->pages = ramfs_file_pages(n);
+    f->subdirs = n->type == VNODE_DIR ? vfs_subdirs(vfs_root(), n) : 0;
+    f->pages = vfs_pages(vfs_root(), n);
     f->atime = n->atime;
     f->mtime = n->mtime;
     f->ctime = n->ctime;
@@ -414,7 +410,7 @@ int64_t fsys_sys_getcwd(uint64_t ubuf, uint64_t size)
 {
     char path[PATH_MAX_BYTES];
     fd_vfs_acquire();
-    int64_t len = fsys_cwd_path(cwd_node(), vfs_root()->root, path, sizeof(path));
+    int64_t len = fsys_cwd_path(vfs_root(), cwd_node(), path, sizeof(path));
     fd_vfs_release();
     if (len < 0)
         return len;                             /* ENOENT, ENAMETOOLONG */

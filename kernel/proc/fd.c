@@ -134,7 +134,8 @@ void fd_vfs_release(void)
  * held. */
 static bool dies_with_pages(const struct vnode *n)
 {
-    return n->type == VNODE_FILE && n->nlink == 0 && n->opens == 1 && ramfs_file_pages(n) > 0;
+    return n->type == VNODE_FILE && n->nlink == 0 && n->opens == 1 &&
+           vfs_pages(vfs_root(), n) > 0;
 }
 
 /* Drops one hold of each node, in order (a node may come twice: its other
@@ -580,7 +581,7 @@ int64_t fd_file_read(uint32_t file, uint64_t buf, uint64_t count)
         struct hold h;
         hold_begin(&h);
         uint64_t off = files.f[file].offset;
-        int64_t got = ramfs_read(vfs_ramfs(), n, off, kbuf, want);
+        int64_t got = vfs_read(vfs_root(), n, off, kbuf, want);
         if (got > 0)
             files.f[file].offset = off + (uint64_t)got;
         hold_end(&h, HOLD_DATA);
@@ -649,7 +650,7 @@ int64_t fd_file_write(uint32_t file, uint64_t buf, uint64_t count)
         struct hold h;
         hold_begin(&h);
         uint64_t off = files.f[file].offset;
-        int64_t put = ramfs_write(vfs_ramfs(), n, off, kbuf, want);
+        int64_t put = vfs_write(vfs_root(), n, off, kbuf, want);
         if (put > 0) {
             files.f[file].offset = off + (uint64_t)put;
             stamp(n);
@@ -684,7 +685,7 @@ int fd_node_truncate(struct vnode *n, uint64_t length)
     do {
         struct hold h;
         hold_begin(&h);
-        r = ramfs_truncate_step(vfs_ramfs(), n, length, FSYS_TRUNC_STEP);
+        r = vfs_truncate_step(vfs_root(), n, length, FSYS_TRUNC_STEP);
         if (first && r >= 0)
             stamp(n);
         first = false;
@@ -731,7 +732,7 @@ int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count)
         hold_begin(&h);
         uint64_t cur = files.f[file].offset, next = cur;
         bool more = false, gone = n->nlink == 0;
-        uint32_t used = gone ? 0 : fsys_dir_fill(n, cur, kbuf, room, &next, &more);
+        uint32_t used = gone ? 0 : fsys_dir_list(vfs_root(), n, cur, kbuf, room, &next, &more);
         hold_end(&h, HOLD_DIR);
         if (gone) {
             if (done == 0)

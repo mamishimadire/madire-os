@@ -235,5 +235,8 @@
 # (3: unknown INCOMPAT refused, unknown RO_COMPAT read only, the states
 # reported); the sanitizers over 104 corrupted images (1); 1 unit suite
 # (ext2_core), and a new case in test_guard_core (the label madire-test2).
+# Stage 7: none (the VFS refactor: every existing check unchanged); 1 unit
+# suite (mount_core: two fake filesystems mounted on the RAM tree's
+# folders, crossing, "..", EXDEV, nested mounts and the busy cases).
 1.4 52
-unit-suites 100
+unit-suites 101

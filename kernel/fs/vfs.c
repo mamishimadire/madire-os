@@ -20,6 +20,11 @@
  * (kernel/proc/klock.h). The boot takes it like every later user: around
  * building the root folders and around each step of the self-test (thread
  * 0 is the only user then, so it never waits).
+ *
+ * 1.4 stage 7: the RAM filesystem is number 0 of the mount table, at "/"
+ * (vfs_mount), and the only one mounted; the boot's listing of "/" goes
+ * through the ops table (vfs_entry_from), while the self-test steps below
+ * keep calling the RAM filesystem directly, as its own tests.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -488,9 +493,10 @@ static bool build(void)
           ramfs.budget_pages * (RAMFS_PAGE / 1024u));
     char names[64];
     size_t p = 0;
-    for (struct vnode *e = ramfs_first(vfs.root); e && p + 20 < sizeof(names); e = ramfs_next(e)) {
+    for (struct vnode *e = vfs_entry_from(&vfs, vfs.root, 0); e && p + 20 < sizeof(names);
+         e = vfs_entry_next(&vfs, vfs.root, e)) {
         size_t len;
-        const char *s = ramfs_name(e, &len);
+        const char *s = vfs_entry_name(&vfs, e, &len);
         if (p) {
             names[p++] = ',';
             names[p++] = ' ';

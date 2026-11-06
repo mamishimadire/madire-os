@@ -195,9 +195,17 @@ uint32_t fsys_dirent_put(uint8_t *buf, uint32_t room, uint64_t ino, uint64_t off
  * parent is known): the bytes written, *next the offset after the last
  * one written (cursor if none), and *more whether a record follows
  * (false at the end of the folder). The VFS lock held.
+ *
+ * 1.4 stage 7: fsys_dir_list does it for a folder of any filesystem of v,
+ * through its ops table (the kernel's getdents64, kernel/proc/fd.c); ".."
+ * at a mounted root names the parent of the folder it is mounted on.
+ * fsys_dir_fill is its RAM-filesystem form (a folder of the RAM filesystem
+ * alone, with no mount), as before (tests/unit/test_syscall_dir.c).
  */
 uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, uint32_t room,
                        uint64_t *next, bool *more);
+uint32_t fsys_dir_list(const struct vfs *v, const struct vnode *dir, uint64_t cursor,
+                       uint8_t *buf, uint32_t room, uint64_t *next, bool *more);
 
 /* The offset after the last whole record within the first `valid` bytes of
  * the `used` bytes fsys_dir_fill wrote, and that record's end (the bytes
@@ -208,7 +216,8 @@ uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64
 /* getcwd: the path of folder cwd into buf (size bytes), with its NUL:
  * its length with the NUL, or -FS_ENOENT (cwd removed: no name left) or
  * -FS_ENAMETOOLONG (the path and its NUL need more than size bytes). The
- * VFS lock held. */
-int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size);
+ * VFS lock held. 1.4 stage 7: from v's root, across mounts (a mounted
+ * root is named by the folder it is mounted on). */
+int64_t fsys_cwd_path(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size);
 
 #endif

@@ -31,7 +31,7 @@ static struct ramfs_node *new_node(struct ramfs *fs, enum vnode_type type, uint3
     n->vn.parent = 0;
     n->vn.atime = n->vn.mtime = n->vn.ctime = 0;
     n->vn.wr_next = n->vn.wr_serving = 0;   /* stage 5: the write mark free */
-    n->vn.wr_holder = n->vn.wr_spare = 0;
+    n->vn.wr_holder = n->vn.fs_id = 0;      /* 1.4 stage 7: fs_id was wr_spare */
     n->name = 0;
     n->name_len = 0;
     n->seq = 0;
@@ -181,15 +181,6 @@ static void r_release(void *fsp, struct vnode *node)
         free_pages_from(fsp, RN(node), 0);
     free_node(fsp, RN(node));
 }
-
-const struct vfs_ops ramfs_ops = {
-    .lookup = r_lookup,
-    .create = r_create,
-    .detach = r_detach,
-    .move = r_move,
-    .entries = r_entries,
-    .release = r_release,
-};
 
 const char *ramfs_name(const struct vnode *n, size_t *len)
 {
@@ -494,3 +485,71 @@ int ramfs_truncate_step(struct ramfs *fs, struct vnode *file, uint64_t length,
     }
     return more ? 1 : 0;
 }
+
+/* ---- the ops table (1.4 stage 7: the data and folder-listing calls too) ---- */
+
+/* The listing calls never use the filesystem's state (an entry knows its
+ * folder), so fsys_dir_fill's RAM form passes none (fsys_core.c). */
+
+static int64_t r_read(void *fsp, struct vnode *file, uint64_t off, void *buf, uint64_t len)
+{
+    return ramfs_read(fsp, file, off, buf, len);
+}
+
+static int64_t r_write(void *fsp, struct vnode *file, uint64_t off, const void *buf, uint64_t len)
+{
+    return ramfs_write(fsp, file, off, buf, len);
+}
+
+static int r_truncate_step(void *fsp, struct vnode *file, uint64_t length, uint32_t max_pages)
+{
+    return ramfs_truncate_step(fsp, file, length, max_pages);
+}
+
+static uint32_t r_pages(void *fsp, const struct vnode *n)
+{
+    (void)fsp;
+    return ramfs_file_pages(n);
+}
+
+static struct vnode *r_entry_from(void *fsp, const struct vnode *dir, uint64_t pos)
+{
+    (void)fsp;
+    return ramfs_entry_from(dir, pos);
+}
+
+static struct vnode *r_entry_next(void *fsp, const struct vnode *dir, const struct vnode *e)
+{
+    (void)fsp;
+    (void)dir;
+    return ramfs_next(e);
+}
+
+static const char *r_name(void *fsp, const struct vnode *n, size_t *len)
+{
+    (void)fsp;
+    return ramfs_name(n, len);
+}
+
+static uint64_t r_pos(void *fsp, const struct vnode *e)
+{
+    (void)fsp;
+    return ramfs_seq(e);
+}
+
+const struct vfs_ops ramfs_ops = {
+    .lookup = r_lookup,
+    .create = r_create,
+    .detach = r_detach,
+    .move = r_move,
+    .entries = r_entries,
+    .release = r_release,
+    .read = r_read,
+    .write = r_write,
+    .truncate_step = r_truncate_step,
+    .pages = r_pages,
+    .entry_from = r_entry_from,
+    .entry_next = r_entry_next,
+    .name = r_name,
+    .pos = r_pos,
+};

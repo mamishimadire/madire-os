@@ -14,6 +14,7 @@ const char *fs_errno_name(int err)
     case FS_EFAULT:       return "EFAULT";
     case FS_EBUSY:        return "EBUSY";
     case FS_EEXIST:       return "EEXIST";
+    case FS_EXDEV:        return "EXDEV";
     case FS_ENOTDIR:      return "ENOTDIR";
     case FS_EISDIR:       return "EISDIR";
     case FS_EINVAL:       return "EINVAL";

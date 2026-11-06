@@ -297,7 +297,7 @@ static int64_t fs_cwd_path(void *ctx, char *buf, uint32_t size)
 {
     (void)ctx;
     fd_vfs_acquire();
-    int64_t r = fsys_cwd_path(cwd_node(), vfs_root()->root, buf, size);
+    int64_t r = fsys_cwd_path(vfs_root(), cwd_node(), buf, size);
     fd_vfs_release();
     return r;
 }
@@ -337,13 +337,10 @@ static int fs_chdir(void *ctx, const char *path)
 /* A node's facts (the VFS lock held). */
 static void fs_facts(const struct vnode *n, struct shell_finfo *f)
 {
-    uint32_t subdirs = 0;
-    if (n->type == VNODE_DIR)
-        for (const struct vnode *e = ramfs_first(n); e; e = ramfs_next(e))
-            if (e->type == VNODE_DIR)
-                subdirs++;
+    const struct vfs *v = vfs_root();
+    uint32_t subdirs = n->type == VNODE_DIR ? vfs_subdirs(v, n) : 0;
     f->type = n->type == VNODE_DIR ? SHELL_FT_DIR : SHELL_FT_FILE;
-    f->pages = ramfs_file_pages(n);
+    f->pages = vfs_pages(v, n);
     f->nlink = n->nlink == 0 ? 0 : n->type == VNODE_DIR ? 2 + subdirs : 1;
     f->mode = n->mode;
     f->size = n->type == VNODE_DIR ? 0 : n->size;
@@ -422,19 +419,20 @@ static int fs_list_next(void *ctx, uint64_t *cursor, struct shell_finfo *rows, u
 {
     (void)ctx;
     int r = 0;
+    const struct vfs *v = vfs_root();
     fd_vfs_acquire();
-    if (ls_dir != vfs_root()->root && !ls_dir->parent) {
+    if (ls_dir != v->root && !ls_dir->parent) {
         r = -FS_ENOENT;                     /* removed meanwhile (as getdents64, S6-3) */
     } else {
-        for (struct vnode *e = ramfs_entry_from(ls_dir, *cursor); e && (uint32_t)r < max;
-             e = ramfs_next(e)) {
+        for (struct vnode *e = vfs_entry_from(v, ls_dir, *cursor); e && (uint32_t)r < max;
+             e = vfs_entry_next(v, ls_dir, e)) {
             size_t len = 0;
-            const char *s = ramfs_name(e, &len);
-            fs_facts(e, &rows[r]);
+            const char *s = vfs_entry_name(v, e, &len);
+            fs_facts(vfs_enter(v, e), &rows[r]);    /* a mount point: what is mounted there */
             for (size_t i = 0; i < len && i < SHELL_NAME_MAX; i++)
                 rows[r].name[i] = s[i];
             rows[r].name[len < SHELL_NAME_MAX ? len : SHELL_NAME_MAX] = '\0';
-            *cursor = (uint64_t)ramfs_seq(e) + 1;
+            *cursor = vfs_entry_pos(v, e) + 1;
             r++;
         }
     }
@@ -607,7 +605,7 @@ static int st_du_open(void *ctx, const char *path, struct shell_du *t)
     int r = vfs_lookup(vfs_root(), cwd_node(), path, &n);
     if (r == 0 && n->type == VNODE_FILE) {
         t->files = 1;
-        t->pages = ramfs_file_pages(n);
+        t->pages = vfs_pages(vfs_root(), n);
     } else if (r == 0) {
         vfs_hold(n);                        /* where the walk started */
         vfs_hold(n);                        /* where it is */
@@ -637,20 +635,22 @@ static int st_du_next(void *ctx, struct shell_du *t)
             r = -FS_ENOENT;                 /* removed meanwhile */
             break;
         }
-        struct vnode *e = ramfs_entry_from(du_cur, du_seq);
+        struct vnode *e = vfs_entry_from(v, du_cur, du_seq);
         if (!e) {
             if (du_depth == 0) {
                 r = 0;
                 break;
             }
-            struct vnode *up = du_cur->parent;
-            du_seq = (uint64_t)ramfs_seq(du_cur) + 1;
+            /* Up across a mount too: on after the entry it is mounted on. */
+            struct vnode *up = vfs_parent(v, du_cur);
+            du_seq = vfs_entry_pos(v, vfs_covered(v, du_cur)) + 1;
             vfs_hold(up);
             vfs_drop(v, du_cur);
             du_cur = up;
             du_depth--;
         } else if (e->type == VNODE_DIR) {
             t->folders++;
+            e = vfs_enter(v, e);            /* a mount point: into what is mounted there */
             vfs_hold(e);
             vfs_drop(v, du_cur);
             du_cur = e;
@@ -658,8 +658,8 @@ static int st_du_next(void *ctx, struct shell_du *t)
             du_depth++;
         } else {
             t->files++;
-            t->pages += ramfs_file_pages(e);
-            du_seq = (uint64_t)ramfs_seq(e) + 1;
+            t->pages += vfs_pages(v, e);
+            du_seq = vfs_entry_pos(v, e) + 1;
         }
     }
     fd_vfs_release();
@@ -708,7 +708,7 @@ static int64_t st_out_write(void *ctx, const uint8_t *buf, uint32_t len)
     if (len > sizeof(cat_chunk))
         len = sizeof(cat_chunk);            /* one chunk per hold */
     fd_vfs_acquire();
-    int64_t put = ramfs_write(vfs_ramfs(), out_node, out_off, buf, len);
+    int64_t put = vfs_write(vfs_root(), out_node, out_off, buf, len);
     if (put > 0) {
         out_off += (uint64_t)put;
         stamp_node(out_node);
@@ -981,7 +981,7 @@ static void cat_finish(const char *why)
 static void cat_step(void)
 {
     fd_vfs_acquire();
-    int64_t n = ramfs_read(vfs_ramfs(), cat_node, cat_off, cat_chunk, sizeof(cat_chunk));
+    int64_t n = vfs_read(vfs_root(), cat_node, cat_off, cat_chunk, sizeof(cat_chunk));
     fd_vfs_release();
     if (n <= 0) {
         cat_finish(0);
@@ -1027,14 +1027,14 @@ static void copy_finish(int err, bool cancelled)
 static void copy_step(void)
 {
     fd_vfs_acquire();
-    int64_t n = ramfs_read(vfs_ramfs(), cp_src, cp_off, cat_chunk, sizeof(cat_chunk));
+    int64_t n = vfs_read(vfs_root(), cp_src, cp_off, cat_chunk, sizeof(cat_chunk));
     fd_vfs_release();
     if (n <= 0) {
         copy_finish(0, false);
         return;
     }
     fd_vfs_acquire();
-    int64_t put = ramfs_write(vfs_ramfs(), cp_dst, cp_off, cat_chunk, (uint64_t)n);
+    int64_t put = vfs_write(vfs_root(), cp_dst, cp_off, cat_chunk, (uint64_t)n);
     if (put > 0)
         stamp_node(cp_dst);
     fd_vfs_release();

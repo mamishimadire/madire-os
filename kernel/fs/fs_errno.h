@@ -15,6 +15,7 @@
 #define FS_EFAULT       14
 #define FS_EBUSY        16
 #define FS_EEXIST       17
+#define FS_EXDEV        18              /* 1.4 stage 7: a rename between two filesystems */
 #define FS_ENOTDIR      20
 #define FS_EISDIR       21
 #define FS_EINVAL       22
