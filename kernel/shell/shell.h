@@ -281,6 +281,21 @@ struct shell_display {
     uint32_t cell_w, cell_h;    /* the console font's cell, in pixels */
 };
 
+/* 1.4 stage 10: "sync" (docs/plans/1.4.md, C12, D19): a full save of the
+ * disk's changed files. sync returns one of these, with *blocks the
+ * filesystem blocks written. */
+enum shell_sync_end {
+    SHELL_SYNC_SAVED,
+    SHELL_SYNC_NO_DISK,         /* Live mode */
+    SHELL_SYNC_READONLY,        /* /home is read-only: nothing to save */
+    SHELL_SYNC_FAILED,          /* a disk write failed: /home is read-only now */
+};
+
+struct shell_disk {
+    enum shell_sync_end (*sync)(void *ctx, uint64_t *blocks);
+    void *ctx;
+};
+
 struct shell_context {
     const char *version;                    /* e.g. "0.5" */
     bool timer_ok;                          /* timer verified at boot */
@@ -348,6 +363,16 @@ struct shell_context {
      * after "reboot", in the section "system") and shows the screen's mode
      * and scale, or VGA text. NULL leaves every output exactly as before. */
     const struct shell_display *display;
+    /* 1.4 stage 10, optional: when set, "sync" exists (SYSTEM: "Save
+     * changed files to the disk"; "sync --help" and "help sync" work). It
+     * is NOT in the help lists until 1.4 stage 12 adds it there with
+     * "disk" (the owner's decision; docs/plans/1.4.md, G2), so every
+     * "help" output is unchanged. Its lines: "sync: N blocks saved.",
+     * "sync: nothing to save.", "sync: no disk in use (Live mode).",
+     * "sync: /home is read-only; nothing to save." and "sync: the disk
+     * could not be written; /home is read-only now.". NULL leaves every
+     * output exactly as before ("sync" is an unknown command). */
+    const struct shell_disk *disk;
 };
 
 enum shell_text {

@@ -12,6 +12,11 @@
 #define FS_ENOENT        2
 #define FS_EIO           5              /* 1.4 stage 8: a disk read failed (ext2 at /home) */
 #define FS_EBADF         9
+/* 1.4 stage 10: INTERNAL only, never returned by a system call or shown:
+ * ext2 needs a save before this change (R4, or a save in progress); the
+ * caller gives the VFS lock back, saves in pieces and tries again
+ * (ext2_disk.h: at most 3 saves, then ENOSPC). */
+#define FS_EAGAIN       11
 #define FS_ENOMEM       12
 #define FS_EFAULT       14
 #define FS_EBUSY        16
@@ -26,6 +31,7 @@
 #define FS_ENOSPC       28
 #define FS_ESPIPE       29
 #define FS_EROFS        30              /* 1.4 stage 8: a change on a read-only filesystem */
+#define FS_EMLINK       31              /* 1.4 stage 10: a folder with too many subfolders (ext2) */
 #define FS_ERANGE       34
 #define FS_ENAMETOOLONG 36
 #define FS_ENOSYS       38

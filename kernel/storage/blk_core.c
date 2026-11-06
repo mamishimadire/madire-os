@@ -1,5 +1,5 @@
-/* The block cache, the pure part (1.4 stage 4: reads only): see
- * blk_core.h. */
+/* The block cache, the pure part (1.4 stage 4: reads; stage 10: pages a
+ * write reached are forgotten): see blk_core.h. */
 #include "kernel/storage/blk_core.h"
 
 uint32_t blk_cache_pages(uint32_t free_pages)
@@ -18,6 +18,7 @@ void blk_cache_init(struct blk_cache *c, const struct blk_ops *ops, struct blk_s
     c->sectors = sectors;
     c->clock = 0;
     c->reads = c->hits = c->misses = c->commands = c->replaced = c->errors = c->refused = 0;
+    c->forgotten = 0;
     c->short_of_pages = false;
     for (uint32_t i = 0; i < cap; i++) {
         slots[i].page = 0;
@@ -129,6 +130,22 @@ int blk_cache_read(struct blk_cache *c, uint64_t lba, uint32_t count, uint8_t *d
         page += n;
     }
     return 0;
+}
+
+uint32_t blk_cache_forget(struct blk_cache *c, uint64_t lba, uint32_t count)
+{
+    uint32_t n = 0;
+    if (count == 0)
+        return 0;
+    uint64_t first = lba / BLK_PER_PAGE, last = (lba + count - 1u) / BLK_PER_PAGE;
+    for (uint32_t i = 0; i < c->made; i++) {
+        if (c->slots[i].valid && c->slots[i].page >= first && c->slots[i].page <= last) {
+            c->slots[i].valid = false;
+            n++;
+        }
+    }
+    c->forgotten += n;
+    return n;
 }
 
 /* The CRC32 table by nibbles (polynomial 0xEDB88320, reflected). */

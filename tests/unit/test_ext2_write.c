@@ -1162,6 +1162,101 @@ static void test_pending_merge(void)
     CHECK(strcmp(ext2_write_err_str(EXT2_ENOENT), "ENOENT") == 0);
 }
 
+/* 1.4 stage 10: a save in pieces gives the same disk as a whole save;
+ * while it is in progress every operation answers EAGAIN and changes
+ * nothing; keep_ino keeps an open file's inode after its name is removed
+ * until ext2_write_forget; ext2_write_mark_clean writes the clean state
+ * (EAGAIN while a save is in progress). */
+static void test_save_steps(void)
+{
+    mkimg(1024, 256, 1, 1, 2048, 64, 0);
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    uint32_t ino = 0, other = 0;
+    CHECK_EQ(ext2_write_create(&w, 2, "piece", 5, 0644, &ino), EXT2_OK);
+    CHECK_EQ(write_all(ino, 0, 20 * 1024, 3), 20 * 1024);
+    uint32_t saves = w.saves_done, calls = 0;
+    bool done = false;
+    while (!done) {
+        uint32_t before = nw;
+        CHECK_EQ(ext2_write_save_step(&w, 2, &done), EXT2_OK);
+        CHECK(nw - before <= 2);
+        calls++;
+        if (!done) {
+            CHECK(ext2_write_saving(&w));
+            uint32_t n0 = nw;
+            CHECK_EQ(ext2_write_create(&w, 2, "late", 4, 0644, &other), EXT2_EAGAIN);
+            CHECK_EQ(ext2_write_pwrite(&w, ino, 0, (const uint8_t *)"x", 1), EXT2_EAGAIN);
+            CHECK_EQ(ext2_write_unlink(&w, 2, "piece", 5), EXT2_EAGAIN);
+            CHECK_EQ(ext2_write_mark_clean(&w), EXT2_EAGAIN);
+            CHECK_EQ(nw, n0);
+            CHECK_EQ(lookup(2, "late"), 0);
+        }
+        CHECK(calls < 200);
+    }
+    CHECK(calls > 3);
+    CHECK(!ext2_write_saving(&w));
+    CHECK_EQ(w.saves_done, saves + 1);
+    CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
+    CHECK(clean());
+    CHECK(reads_back(lookup(2, "piece"), 0, 20 * 1024, 3));
+
+    /* keep_ino: the name goes, the inode stays until forget. */
+    w.keep_ino = ino;
+    w.kept = false;
+    CHECK_EQ(ext2_write_unlink(&w, 2, "piece", 5), EXT2_OK);
+    w.keep_ino = 0;
+    CHECK(w.kept);
+    CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
+    CHECK_EQ(lookup(2, "piece"), 0);
+    CHECK_EQ(inode_raw(ino).links, 1);              /* still there: open */
+    CHECK(reads_back(ino, 0, 20 * 1024, 3));
+    ext2_write_forget(&w, ino);
+    CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
+    CHECK_EQ(inode_raw(ino).links, 0);              /* deleted after its last close */
+    CHECK(inode_raw(ino).dtime != 0);
+    CHECK(clean());
+
+    /* The clean state. */
+    CHECK_EQ(g16(1024 + 58) & 1u, 0);
+    CHECK_EQ(ext2_write_mark_clean(&w), EXT2_OK);
+    CHECK_EQ(ext2_write_save(&w), EXT2_OK);
+    CHECK_EQ(g16(1024 + 58) & 1u, 1);
+}
+
+/* 1.4 stage 10 (the owner's touch case): a truncate to the file's own size
+ * (what the console's touch does on the disk) changes only the inode's
+ * times: no block allocated or copied (no R2 copy), nothing pending, the
+ * block map, size and i_blocks the same, and its save writes only the
+ * inode table (class 3). */
+static void test_truncate_same_size(void)
+{
+    mkimg(1024, 256, 1, 1, 2048, 64, 0);
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    uint32_t ino = 0;
+    CHECK_EQ(ext2_write_create(&w, 2, "t", 1, 0644, &ino), EXT2_OK);
+    CHECK_EQ(write_all(ino, 0, 14 * 1024, 5), 14 * 1024);   /* 12 direct + the single indirect */
+    CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
+    struct ext2_inode a = inode_raw(ino), b;
+    uint32_t alloc0 = w.blocks_alloc, copies0 = w.copies, pend0 = w.pend_n, mark = nw;
+    CHECK(a.block[EXT2_IND] != 0);
+    CHECK_EQ(ext2_write_truncate(&w, ino, a.size), EXT2_OK);
+    CHECK_EQ(w.blocks_alloc, alloc0);
+    CHECK_EQ(w.copies, copies0);
+    CHECK_EQ(w.pend_n, pend0);
+    CHECK_EQ(save(), EXT2_OK);
+    bool only3 = nw > mark;
+    for (uint32_t i = mark; i < nw && i < WLOG; i++)
+        only3 = only3 && wlog[i].cls == BLK_SV_INODE;
+    CHECK(only3);
+    b = inode_raw(ino);
+    bool same = a.size == b.size && a.blocks512 == b.blocks512 && a.links == b.links && a.mode == b.mode;
+    for (uint32_t i = 0; i < EXT2_NBLOCKS; i++)
+        same = same && a.block[i] == b.block[i];
+    CHECK(same);
+    CHECK(reads_back(ino, 0, 14 * 1024, 5));
+    CHECK(clean());
+}
+
 int main(void)
 {
     printf("ext2_write (the write core over the save order)\n");
@@ -1183,5 +1278,7 @@ int main(void)
     RUN(test_failed_save);
     RUN(test_checker_negative);
     RUN(test_pending_merge);
+    RUN(test_save_steps);
+    RUN(test_truncate_same_size);
     return unit_report("ext2_write");
 }

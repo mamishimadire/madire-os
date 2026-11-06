@@ -70,6 +70,7 @@ struct blk_cache {
     uint64_t clock;
     /* figures (report only) */
     uint64_t reads, hits, misses, commands, replaced, errors, refused;
+    uint64_t forgotten;     /* 1.4 stage 10: pages dropped because a write reached them */
     bool short_of_pages;    /* a slot's page could not be made: the cache stays at `made` */
 };
 
@@ -82,6 +83,14 @@ void blk_cache_init(struct blk_cache *c, const struct blk_ops *ops, struct blk_s
 /* Reads sectors [lba, lba + count) into dst (count * 512 bytes): 0 or
  * -BLK_EIO. A count of 0 reads nothing and returns 0. */
 int blk_cache_read(struct blk_cache *c, uint64_t lba, uint32_t count, uint8_t *dst);
+
+/* 1.4 stage 10: every cached page holding a sector of [lba, lba + count)
+ * is dropped (the next read reads the disk again), after a write command
+ * reached those sectors, whether it succeeded or not (the sectors on the
+ * disk are then unknown). The pages that were dropped. The write itself
+ * goes past the cache: the changed bytes are held by the block layer's
+ * write-back part until a save writes them (blk_core_save.h). */
+uint32_t blk_cache_forget(struct blk_cache *c, uint64_t lba, uint32_t count);
 
 /* The CRC32 of n bytes, continuing from crc (0 to start). */
 uint32_t blk_crc32(uint32_t crc, const uint8_t *p, uint32_t n);

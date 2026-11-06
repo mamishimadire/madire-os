@@ -168,6 +168,16 @@ int vfs_create(struct vfs *v, struct vnode *start, const char *path, enum vnode_
     return 0;
 }
 
+/* 1.4 stage 10: node out of folder dir by the filesystem's remove (which
+ * may fail, nothing changed), or by detach where it has none. */
+static int take_out(const struct mount *m, struct vnode *dir, struct vnode *n)
+{
+    if (m->ops->remove)
+        return m->ops->remove(m->fs, dir, n);
+    m->ops->detach(m->fs, n);
+    return 0;
+}
+
 static void release_if_unused(struct vfs *v, struct vnode *n)
 {
     if (n->nlink == 0 && n->opens == 0) {
@@ -199,7 +209,9 @@ int vfs_unlink(struct vfs *v, struct vnode *start, const char *path)
     if (l.trailing_slash)
         return -FS_ENOTDIR;
     const struct mount *m = vfs_mnt(v, n);
-    m->ops->detach(m->fs, n);
+    r = take_out(m, l.dir, n);
+    if (r < 0)
+        return r;
     l.dir->mtime = l.dir->ctime = n->ctime = now(v);
     release_if_unused(v, n);
     return 0;
@@ -238,7 +250,9 @@ int vfs_rmdir(struct vfs *v, struct vnode *start, const char *path)
     const struct mount *m = vfs_mnt(v, n);
     if (m->ops->entries(m->fs, n))
         return -FS_ENOTEMPTY;
-    m->ops->detach(m->fs, n);
+    r = take_out(m, l.dir, n);
+    if (r < 0)
+        return r;
     l.dir->mtime = l.dir->ctime = n->ctime = now(v);
     release_if_unused(v, n);
     return 0;

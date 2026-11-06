@@ -1840,6 +1840,42 @@ static const struct command storage_commands[] = {
 static const struct command display_command =
     { "display", "display",      "Show the screen's mode and scale",        0, cmd_display, SECTION_SYSTEM };
 
+/* 1.4 stage 10: "sync", a full save of the disk's changed files (C12). */
+static enum shell_result cmd_sync(int argc, char **argv, const struct shell_context *c,
+                                  const struct shell_output *o)
+{
+    struct line l;
+    uint64_t blocks = 0;
+    (void)argc; (void)argv;
+    switch (c->disk->sync(c->disk->ctx, &blocks)) {
+    case SHELL_SYNC_SAVED:
+        if (blocks == 0) {
+            say(o, "sync: nothing to save.", SHELL_TEXT);
+            break;
+        }
+        l_reset(&l);
+        l_str(&l, "sync: ");
+        l_count(&l, blocks, " block saved.", " blocks saved.");
+        emit(o, &l, SHELL_TEXT);
+        break;
+    case SHELL_SYNC_NO_DISK:
+        say(o, "sync: no disk in use (Live mode).", SHELL_TEXT);
+        break;
+    case SHELL_SYNC_READONLY:
+        say(o, "sync: /home is read-only; nothing to save.", SHELL_TEXT);
+        break;
+    default:
+        say(o, "sync: the disk could not be written; /home is read-only now.", SHELL_ERROR);
+        return SHELL_OK;
+    }
+    return SHELL_OK;
+}
+
+/* Offered only when the context has a disk (see shell.h), and not in the
+ * help lists until 1.4 stage 12 (offered() leaves it out). */
+static const struct command sync_command =
+    { "sync",    "sync",         "Save changed files to the disk",          0, cmd_sync, SECTION_FILES };
+
 static const char *const section_names[SECTION_COUNT] = { "shell", "system", "programs", "files" };
 static const char *const section_titles[SECTION_COUNT] = {
     "The shell's own commands",
@@ -1915,6 +1951,8 @@ static bool builtin_name(const char *name, const struct shell_context *c)
                 return true;
     if (c->display && str_eq(name, display_command.name))   /* 1.2 stage 10b, likewise */
         return true;
+    if (c->disk && str_eq(name, sync_command.name))         /* 1.4 stage 10, likewise */
+        return true;
     if (str_eq(name, ps_command.name) || str_eq(name, run_command.name) ||
         str_eq(name, kill_command.name))
         return true;
@@ -1966,6 +2004,8 @@ static const struct command *find_command(const char *name, const struct shell_c
                 return &storage_commands[i];
     if (c->display && str_eq(name, display_command.name))
         return &display_command;
+    if (c->disk && str_eq(name, sync_command.name))     /* 1.4 stage 10: not in offered() */
+        return &sync_command;
     return 0;
 }
 

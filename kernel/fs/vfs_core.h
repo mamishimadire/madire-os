@@ -113,6 +113,12 @@ struct vfs_ops {
      * there, or the end), or -FS_ENOMEM / -FS_EIO; read once, then cleared
      * (NULL: always 0, as the RAM filesystem). */
     int (*error)(void *fs);
+
+    /* 1.4 stage 10 (may be NULL): takes node out of its folder dir as
+     * detach does (nlink 0, parent NULL), but may fail: 0, or an error with
+     * nothing changed (ext2: -FS_EAGAIN, -FS_EIO, -FS_ENOSPC ...). NULL:
+     * detach is used, which cannot fail (the RAM filesystem). */
+    int (*remove)(void *fs, struct vnode *dir, struct vnode *node);
 };
 
 #include "kernel/fs/mount_core.h"

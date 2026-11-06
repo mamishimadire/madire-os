@@ -1,4 +1,5 @@
-/* The AHCI driver at boot (1.4 stage 4): see ahci.h. Read only. */
+/* The AHCI driver at boot (1.4 stage 4): see ahci.h. Writes since stage 10,
+ * only as the guard allows (the pure core decides). */
 #include "kernel/storage/ahci.h"
 #include "kernel/fs/ext2_disk.h"
 #include "kernel/kprintf.h"
@@ -17,11 +18,20 @@ static struct ahci_hba ahci_hba;
 static volatile uint8_t *ahci_regs;          /* the controller's registers (BAR5) */
 static uint32_t ahci_dma_slots[VM_STORAGE_DMA_PAGES / 32];  /* VM_STORAGE_BASE's pages in use */
 static uint32_t ahci_dma_pages;             /* DMA pages mapped now */
+/* test=blkdebug (ahci_debug_arm): the port whose PxIS reads show the
+ * task-file error bit while one command is waited for (AHCI_PORTS: none). */
+static uint32_t ahci_dbg_port = AHCI_PORTS;
+static bool ahci_dbg_read_once, ahci_dbg_writes;
+
+#define AHCI_IS_TFES        0x40000000u     /* PxIS: task-file error status */
 
 static uint32_t ahci_reg_read(void *ctx, uint32_t off)
 {
     (void)ctx;
-    return *(volatile uint32_t *)(ahci_regs + off);
+    uint32_t v = *(volatile uint32_t *)(ahci_regs + off);
+    if (ahci_dbg_port < AHCI_PORTS && off == AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_IS)
+        v |= AHCI_IS_TFES;                  /* test=blkdebug: an injected device error */
+    return v;
 }
 
 static void ahci_reg_write(void *ctx, uint32_t off, uint32_t value)
@@ -132,7 +142,7 @@ static void ahci_log_port(uint32_t p)
     klogf("ahci: port %u: signature 0x%08x (ATA disk); IDENTIFY DEVICE: model '%s', %llu sectors of %u bytes "
           "(%s), LBA48 %s, DMA %s; %s%s%s\n", p, pt->sig, pt->disk.model, (ull)pt->disk.sectors,
           pt->disk.sector_size, size, pt->disk.lba48 ? "yes" : "no", pt->disk.dma ? "yes" : "no",
-          pt->state == AHCI_PORT_DISK ? "used read only" : ahci_state_str(pt->state),
+          pt->state == AHCI_PORT_DISK ? "used (written only as the write guard allows)" : ahci_state_str(pt->state),
           pt->why ? ": " : "", pt->why ? pt->why : "");
 }
 
@@ -155,10 +165,70 @@ int ahci_disk_read(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_t
     if (port >= AHCI_PORTS)
         return -AHCI_EIO;
     uint32_t errors = ahci_hba.port[port].errors;
+    if (ahci_dbg_read_once) {
+        ahci_dbg_read_once = false;
+        ahci_dbg_port = port;
+    }
     int r = ahci_read(&ahci_hba, port, lba, sectors, phys, pages);
+    ahci_dbg_port = AHCI_PORTS;
     if (ahci_hba.port[port].errors != errors)
         ahci_log_error(port);
     return r;
+}
+
+int ahci_disk_write(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages)
+{
+    if (port >= AHCI_PORTS)
+        return -AHCI_EIO;
+    uint32_t errors = ahci_hba.port[port].errors;
+    if (ahci_dbg_writes)
+        ahci_dbg_port = port;
+    int r = ahci_write(&ahci_hba, port, lba, sectors, phys, pages);
+    ahci_dbg_port = AHCI_PORTS;
+    if (ahci_hba.port[port].errors != errors)
+        ahci_log_error(port);
+    return r;
+}
+
+int ahci_disk_flush(uint32_t port)
+{
+    if (port >= AHCI_PORTS)
+        return -AHCI_EIO;
+    uint32_t errors = ahci_hba.port[port].errors;
+    int r = ahci_flush(&ahci_hba, port);
+    if (ahci_hba.port[port].errors != errors)
+        ahci_log_error(port);
+    return r;
+}
+
+void ahci_write_figures(uint64_t *writes, uint64_t *flushes, uint64_t *refused, uint64_t *flush_ticks)
+{
+    *writes = ahci_hba.writes;
+    *flushes = ahci_hba.flushes;
+    *refused = ahci_hba.guard_refused;
+    *flush_ticks = ahci_hba.flush_ticks_longest;
+}
+
+bool ahci_disk_usable(uint32_t port)
+{
+    return port < AHCI_PORTS && ahci_hba.port[port].state == AHCI_PORT_DISK;
+}
+
+void ahci_debug_arm(bool read_once, bool writes)
+{
+    ahci_dbg_read_once = read_once;
+    ahci_dbg_writes = writes;
+}
+
+bool ahci_debug_read_pending(void)
+{
+    return ahci_dbg_read_once;
+}
+
+void ahci_write_attempt(uint32_t port, uint64_t lba, uint32_t phys, int *write_r, int *flush_r)
+{
+    *write_r = ahci_disk_write(port, lba, 1, &phys, 1);
+    *flush_r = ahci_disk_flush(port);
 }
 
 bool ahci_disk_guard(uint32_t port, bool allows, uint64_t first, uint64_t sectors)
@@ -239,7 +309,8 @@ void ahci_boot(const struct pci_ahci *a)
     gs.table[0] = gs.result[0] = 0;
     /* 1.4 stage 8: the Storage: line's end; a disk the guard refused is
      * not mounted (Live mode, as before); one it allowed has its ext2
-     * volume mounted read-only on /home (ext2_disk.h, D16). */
+     * volume mounted on /home (ext2_disk.h, D16): since stage 10 read-write
+     * unless the feature policy, the state or test=diskro says read-only. */
     char tail[96];
     bool mounted = false;
     ksnprintf(tail, sizeof(tail), "; read only, not mounted");
@@ -251,15 +322,21 @@ void ahci_boot(const struct pci_ahci *a)
     }
     uint32_t tables, mapped;
     paging_slot_figures(VM_STORAGE_INDEX, &tables, &mapped);
+    /* 1.4 stage 10: a read-write mount's store of changes not yet saved
+     * (ext2_disk.h) is named only when it exists, so every other boot's
+     * line is as before. */
+    char store[48] = "";
+    if (ext2_disk_store_pages())
+        ksnprintf(store, sizeof(store), ", %u pages for changes not yet saved", ext2_disk_store_pages());
     klogf("ahci: slot 508 now: %u page tables, %u pages mapped (walked); %u page tables added, %u DMA pages, "
-          "%u cache pages\n", tables, mapped, paging_stats()->page_tables - tables0, ahci_dma_pages,
-          blk_pages_made());
+          "%u cache pages%s\n", tables, mapped, paging_stats()->page_tables - tables0, ahci_dma_pages,
+          blk_pages_made(), store);
     if (disk >= 0) {
         const struct ahci_port *pt = &h->port[disk];
         ahci_size(size, sizeof(size), pt->disk.sectors);
         klogf("Storage: AHCI %s, port %d disk %s %s, %s, writes would be %s%s%s (%s)\n", where, disk,
               pt->disk.model, size, gs.table, gs.result, tail, disks > 1 ? "; more disks not used" : "",
-              mounted ? "Disk mode, read-only" : "Live mode");
+              mounted ? ext2_disk_mode() : "Live mode");
     } else if (refused >= 0) {
         klogf("Storage: AHCI %s, no usable disk (port %d: %s) (Live mode)\n", where, refused,
               h->port[refused].why ? h->port[refused].why : "unknown");

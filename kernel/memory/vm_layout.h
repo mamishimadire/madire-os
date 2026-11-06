@@ -31,7 +31,9 @@
  *             (uncached, PTE_PCD|PTE_PWT), and the storage area at
  *             VM_STORAGE_BASE: the controller's DMA structures, then the
  *             block cache's pages from VM_BLK_CACHE_BASE (frames of free
- *             RAM, write-back); each area in its own 1 GiB (its own page
+ *             RAM, write-back), and (1.4 stage 10, a read-write mount only)
+ *             the store of unsaved changes from VM_SV_BASE and one write
+ *             command's pages at VM_SV_RUN_BASE; each area in its own 1 GiB (its own page
  *             directory), mapped after the freeze (slot 508's PDPT exists
  *             from paging_init(), so no PML4 entry is added)
  *   slot 509  VM_HEAP_BASE: kernel heap, grows up to VM_HEAP_MAX
@@ -67,6 +69,13 @@
 #define VM_STORAGE_DMA_PAGES  64u                    /* 2 per port, 32 ports */
 #define VM_BLK_CACHE_BASE     0xFFFFFE0080200000ull  /* VM_STORAGE_BASE + 2 MiB */
 #define VM_BLK_CACHE_PAGES    512u                   /* 2 MiB, the cache's most */
+/* 1.4 stage 10, only on a read-write mount (kernel/fs/ext2_disk.c): the
+ * changes not yet saved (blk_core_save.h's 1 KiB chunks), as many pages as
+ * the cache may have, then the 4 pages of one write command's bytes. */
+#define VM_SV_BASE            0xFFFFFE0080400000ull  /* VM_STORAGE_BASE + 4 MiB */
+#define VM_SV_PAGES           512u                   /* 2 MiB at most */
+#define VM_SV_RUN_BASE        0xFFFFFE0080600000ull  /* VM_SV_BASE + 2 MiB */
+#define VM_SV_RUN_PAGES       4u                     /* 16 KiB: BLK_SV_RUN_MAX chunks */
 
 #define VM_HEAP_BASE          0xFFFFFE8000000000ull
 #define VM_HEAP_INITIAL       (64u * 1024)

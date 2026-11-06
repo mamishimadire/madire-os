@@ -135,6 +135,13 @@ int64_t fd_file_lseek(uint32_t file, int64_t off, uint64_t whence);
 int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count);
 void fd_node_drop(struct vnode *n);
 
+/* 1.4 stage 10: one hold's records of getdents64 (the VFS lock held): the
+ * records of folder n from cursor `cur` into buf (at most room bytes), as
+ * fsys_dir_list, with *next and *more; or -ENOMEM / -EIO when the folder's
+ * filesystem could not give the next entry and nothing was listed (ext2's
+ * node table full: every node in use). getdents64 answers that error. */
+int64_t fd_dir_records(struct vnode *n, uint64_t cur, uint8_t *buf, uint32_t room, uint64_t *next, bool *more);
+
 int64_t fd_sys_close(struct fd_table *d, uint64_t fd);
 int64_t fd_sys_dup(struct fd_table *d, uint64_t oldfd);
 int64_t fd_sys_dup2(struct fd_table *d, uint64_t oldfd, uint64_t newfd);

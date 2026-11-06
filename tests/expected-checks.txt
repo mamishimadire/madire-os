@@ -263,5 +263,29 @@
 # (1); the policy for writes (1); the host cut sweep at every N for six
 # sequences, the owner's case and removed folders included (6); the sweep
 # under the sanitizers (1); 2 unit suites (blk_core_save, ext2_write). No existing check changed.
-1.4 104
-unit-suites 104
+# Stage 10: 18 more in part static, disk writes behind the guard: the
+# guard's proof, test=diskwrite on each of the six refused disks (all
+# writes and flushes refused by the command builder, the image unchanged)
+# (6); test=diskwrite on a read-write disk (written, saved, read back;
+# e2fsck -fn clean after it) and the node test in the same boot (eviction,
+# ENOMEM) (3); the write session (the session and reboot's save; e2fsck
+# -fn clean; debugfs's tree exact) (3); persistence on the same image (the
+# volume clean; everything read back; e2fsck -fn clean and the tree still
+# exact) (3); test=blkdebug (a read error, the write errors and the failed
+# disk, the system going on) (3); 2 unit suites (ext2_vfs_rw, shell_sync),
+# new cases in ahci_core, blk_core, blk_core_save and ext2_write. Changed,
+# not added (the owner's approval, before the commit): stage 4's two
+# read-only proofs (now the guarded-write proofs: the source and madire.elf)
+# and its IDENTIFY line's wording; stage 5's decision lines' wording, the
+# model boot's IDENTIFY line, the marked MBR and GPT disks' Storage: lines
+# (read-write) and their SHA-256 checks (now the bounded diff, byte and
+# field level: only save 0's superblock fields, e2fsck -fn clean), gd_boot
+# (booting a copy); stage 8's ELF proof (now the only path to a disk
+# write, no path function's address taken but the two in ext2_d_sv_ops),
+# the not-clean boot
+# (read-write after the recount; its SHA-256 check now the bounded diff),
+# the unknown COMPAT boot (read-only), the marked clean disks (read-write)
+# and the read sessions (booted with test=diskro); stage 9's "not linked"
+# check (now linked); the unit suite ahci_core's opcode table (2 -> 4 bytes).
+1.4 122
+unit-suites 106

@@ -1831,8 +1831,13 @@ if ($script:DiagBooted.Count) {
 # table, so the part: and guard: lines say so, writes would be REFUSED,
 # and the Storage: line names both. test=diskread itself
 # needs a Diagnostics entry (none in 1.4, D21) or a changed command line,
-# so the read check is the probe's read. MadireOS-Test.vdi's SHA-256 and
-# size before and after (report only): Madire has no write command; if
+# so the read check is the probe's read. 1.4 stage 10 (one row changed):
+# the IDENTIFY line ends "used (written only as the write guard allows)"
+# where it said "used read only" (the same disk and figures; the guard
+# refuses the empty disk, as the guard: and Storage: rows show).
+# MadireOS-Test.vdi's SHA-256 and
+# size before and after (report only): the guard refuses this disk, so no
+# write command reaches it; if
 # they differ, VirtualBox itself rewrote the file (for example the VDI's
 # header when it opens the disk), which the result folder's two values
 # and the driver's lines tell apart. Every storage line and the VDI's
@@ -1855,7 +1860,7 @@ if (Want "storageprobe") {
     Stop-Run "storageprobe" @("^ahci: controller at [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] \([0-9a-f]{4}:[0-9a-f]{4}, BAR5 0x[0-9a-f]{8}\)$",
         "^ahci: PCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] command register 0x[0-9a-f]{4} -> 0x[0-9a-f]{4} \(memory space on, bus master on, INTx off; read back as written\); the only configuration write$",
         "^ahci: AHCI version 0x[0-9a-f]{8}, CAP 0x[0-9a-f]{8}, CAP2 0x[0-9a-f]{8}, [0-9]+ ports implemented \(PI 0x[0-9a-f]{8}\); BIOS hand-off: .*; GHC 0x[0-9a-f]{8} -> 0x8[0-9a-f]{7} \(AHCI mode on, interrupts off\); polling$",
-        "^ahci: port 0: signature 0x00000101 \(ATA disk\); IDENTIFY DEVICE: model 'VBOX HARDDISK', $sectorsRe sectors of 512 bytes \([0-9.]+ [MG]iB\), LBA48 yes, DMA yes; used read only$",
+        "^ahci: port 0: signature 0x00000101 \(ATA disk\); IDENTIFY DEVICE: model 'VBOX HARDDISK', $sectorsRe sectors of 512 bytes \([0-9.]+ [MG]iB\), LBA48 yes, DMA yes; used \(written only as the write guard allows\)$",
         "^ahci: port 1: signature 0xeb140101: ATAPI device, ignored \(no command sent\)$",
         "^blk: read check: LBA 0 CRC32 0xb2aa7578, LBA [0-9]+ CRC32 0xb2aa7578 \(2 commands, [0-9]+ ticks\)$",
         "^part: port 0: no partition table \(LBA 0 has no 0x55AA signature\)$",

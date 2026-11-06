@@ -20,6 +20,7 @@
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_menus.h"
 #include "kernel/display/ui_window.h"
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/memory.h"
@@ -709,6 +710,10 @@ static enum ui_menu_action desk_menu_done(void)
         klogf("Desktop: a menu opened the Console window\n");
     if (desk_menus.restart) {
         klogf("Desktop: Restart chosen in the Restart dialog: restarting\n");
+        /* 1.4 stage 10: in Disk mode /home is saved first (at most 10 s;
+         * a failure is logged and the restart goes on, D9). */
+        if (ext2_disk_rw())
+            (void)ext2_disk_restart_save();
         reset_machine(true);                /* does not return */
     }
     return a;

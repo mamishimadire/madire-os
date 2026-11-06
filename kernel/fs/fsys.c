@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "kernel/fs/fsys.h"
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/fsys_core.h"
 #include "kernel/fs/path_core.h"
@@ -140,11 +141,14 @@ int64_t fsys_sys_openat(uint64_t dirfd, uint64_t upath, uint64_t flags, uint64_t
             return r;
         }
     }
-    fd_vfs_acquire();
-    r = open_node(&o, start, path, mode, &n);
-    if (r == 0)
-        fd_open_node(file, n);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    do {                                        /* 1.4 stage 10: again after a save (ext2_disk_retry) */
+        fd_vfs_acquire();
+        r = open_node(&o, start, path, mode, &n);
+        if (r == 0)
+            fd_open_node(file, n);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     if (held != NO_FILE)
         fd_put(held);
     if (r < 0) {
@@ -318,10 +322,13 @@ int64_t fsys_sys_mkdirat(uint64_t dirfd, uint64_t upath, uint64_t mode)
     struct vnode *start = NULL;
     uint32_t held = NO_FILE;
     int r = path_start(dirfd, upath, path, &start, &held);
-    if (r == 0) {
+    uint32_t tries = 0;
+    while (r == 0 || ext2_disk_retry(&r, &tries)) {     /* 1.4 stage 10: again after a save */
         fd_vfs_acquire();
         r = vfs_create(vfs_root(), start, path, VNODE_DIR, fsys_mkdir_mode(mode), NULL);
         fd_vfs_release();
+        if (r != -FS_EAGAIN)
+            break;
     }
     if (held != NO_FILE)
         fd_put(held);
@@ -338,22 +345,27 @@ int64_t fsys_sys_unlinkat(uint64_t dirfd, uint64_t upath, uint64_t flags)
     struct vnode *start = NULL, *victim = NULL;
     uint32_t held = NO_FILE;
     r = path_start(dirfd, upath, path, &start, &held);
-    if (r == 0) {
+    uint32_t tries = 0;
+    while (r == 0) {
         struct vfs *v = vfs_root();
         fd_vfs_acquire();
         if (removedir) {
             r = vfs_rmdir(v, start, path);              /* a folder has no pages */
         } else {
             /* The file is held across the unlink, so that a last hold
-             * frees its pages in steps (fd_node_drop), not in this hold. */
+             * frees its pages in steps (fd_node_drop), not in this hold
+             * (held once, also when the call is tried again). */
             struct vnode *n = NULL;
-            if (vfs_lookup(v, start, path, &n) == 0 && n->type == VNODE_FILE) {
+            if (!victim && vfs_lookup(v, start, path, &n) == 0 && n->type == VNODE_FILE) {
                 vfs_hold(n);
                 victim = n;
             }
             r = vfs_unlink(v, start, path);
         }
         fd_vfs_release();
+        if (!ext2_disk_retry(&r, &tries))               /* 1.4 stage 10: again after a save */
+            break;
+        r = 0;
     }
     if (victim)
         fd_node_drop(victim);
@@ -373,14 +385,17 @@ int64_t fsys_sys_rename(uint64_t uold, uint64_t unew)
         return r;
     struct vfs *v = vfs_root();
     struct vnode *start = cwd_node(), *n = NULL, *victim = NULL;
-    fd_vfs_acquire();
-    /* A file it may replace is held across the rename (as in unlinkat). */
-    if (vfs_lookup(v, start, npath, &n) == 0 && n->type == VNODE_FILE) {
-        vfs_hold(n);
-        victim = n;
-    }
-    r = vfs_rename(v, start, opath, start, npath);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    do {                                        /* 1.4 stage 10: again after a save (ext2_disk_retry) */
+        fd_vfs_acquire();
+        /* A file it may replace is held across the rename (as in unlinkat). */
+        if (!victim && vfs_lookup(v, start, npath, &n) == 0 && n->type == VNODE_FILE) {
+            vfs_hold(n);
+            victim = n;
+        }
+        r = vfs_rename(v, start, opath, start, npath);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     if (victim)
         fd_node_drop(victim);
     return r;

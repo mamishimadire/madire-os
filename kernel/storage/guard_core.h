@@ -24,8 +24,8 @@
  * tests: tests/unit/test_guard_core.c); kernel/storage/guard.c reads the
  * sectors, logs the result and hands the disk's decision, made once at
  * attach, to the lowest layer (ahci_guard_decide, ahci_core.h), the only
- * place that keeps it. Stage 5 has no write command: the decision is only
- * logged ("writes would be ALLOWED" or "... REFUSED: <condition>").
+ * place that keeps it, and (1.4 stage 10) the one place that reads it: the
+ * command builder refuses a write or a flush the decision does not allow.
  */
 
 #include <stdbool.h>

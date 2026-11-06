@@ -260,6 +260,96 @@ static void test_failures(void)
     CHECK(!disk_is(5, 0x21));
 }
 
+/* 1.4 stage 10: the save in pieces. The same dirty chunks saved whole and
+ * in pieces of 1, 2, 3 and 8 commands give exactly the same commands in
+ * the same order; between pieces a put is refused (-BLK_SV_FULL, nothing
+ * changed) and every chunk still reads its new bytes; the pieces are
+ * counted. Then the slots: chunks put in descending order (each opening
+ * the table's first entry) and again after a save (freed slots reused)
+ * keep their own bytes. */
+static void seed(void)
+{
+    put(40, 3, BLK_SV_DATA, 0x10);
+    put(7, 1, BLK_SV_BITMAP, 0x20);
+    put(1, 1, BLK_SV_SUPER, 0x30);
+    put(20, 2, BLK_SV_INODE, 0x40);
+    put(60, 20, BLK_SV_DATA, 0x50);     /* two commands: 16 + 4 */
+    put(30, 1, BLK_SV_FOLDER, 0x60);
+    put(9, 1, BLK_SV_BITMAP, 0x70);
+}
+
+static void test_steps(void)
+{
+    static struct fk_op whole[FK_LOG];
+    reset();
+    seed();
+    CHECK_EQ(blk_sv_save(&sv), 0);
+    uint32_t n_whole = nops;
+    memcpy(whole, oplog, sizeof(whole));
+    CHECK_EQ(n_whole, 13);              /* writes 3 (runs of 3, 16, 4) + 2 + 1 + 1 + 1, and 5 flushes */
+    static const uint32_t limits[4] = { 1, 2, 3, 8 };
+    for (uint32_t t = 0; t < 4; t++) {
+        reset();
+        seed();
+        bool done = false;
+        uint32_t calls = 0;
+        while (!done) {
+            uint32_t before = nops;
+            CHECK_EQ(blk_sv_save_step(&sv, limits[t], &done), 0);
+            CHECK(nops - before <= limits[t]);
+            calls++;
+            if (!done) {
+                CHECK(sv.saving);
+                fill(0x99, 1);
+                CHECK_EQ(blk_sv_put(&sv, 50u * BLK_SV_CHUNK, BLK_SV_CHUNK, buf, BLK_SV_DATA), -BLK_SV_FULL);
+                uint8_t out[BLK_SV_CHUNK];
+                CHECK_EQ(blk_sv_read(&sv, 30u * BLK_SV_CHUNK, BLK_SV_CHUNK, out), 0);
+                bool ok = true;
+                for (uint32_t i = 0; i < BLK_SV_CHUNK; i++)
+                    ok = ok && out[i] == (uint8_t)(0x60 + i);
+                CHECK(ok);
+            }
+            CHECK(calls < 100);
+        }
+        CHECK(!sv.saving);
+        CHECK_EQ(nops, n_whole);
+        bool same = true;
+        for (uint32_t i = 0; i < n_whole; i++)
+            same = same && oplog[i].kind == whole[i].kind && oplog[i].off == whole[i].off &&
+                   oplog[i].len == whole[i].len && oplog[i].cls == whole[i].cls;
+        CHECK(same);
+        CHECK_EQ(blk_sv_dirty(&sv), 0);
+        CHECK_EQ(sv.saves, 1);
+        CHECK(sv.pieces >= 1);
+    }
+    /* Descending puts, a save, and again: every chunk keeps its bytes. */
+    reset();
+    for (uint32_t k = 0; k < 20; k++)
+        put(100 - k, 1, BLK_SV_DATA, (uint8_t)(k * 3));
+    for (uint32_t k = 0; k < 20; k++) {
+        uint8_t out[BLK_SV_CHUNK];
+        CHECK_EQ(blk_sv_read(&sv, (uint64_t)(100 - k) * BLK_SV_CHUNK, BLK_SV_CHUNK, out), 0);
+        CHECK_EQ(out[5], (uint8_t)(k * 3 + 5));
+    }
+    CHECK_EQ(blk_sv_save(&sv), 0);
+    for (uint32_t k = 0; k < 20; k++)
+        CHECK(disk_is(100 - k, (uint8_t)(k * 3)));
+    for (uint32_t k = 0; k < 30; k++)
+        put(150 - k, 1, BLK_SV_INODE, (uint8_t)(k * 5 + 1));
+    CHECK_EQ(blk_sv_save(&sv), 0);
+    for (uint32_t k = 0; k < 30; k++)
+        CHECK(disk_is(150 - k, (uint8_t)(k * 5 + 1)));
+    /* Every slot still held once by the table's entries. */
+    uint32_t seen[CAP] = { 0 };
+    for (uint32_t i = 0; i < CAP; i++)
+        if (ents[i].slot < CAP)
+            seen[ents[i].slot]++;
+    bool once = true;
+    for (uint32_t i = 0; i < CAP; i++)
+        once = once && seen[i] == 1;
+    CHECK(once);
+}
+
 int main(void)
 {
     printf("blk_core_save (write-back, the save's classes and FLUSHes)\n");
@@ -268,5 +358,6 @@ int main(void)
     RUN(test_save_order);
     RUN(test_superblock_chunk);
     RUN(test_failures);
+    RUN(test_steps);
     return unit_report("blk_core_save");
 }

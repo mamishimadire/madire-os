@@ -1,5 +1,5 @@
 /* The block cache in the kernel and test=diskread (1.4 stage 4): see
- * blk.h. Read only. */
+ * blk.h. Stage 10: writes and flushes pass through to the driver. */
 #include "kernel/storage/blk.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
@@ -77,6 +77,27 @@ int blk_read(uint64_t lba, uint32_t count, uint8_t *dst)
     return blk_cache_read(&blk_cache, lba, count, dst);
 }
 
+int blk_write(uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages)
+{
+    if (!blk_on)
+        return -BLK_EIO;
+    int r = ahci_disk_write(blk_port, lba, sectors, phys, pages) ? -BLK_EIO : 0;
+    blk_cache_forget(&blk_cache, lba, sectors);
+    return r;
+}
+
+int blk_flush(void)
+{
+    if (!blk_on)
+        return -BLK_EIO;
+    return ahci_disk_flush(blk_port) ? -BLK_EIO : 0;
+}
+
+uint32_t blk_port_number(void)
+{
+    return blk_port;
+}
+
 /* One sector's CRC32, or false on an error. */
 static bool blk_sector_crc(uint64_t lba, uint32_t *crc)
 {
@@ -93,7 +114,8 @@ void blk_attach(uint32_t port, uint64_t sectors)
     blk_cache_init(&blk_cache, &blk_kernel_ops, blk_slots, cap, sectors);
     blk_on = true;
     klogf("blk: disk on port %u, %llu sectors; cache up to %u pages (%u KiB: 2 MiB or 1/16 of the %u free pages, "
-          "the smaller), each made on first use; read only\n", port, (ull)sectors, cap, cap * 4u, free_pages);
+          "the smaller), each made on first use; writes only as the write guard allows\n", port, (ull)sectors, cap,
+          cap * 4u, free_pages);
     uint32_t c0 = 0, c1 = 0;
     uint64_t t0 = timer_ticks();
     bool ok0 = blk_sector_crc(0, &c0), ok1 = blk_sector_crc(sectors - 1, &c1);

@@ -1,20 +1,25 @@
-/* The AHCI driver, the pure part (1.4 stage 4): see ahci_core.h. Read
- * only: IDENTIFY DEVICE and READ DMA EXT are the only commands. */
+/* The AHCI driver, the pure part (1.4 stage 4): see ahci_core.h. IDENTIFY
+ * DEVICE and READ DMA EXT; since 1.4 stage 10 WRITE DMA EXT and FLUSH
+ * CACHE EXT, which the one command builder sends only as the write guard
+ * allows (C4, D5). */
 #include "kernel/storage/ahci_core.h"
 
-/* The only ATA opcodes this driver sends (D1, read only in stage 4),
- * indexed by enum ahci_op. Read through a volatile access (ahci_opcode),
- * so the table stays in .rodata, where part static reads it back from
- * madire.elf: its two bytes are every command the kernel can send. */
+/* The only ATA opcodes this driver sends (D1), indexed by enum ahci_op.
+ * Read through a volatile access (ahci_opcode), so the table stays in
+ * .rodata, where part static reads it back from madire.elf: its four bytes
+ * are every command the kernel can send. */
 static const uint8_t ahci_opcodes[AHCI_OPS] __attribute__((used)) = {
     0xECu,      /* IDENTIFY DEVICE */
     0x25u,      /* READ DMA EXT */
+    0x35u,      /* WRITE DMA EXT: only as the guard allows (ahci_command) */
+    0xEAu,      /* FLUSH CACHE EXT: likewise */
 };
 
 #define AHCI_FIS_H2D        0x27u       /* register FIS, host to device */
 #define AHCI_FIS_COMMAND    0x80u       /* its C bit: the command register */
 #define AHCI_DEVICE_LBA     0x40u       /* the device register's LBA bit */
 #define AHCI_CFL_H2D        5u          /* the FIS's length in dwords (20 bytes) */
+#define AHCI_HDR_WRITE      0x40u       /* the command header's W bit: data to the device */
 #define AHCI_SECTOR         512u
 #define AHCI_PAGE           4096u
 
@@ -174,15 +179,41 @@ static void ahci_port_recover(struct ahci_hba *h, uint32_t p)
     }
 }
 
+/* THE WRITE GUARD (C4, D5), checked by the command builder below before it
+ * touches the port: true if `op` may be sent to port p. IDENTIFY and READ
+ * always; WRITE only if the guard's decision allows the disk and every
+ * sector of [lba, lba + count) lies inside its partition, past the first
+ * AHCI_GUARD_SKIP sectors (the test marker's); FLUSH only if the decision
+ * allows the disk. */
+static bool ahci_guard_ok(const struct ahci_hba *h, uint32_t p, enum ahci_op op, uint64_t lba, uint32_t count)
+{
+    if (op != AHCI_OP_WRITE && op != AHCI_OP_FLUSH)
+        return true;
+    if (!ahci_guard_allows(h, p))
+        return false;
+    if (op == AHCI_OP_FLUSH)
+        return true;
+    const struct ahci_port *pt = &h->port[p];
+    uint64_t lo = pt->guard_first + AHCI_GUARD_SKIP, hi = pt->guard_first + pt->guard_sectors;
+    return count > 0 && lba >= lo && lba < hi && count <= hi - lba;
+}
+
 /* One command in slot 0: the header, the FIS, `n` regions of bytes[i]
- * bytes at phys[i]; issued and waited for (5 s). */
+ * bytes at phys[i] (none for a flush); issued and waited for (5 s; 10 s
+ * for a flush). The ONLY function that builds a command: a write or a
+ * flush the guard does not allow is refused here, before the port is
+ * touched. */
 static enum ahci_end ahci_command(struct ahci_hba *h, uint32_t p, enum ahci_op op, uint64_t lba, uint32_t count,
                                   const uint32_t *phys, const uint32_t *bytes, uint32_t n)
 {
     struct ahci_port *pt = &h->port[p];
     uint32_t base = AHCI_PORT_BASE(p), total = 0;
+    if (!ahci_guard_ok(h, p, op, lba, count)) {
+        h->guard_refused++;
+        return AHCI_END_REFUSED;
+    }
     uint8_t code = ahci_opcode(op);
-    if (!code || n == 0 || n > AHCI_PRD_MAX || !pt->list || !pt->table)
+    if (!code || (n == 0) != (op == AHCI_OP_FLUSH) || n > AHCI_PRD_MAX || !pt->list || !pt->table)
         return AHCI_END_REFUSED;
     if (ahci_wait(h, base + AHCI_PX_TFD, AHCI_TFD_BSY | AHCI_TFD_DRQ, 0, false, AHCI_LIMIT_READY_MS) !=
             AHCI_END_DONE ||
@@ -190,7 +221,8 @@ static enum ahci_end ahci_command(struct ahci_hba *h, uint32_t p, enum ahci_op o
         return AHCI_END_BUSY;
 
     volatile uint32_t *hdr = (volatile uint32_t *)pt->list;            /* command header 0 */
-    hdr[0] = AHCI_CFL_H2D | (n << 16);  /* the FIS length, PRDTL; W (bit 6) clear: from the device */
+    /* The FIS length, PRDTL; W (bit 6) only for WRITE DMA EXT: to the device. */
+    hdr[0] = AHCI_CFL_H2D | (n << 16) | (op == AHCI_OP_WRITE ? AHCI_HDR_WRITE : 0u);
     hdr[1] = 0;                         /* PRDBC: the controller counts the bytes moved */
     hdr[2] = pt->table_phys;
     hdr[3] = 0;
@@ -202,7 +234,7 @@ static enum ahci_end ahci_command(struct ahci_hba *h, uint32_t p, enum ahci_op o
     fis[0] = AHCI_FIS_H2D;
     fis[1] = AHCI_FIS_COMMAND;
     fis[2] = code;
-    if (op == AHCI_OP_READ) {
+    if (op == AHCI_OP_READ || op == AHCI_OP_WRITE) {
         fis[4] = (uint8_t)lba;
         fis[5] = (uint8_t)(lba >> 8);
         fis[6] = (uint8_t)(lba >> 16);
@@ -226,8 +258,11 @@ static enum ahci_end ahci_command(struct ahci_hba *h, uint32_t p, enum ahci_op o
     ahci_wr(h, base + AHCI_PX_CI, 1u);
     pt->commands++;
     h->commands++;
+    h->writes += op == AHCI_OP_WRITE;
+    h->flushes += op == AHCI_OP_FLUSH;
 
-    uint64_t limit = ahci_limit_ticks(h, AHCI_LIMIT_CMD_MS), cap = (uint64_t)AHCI_LIMIT_CMD_MS * AHCI_POLLS_PER_MS;
+    uint32_t ms = op == AHCI_OP_FLUSH ? AHCI_LIMIT_FLUSH_MS : AHCI_LIMIT_CMD_MS;
+    uint64_t limit = ahci_limit_ticks(h, ms), cap = (uint64_t)ms * AHCI_POLLS_PER_MS;
     uint64_t t0 = ahci_now(h), polls = 0;
     enum ahci_end e = AHCI_END_DONE;
     for (;;) {
@@ -257,6 +292,8 @@ static enum ahci_end ahci_command(struct ahci_hba *h, uint32_t p, enum ahci_op o
         h->polls_longest = polls;
     if (took > h->ticks_longest)
         h->ticks_longest = took;
+    if (op == AHCI_OP_FLUSH && took > h->flush_ticks_longest)
+        h->flush_ticks_longest = took;
     __asm__ volatile ("" ::: "memory");    /* the data is read after the wait */
     uint32_t tfd = ahci_rd(h, base + AHCI_PX_TFD);
     if (e == AHCI_END_DONE && (tfd & (AHCI_TFD_ERR | AHCI_TFD_BSY | AHCI_TFD_DRQ)))
@@ -388,6 +425,7 @@ void ahci_start(struct ahci_hba *h, const struct ahci_ops *ops)
     h->handoff_end = AHCI_END_DONE;
     h->commands = h->polls_longest = h->ticks_longest = 0;
     h->ends_time = h->ends_cap = 0;
+    h->writes = h->flushes = h->guard_refused = h->flush_ticks_longest = 0;
     for (uint32_t p = 0; p < AHCI_PORTS; p++) {
         struct ahci_port *pt = &h->port[p];
         pt->state = AHCI_PORT_NONE;
@@ -440,8 +478,9 @@ void ahci_start(struct ahci_hba *h, const struct ahci_ops *ops)
             ahci_probe(h, p);
 }
 
-int ahci_read(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, const uint32_t *phys,
-              uint32_t pages)
+/* A read or a write of `sectors` sectors at `lba` through `pages` pages. */
+static int ahci_transfer(struct ahci_hba *h, uint32_t p, enum ahci_op op, uint64_t lba, uint32_t sectors,
+                         const uint32_t *phys, uint32_t pages)
 {
     if (p >= AHCI_PORTS || h->port[p].state != AHCI_PORT_DISK)
         return -AHCI_EIO;
@@ -452,7 +491,26 @@ int ahci_read(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, co
         return -AHCI_EIO;
     for (uint32_t i = 0; i < pages; i++)
         bytes[i] = i + 1 < pages ? AHCI_PAGE : (sectors - (pages - 1) * per) * AHCI_SECTOR;
-    return ahci_command(h, p, AHCI_OP_READ, lba, sectors, phys, bytes, pages) == AHCI_END_DONE ? 0 : -AHCI_EIO;
+    return ahci_command(h, p, op, lba, sectors, phys, bytes, pages) == AHCI_END_DONE ? 0 : -AHCI_EIO;
+}
+
+int ahci_read(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, const uint32_t *phys,
+              uint32_t pages)
+{
+    return ahci_transfer(h, p, AHCI_OP_READ, lba, sectors, phys, pages);
+}
+
+int ahci_write(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, const uint32_t *phys,
+               uint32_t pages)
+{
+    return ahci_transfer(h, p, AHCI_OP_WRITE, lba, sectors, phys, pages);
+}
+
+int ahci_flush(struct ahci_hba *h, uint32_t p)
+{
+    if (p >= AHCI_PORTS || h->port[p].state != AHCI_PORT_DISK)
+        return -AHCI_EIO;
+    return ahci_command(h, p, AHCI_OP_FLUSH, 0, 0, 0, 0, 0) == AHCI_END_DONE ? 0 : -AHCI_EIO;
 }
 
 bool ahci_guard_decide(struct ahci_hba *h, uint32_t p, bool allows, uint64_t first, uint64_t sectors)
@@ -508,6 +566,8 @@ const char *ahci_op_str(enum ahci_op op)
     switch (op) {
     case AHCI_OP_IDENTIFY: return "IDENTIFY DEVICE";
     case AHCI_OP_READ:     return "READ DMA EXT";
+    case AHCI_OP_WRITE:    return "WRITE DMA EXT";
+    case AHCI_OP_FLUSH:    return "FLUSH CACHE EXT";
     case AHCI_OPS:         break;
     }
     return "none";

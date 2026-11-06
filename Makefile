@@ -55,14 +55,14 @@ TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
 EXT2_SRCS := kernel/fs/ext2_core.c
 EXT2_OBJS := $(EXT2_SRCS:%.c=$(BUILD)/%.o)
 # 1.4 stage 9: the ext2 write core and the block layer's save order are pure
-# code, NOT linked into the kernel yet (left out of C_SRCS, so madire.kernel
-# stays byte-identical to stage 8's); compiled with the kernel's flags (make
-# ext2core) for part static's checks, and built into the host tool
-# tests/ext2write.c and the unit suites. Stage 10 links them.
+# code, compiled with the kernel's flags (make ext2core) for part static's
+# checks, and built into the host tool tests/ext2write.c and the unit
+# suites. 1.4 stage 10: linked into the kernel too (behind the write guard),
+# as every other file under kernel/.
 EXT2_WRITE_SRCS := kernel/fs/ext2_write.c kernel/storage/blk_core_save.c
 EXT2_WRITE_OBJS := $(EXT2_WRITE_SRCS:%.c=$(BUILD)/%.o)
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
-C_SRCS   := $(filter-out $(EXT2_WRITE_SRCS),$(sort $(shell find kernel drivers -name '*.c')))
+C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
 # 1.2 stage 6: the console fonts, converted at build time from the pinned
@@ -391,6 +391,9 @@ $(BUILD)/unit/test_ext2_vfs: $(EXT2_SRCS) kernel/fs/ext2_vfs.c
 # 1.4 stage 9: the write core's and the save order's suites include them.
 $(BUILD)/unit/test_ext2_write: $(EXT2_SRCS) $(EXT2_WRITE_SRCS)
 $(BUILD)/unit/test_blk_core_save: kernel/storage/blk_core_save.c
+# 1.4 stage 10: the read-write VFS adapter's suite includes the adapter, its
+# writer, the write core and the save order.
+$(BUILD)/unit/test_ext2_vfs_rw: $(EXT2_SRCS) $(EXT2_WRITE_SRCS) kernel/fs/ext2_vfs.c kernel/fs/ext2_vfs_rw.c
 
 toolkit: $(TOOLKIT_OBJS)
 

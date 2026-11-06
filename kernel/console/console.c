@@ -99,6 +99,7 @@ static bool storage_asked;
 static bool copying;
 static struct vnode *cp_src, *cp_dst;
 static uint64_t cp_off, cp_size, cp_chunks, cp_start;
+static uint32_t cp_tries;               /* 1.4 stage 10: saves since the copy last moved (ext2_disk_retry) */
 static char cp_to[256];
 static struct vnode *out_node;
 static uint64_t out_off, out_bytes;
@@ -374,41 +375,60 @@ static int fs_stat(void *ctx, const char *path, struct shell_finfo *out)
     return r;
 }
 
+/* 1.4 stage 10: each change below is tried again after a save when the
+ * disk's filesystem needs one first (-FS_EAGAIN; ext2_disk_retry gives up
+ * after 3 saves with ENOSPC); never on the RAM filesystem. */
 static int fs_mkdir(void *ctx, const char *path)
 {
     (void)ctx;
-    fd_vfs_acquire();
-    int r = vfs_create(vfs_root(), cwd_node(), path, VNODE_DIR, 0755, 0);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        r = vfs_create(vfs_root(), cwd_node(), path, VNODE_DIR, 0755, 0);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     return r;
 }
 
 static int fs_rmdir(void *ctx, const char *path)
 {
     (void)ctx;
-    fd_vfs_acquire();
-    int r = vfs_rmdir(vfs_root(), cwd_node(), path);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        r = vfs_rmdir(vfs_root(), cwd_node(), path);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     return r;
 }
 
 /* An empty file (mode 0644), or an existing file's or folder's access,
- * modify and change times set to now. */
+ * modify and change times set to now (1.4 stage 10: a file on the disk
+ * gets its new modify and change times written, by a truncate to its own
+ * size). */
 static int fs_touch(void *ctx, const char *path)
 {
     (void)ctx;
     struct vfs *v = vfs_root();
-    fd_vfs_acquire();
-    int r = vfs_create(v, cwd_node(), path, VNODE_FILE, 0644, 0);
-    if (r == -FS_EEXIST || r == -FS_EISDIR) {
-        struct vnode *n = 0;
-        r = vfs_lookup(v, cwd_node(), path, &n);
-        if (r == 0)
-            r = vfs_writable(v, n);         /* 1.4 stage 8: no time changes on a read-only disk */
-        if (r == 0)
-            n->atime = n->mtime = n->ctime = v->now();
-    }
-    fd_vfs_release();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        r = vfs_create(v, cwd_node(), path, VNODE_FILE, 0644, 0);
+        if (r == -FS_EEXIST || r == -FS_EISDIR) {
+            struct vnode *n = 0;
+            r = vfs_lookup(v, cwd_node(), path, &n);
+            if (r == 0)
+                r = vfs_writable(v, n);     /* 1.4 stage 8: no time changes on a read-only disk */
+            if (r == 0 && n->fs_id != 0 && n->type == VNODE_FILE)
+                r = vfs_truncate_step(v, n, n->size, 1);
+            if (r == 0)
+                n->atime = n->mtime = n->ctime = v->now();
+        }
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     return r;
 }
 
@@ -529,13 +549,17 @@ static int st_unlink(void *ctx, const char *path)
     (void)ctx;
     struct vfs *v = vfs_root();
     struct vnode *n = 0, *victim = 0;
-    fd_vfs_acquire();
-    if (vfs_lookup(v, cwd_node(), path, &n) == 0 && n->type == VNODE_FILE) {
-        vfs_hold(n);
-        victim = n;
-    }
-    int r = vfs_unlink(v, cwd_node(), path);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        if (!victim && vfs_lookup(v, cwd_node(), path, &n) == 0 && n->type == VNODE_FILE) {
+            vfs_hold(n);
+            victim = n;
+        }
+        r = vfs_unlink(v, cwd_node(), path);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     if (victim)
         fd_node_drop(victim);
     return r;
@@ -546,13 +570,17 @@ static int st_rename(void *ctx, const char *from, const char *to)
     (void)ctx;
     struct vfs *v = vfs_root();
     struct vnode *n = 0, *victim = 0;
-    fd_vfs_acquire();
-    if (vfs_lookup(v, cwd_node(), to, &n) == 0 && n->type == VNODE_FILE) {
-        vfs_hold(n);                        /* a file it may replace */
-        victim = n;
-    }
-    int r = vfs_rename(v, cwd_node(), from, cwd_node(), to);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        if (!victim && vfs_lookup(v, cwd_node(), to, &n) == 0 && n->type == VNODE_FILE) {
+            vfs_hold(n);                    /* a file it may replace */
+            victim = n;
+        }
+        r = vfs_rename(v, cwd_node(), from, cwd_node(), to);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
     if (victim)
         fd_node_drop(victim);
     return r;
@@ -584,21 +612,28 @@ static int st_copy_open(void *ctx, const char *from, const char *to, uint64_t *s
     (void)ctx;
     struct vnode *src = 0, *dst = 0;
     bool existed = false;
-    fd_vfs_acquire();
-    int r = vfs_lookup(vfs_root(), cwd_node(), from, &src);
-    if (r == 0 && src->type == VNODE_DIR)
-        r = -FS_EISDIR;
-    if (r == 0) {
-        vfs_hold(src);
-        r = hold_target(to, &dst, &existed);
-        if (r < 0) {
-            fd_vfs_release();
-            fd_node_drop(src);
-            return r;
+    uint32_t tries = 0;
+    int r;
+    for (;;) {
+        fd_vfs_acquire();
+        r = vfs_lookup(vfs_root(), cwd_node(), from, &src);
+        if (r == 0 && src->type == VNODE_DIR)
+            r = -FS_EISDIR;
+        if (r == 0) {
+            vfs_hold(src);
+            r = hold_target(to, &dst, &existed);
+            if (r < 0) {
+                fd_vfs_release();
+                fd_node_drop(src);
+                if (ext2_disk_retry(&r, &tries))    /* 1.4 stage 10: again after a save */
+                    continue;
+                return r;
+            }
+            *size = src->size;
         }
-        *size = src->size;
+        fd_vfs_release();
+        break;
     }
-    fd_vfs_release();
     if (r < 0)
         return r;
     if (existed)
@@ -609,6 +644,7 @@ static int st_copy_open(void *ctx, const char *from, const char *to, uint64_t *s
     cp_off = 0;
     cp_size = *size;
     cp_chunks = 0;
+    cp_tries = 0;
     keep_path(cp_to, to, sizeof(cp_to));
     return 0;
 }
@@ -712,9 +748,13 @@ static int st_out_open(void *ctx, const char *path, bool append)
     (void)ctx;
     struct vnode *n = 0;
     bool existed = false;
-    fd_vfs_acquire();
-    int r = hold_target(path, &n, &existed);
-    fd_vfs_release();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        r = hold_target(path, &n, &existed);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));          /* 1.4 stage 10: again after a save */
     if (r < 0)
         return r;
     if (existed && !append)
@@ -738,20 +778,35 @@ static int64_t st_out_write(void *ctx, const uint8_t *buf, uint32_t len)
     (void)ctx;
     if (len > sizeof(cat_chunk))
         len = sizeof(cat_chunk);            /* one chunk per hold */
-    fd_vfs_acquire();
-    int64_t put = vfs_write(vfs_root(), out_node, out_off, buf, len);
-    if (put > 0) {
-        out_off += (uint64_t)put;
-        stamp_node(out_node);
+    uint32_t tries = 0, done = 0;
+    for (;;) {
+        fd_vfs_acquire();
+        int64_t put = vfs_write(vfs_root(), out_node, out_off, buf + done, len - done);
+        if (put > 0) {
+            out_off += (uint64_t)put;
+            stamp_node(out_node);
+        }
+        /* 1.4 stage 10: the disk's filesystem needs a save before the rest. */
+        bool again = put == -FS_EAGAIN || (put >= 0 && (uint64_t)put < len - done && ext2_disk_again());
+        fd_vfs_release();
+        if (put > 0) {
+            out_bytes += (uint64_t)put;
+            out_writes++;
+            if ((uint32_t)put > out_largest)
+                out_largest = (uint32_t)put;
+            done += (uint32_t)put;
+            tries = 0;
+        }
+        if (again && done < len) {
+            int rr = -FS_EAGAIN;
+            if (ext2_disk_retry(&rr, &tries))
+                continue;
+            return done ? (int64_t)done : rr;
+        }
+        if (put < 0)
+            return done ? (int64_t)done : put;
+        return done;
     }
-    fd_vfs_release();
-    if (put > 0) {
-        out_bytes += (uint64_t)put;
-        out_writes++;
-        if ((uint32_t)put > out_largest)
-            out_largest = (uint32_t)put;
-    }
-    return put;
 }
 
 static void st_out_close(void *ctx)
@@ -778,6 +833,21 @@ static const struct shell_storage storage_ops = {
     st_unlink, st_rename, st_copy_open, st_df, st_du_open, st_du_next, st_du_close,
     st_out_open, st_out_write, st_out_close, st_out_is, 0,
 };
+
+/* 1.4 stage 10: "sync": a full save of the disk's changes, in pieces
+ * (ext2_disk.h; the console holds no lock here). */
+static enum shell_sync_end disk_sync(void *ctx, uint64_t *blocks)
+{
+    (void)ctx;
+    switch (ext2_disk_sync(blocks)) {
+    case EXT2_DISK_SAVED:    return SHELL_SYNC_SAVED;
+    case EXT2_DISK_NONE:     return SHELL_SYNC_NO_DISK;
+    case EXT2_DISK_READONLY: return SHELL_SYNC_READONLY;
+    default:                 return SHELL_SYNC_FAILED;
+    }
+}
+
+static const struct shell_disk disk_ops = { disk_sync, 0 };
 
 /* ---- Programs (0.11) ---- */
 
@@ -944,6 +1014,8 @@ static void build_context(struct shell_context *c)
         disp.cell_h = lay->cell_h;
     }
     c->display = &disp;
+    /* 1.4 stage 10: "sync" (not in the help lists until stage 12). */
+    c->disk = fs_up() ? &disk_ops : 0;
 }
 
 /* 0.12 stage 2: Ctrl held with c (as for a foreground program). */
@@ -1092,10 +1164,19 @@ static void copy_step(void)
     int64_t put = vfs_write(vfs_root(), cp_dst, cp_off, cat_chunk, (uint64_t)n);
     if (put > 0)
         stamp_node(cp_dst);
+    /* 1.4 stage 10: the disk's filesystem needs a save before the rest. */
+    bool again = put == -FS_EAGAIN || (put >= 0 && put < n && ext2_disk_again());
     fd_vfs_release();
     if (put > 0) {
         cp_off += (uint64_t)put;
         cp_chunks++;
+        cp_tries = 0;
+    }
+    if (again) {
+        int rr = -FS_EAGAIN;
+        if (!ext2_disk_retry(&rr, &cp_tries))
+            copy_finish(rr, false);
+        return;                             /* the rest on the next pass */
     }
     if (put < 0)
         copy_finish((int)put, false);
@@ -1107,6 +1188,15 @@ static void copy_step(void)
 static void answer_reboot(const char *answer)
 {
     if (shell_reboot_confirmed(answer)) {
+        /* 1.4 stage 10: in Disk mode the files in /home are saved first
+         * (at most 10 s); a failure is logged and the restart goes on (D9).
+         * Live mode and a read-only /home: as before. */
+        if (ext2_disk_rw()) {
+            enum ext2_disk_save s = ext2_disk_restart_save();
+            shell_sink(0, s == EXT2_DISK_SAVED ? "Saving files... done.\n"
+                                               : "Saving files... failed (see the log); restarting anyway.\n",
+                       SHELL_TEXT);
+        }
         shell_sink(0, SHELL_REBOOT_STARTING "\n", SHELL_TEXT);
         render_all();
         place_cursor();

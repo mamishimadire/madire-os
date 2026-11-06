@@ -10,7 +10,14 @@
  * does not stop, a device that stays busy, a late or missing signature,
  * a BIOS that keeps the controller, and a stopped clock. Every test also
  * proves that only 0xEC and 0x25 were ever sent and that no header asked
- * for a write. The module is included directly. */
+ * for a write. 1.4 stage 10: the fake also carries out WRITE DMA EXT (it
+ * reads the buffers and records the sectors and a sum of their bytes) and
+ * FLUSH CACHE EXT; test_write_guard proves that no write and no flush
+ * reaches the controller (no command issued, PxCI never written for it)
+ * for a disk whose guard decision is missing or refused, for a write
+ * outside the allowed partition or in its first two sectors, and for a
+ * failed disk; the other tests stay read-only. The module is included
+ * directly. */
 #include <stdbool.h>
 #include <string.h>
 #include "tests/unit/unit.h"
@@ -41,6 +48,9 @@ struct fk {
     uint64_t reads;
     uint32_t opcodes[256];
     uint32_t write_bits, bad_dma, bad_prd;
+    uint32_t ci_writes;         /* stage 10: PxCI issues of any port */
+    uint64_t wr_lba, wr_sum;    /* stage 10: the last write's first sector, and the sum of its bytes */
+    uint32_t wr_count;
     uint32_t prd_bytes[AHCI_PRD_MAX], prd_n;
     uint8_t mem[FK_PAGES][4096] __attribute__((aligned(4096)));
     bool used[FK_PAGES];
@@ -213,6 +223,15 @@ static void fk_execute(struct fk_port *p)
     uint32_t count = (uint32_t)t[12] | (uint32_t)t[13] << 8, want = op == 0xECu ? 512u : count * 512u, moved = 0;
     uint32_t *prd = (uint32_t *)(t + AHCI_TABLE_PRDT);
     fk.prd_n = n;
+    if (op == 0x35u) {                      /* stage 10: WRITE DMA EXT reads the buffers */
+        if (!(dw0 & (1u << 6)) || t[7] != 0x40u || lba + count > p->sectors)
+            fk.bad_prd++;
+        fk.wr_lba = lba;
+        fk.wr_count = count;
+        fk.wr_sum = 0;
+    }
+    if (op == 0xEAu && (n != 0 || (dw0 & (1u << 6))))
+        fk.bad_prd++;                       /* a flush moves no data */
     for (uint32_t i = 0; i < n && moved < want; i++) {
         uint32_t bytes = (prd[4 * i + 3] & 0x3FFFFFu) + 1u;
         if (i < AHCI_PRD_MAX)
@@ -227,6 +246,8 @@ static void fk_execute(struct fk_port *p)
         for (uint32_t k = 0; k < bytes && moved < want; k++, moved++) {
             if (op == 0xECu)
                 dst[k] = (uint8_t)(p->ident[moved / 2] >> (8 * (moved % 2)));
+            else if (op == 0x35u)
+                fk.wr_sum += dst[k];
             else
                 dst[k] = fk_byte(lba + moved / 512u, moved % 512u);
         }
@@ -282,6 +303,7 @@ static void fk_write(void *ctx, uint32_t off, uint32_t v)
         p->sctl = v;
         break;
     case AHCI_PX_CI:
+        fk.ci_writes++;
         if ((v & 1u) && (p->cmd & AHCI_CMD_ST))
             fk_execute(p);
         break;
@@ -363,8 +385,12 @@ static void test_opcodes(void)
 {
     CHECK_EQ(ahci_opcode(AHCI_OP_IDENTIFY), 0xEC);
     CHECK_EQ(ahci_opcode(AHCI_OP_READ), 0x25);
+    /* 1.4 stage 10 (changed): the table holds the write and the flush too,
+     * sent only as the guard allows (test_write_guard). */
+    CHECK_EQ(ahci_opcode(AHCI_OP_WRITE), 0x35);
+    CHECK_EQ(ahci_opcode(AHCI_OP_FLUSH), 0xEA);
     CHECK_EQ(ahci_opcode(AHCI_OPS), 0);
-    CHECK_EQ(sizeof(ahci_opcodes), 2);
+    CHECK_EQ(sizeof(ahci_opcodes), 4);
     CHECK_EQ(ahci_regs_bytes(0), 0x100);
     CHECK_EQ(ahci_regs_bytes(0x3Fu), 0x400);
     CHECK_EQ(ahci_regs_bytes(0x3FFFFFFFu), 0x1000);
@@ -676,6 +702,107 @@ static void test_identify(void)
     check_read_only();
 }
 
+/* 1.4 stage 10 (C4, D5): WRITE DMA EXT and FLUSH CACHE EXT reach the
+ * controller only through the guard. For each refused case: -AHCI_EIO, no
+ * command issued (PxCI never written, no opcode recorded), no error
+ * counted, the refusal counted. */
+static void check_nothing_sent(uint32_t ci0, uint32_t cmds0, uint64_t refused0, uint64_t more)
+{
+    CHECK_EQ(fk.ci_writes, ci0);
+    CHECK_EQ(fk.port[0].commands, cmds0);
+    CHECK_EQ(hba.guard_refused, refused0 + more);
+    CHECK_EQ(hba.port[0].errors, 0);
+}
+
+static void test_write_guard(void)
+{
+    fk_reset();
+    fk_disk(0, 131075);
+    fk_cd(1);
+    ahci_start(&hba, &fk_ops);
+    uint32_t a = fk_data_page();
+    uint8_t *d = fk_phys(a, 4096);
+    uint64_t sum = 0;
+    for (uint32_t k = 0; k < 4096; k++) {
+        d[k] = (uint8_t)(k * 5u + 3u);
+        sum += d[k];
+    }
+    /* (1) No decision yet: refused. */
+    uint32_t ci0 = fk.ci_writes, c0 = fk.port[0].commands;
+    CHECK_EQ(ahci_write(&hba, 0, 2050, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_flush(&hba, 0), -AHCI_EIO);
+    check_nothing_sent(ci0, c0, 0, 2);
+    /* (2) The decision refuses the disk: refused, also inside the partition. */
+    CHECK(ahci_guard_decide(&hba, 0, false, 2048, 100000));
+    CHECK(!ahci_guard_decide(&hba, 0, true, 2048, 100000));     /* decided once */
+    CHECK(!ahci_guard_allows(&hba, 0));
+    CHECK_EQ(ahci_write(&hba, 0, 2050, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_write(&hba, 0, 0, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_flush(&hba, 0), -AHCI_EIO);
+    check_nothing_sent(ci0, c0, 2, 3);
+    CHECK_EQ(ahci_write(&hba, 1, 2050, 8, &a, 1), -AHCI_EIO);   /* the CD: never */
+    CHECK_EQ(ahci_flush(&hba, 1), -AHCI_EIO);
+    CHECK_EQ(fk.port[1].commands, 0);
+    CHECK_EQ(fk.opcodes[0x35] + fk.opcodes[0xEA], 0);
+    CHECK_EQ(fk.write_bits, 0);
+    check_read_only();
+
+    /* (3) A disk the decision allows on [2048, 102048). */
+    fk_reset();
+    fk_disk(0, 131075);
+    ahci_start(&hba, &fk_ops);
+    a = fk_data_page();
+    d = fk_phys(a, 4096);
+    for (uint32_t k = 0; k < 4096; k++)
+        d[k] = (uint8_t)(k * 5u + 3u);
+    CHECK(ahci_guard_decide(&hba, 0, true, 2048, 100000));
+    CHECK(ahci_guard_allows(&hba, 0));
+    ci0 = fk.ci_writes;
+    c0 = fk.port[0].commands;
+    /* Outside the partition, or in its first two sectors: refused. */
+    CHECK_EQ(ahci_write(&hba, 0, 0, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_write(&hba, 0, 2040, 8, &a, 1), -AHCI_EIO);    /* across its start */
+    CHECK_EQ(ahci_write(&hba, 0, 2048, 8, &a, 1), -AHCI_EIO);    /* the marker's sector */
+    CHECK_EQ(ahci_write(&hba, 0, 2049, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_write(&hba, 0, 102044, 8, &a, 1), -AHCI_EIO);  /* across its end */
+    CHECK_EQ(ahci_write(&hba, 0, 102048, 8, &a, 1), -AHCI_EIO);  /* after it */
+    check_nothing_sent(ci0, c0, 0, 6);
+    CHECK_EQ(fk.opcodes[0x35], 0);
+    /* Inside, past the marker: sent, the W bit set, the buffer's bytes. */
+    CHECK_EQ(ahci_write(&hba, 0, 2050, 8, &a, 1), 0);
+    CHECK_EQ(fk.opcodes[0x35], 1);
+    CHECK_EQ(fk.write_bits, 1);
+    CHECK_EQ(fk.wr_lba, 2050);
+    CHECK_EQ(fk.wr_count, 8);
+    CHECK_EQ(fk.wr_sum, sum);
+    CHECK_EQ(ahci_write(&hba, 0, 102040, 8, &a, 1), 0);          /* its last 8 sectors */
+    CHECK_EQ(fk.wr_lba, 102040);
+    CHECK_EQ(ahci_flush(&hba, 0), 0);
+    CHECK_EQ(fk.opcodes[0xEA], 1);
+    CHECK_EQ(fk.write_bits, 2);                                  /* not for the flush */
+    CHECK_EQ(hba.writes, 2);
+    CHECK_EQ(hba.flushes, 1);
+    CHECK_EQ(hba.guard_refused, 6);
+    CHECK_EQ(fk.bad_dma + fk.bad_prd, 0);
+    /* A failed write: EIO, counted, the port running again (D9). */
+    fk.port[0].fail_next = 1;
+    CHECK_EQ(ahci_write(&hba, 0, 2050, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(hba.port[0].errors, 1);
+    CHECK_EQ(hba.port[0].last.op, AHCI_OP_WRITE);
+    CHECK(hba.port[0].last.recovered);
+    /* Two more errors: the disk failed; then nothing is sent at all. */
+    fk.port[0].fail_next = 2;
+    CHECK_EQ(ahci_write(&hba, 0, 2050, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_flush(&hba, 0), -AHCI_EIO);
+    CHECK_EQ(hba.port[0].state, AHCI_PORT_FAILED);
+    CHECK(!ahci_guard_allows(&hba, 0));
+    ci0 = fk.ci_writes;
+    CHECK_EQ(ahci_write(&hba, 0, 2050, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(ahci_flush(&hba, 0), -AHCI_EIO);
+    CHECK_EQ(fk.ci_writes, ci0);
+    CHECK_EQ(hba.port[0].errors, 3);
+}
+
 int main(void)
 {
     printf("test_ahci_core\n");
@@ -690,5 +817,6 @@ int main(void)
     RUN(test_stuck_and_busy);
     RUN(test_signatures);
     RUN(test_identify);
+    RUN(test_write_guard);
     return unit_report("ahci_core");
 }

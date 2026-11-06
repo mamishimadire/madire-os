@@ -224,6 +224,28 @@ static void test_error(void)
     CHECK(bytes_ok(buf, 8, 24));
 }
 
+/* 1.4 stage 10: after a write reached sectors, the pages holding them are
+ * forgotten (the next read reads the disk again); other pages stay. */
+static void test_forget(void)
+{
+    setup(1024, 8, 8);
+    CHECK_EQ(blk_cache_read(&c, 0, 32, buf), 0);         /* pages 0-3 */
+    uint32_t k0 = fd.commands;
+    CHECK_EQ(blk_cache_read(&c, 8, 8, buf), 0);          /* a hit */
+    CHECK_EQ(fd.commands, k0);
+    CHECK_EQ(blk_cache_forget(&c, 9, 9), 2);             /* sectors 9-17: pages 1 and 2 */
+    CHECK_EQ(c.forgotten, 2);
+    CHECK_EQ(blk_cache_forget(&c, 9, 0), 0);
+    CHECK_EQ(blk_cache_forget(&c, 512, 8), 0);           /* not cached */
+    CHECK_EQ(blk_cache_read(&c, 0, 8, buf), 0);          /* page 0: still a hit */
+    CHECK_EQ(fd.commands, k0);
+    CHECK_EQ(blk_cache_read(&c, 8, 16, buf), 0);         /* pages 1 and 2: read again, one command */
+    CHECK_EQ(fd.commands, k0 + 1);
+    CHECK(bytes_ok(buf, 8, 16));
+    CHECK_EQ(blk_cache_read(&c, 24, 8, buf), 0);         /* page 3: a hit */
+    CHECK_EQ(fd.commands, k0 + 1);
+}
+
 int main(void)
 {
     printf("test_blk_core\n");
@@ -234,5 +256,6 @@ int main(void)
     RUN(test_replacement);
     RUN(test_short_of_pages);
     RUN(test_error);
+    RUN(test_forget);
     return unit_report("blk_core");
 }

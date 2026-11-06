@@ -1060,7 +1060,7 @@ done
 DISK_SA=$(sha256sum < "$DISK_W/a.img" | cut -d' ' -f1)
 DISK_SB=$(sha256sum < "$DISK_W/b.img" | cut -d' ' -f1)
 echo "      mke2fs exit:$DISK_MK; a.img $DISK_SA; b.img $DISK_SB ($(stat -c%s "$DISK_W/a.img" 2>/dev/null) bytes)"
-echo "DISK_IMAGE_SHA256 ext2-1k-128 $DISK_SA (report only: the same tools give the same image in every run)"
+echo "DISK_IMAGE_SHA256 ext2-1k-128 $DISK_SA (report only: identical within a run (a.img = b.img, checked below); it varies between runs, since mke2fs -d copies the source files' change times, which touch cannot set; the stage 9 configuration change did not alter it)"
 if [ "$DISK_MK" = " 0 0" ] && [ -s "$DISK_W/a.img" ] && [ "$DISK_SA" = "$DISK_SB" ]; then
     pass "[1.4] disk tools: mke2fs with tests/mke2fs.conf, the fixed UUID, hash seed and time makes the same ext2 image twice (SHA-256 identical)"
 else
@@ -1348,27 +1348,48 @@ section "[1.4] AHCI reads and the block cache: read only (stage 4)"
 # speed and the longest turn are report only (risk 26).
 AH_T0=$(date +%s)
 AH_SRC=$(dirname "$0")/../kernel
-# (1) The source: the opcode table holds 0xEC and 0x25 only; the FIS's
-# command byte is set in one place, from it; a command header's first
-# word is set in one place, without the write bit; only ahci_core.c
-# issues commands (PxCI); no name of a write or flush command anywhere.
+# (1) The source. 1.4 stage 10 (changed, the owner's GUARDED-WRITE proof,
+# where stage 4 proved no write existed): the opcode table holds exactly
+# 0xEC, 0x25, 0x35 (WRITE DMA EXT) and 0xEA (FLUSH CACHE EXT); the FIS's
+# command byte is set in one place, from it; the table is read in one
+# place (ahci_opcode(op)), inside the one command builder (ahci_command),
+# AFTER the builder's guard check refuses what ahci_guard_ok does not
+# allow, and ahci_guard_ok refuses every write and flush unless
+# ahci_guard_allows(); the builder is called from three places only
+# (IDENTIFY, a read or write transfer, a flush); a command header's first
+# word is set in one place, the write bit only for WRITE DMA EXT; only
+# ahci_core.c issues commands (PxCI); the write and flush operations are
+# named nowhere but ahci_core.[ch]. The unit suite ahci_core proves on its
+# fake controller that no write or flush command is issued (PxCI never
+# written) for a disk the guard refused or did not decide, outside the
+# partition, in its first two sectors, or after the disk failed.
 AH_TABLE=$(awk '/^static const uint8_t ahci_opcodes\[AHCI_OPS\] __attribute__\(\(used\)\) = \{$/ { on = 1; next }
                 on && /^\};$/ { exit } on { print $1 }' "$AH_SRC/storage/ahci_core.c" | tr '\n' ' ')
 AH_OPS=$(awk '/^enum ahci_op \{$/ { on = 1; next } on && /^\};$/ { exit } on { print $1 }' "$AH_SRC/storage/ahci_core.h" | tr '\n' ' ')
 AH_FIS=$(grep -c 'fis\[2\]' "$AH_SRC/storage/ahci_core.c")
 AH_HDR=$(grep -cE 'hdr\[0\] *=' "$AH_SRC/storage/ahci_core.c")
 AH_CI=$(grep -rlE 'AHCI_PX_CI\b' "$AH_SRC" | grep -v 'storage/ahci_core\.[ch]$' | tr '\n' ' ')
-AH_NAMES=$(grep -rniE 'write_dma|flush_cache|op_write|op_flush|0x35u|0xeau' "$AH_SRC/storage" | tr '\n' ' ')
-echo "      opcode table: $AH_TABLE; enum ahci_op: $AH_OPS; fis[2] lines: $AH_FIS; hdr[0] lines: $AH_HDR; other files using PxCI: ${AH_CI:-none}"
-if [ "$AH_TABLE" = "0xECu, 0x25u, " ] && [ "$AH_OPS" = "AHCI_OP_IDENTIFY, AHCI_OP_READ, AHCI_OPS, " ] &&
+AH_NAMES=$(grep -rlE 'AHCI_OP_(WRITE|FLUSH)\b' "$AH_SRC" | grep -v 'storage/ahci_core\.[ch]$' | tr '\n' ' ')
+# The builder up to the line that reads the table, and the guard's test.
+AH_BODY=$(awk '/^static enum ahci_end ahci_command\(/ { on = 1 } on { print } on && /uint8_t code = ahci_opcode\(op\);/ { exit }' \
+          "$AH_SRC/storage/ahci_core.c")
+AH_GOK=$(awk '/^static bool ahci_guard_ok\(/ { on = 1 } on { print } on && /^}$/ { exit }' "$AH_SRC/storage/ahci_core.c")
+AH_BUILDS=$(grep -cE 'ahci_command\(h, p, ' "$AH_SRC/storage/ahci_core.c")
+echo "      opcode table: $AH_TABLE; enum ahci_op: $AH_OPS; fis[2] lines: $AH_FIS; hdr[0] lines: $AH_HDR; builder calls: $AH_BUILDS; other files using PxCI: ${AH_CI:-none}; write or flush named elsewhere: ${AH_NAMES:-none}"
+if [ "$AH_TABLE" = "0xECu, 0x25u, 0x35u, 0xEAu, " ] &&
+   [ "$AH_OPS" = "AHCI_OP_IDENTIFY, AHCI_OP_READ, AHCI_OP_WRITE, AHCI_OP_FLUSH, AHCI_OPS, " ] &&
    [ "$AH_FIS" -eq 1 ] && grep -qxF '    fis[2] = code;' "$AH_SRC/storage/ahci_core.c" &&
    [ "$(grep -cF 'ahci_opcode(op)' "$AH_SRC/storage/ahci_core.c")" -eq 1 ] &&
-   grep -qxF '    uint8_t code = ahci_opcode(op);' "$AH_SRC/storage/ahci_core.c" &&
-   [ "$AH_HDR" -eq 1 ] && grep -qF 'hdr[0] = AHCI_CFL_H2D | (n << 16);' "$AH_SRC/storage/ahci_core.c" &&
+   grep -qxF '    uint8_t code = ahci_opcode(op);' <<< "$AH_BODY" &&
+   grep -qxF '    if (!ahci_guard_ok(h, p, op, lba, count)) {' <<< "$AH_BODY" &&
+   grep -qxF '    if (op != AHCI_OP_WRITE && op != AHCI_OP_FLUSH)' <<< "$AH_GOK" &&
+   grep -qxF '    if (!ahci_guard_allows(h, p))' <<< "$AH_GOK" && [ "$AH_BUILDS" -eq 3 ] &&
+   [ "$AH_HDR" -eq 1 ] &&
+   grep -qF 'hdr[0] = AHCI_CFL_H2D | (n << 16) | (op == AHCI_OP_WRITE ? AHCI_HDR_WRITE : 0u);' "$AH_SRC/storage/ahci_core.c" &&
    [ -z "$AH_CI" ] && [ -z "$AH_NAMES" ]; then
-    pass "[1.4] AHCI read only (source): the opcode table holds IDENTIFY DEVICE (0xEC) and READ DMA EXT (0x25) only, the FIS's command byte is set once and from it, the command header's first word once and without the write bit, only ahci_core.c issues commands, and no write or flush command is named"
+    pass "[1.4] AHCI guarded writes (source): the opcode table holds exactly IDENTIFY DEVICE (0xEC), READ DMA EXT (0x25), WRITE DMA EXT (0x35) and FLUSH CACHE EXT (0xEA); it is read once, inside the one command builder, after the builder's guard check, which refuses every write and flush unless ahci_guard_allows(); the builder is called from three places; the FIS's command byte is set once and from the table; the header's write bit only for WRITE DMA EXT; only ahci_core.c issues commands or names a write or flush"
 else
-    fail "[1.4] AHCI read only (source): the opcode table, the FIS's command byte, the header's write bit or the command issue is not as stage 4 allows (table: $AH_TABLE; ops: $AH_OPS; fis[2]: $AH_FIS; hdr[0]: $AH_HDR; PxCI elsewhere: ${AH_CI:-none}; names: ${AH_NAMES:-none})"
+    fail "[1.4] AHCI guarded writes (source): the opcode table, the builder's guard check, the FIS's command byte, the header's write bit, the builder's callers or the command issue is not as stage 10 allows (table: $AH_TABLE; ops: $AH_OPS; fis[2]: $AH_FIS; hdr[0]: $AH_HDR; builder calls: $AH_BUILDS; PxCI elsewhere: ${AH_CI:-none}; write or flush elsewhere: ${AH_NAMES:-none})"
 fi
 # (2) madire.elf: the table's bytes as linked, and no immediate byte store
 # of a write-type ATA opcode (ACS-3: the WRITE, FLUSH, DOWNLOAD MICROCODE
@@ -1425,11 +1446,16 @@ read -r AH_FNS AH_INSNS AH_EMPTY <<< "$(ah_scan "$AH_DIS" "$OUT/ahci-objdump-fla
 AH_BAD=$(cat "$OUT/ahci-objdump-flagged.txt")
 echo "      madire.elf: ahci_opcodes ${AH_SIZE:-?} bytes: ${AH_BYTES:-?}; $AH_FNS storage functions, $AH_INSNS instructions examined (minimum $AH_MIN_INSNS), $AH_EMPTY with none; write-type opcode stores: $(grep -c . <<< "$AH_BAD")"
 [ -n "$AH_BAD" ] && sed 's/^/      store: /' <<< "$AH_BAD"
-if [ "${AH_SIZE:-}" = 0000000000000002 ] && [ "$AH_BYTES" = ec25 ] && [ "$AH_FNS" -ge 10 ] &&
+# 1.4 stage 10 (changed): the table as linked is the 4 bytes EC 25 35 EA
+# (it was EC 25), still the only source of an opcode: the scan below is
+# unchanged, so no storage function stores a write-type opcode (0x35 and
+# 0xEA included) as an immediate byte; WRITE DMA EXT and FLUSH CACHE EXT
+# can only come from the table, through the guarded builder (1).
+if [ "${AH_SIZE:-}" = 0000000000000004 ] && [ "$AH_BYTES" = ec2535ea ] && [ "$AH_FNS" -ge 10 ] &&
    [ "$AH_INSNS" -ge "$AH_MIN_INSNS" ] && [ "$AH_EMPTY" -eq 0 ] && [ -z "$AH_BAD" ]; then
-    pass "[1.4] AHCI read only (madire.elf): ahci_opcodes is 2 bytes, EC 25, as linked; no ahci_, blk_ or pci_ function ($AH_FNS of them, $AH_INSNS instructions examined, at least $AH_MIN_INSNS needed and one in each) stores a write-type ATA opcode as an immediate byte"
+    pass "[1.4] AHCI guarded writes (madire.elf): ahci_opcodes is 4 bytes, EC 25 35 EA, as linked; no ahci_, blk_ or pci_ function ($AH_FNS of them, $AH_INSNS instructions examined, at least $AH_MIN_INSNS needed and one in each) stores a write-type ATA opcode as an immediate byte, so a write or a flush can only come from the table through the guarded builder"
 else
-    fail "[1.4] AHCI read only (madire.elf): ahci_opcodes is not the 2 bytes EC 25 (${AH_SIZE:-no symbol}: ${AH_BYTES:-none}), too few storage functions or instructions were examined ($AH_FNS functions, $AH_INSNS instructions, minimum $AH_MIN_INSNS, $AH_EMPTY with none), or a storage function stores a write-type opcode"
+    fail "[1.4] AHCI guarded writes (madire.elf): ahci_opcodes is not the 4 bytes EC 25 35 EA (${AH_SIZE:-no symbol}: ${AH_BYTES:-none}), too few storage functions or instructions were examined ($AH_FNS functions, $AH_INSNS instructions, minimum $AH_MIN_INSNS, $AH_EMPTY with none), or a storage function stores a write-type opcode"
 fi
 # (3) The scan's self-test: tests/ahci_opcode_sample.c, compiled here with
 # the kernel's code-generation flags (test only, never linked), stores
@@ -1489,8 +1515,11 @@ fi
 # pattern disk has no 0x55AA signature in LBA 0, so "no partition table,
 # writes would be REFUSED: no partition table" (the same disk, model and
 # size as before; the table and the guard are checked in stage 5's boots).
+# 1.4 stage 10 (changed): the IDENTIFY line ends "used (written only as
+# the write guard allows)" where it said "used read only" (logged before
+# the guard decides; the same disk, model and size).
 AH_STORAGE="Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK 64 MiB, no partition table, writes would be REFUSED: no partition table; read only, not mounted (Live mode)"
-if grep -qxF "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'QEMU HARDDISK', $AH_N sectors of 512 bytes (64 MiB), LBA48 yes, DMA yes; used read only" "$AH_LOG" &&
+if grep -qxF "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'QEMU HARDDISK', $AH_N sectors of 512 bytes (64 MiB), LBA48 yes, DMA yes; used (written only as the write guard allows)" "$AH_LOG" &&
    grep -qxF "$AH_STORAGE" "$AH_LOG" &&
    [ "$(grep -c '^Storage: ' "$AH_LOG")" -eq 1 ]; then
     pass "[1.4] AHCI: IDENTIFY DEVICE on port 0 gives QEMU's model 'QEMU HARDDISK' and the image's $AH_N sectors of 512 bytes (LBA48, DMA); '$AH_STORAGE'"
@@ -1619,13 +1648,18 @@ echo "      images: ok=$GD_OK; MBR partition $GD_S+$GD_N (${GD_MIB_M} MiB disk);
 
 # gd_boot <name> <image> [model]: one boot into serial-guard-<name>.log, the
 # image's SHA-256 before and after.
+# 1.4 stage 10 (changed helper): the boot runs on a copy, <name>-after.img
+# (the hashes are the copy's, before and after: the image booted, as
+# before), so the images stay pristine for the later sections: the marked
+# disks are now written by their read-write mount (save 0).
 gd_boot() {
-    local name=$1 img=$2 model=${3:-} log=$OUT/serial-guard-$1.log
-    GD_SHA0[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
+    local name=$1 img=$2 model=${3:-} log=$OUT/serial-guard-$1.log run=$GD_W/$1-after.img
+    cp "$img" "$run"
+    GD_SHA0[$name]=$(sha256sum < "$run" | cut -d' ' -f1)
     boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" \
-        -drive file="$img",if=none,id=gdtest-disk,format=raw -device ich9-ahci,id=gdtest-ahci,addr=0x5 \
+        -drive file="$run",if=none,id=gdtest-disk,format=raw -device ich9-ahci,id=gdtest-ahci,addr=0x5 \
         -device "ide-hd,drive=gdtest-disk,bus=gdtest-ahci.0${model:+,model=$model}"
-    GD_SHA1[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
+    GD_SHA1[$name]=$(sha256sum < "$run" | cut -d' ' -f1)
     grep -E '^(part|guard|Storage): ' "$log" | sed "s/^/      $name: /"
 }
 # gd_lines <name> <expected lines>: each expected line exactly once; as many
@@ -1649,8 +1683,12 @@ gd_hash() {
         fail "[1.4] write guard, $2: the disk image's SHA-256 changed during the boot (${GD_SHA0[$1]:-?} -> ${GD_SHA1[$1]:-?})"
     fi
 }
-GD_DEC_ALLOW="guard: port 0: decided once, kept by the AHCI driver: writes would be ALLOWED on partition 1 (LBA %s, %s sectors); no write command exists in stage 5"
-GD_DEC_REFUSE="guard: port 0: decided once, kept by the AHCI driver: writes would be REFUSED; no write command exists in stage 5"
+# 1.4 stage 10 (changed): the decision lines end with what the decision now
+# does ("the AHCI command builder checks this decision before every write
+# and flush" / "refuses every write and flush to this disk") where they
+# said "no write command exists in stage 5"; the decisions are the same.
+GD_DEC_ALLOW="guard: port 0: decided once, kept by the AHCI driver: writes would be ALLOWED on partition 1 (LBA %s, %s sectors); the AHCI command builder checks this decision before every write and flush"
+GD_DEC_REFUSE="guard: port 0: decided once, kept by the AHCI driver: writes would be REFUSED; the AHCI command builder refuses every write and flush to this disk"
 GD_PART_MBR="part: port 0: MBR (disk signature 0x4d414452), 1 partition
 part: port 0: partition 1: MBR type 0x83 (Linux), LBA $GD_S, $GD_N sectors"
 GD_ST_MBR="Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_M MiB, MBR, 1 partition, writes would be"
@@ -1658,7 +1696,54 @@ GD_TAIL="; read only, not mounted (Live mode)"
 # 1.4 stage 8 (changed): a disk the guard allows has its ext2 volume
 # mounted read-only on /home (D16), so the two marked disks' Storage:
 # lines end so (the refused disks' lines are unchanged, GD_TAIL).
-GD_TAIL_MOUNTED="; ext2 'madire-test' mounted read-only on /home (Disk mode, read-only)"
+# 1.4 stage 10 (changed): mounted read-write, "Disk mode" (D16).
+GD_TAIL_MOUNTED="; ext2 'madire-test' mounted read-write on /home (Disk mode)"
+# gd_bounded <name> <what> <image before> <partition's first sector>
+# <bytes allowed after the superblock>: 1.4 stage 10 (changed, the owner's
+# bounded diff, where stage 5 checked the SHA-256 unchanged): a read-write
+# mount writes save 0 (the "not clean" state) at once, so the image may
+# differ from the one before the boot ONLY inside the partition's
+# superblock (partition bytes 1024-2047), and with <bytes> > 0 in the
+# <bytes> after it (the group descriptors a D12 recount rewrites); the
+# partition table and the marker's sector are byte-identical; and e2fsck
+# -fn on the partition after the boot reports nothing.
+# The owner's FIELD-LEVEL addition (approved with the S10 changed checks):
+# inside the superblock, only the bytes of the fields save 0 writes may
+# differ: the state (58-59), the last mount time (44-47), the last write
+# time (48-51) and the mount count (52-53; allowed, not written by Madire);
+# the free block and inode counts (12-19) are written too (the superblock
+# is written whole), so they must keep their values except after D12's
+# recount ('dirty': <bytes> > 0); in the descriptor block only each
+# 32-byte descriptor's free blocks, free inodes and folders (its bytes
+# 12-17), which the recount fixes. dumpe2fs -h before and after must also
+# differ only in those fields (Filesystem state, Mount count, Last mount
+# time, Last write time; for 'dirty' also Free blocks and Free inodes).
+gd_bounded() {
+    local name=$1 what=$2 before=$3 start=$4 extra=$5 img=$GD_W/$1-after.img lo hi offs out bad fsck rc fields fbad allow
+    lo=$((start * 512 + 1024)); hi=$((lo + 1024 + extra))
+    offs=$(cmp -l "$before" "$img" 2>/dev/null | awk '{ print $1 - 1 }')
+    bad=$(awk -v lo="$lo" -v hi="$hi" -v ex="$extra" '{ r = $1 - lo }
+            r < 0 || $1 >= hi { print; next }
+            r < 1024 { if ((r >= 44 && r <= 53) || r == 58 || r == 59 || (ex > 0 && r >= 12 && r <= 19)) next; print; next }
+            { d = (r - 1024) % 32; if (d >= 12 && d <= 17) next; print }' <<< "$offs" | grep -c .)
+    disk_image extract "$before" "$GD_W/$1-before-part.img" > /dev/null 2>&1
+    disk_image extract "$img" "$GD_W/$1-after-part.img" > /dev/null 2>&1
+    fields=$(diff <(LC_ALL=C "$(disk_tool dumpe2fs)" -h "$GD_W/$1-before-part.img" 2>/dev/null) \
+                  <(LC_ALL=C "$(disk_tool dumpe2fs)" -h "$GD_W/$1-after-part.img" 2>/dev/null) |
+             sed -nE 's/^[<>] ([^:]+):.*/\1/p' | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//')
+    allow='^(Filesystem state|Mount count|Last mount time|Last write time)$'
+    [ "$extra" -gt 0 ] && allow='^(Filesystem state|Mount count|Last mount time|Last write time|Free blocks|Free inodes)$'
+    fbad=$(tr ',' '\n' <<< "$fields" | grep . | grep -vE "$allow" | tr '\n' ',' | sed 's/,$//')
+    out=$(LC_ALL=C E2FSCK_CONFIG=/dev/null "$(disk_tool e2fsck)" -fn "$GD_W/$1-after-part.img" 2>&1); rc=$?
+    fsck=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$out")
+    echo "      $name: $(grep -c . <<< "$offs") bytes changed, $bad outside the allowed fields; dumpe2fs -h fields changed: ${fields:-none}${fbad:+ (NOT allowed: $fbad)}; e2fsck -fn exit $rc${fsck:+: $(tr '\n' '|' <<< "$fsck")}"
+    if [ -s "$img" ] && [ "$bad" -eq 0 ] && [ -z "$fbad" ] && [ -n "$fields" ] &&
+       [ "$(stat -c%s "$img")" -eq "$(stat -c%s "$before")" ] && [ "$rc" -eq 0 ] && [ -z "$fsck" ]; then
+        pass "[1.4] $what: the read-write mount changed only the superblock's state, mount and write times (save 0)$([ "$extra" -gt 0 ] && echo ", its free counts and the descriptors' per-group counts (the D12 recount)"), byte for byte and field by field (dumpe2fs -h: $fields); the partition table and the marker's sector are byte-identical; e2fsck -fn reports nothing"
+    else
+        fail "[1.4] $what: the image changed outside the allowed fields ($bad bytes; dumpe2fs -h fields: ${fields:-none}; not allowed: ${fbad:-none}), or e2fsck -fn reported something (exit $rc)"
+    fi
+}
 
 # (1) The marked MBR disk: ALLOWED.
 gd_boot mbr "$GD_W/mbr.img"
@@ -1670,7 +1755,7 @@ $GD_ST_MBR ALLOWED on partition 1$GD_TAIL_MOUNTED"; then
 else
     fail "[1.4] write guard, the marked MBR disk: the part:, guard: or Storage: lines differ from the image's (see serial-guard-mbr.log)"
 fi
-gd_hash mbr "the marked MBR disk"
+gd_bounded mbr "write guard, the marked MBR disk" "$GD_W/mbr.img" "$GD_S" 0
 # (2) The marked GPT disk: ALLOWED; the backup header checked and reported.
 gd_boot gpt "$GD_W/gpt.img"
 if gd_lines gpt "part: port 0: GPT (protective MBR 0xEE): revision 1.0, header 92 bytes, 128 entries of 128 bytes at LBA 2, usable LBA $GD_FU-$GD_LU, header and entry-array CRC32 valid ($GD_HC, $GD_AC), 1 partition
@@ -1683,7 +1768,7 @@ Storage: AHCI 00:05.0, port 0 disk QEMU HARDDISK $GD_MIB_G MiB, GPT, 1 partition
 else
     fail "[1.4] write guard, the marked GPT disk: the part:, guard: or Storage: lines differ from the image's (see serial-guard-gpt.log)"
 fi
-gd_hash gpt "the marked GPT disk"
+gd_bounded gpt "write guard, the marked GPT disk" "$GD_W/gpt.img" "$GD_GS" 0
 # (3) No marker: REFUSED at (b).
 gd_boot nomarker "$GD_W/mbr-nomarker.img"
 if gd_lines nomarker "$GD_PART_MBR
@@ -1719,7 +1804,7 @@ fi
 gd_hash label "the wrong label"
 # (6) A model that is not a virtual disk's (the marked disk): REFUSED at (a).
 gd_boot model "$GD_W/mbr.img" MADIRE-REAL-DISK-TEST
-if gd_lines model "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'MADIRE-REAL-DISK-TEST', $((GD_S + GD_N)) sectors of 512 bytes ($GD_MIB_M MiB), LBA48 yes, DMA yes; used read only
+if gd_lines model "ahci: port 0: signature 0x00000101 (ATA disk); IDENTIFY DEVICE: model 'MADIRE-REAL-DISK-TEST', $((GD_S + GD_N)) sectors of 512 bytes ($GD_MIB_M MiB), LBA48 yes, DMA yes; used (written only as the write guard allows)
 $GD_PART_MBR
 guard: port 0: writes would be REFUSED: (a) model 'MADIRE-REAL-DISK-TEST' is not QEMU HARDDISK or VBOX HARDDISK
 $GD_DEC_REFUSE
@@ -1812,34 +1897,72 @@ if [ -s "$E2_OBJ" ] && [ -z "$E2_UNDEF" ] && [ "$E2_SSE" -eq 0 ] && [ "$E2_LINKE
 else
     fail "[1.4] ext2 read core: the object is missing, needs symbols (${E2_UNDEF:-none}), uses SSE/x87 ($E2_SSE), madire.elf lacks the core's read calls ($E2_LINKED of 4), or no ext2dump"
 fi
-# 1.4 stage 8 (added, the owner's read-only proof): madire.elf holds no
-# ext2 write-type symbol. Every symbol (global or local, nm) named ext2_*
-# whose name contains write, alloc, free, trunc, unlink, mkdir, rmdir,
-# rename, create, move, sync, flush, dirty, bitmap, set_ or put_ must be one
-# of the VFS adapter's four refusing ops (ext2_vn_create, ext2_vn_move,
-# ext2_vn_write, ext2_vn_truncate_step, with any compiler suffix such as
-# .isra.0), and each of those present must call nothing, jump only within
-# itself and store nothing to memory (it can only return a value; the unit
-# suite ext2_vfs proves that value is EROFS, or EISDIR for a folder).
-E2_WPAT='^ext2_[A-Za-z0-9_.]*(write|alloc|free|trunc|unlink|mkdir|rmdir|rename|create|move|sync|flush|dirty|bitmap|set_|put_)'
-E2_WOK='^ext2_vn_(create|move|write|truncate_step)(\.[a-z]+\.[0-9]+)?$'
-E2_WSYMS=$(nm "$OUT/madire.elf" 2>/dev/null | awk '{ print $NF }' | grep -E "$E2_WPAT")
-E2_WBAD=$(grep -vE "$E2_WOK" <<< "$E2_WSYMS" | grep .)
-E2_WDIS=$OUT/ext2-refusing-ops.txt
-objdump -d --no-show-raw-insn "$OUT/madire.elf" 2>/dev/null |
-    awk '/^[0-9a-f]+ <[^>]*>:$/ { fn = substr($2, 2, length($2) - 3); on = fn ~ /^ext2_vn_(create|move|write|truncate_step)/ }
-         on { print fn "\t" $0 }' > "$E2_WDIS"
-E2_WSTUB=$(awk -F'\t' '{ fn = $1; n[fn]++; i = $NF; sub(/[ \t]*#.*$/, "", i) }
-         i ~ /^call/ { c[fn] = 1 }
-         i ~ /^j[a-z]+[ \t]/ && i ~ /</ && i !~ ("<" fn "(\\+0x[0-9a-f]+)?>") { c[fn] = 1 }
-         i ~ /^(mov|add|sub|and|or|xor|inc|dec|neg|not|stos|xchg|cmpxchg|set[a-z]+)[a-z]*[ \t]/ && i ~ /\(%/ &&
-             (i ~ /,[^,]*\(%[a-z0-9]+\)$/ || i ~ /^(inc|dec|neg|not|set[a-z]+)[a-z]*[ \t]+[^,]*\(%/) { c[fn] = 1 }
-         END { for (f in n) printf "%s:%s ", f, c[f] ? "NOT-ONLY-EROFS" : "returns-only" }' "$E2_WDIS")
-echo "      ext2 write-type symbols in madire.elf: $(tr '\n' ' ' <<< "${E2_WSYMS:-none}"); outside the refusing ops: ${E2_WBAD:-none}; the refusing ops: ${E2_WSTUB:-none present}"
-if [ -s "$OUT/madire.elf" ] && [ -z "$E2_WBAD" ] && ! grep -q 'NOT-ONLY-EROFS' <<< "$E2_WSTUB"; then
-    pass "[1.4] ext2 read only (madire.elf): no ext2_ symbol of a write-type name (write, alloc, free, trunc, unlink, mkdir, rmdir, rename, create, move, sync, flush, dirty, bitmap, set_, put_) but the adapter's refusing ops, and each of those calls nothing, jumps only within itself and stores nothing (the unit suite proves they return EROFS)"
+# 1.4 stage 8 (added, the owner's read-only proof): madire.elf held no
+# ext2 write-type symbol but the adapter's refusing ops. 1.4 stage 10
+# (changed, the owner's GUARDED-WRITE proof, now that ext2 writes): in
+# madire.elf, every reference (call or jump) to each function on the way
+# to a disk write comes only from the function one level up, so the ONLY
+# path from the filesystem to the disk is ext2_d_write / ext2_d_flush (the
+# block layer's write-back calls, ext2_disk.c) -> blk_write / blk_flush
+# (blk.c) -> ahci_disk_write / ahci_disk_flush (ahci.c) -> ahci_write /
+# ahci_flush (ahci_core.c, into the guarded builder, source check above);
+# besides it only test=diskwrite's refused-disk attempt (ahci_write_attempt,
+# from disktest.c's dt_refused or the function it was inlined into) may
+# reach the driver's calls, and it must be refused (its boots below). Each
+# function on the path must be in madire.elf.
+E2_WDIS=$OUT/ext2-write-path.txt
+E2_WALL=$OUT/ext2-write-path-objdump.txt
+objdump -d --no-show-raw-insn "$OUT/madire.elf" 2>/dev/null | tee "$E2_WALL" |
+    awk '/^[0-9a-f]+ <[^>]*>:$/ { fn = substr($2, 2, length($2) - 3); sub(/\.[a-z]+\.[0-9]+$/, "", fn); next }
+         /(call|jmp)[a-z]*[ \t]+[0-9a-f]+ <[^>+]+>/ { t = $0; sub(/^.*</, "", t); sub(/>.*$/, "", t);
+             sub(/\.[a-z]+\.[0-9]+$/, "", t); print t "\t" fn }' | LC_ALL=C sort -u > "$E2_WDIS"
+# e2_refs <target>: the functions that call or jump to it (other than itself).
+e2_refs() { awk -F'\t' -v t="$1" '$1 == t && $2 != t { print $2 }' "$E2_WDIS" | tr '\n' ' ' | sed 's/ *$//'; }
+E2_WBAD=""
+for e2_pair in "ahci_write:ahci_disk_write ahci_write_attempt" "ahci_flush:ahci_disk_flush ahci_write_attempt" \
+               "ahci_disk_write:blk_write ahci_write_attempt" "ahci_disk_flush:blk_flush ahci_write_attempt" \
+               "blk_write:ext2_d_write" "blk_flush:ext2_d_flush" "ahci_write_attempt:dt_refused disktest_write"; do
+    e2_t=${e2_pair%%:*}; e2_ok=" ${e2_pair#*:} "
+    e2_got=$(e2_refs "$e2_t")
+    echo "      references to $e2_t: ${e2_got:-none} (allowed: ${e2_pair#*:})"
+    [ -n "$e2_got" ] || E2_WBAD="$E2_WBAD $e2_t:unreferenced"
+    for e2_f in $e2_got; do
+        case "$e2_ok" in *" $e2_f "*) ;; *) E2_WBAD="$E2_WBAD $e2_t<-$e2_f" ;; esac
+    done
+done
+E2_WMISS=""
+for e2_f in ext2_d_write ext2_d_flush blk_write blk_flush ahci_disk_write ahci_disk_flush ahci_write ahci_flush; do
+    nm "$OUT/madire.elf" 2>/dev/null | awk '{ print $NF }' | grep -qE "^$e2_f(\.[a-z]+\.[0-9]+)?\$" || E2_WMISS="$E2_WMISS $e2_f"
+done
+# The owner's addition (indirect calls): no function on the write path has
+# its address taken anywhere in madire.elf, in code (any instruction but a
+# call or a jump that names it, or holds its address as an immediate) or in
+# data (its 8-byte address stored in a non-code section, tests/elf_refs.py),
+# with ONE exception, required and safe: ext2_d_write and ext2_d_flush are
+# stored once each in ext2_d_sv_ops, the block layer's write-back calls
+# (const, in .rodata), which ext2_disk.c hands only to blk_sv_init; the
+# write-back part calls them only from its save (blk_sv_save_step) and the
+# write core's error-state write, which are the level above in the path.
+E2_WFNS="ahci_write ahci_flush ahci_disk_write ahci_disk_flush blk_write blk_flush ext2_d_write ext2_d_flush ahci_write_attempt"
+E2_ACODE=""
+for e2_f in $E2_WFNS; do
+    e2_a=$(nm "$OUT/madire.elf" 2>/dev/null | awk -v f="$e2_f" '{ n = $NF; sub(/\.[a-z]+\.[0-9]+$/, "", n) }
+           n == f && ($2 == "t" || $2 == "T") { a = $1; sub(/^0+/, "", a); print a; exit }')
+    e2_r=$(grep -E "<$e2_f(\.[a-z]+\.[0-9]+)?>|\\\$0x0*${e2_a:-NONE}([^0-9a-f]|\$)" "$E2_WALL" |
+           grep -vE '>:$' | grep -vE ':[[:space:]]+(call|j[a-z]+)[a-z]*[[:space:]]' | grep -c .)
+    [ "$e2_r" -eq 0 ] || E2_ACODE="$E2_ACODE $e2_f:$e2_r"
+done
+E2_ADATA=$(python3 -I -B "$(dirname "$0")/elf_refs.py" "$OUT/madire.elf" $E2_WFNS 2>&1)
+sed 's/^/      address stored: /' <<< "$E2_ADATA"
+E2_ABAD=$(grep -E '^(DATA|MISSING|NOT-ELF64)' <<< "$E2_ADATA" |
+          grep -vxE 'DATA ext2_d_(write|flush) \.rodata\+0x[0-9a-f]+ in ext2_d_sv_ops' | tr '\n' ';')
+E2_AOK=$(grep -cxE 'DATA ext2_d_(write|flush) \.rodata\+0x[0-9a-f]+ in ext2_d_sv_ops' <<< "$E2_ADATA")
+echo "      address taken in code: ${E2_ACODE:-none}; stored in data outside ext2_d_sv_ops: ${E2_ABAD:-none} (in ext2_d_sv_ops: $E2_AOK of 2)"
+if [ -s "$OUT/madire.elf" ] && [ -s "$E2_WDIS" ] && [ -z "$E2_WBAD" ] && [ -z "$E2_WMISS" ] && [ -z "$E2_ACODE" ] &&
+   [ -z "$E2_ABAD" ] && [ "$E2_AOK" -eq 2 ] && grep -qxF "FUNCS 9 of 9" <<< "$E2_ADATA"; then
+    pass "[1.4] ext2 guarded writes (madire.elf): the only path from the filesystem to a disk write is ext2_d_write/ext2_d_flush -> blk_write/blk_flush -> ahci_disk_write/ahci_disk_flush -> ahci_write/ahci_flush (into the guarded builder); every call or jump to each comes only from the level above (and test=diskwrite's refused-disk attempt to the driver's calls); no address of a path function is taken in code, and in data only ext2_d_write's and ext2_d_flush's, once each, in the block layer's const ext2_d_sv_ops"
 else
-    fail "[1.4] ext2 read only (madire.elf): a write-type ext2_ symbol (${E2_WBAD:-none}) or a refusing op that does more than return EROFS (${E2_WSTUB:-?})"
+    fail "[1.4] ext2 guarded writes (madire.elf): a function on the write path is referenced from elsewhere or not referenced (${E2_WBAD:-none}), missing from madire.elf (${E2_WMISS:-none}), or its address is taken (code: ${E2_ACODE:-none}; data: ${E2_ABAD:-none}; in ext2_d_sv_ops $E2_AOK of 2)"
 fi
 
 # The images. e2_mkimg <name> <tree kind> <KiB> <block size> <inode size>
@@ -2157,6 +2280,7 @@ for e8_spec in "notext2 $((E8_SB + 56)) 2 0x0" "incompat $((E8_SB + 96)) 4 0x10 
     "${E2_PY[@]}" set "$GD_W/mbr.img" "$E8_W/$e8_x.img" "$e8_off" "$e8_len" "$e8_val" $e8_how | sed 's/^/      /' || E8_OK=0
     [ -s "$E8_W/$e8_x.img" ] || E8_OK=0
 done
+cp "$E8_W/dirty.img" "$E8_W/dirty-before.img"     # 1.4 stage 10: for its bounded diff
 for e8_x in notext2 incompat rocompat error dirty compat; do
     e8_boot "$e8_x" "$E8_W/$e8_x.img"
 done
@@ -2229,31 +2353,51 @@ if e8_ro error "ext2: the error bit is set (state 0x3): mounted read-only (C7)" 
 else
     fail "[1.4] ext2 at /home, the error bit: not mounted read-only with its line (see serial-ext2-error.log)"
 fi
-if e8_ro dirty "ext2: warning: the volume was not cleanly unmounted (state 0x0); mounted read-only in stage 8 (the recount of free blocks and inodes from the bitmaps comes with read-write in stage 10, D12)" "0x0 \(not clean, error bit not set\)" "not cleanly unmounted"; then
-    pass "[1.4] ext2 at /home, not cleanly unmounted (state 0x0): mounted read-only with the D12 warning line (the recount comes with read-write in stage 10)"
+# 1.4 stage 10 (changed): not clean (no error bit) is now mounted
+# READ-WRITE after D12's recount, with the warning line naming the recount
+# and its results, the read-write mount line (save 0) and the fourth mount:
+# line (the store of changes); 'Disk mode'. (Stage 8 checked the read-only
+# mount that stage had, with the warning that the recount would come.)
+# e8_rw <name> <state regex>: the volume's line, the mount's four lines
+# (read-write, save 0 with at least one write and one flush, the lock hold,
+# the limits, the store: automatic save on), 'Disk mode', no disk error.
+E8_RWTAIL="; ext2 'madire-test' mounted read-write on /home (Disk mode)"
+e8_rw() {
+    local log=$1
+    [ "$E8_OK" -eq 1 ] && [ -f "$log" ] && [ "$(grep -c '^mount: ' "$log")" -eq 4 ] && e8_fsline "$log" "$2" &&
+        [ "$(grep -cE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; the RAM folder /home is under it, / and /tmp stay in memory; [0-9]+ disk reads, 0 failed; save 0 \(the volume marked not clean on the disk\): [1-9][0-9]* writes, [1-9][0-9]* flushes$" "$log")" -eq 1 ] &&
+        [ "$(grep -cE '^mount: changes are kept in memory \(([0-9]+) KiB, \1 chunks of 1 KiB\) until a save writes them, at most 8 disk commands per hold of the VFS lock; automatic save every 5 s: on$' "$log")" -eq 1 ] &&
+        [ "$(grep '^Storage: ' "$log" | grep -cF ", writes would be ALLOWED on partition 1$E8_RWTAIL")" -eq 1 ] &&
+        [ "$(grep -c '^Storage: ' "$log")" -eq 1 ] && ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log"
+}
+if [ "$(grep -c '^ext2: ' "$E8_L-dirty.log")" -eq 2 ] && e8_rw "$E8_L-dirty.log" "0x0 \(not clean, error bit not set\)" &&
+   [ "$(grep -cE '^ext2: warning: the volume was not cleanly unmounted \(state 0x0\); the free blocks, free inodes and folders of every group recounted from the bitmaps and inode tables \(D12\): [0-9]+ blocks free, [0-9]+ inodes free; mounted read-write$' "$E8_L-dirty.log")" -eq 1 ]; then
+    pass "[1.4] ext2 at /home, not cleanly unmounted (state 0x0): the free blocks, inodes and folders recounted from the bitmaps (D12), the warning line naming the recount; mounted read-write (save 0), 'Disk mode'"
 else
-    fail "[1.4] ext2 at /home, not clean: not mounted read-only with the D12 warning (see serial-ext2-dirty.log)"
+    fail "[1.4] ext2 at /home, not clean: not recounted and mounted read-write with the D12 warning (see serial-ext2-dirty.log)"
 fi
-# (10) An unknown COMPAT flag (0x1000): reading allowed, logged.
-if e8_ro compat "ext2: unknown COMPAT flags 0x1000: reading allowed (logged; the rule for writes comes in stage 10)" "0x1 \(clean, error bit not set\)" "stage 8 has no write path"; then
-    pass "[1.4] ext2 at /home, an unknown COMPAT flag (0x1000): mounted (reading allowed), the flag logged; read-only as every stage 8 mount"
+# (10) An unknown COMPAT flag (0x1000). 1.4 stage 10 (changed): reading
+# allowed, writing not (the owner's rule for writes, which stage 8 named as
+# coming): mounted READ-ONLY with its line; still read exactly as before.
+if e8_ro compat "ext2: unknown COMPAT flags 0x1000: mounted read-only (reading allowed; writing needs every COMPAT flag known)" "0x1 \(clean, error bit not set\)" "an unknown COMPAT flag"; then
+    pass "[1.4] ext2 at /home, an unknown COMPAT flag (0x1000): mounted read-only (reading allowed, writing needs every COMPAT flag known), its line logged; 'Disk mode, read-only'"
 else
-    fail "[1.4] ext2 at /home, an unknown COMPAT flag: not mounted with its line (see serial-ext2-compat.log)"
+    fail "[1.4] ext2 at /home, an unknown COMPAT flag: not mounted read-only with its line (see serial-ext2-compat.log)"
 fi
-# (11) The marked, supported, clean disk (stage 5's MBR and GPT boots):
-# mounted read-only on /home, no warning line.
+# (11) The marked, supported, clean disk (stage 5's MBR and GPT boots).
+# 1.4 stage 10 (changed): mounted READ-WRITE on /home (save 0), no warning
+# line, the fourth mount: line; 'Disk mode' (stage 8: read-only, 'stage 8
+# has no write path').
 E8_BAD=""
 for n in mbr gpt; do
     log=$OUT/serial-guard-$n.log
-    [ "$(grep -c '^ext2: ' "$log")" -eq 1 ] && [ "$(grep -c '^mount: ' "$log")" -eq 3 ] &&
-        e8_fsline "$log" "0x1 \(clean, error bit not set\)" && e8_mounted "$log" "stage 8 has no write path" &&
+    [ "$(grep -c '^ext2: ' "$log")" -eq 1 ] && e8_rw "$log" "0x1 \(clean, error bit not set\)" &&
         grep -qxF "mount: file-size limits from each filesystem's ops table: / 2097152 bytes, /home 4294967295 bytes" "$log" &&
-        grep -qE '^mount: the mount held the VFS lock [0-9]+ us \([0-9]+ ticks\) \(report only; TSC [0-9]+ cycles per tick\)$' "$log" &&
-        [ "$(grep '^Storage: ' "$log" | grep -cF ", writes would be ALLOWED on partition 1$E8_RO")" -eq 1 ] ||
+        grep -qE '^mount: the mount held the VFS lock [0-9]+ us \([0-9]+ ticks\) \(report only; TSC [0-9]+ cycles per tick\)$' "$log" ||
         E8_BAD="$E8_BAD $n"
 done
 if [ -z "$E8_BAD" ]; then
-    pass "[1.4] ext2 at /home, the marked clean disk (MBR and GPT): its volume's line, mounted read-only on /home as filesystem 1 with no warning ('stage 8 has no write path'), 'Disk mode, read-only'"
+    pass "[1.4] ext2 at /home, the marked clean disk (MBR and GPT): its volume's line, mounted read-write on /home as filesystem 1 with no warning (save 0 written: at least one write and one flush), the store of changes and the automatic save named, 'Disk mode'"
 else
     fail "[1.4] ext2 at /home, the marked clean disk: not mounted as expected:$E8_BAD"
 fi
@@ -2262,7 +2406,12 @@ e8_hash notext2 "the partition without the ext2 magic"
 e8_hash incompat "the unknown INCOMPAT flag"
 e8_hash rocompat "the unknown RO_COMPAT flag"
 e8_hash error "the error bit"
-e8_hash dirty "the volume not cleanly unmounted"
+# 1.4 stage 10 (changed): the not-clean volume is mounted read-write, so its
+# check is the owner's bounded diff (gd_bounded, stage 5's section): only
+# the superblock and the group descriptors' block after it (the D12
+# recount) may change; e2fsck -fn reports nothing.
+cp "$E8_W/dirty.img" "$GD_W/e8dirty-after.img"
+gd_bounded e8dirty "ext2 at /home, the volume not cleanly unmounted" "$E8_W/dirty-before.img" "$GD_S" 1024
 e8_hash compat "the unknown COMPAT flag"
 # (18) Their line order and health.
 E8_BAD=""
@@ -2307,7 +2456,12 @@ e8_session() {
     sed "s/^/      mke2fs ($1): /" "$E8_W/$1-mkfs.txt"
     E8_SHA0[$1]=$(sha256sum < "$img" | cut -d' ' -f1)
     T0S=$(date +%s%N)
+    # 1.4 stage 10 (changed, the owner's decision): the read sessions boot
+    # with test=diskro, which mounts the marked disk read-only as stage 8
+    # did (a clean marked disk is read-write since stage 10), so every check
+    # below keeps its meaning (writes refused, the image unchanged).
     boot_text "$log" 150 "System ready." "$E8_KEYS" 0.05 $'\nend-of-ext2-session\n' -m 128M -kernel "$KERNEL" \
+        -append "test=diskro" \
         -drive file="$img",if=none,id=e8s-disk,format=raw -device ich9-ahci,id=e8s-ahci,addr=0x5 \
         -device ide-hd,drive=e8s-disk,bus=e8s-ahci.0
     boot_seconds "$log" "$T0S"
@@ -2323,10 +2477,10 @@ e8_results() {
     local name=$1 log=$OUT/serial-ext2-$1.log res=$E8_W/$1-session.txt c
     if [ "$E8_OK" -eq 1 ] && grep -qE '^Storage: AHCI 00:05\.0, port 0 disk QEMU HARDDISK [0-9]+ MiB, MBR, 1 partition, ' "$log" &&
        [ "$(grep '^Storage: ' "$log" | grep -cF ", writes would be ALLOWED on partition 1$E8_RO")" -eq 1 ] &&
-       e8_mounted "$log" "stage 8 has no write path" && grep -qxF "$PCI_READY" "$log" && ! grep -qE 'PANIC|FAILED' "$log" &&
+       e8_mounted "$log" "test=diskro" && grep -qxF "$PCI_READY" "$log" && ! grep -qE 'PANIC|FAILED' "$log" &&
        ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log" && grep -qE '^ext2: port 0 partition 1: revision 1, '"$3"'-byte blocks' "$log" &&
        [ "$(grep -cE '^console: cat: from the disk \(report only\): longest VFS lock hold [0-9]+ us ' "$log")" -eq 3 ]; then
-        pass "[1.4] ext2 read session, $2: the marked disk mounted read-only on /home at boot ('Disk mode, read-only'), System ready, the session typed, no disk error, no PANIC or FAILED line"
+        pass "[1.4] ext2 read session, $2: the marked disk mounted read-only on /home at boot by test=diskro ('Disk mode, read-only'), System ready, the session typed, no disk error, no PANIC or FAILED line"
     else
         fail "[1.4] ext2 read session, $2: not mounted as expected, or the boot or the session failed (see serial-ext2-$1.log)"
     fi
@@ -2424,11 +2578,17 @@ E9_INELF=$(grep -xFf <(echo "$E9_MINE") <<< "$E9_ELFSYMS" | tr '\n' ' ' | sed 's
 E9_PREFIX=$(grep -cE '^(ext2_w_|ext2_write_|blk_sv_)' <<< "$E9_ELFSYMS")
 E9_SELF=$("$E9_TOOL" -t 2>&1)
 echo "      ext2_write.o text $(size "$E9_OBJW" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes, blk_core_save.o text $(size "$E9_OBJS" 2>/dev/null | awk 'NR == 2 { print $1 }') bytes (report only); $(grep -c . <<< "$E9_MINE") symbols; undefined outside the cores: ${E9_UNDEF:-none}; SSE/x87: $E9_SSE; in madire.elf: ${E9_INELF:-none} (prefixed: $E9_PREFIX); $E9_SELF"
-if [ -s "$E9_OBJW" ] && [ -s "$E9_OBJS" ] && [ -z "$E9_UNDEF" ] && [ "$E9_SSE" -eq 0 ] && [ -z "$E9_INELF" ] &&
-   [ "$E9_PREFIX" -eq 0 ] && [ "$(grep -c . <<< "$E9_MINE")" -ge 40 ] && [ "$E9_SELF" = "SHA256_SELFTEST ok" ]; then
-    pass "[1.4] ext2 write core: kernel/fs/ext2_write.c and kernel/storage/blk_core_save.c compiled with the kernel's flags need no symbol but the read core's and each other's, use no SSE/x87 register, and madire.elf holds none of their symbols (not linked, stage 9); tests/ext2write.c is built from them (SHA-256 self-test ok)"
+# 1.4 stage 10 (changed): the two files are linked into the kernel now, so
+# madire.elf must hold their public calls the kernel uses (ext2_write_mount,
+# ext2_write_save_step, ext2_write_create, ext2_write_pwrite, blk_sv_init,
+# blk_sv_put, blk_sv_save_step), where stage 9 checked it held none; the
+# objects' own checks (no other symbol, no SSE/x87, the tool) are unchanged.
+E9_LINKED=$(grep -cxE 'ext2_write_(mount|save_step|create|pwrite)|blk_sv_(init|put|save_step)' <<< "$E9_ELFSYMS")
+if [ -s "$E9_OBJW" ] && [ -s "$E9_OBJS" ] && [ -z "$E9_UNDEF" ] && [ "$E9_SSE" -eq 0 ] && [ "$E9_LINKED" -eq 7 ] &&
+   [ "$(grep -c . <<< "$E9_MINE")" -ge 40 ] && [ "$E9_SELF" = "SHA256_SELFTEST ok" ]; then
+    pass "[1.4] ext2 write core: kernel/fs/ext2_write.c and kernel/storage/blk_core_save.c compiled with the kernel's flags need no symbol but the read core's and each other's, use no SSE/x87 register, and madire.elf holds their seven public calls the kernel uses (linked, stage 10); tests/ext2write.c is built from them (SHA-256 self-test ok)"
 else
-    fail "[1.4] ext2 write core: an object is missing, needs other symbols (${E9_UNDEF:-none}), uses SSE/x87 ($E9_SSE), is in madire.elf (${E9_INELF:-none}; prefixed $E9_PREFIX), or the tool's self-test failed ($E9_SELF)"
+    fail "[1.4] ext2 write core: an object is missing, needs other symbols (${E9_UNDEF:-none}), uses SSE/x87 ($E9_SSE), madire.elf lacks their public calls ($E9_LINKED of 7; in madire.elf: ${E9_INELF:-none}), or the tool's self-test failed ($E9_SELF)"
 fi
 echo "      mke2fs fix (report only): the stage 2 image ext2-1k-128 is ${DISK_SA:-?} (stage 8's run 42226698091: 20516434eba0496fedb74c0980b03ec64b55b3d9aa13d77c185fcc5287e0a349)"
 
@@ -2653,3 +2813,267 @@ else
     fail "[1.4] host cut sweep under the sanitizers: build exit $E9_SANB, $E9_SANOK of 6 sequences clean (see $E9_W/sweep-*.txt)"
 fi
 echo "      [1.4] ext2 write core and cut sweep: $(( $(date +%s) - E9_T0 )) s (report only)"
+
+# ---- 1.4 stage 10: disk writes behind the guard, Disk mode read-write ----
+
+section "[1.4] Disk writes behind the guard: the guard's proof, test=diskwrite, the write session and persistence, blkdebug (stage 10)"
+# docs/plans/1.4.md, S10 (C4, C5 with R1-R4, D5, D8, D9, D12, D16, D19;
+# risks 24, 25, 26, 31, 32, 43). The write core and the save order are
+# linked; the AHCI driver's one command builder sends WRITE DMA EXT and
+# FLUSH CACHE EXT only as the guard allows (the source and ELF checks of
+# stages 4 and 8, changed). -kernel boots at -m 128M with one disk on
+# ich9-ahci (as stage 5's).
+# (1-6) The guard's proof (D5): each disk the guard REFUSED (stage 5's
+# unmarked, bad-CRC, wrong-label, start-mismatch and empty disks, and the
+# marked disk with a non-virtual model) booted with test=diskwrite, which
+# tries 3 writes and 3 flushes through the driver's own calls: all 6
+# refused by the command builder, none sent, the image's SHA-256 the same
+# before and after.
+# (7-9) test=diskwrite on a marked read-write disk (16 MiB, 1 KiB blocks):
+# 1 MiB written through the VFS, saved, read back; rewritten, truncated,
+# saved, read back; removed and saved (DONE); then the node test in the
+# same boot (1100 files in one folder, more than the 1024-node table: all
+# listed with eviction; every node held: getdents64's records call answers
+# ENOMEM; all removed and saved); after the boot e2fsck -fn reports nothing
+# and debugfs finds neither left. The write speed, FLUSH's cost, the
+# longest VFS lock hold of a write call and of a save piece and the longest
+# turn are report only (the owner's STOP rule: a hold during disk writes
+# above 2 ticks is reported before anything else).
+# (10-12) The write session (boot A, no test= option: the automatic save
+# on): a console session on a marked disk holding stage 8's tree: mkdir,
+# '>' and '>>', cp, cat '>>' (a 28 KiB file through the single indirect
+# block), mv in a folder and between folders, rm, rmdir, sync (twice: the
+# second has nothing to save), then a write and a removal after the last
+# sync, then reboot (it saves first: "Saving files... done."). After it
+# e2fsck -fn reports nothing and debugfs's tree equals the expected tree
+# (tests/ext2_tree.py; names, types, sizes, SHA-256s).
+# (13-15) Persistence (boot B, the SAME image): the volume is clean (the
+# save before Restart marked it), mounted read-write; ls -l and cat read
+# everything back exactly; after the boot e2fsck -fn reports nothing and
+# the tree is still the expected one.
+# (16-18) test=blkdebug (the driver's own error path, injected): the first
+# disk read of a file's data fails once ("cat: 'big.txt': I/O error.",
+# error 1 of 3, the port running again), the same cat then prints the file;
+# every disk write fails: sync fails (error 2), the error state's write
+# fails too (error 3: the disk marked failed), /home is read-only from then
+# on; no panic, the session ends.
+E10_T0=$(date +%s)
+E10_W=$OUT/disk-write
+rm -rf "$E10_W" && mkdir -p "$E10_W"
+E10_OK=$GD_OK
+E10_FSCK=$(disk_tool e2fsck)
+E10_TREE_PY=(python3 -I -B "$(dirname "$0")/ext2_tree.py")
+# e10_fsck <disk image> <tag>: its partition extracted; true when e2fsck -fn
+# exits 0 and prints only its frame lines (nothing to report).
+e10_fsck() {
+    local part=$E10_W/$2-part.img out rc extra
+    disk_image extract "$1" "$part" > /dev/null 2>&1 || { echo "      e2fsck ($2): no partition"; return 1; }
+    out=$(LC_ALL=C E2FSCK_CONFIG=/dev/null "$E10_FSCK" -fn "$part" 2>&1); rc=$?
+    extra=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$out")
+    sed "s/^/      e2fsck ($2, exit $rc): /" <<< "$out"
+    [ "$rc" -eq 0 ] && [ -z "$extra" ]
+}
+# e10_health <log>: System ready (or the session's own end), no PANIC or
+# FAILED line.
+e10_health() { [ -s "$1" ] && grep -q '^System ready\.' "$1" && ! grep -qE 'PANIC|FAILED' "$1"; }
+
+# (1-6) The guard's proof.
+for e10_spec in "nomarker:the unmarked disk" "badcrc:the bad marker CRC32" "label:the wrong label" \
+                "model:the non-virtual model" "start:the marker's start mismatch" "empty:the empty disk"; do
+    e10_n=${e10_spec%%:*}; e10_what=${e10_spec#*:}
+    case $e10_n in
+    empty) e10_src=$GD_W/empty.img ;;
+    model) e10_src=$GD_W/mbr.img ;;
+    *) e10_src=$GD_W/mbr-$e10_n.img ;;
+    esac
+    e10_img=$E10_W/guard-$e10_n.img
+    cp "$e10_src" "$e10_img" 2>/dev/null || E10_OK=0
+    e10_s0=$(sha256sum < "$e10_img" | cut -d' ' -f1)
+    e10_log=$OUT/serial-diskwrite-$e10_n.log
+    e10_model=""
+    [ "$e10_n" = model ] && e10_model=",model=MADIRE-REAL-DISK-TEST"
+    boot_until "$e10_log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" -append "test=diskwrite" \
+        -drive file="$e10_img",if=none,id=dwtest-disk,format=raw -device ich9-ahci,id=dwtest-ahci,addr=0x5 \
+        -device "ide-hd,drive=dwtest-disk,bus=dwtest-ahci.0$e10_model"
+    e10_s1=$(sha256sum < "$e10_img" | cut -d' ' -f1)
+    grep -E '^(Storage|diskwrite): ' "$e10_log" | sed "s/^/      $e10_n: /"
+    echo "      $e10_n: SHA-256 before $e10_s0, after $e10_s1"
+    if [ "$E10_OK" -eq 1 ] && [ -n "$e10_s0" ] && [ "$e10_s0" = "$e10_s1" ] &&
+       grep -qxF "diskwrite: the disk on port 0: the write guard REFUSED it; 3 WRITE DMA EXT (LBA 0, 2050, 4096) and 3 FLUSH CACHE EXT tried through the driver's calls: 3 and 3 refused; 0 writes and 0 flushes sent, 6 refused by the command builder" "$e10_log" &&
+       grep -qxF "diskwrite: DONE (every write and flush refused by the guard, nothing sent to the disk)" "$e10_log" &&
+       grep -qE '^Storage: .*, writes would be REFUSED: .*; read only, not mounted \(Live mode\)$' "$e10_log" &&
+       [ "$(grep -cE '^(ext2|mount): ' "$e10_log")" -eq 0 ] && e10_health "$e10_log"; then
+        pass "[1.4] write guard proof (D5), $e10_what: test=diskwrite tried 3 WRITE DMA EXT and 3 FLUSH CACHE EXT through the driver's calls; the command builder refused all 6 and sent none; nothing mounted; the image's SHA-256 is the same before and after ($e10_s0)"
+    else
+        fail "[1.4] write guard proof (D5), $e10_what: a write or a flush was not refused, the image changed ($e10_s0 -> ${e10_s1:-?}), or the boot was not healthy (see serial-diskwrite-$e10_n.log)"
+    fi
+done
+
+# (7-9) test=diskwrite on a marked read-write disk, and the node test.
+E10_DW=$E10_W/dw-disk.img
+disk_mkfs "$E10_W/dw-fs.img" 16384 1024 256 2048 "" > "$E10_W/dw-mkfs.txt" 2>&1 &&
+    disk_image mbr "$E10_W/dw-fs.img" "$E10_DW" || E10_OK=0
+E10_DWLOG=$OUT/serial-diskwrite-rw.log
+boot_until "$E10_DWLOG" 240 "$PCI_READY" -m 128M -kernel "$KERNEL" -append "test=diskwrite" \
+    -drive file="$E10_DW",if=none,id=dwrw-disk,format=raw -device ich9-ahci,id=dwrw-ahci,addr=0x5 \
+    -device ide-hd,drive=dwrw-disk,bus=dwrw-ahci.0
+grep -E '^(mount|diskwrite|disknodes|ext2): ' "$E10_DWLOG" | sed 's/^/      diskwrite: /'
+E10_CRC=$(sed -nE 's/^diskwrite: read back after the sync: CRC32 (0x[0-9a-f]{8}) \(expected (0x[0-9a-f]{8})\); after the rewrite, the truncate to 512 KiB and a sync: CRC32 (0x[0-9a-f]{8}) \(expected (0x[0-9a-f]{8})\)$/\1 \2 \3 \4/p' "$E10_DWLOG")
+read -r e10_c1 e10_w1 e10_c2 e10_w2 <<< "${E10_CRC:-x y z w}"
+if [ "$E10_OK" -eq 1 ] && [ "$e10_c1" = "$e10_w1" ] && [ "$e10_c2" = "$e10_w2" ] &&
+   grep -qxF "diskwrite: DONE (1 MiB written, saved, read back; rewritten, truncated, saved, read back; removed and saved)" "$E10_DWLOG" &&
+   grep -qE '^diskwrite: disk writes: [1-9][0-9]* commands, ' "$E10_DWLOG" &&
+   grep -qE '^diskwrite: the longest VFS lock hold: a write call [0-9]+ us \([0-9]+ ticks\), a save piece [0-9]+ us \([0-9]+ ticks\); ' "$E10_DWLOG" &&
+   grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; " "$E10_DWLOG" &&
+   grep -qE '^mount: changes are kept in memory .*; automatic save every 5 s: off \(a test= boot\)$' "$E10_DWLOG" &&
+   e10_health "$E10_DWLOG"; then
+    pass "[1.4] test=diskwrite on a read-write disk: 1 MiB written through the VFS, saved, read back (CRC32 $e10_c1); 64 KiB rewritten, truncated to 512 KiB, saved, read back (CRC32 $e10_c2); removed and saved; the automatic save off on this test= boot; no PANIC or FAILED line"
+else
+    fail "[1.4] test=diskwrite on a read-write disk: not DONE, a read-back CRC32 differs ($E10_CRC), a figure line is missing or the boot was not healthy (see serial-diskwrite-rw.log)"
+fi
+if grep -qE '^disknodes: 1100 files made in /home/nodes \([0-9]+ saves; [0-9]+ an operation needed\); listed 1100 entries \(end: the end\); the node table: ([0-9]|[1-9][0-9]{1,2}|10[01][0-9]|102[0-4]) nodes now \(at most 1024\), [1-9][0-9]* evicted$' "$E10_DWLOG" &&
+   grep -qE '^disknodes: the table full: [0-9]+ nodes held, the listing ended with ENOMEM; getdents64.s records call from there answered -12 \(ENOMEM\)$' "$E10_DWLOG" &&
+   grep -qxF "disknodes: the holds given back: 1100 entries listed again (end: the end)" "$E10_DWLOG" &&
+   grep -qxF "disknodes: 1100 files and the folder removed (rmdir ok); saved: yes" "$E10_DWLOG" &&
+   grep -qxF "disknodes: DONE (more files than the node table holds, listed with eviction; ENOMEM when every node is in use)" "$E10_DWLOG"; then
+    pass "[1.4] node eviction (risk 43): 1100 files in one folder of /home, more than the 1024-node table, all listed with nodes evicted (the table at most 1024); with every node held, getdents64's records call answers ENOMEM; the holds given back, all 1100 listed again; all removed and saved"
+else
+    fail "[1.4] node eviction: the 1100 files were not all listed with eviction, the full table did not answer ENOMEM, or the files were not removed (see the disknodes: lines in serial-diskwrite-rw.log)"
+fi
+E10_DWLS=$(disk_image extract "$E10_DW" "$E10_W/dw-part.img" > /dev/null 2>&1 &&
+           LC_ALL=C "$(disk_tool debugfs)" -R "ls -l /" "$E10_W/dw-part.img" 2>/dev/null | grep -cE ' (diskwrite\.bin|nodes)$')
+if e10_fsck "$E10_DW" diskwrite && [ "${E10_DWLS:-1}" -eq 0 ]; then
+    pass "[1.4] test=diskwrite on a read-write disk: after the boot e2fsck -fn reports nothing on the partition, and debugfs finds neither /diskwrite.bin nor /nodes (every block and inode given back through R3)"
+else
+    fail "[1.4] test=diskwrite on a read-write disk: e2fsck -fn reported something after the boot, or something was left (${E10_DWLS:-?} names; see the e2fsck lines above)"
+fi
+echo "      [1.4] (report only) $(grep -E '^diskwrite: (wrote|disk writes|the longest)' "$E10_DWLOG" | sed 's/^diskwrite: //' | tr '\n' ';')"
+
+# (10-12) The write session (boot A) and (13-15) persistence (boot B).
+E10_SS=$E10_W/session-disk.img
+disk_mkfs "$E10_W/session-fs.img" 16384 1024 256 1024 "$E8_TREE" > "$E10_W/session-mkfs.txt" 2>&1 &&
+    disk_image mbr "$E10_W/session-fs.img" "$E10_SS" || E10_OK=0
+E10_EXP=$E10_W/expected
+rm -rf "$E10_EXP" && cp -a "$E8_TREE" "$E10_EXP" && (
+    cd "$E10_EXP" && mkdir -p work/sub &&
+    printf 'first line\nsecond line\n' > work/one.txt && cat big.txt big.txt > work/big2.txt &&
+    printf 'inner\n' > work/sub/inner.txt && mv notes.txt work/notes-moved.txt && mv z-last.txt last.txt &&
+    rm m-middle.txt && rmdir empty && printf 'after sync\n' > work/late.txt && rm docs/b.txt
+) || E10_OK=0
+E10_KA="x{wait:1}mkdir work{ret}echo first line > work/one.txt{ret}{wait:1}echo second line >> work/one.txt{ret}{wait:1}"
+E10_KA+="cp -y big.txt work/big2.txt{ret}{wait:2}cat big.txt >> work/big2.txt{ret}{wait:3}mkdir work/sub{ret}"
+E10_KA+="echo inner > work/sub/inner.txt{ret}{wait:1}mv -y notes.txt work/notes-moved.txt{ret}{wait:1}"
+E10_KA+="mv -y z-last.txt last.txt{ret}{wait:1}rm -y m-middle.txt{ret}{wait:1}rmdir empty{ret}mkdir gone{ret}rmdir gone{ret}"
+E10_KA+="sync{ret}{wait:2}sync{ret}{wait:1}echo after sync > work/late.txt{ret}{wait:1}rm -y docs/b.txt{ret}{wait:1}"
+E10_KA+="reboot{ret}{wait:1}yes{ret}"
+E10_LA=$OUT/serial-diskwrite-session.log
+T0S=$(date +%s%N)
+boot_text "$E10_LA" 180 "System ready." "$E10_KA" 0.05 $'\nRestarting...\n' -m 128M -kernel "$KERNEL" \
+    -drive file="$E10_SS",if=none,id=e10a-disk,format=raw -device ich9-ahci,id=e10a-ahci,addr=0x5 \
+    -device ide-hd,drive=e10a-disk,bus=e10a-ahci.0
+boot_seconds "$E10_LA" "$T0S"
+grep -E '^(mount|ext2|sync|Saving files|Restarting)|^(console: restart)' "$E10_LA" | sed 's/^/      session: /'
+# The two syncs: the first saves what the automatic save has not saved yet
+# (it may have saved everything: "nothing to save" then), the second has
+# nothing left to save.
+E10_SYNC1=$(grep -cE '^sync: [1-9][0-9]* blocks? saved\.$' "$E10_LA")
+E10_SYNC0=$(grep -cxF "sync: nothing to save." "$E10_LA")
+if [ "$E10_OK" -eq 1 ] && e10_health "$E10_LA" &&
+   grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; " "$E10_LA" &&
+   grep -qE '^mount: changes are kept in memory .*; automatic save every 5 s: on$' "$E10_LA" &&
+   [ $((E10_SYNC1 + E10_SYNC0)) -eq 2 ] && [ "$E10_SYNC0" -ge 1 ] &&
+   grep -qE "^madire> sync$" "$E10_LA" &&
+   grep -qxF "Saving files... done." "$E10_LA" && grep -qxF "Restarting..." "$E10_LA" &&
+   grep -qE '^ext2: save before restart: done in [0-9]+ ms \([0-9]+ saves, [0-9]+ writes; 0 open files with no name left forgotten first\); the volume marked clean$' "$E10_LA" &&
+   ! grep -qE ': (the filesystem is read-only|I/O error|no room|already exists|no such file or folder)\.$' "$E10_LA" &&
+   ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$E10_LA"; then
+    pass "[1.4] write session on a marked disk (read-write, the automatic save on): mkdir, '>' and '>>', cp, cat '>>' through the single indirect block, mv in a folder and between folders, rm, rmdir; sync ($E10_SYNC1 with blocks to save), a second sync had nothing to save; reboot saved first ('Saving files... done.', the volume marked clean) and restarted; no error line"
+else
+    fail "[1.4] write session on a marked disk: not mounted read-write, a command failed, a sync line is missing, or reboot did not save first (see serial-diskwrite-session.log)"
+fi
+cp "$E10_SS" "$E10_W/session-after-a.img"
+if e10_fsck "$E10_SS" session-a; then
+    pass "[1.4] write session: after boot A (the last changes saved by reboot only) e2fsck -fn reports nothing on the partition"
+else
+    fail "[1.4] write session: e2fsck -fn reported something after boot A (see the e2fsck lines above)"
+fi
+"${E10_TREE_PY[@]}" compare "$E10_W/session-a-part.img" "$E10_EXP" > "$E10_W/tree-a.txt" 2>&1
+grep -vE '^  want ' "$E10_W/tree-a.txt" | sed 's/^/      tree (A): /'
+if [ "$E10_OK" -eq 1 ] && grep -qE '^TREE ok [0-9]+ paths$' "$E10_W/tree-a.txt"; then
+    pass "[1.4] write session: debugfs's tree after boot A equals the expected tree ($(sed -nE 's/^TREE ok ([0-9]+) paths$/\1/p' "$E10_W/tree-a.txt") paths: every name, type, size and SHA-256; the changes after the last sync included, saved by reboot)"
+else
+    fail "[1.4] write session: debugfs's tree after boot A differs from the expected tree (see $E10_W/tree-a.txt)"
+fi
+E10_KB="x{wait:1}ls -l{ret}ls -l work{ret}ls -l work/sub{ret}ls -l docs{ret}cat work/one.txt{ret}{wait:1}"
+E10_KB+="cat work/sub/inner.txt{ret}{wait:1}cat work/notes-moved.txt{ret}{wait:2}cat work/late.txt{ret}{wait:1}"
+E10_KB+="cat last.txt{ret}{wait:1}cat work/big2.txt{ret}{wait:6}echo end-of-persistence{ret}"
+E10_LB=$OUT/serial-diskwrite-persist.log
+T0S=$(date +%s%N)
+boot_text "$E10_LB" 180 "System ready." "$E10_KB" 0.05 $'\nend-of-persistence\n' -m 128M -kernel "$KERNEL" \
+    -drive file="$E10_SS",if=none,id=e10b-disk,format=raw -device ich9-ahci,id=e10b-ahci,addr=0x5 \
+    -device ide-hd,drive=e10b-disk,bus=e10b-ahci.0
+boot_seconds "$E10_LB" "$T0S"
+grep -E '^(ext2|mount): ' "$E10_LB" | sed 's/^/      persist: /'
+if [ "$E10_OK" -eq 1 ] && e10_health "$E10_LB" &&
+   grep -qE "^ext2: port 0 partition 1: revision 1, 1024-byte blocks, [0-9]+ blocks \([0-9]+ free\), [0-9]+ inodes \([0-9]+ free\), [0-9]+ groups, 256-byte inodes, label 'madire-test'; features .*; state 0x1 \(clean, error bit not set\)$" "$E10_LB" &&
+   [ "$(grep -c '^ext2: ' "$E10_LB")" -eq 1 ] &&
+   grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; " "$E10_LB" &&
+   ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$E10_LB"; then
+    pass "[1.4] persistence: the second boot on the same image finds the volume clean (state 0x1: the save before Restart marked it), no recount and no warning, and mounts it read-write"
+else
+    fail "[1.4] persistence: the second boot did not find the volume clean or did not mount it read-write (see serial-diskwrite-persist.log)"
+fi
+"${E10_TREE_PY[@]}" session "$E10_LB" "$E10_EXP" > "$E10_W/session-b.txt" 2>&1
+sed 's/^/      persist: /' "$E10_W/session-b.txt"
+if [ "$E10_OK" -eq 1 ] && grep -qxF "SESSION ok 10 commands" "$E10_W/session-b.txt"; then
+    pass "[1.4] persistence: in the second boot ls -l of /home, work, work/sub and docs lists the expected entries, and cat prints six files exactly (the 28 KiB one through the single indirect block, and the one written after the last sync): everything reads back"
+else
+    fail "[1.4] persistence: the second boot did not read everything back exactly (see $E10_W/session-b.txt)"
+fi
+if e10_fsck "$E10_SS" session-b && "${E10_TREE_PY[@]}" compare "$E10_W/session-b-part.img" "$E10_EXP" > "$E10_W/tree-b.txt" 2>&1 &&
+   grep -qE '^TREE ok [0-9]+ paths$' "$E10_W/tree-b.txt"; then
+    pass "[1.4] persistence: after the second boot e2fsck -fn reports nothing and debugfs's tree is still the expected one"
+else
+    fail "[1.4] persistence: after the second boot e2fsck -fn reported something or the tree changed (see $E10_W/tree-b.txt)"
+fi
+
+# (16-18) test=blkdebug.
+E10_BD=$E10_W/blkdebug-disk.img
+disk_mkfs "$E10_W/blkdebug-fs.img" 8192 1024 128 256 "$E8_TREE" > "$E10_W/blkdebug-mkfs.txt" 2>&1 &&
+    disk_image mbr "$E10_W/blkdebug-fs.img" "$E10_BD" || E10_OK=0
+E10_KD="x{wait:1}cat big.txt{ret}{wait:3}cat big.txt{ret}{wait:4}echo hi > new.txt{ret}{wait:1}sync{ret}{wait:2}"
+E10_KD+="echo x > n2.txt{ret}{wait:1}cat docs/a.txt{ret}{wait:1}echo end-of-blkdebug{ret}"
+E10_LD=$OUT/serial-blkdebug.log
+T0S=$(date +%s%N)
+boot_text "$E10_LD" 150 "System ready." "$E10_KD" 0.05 $'\nend-of-blkdebug\n' -m 128M -kernel "$KERNEL" \
+    -append "test=blkdebug" \
+    -drive file="$E10_BD",if=none,id=e10d-disk,format=raw -device ich9-ahci,id=e10d-ahci,addr=0x5 \
+    -device ide-hd,drive=e10d-disk,bus=e10d-ahci.0
+boot_seconds "$E10_LD" "$T0S"
+grep -E '^(ahci: port 0: (READ|WRITE)|blk: test=|ext2: sync|sync: |cat: |Output to )' "$E10_LD" | sed 's/^/      blkdebug: /'
+E10_BIG=$(stat -c%s "$E8_TREE/big.txt" 2>/dev/null)
+E10_E1=$(grep -cE '^ahci: port 0: READ DMA EXT LBA [0-9]+, [0-9]+ sectors failed: the device reported an error \(PxIS 0x[0-9a-f]{8}, PxTFD 0x[0-9a-f]{8}, PxSERR 0x[0-9a-f]{8}, PxCI 0x[0-9a-f]{8}\); (no port reset|port reset \(COMRESET\) once); port running again; error 1 of 3, then EIO$' "$E10_LD")
+if [ "$E10_OK" -eq 1 ] && [ "$E10_E1" -eq 1 ] && grep -qxF "cat: 'big.txt': I/O error." "$E10_LD" &&
+   grep -qxF "blk: test=blkdebug: armed: the first disk read during a file read fails once, and every disk write fails" "$E10_LD" &&
+   [ "$(grep -cE "^console: cat: $E10_BIG bytes in " "$E10_LD")" -eq 1 ] && ! grep -q 'PANIC' "$E10_LD"; then
+    pass "[1.4] test=blkdebug: an injected read error during a file read: logged once (error 1 of 3, the port running again), EIO, cat prints \"cat: 'big.txt': I/O error.\"; the same cat then prints all $E10_BIG bytes; no panic, no retry loop"
+else
+    fail "[1.4] test=blkdebug: the injected read error was not logged once, cat did not print its I/O error, or the second cat did not print the file (see serial-blkdebug.log)"
+fi
+if grep -qE '^ahci: port 0: WRITE DMA EXT LBA [0-9]+, [0-9]+ sectors failed: .*; port running again; error 2 of 3, then EIO$' "$E10_LD" &&
+   grep -qE '^ahci: port 0: WRITE DMA EXT LBA [0-9]+, [0-9]+ sectors failed: .*; disk marked failed; error 3 of 3, then EIO$' "$E10_LD" &&
+   grep -qxF "sync: the disk could not be written; /home is read-only now." "$E10_LD" &&
+   grep -qE '^ext2: sync: not saved \(a disk write failed\); ' "$E10_LD" &&
+   grep -qxF "Output to 'n2.txt': the filesystem is read-only." "$E10_LD"; then
+    pass "[1.4] test=blkdebug: every disk write fails: sync's first write (error 2) and the error state's write (error 3: the disk marked failed) logged once each; sync says the disk could not be written; /home is read-only from then on (a new file: 'the filesystem is read-only')"
+else
+    fail "[1.4] test=blkdebug: the write errors, the failed disk, sync's line or the read-only filesystem are not as expected (see serial-blkdebug.log)"
+fi
+E10_THIRD=$(grep -E "^cat: 'docs/a\.txt': " "$E10_LD" | head -n 1)
+if grep -q 'end-of-blkdebug' "$E10_LD" && ! grep -qE 'PANIC|FAILED' "$E10_LD" && grep -q '^System ready\.' "$E10_LD" &&
+   [ "$(grep -cE '^ahci: port 0: .* failed: ' "$E10_LD")" -eq 3 ]; then
+    pass "[1.4] test=blkdebug: after the disk failed the system goes on (the session ends normally): no panic, no PANIC or FAILED line, exactly three disk errors logged (a failed disk sends no more commands); cat of another file (report only): ${E10_THIRD:-printed from the cache}"
+else
+    fail "[1.4] test=blkdebug: the session did not end normally after the disk failed, a PANIC or FAILED line, or more than three disk errors (see serial-blkdebug.log)"
+fi
+echo "      [1.4] disk writes: $(( $(date +%s) - E10_T0 )) s (report only)"

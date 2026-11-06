@@ -3,13 +3,24 @@
 
 /*
  * ext2, the write core (1.4 stage 9; docs/plans/1.4.md, C5 with R1-R4, C7,
- * D, D9, D11, D12). PURE: no hardware access, printing or allocation. NOT
- * LINKED into the kernel in stage 9 (the Makefile leaves it out of the
- * kernel's sources; madire.kernel stays byte-identical to stage 8's, and
- * stage 8's check that madire.elf holds no ext2 write-type symbol is
- * unchanged); stage 10 links it behind the write guard. Host tests:
- * tests/unit/test_ext2_write.c and tests/ext2write.c (the host sequences and
- * the cut sweep against e2fsck -fn and debugfs, part static).
+ * D, D9, D11, D12). PURE: no hardware access, printing or allocation.
+ * Linked into the kernel since stage 10, behind the write guard (the disk
+ * is written only through the AHCI driver's one command builder, which
+ * checks the guard's decision). Host tests: tests/unit/test_ext2_write.c
+ * and tests/ext2write.c (the host sequences and the cut sweep against
+ * e2fsck -fn and debugfs, part static).
+ *
+ * Stage 10 (the kernel's needs, the save design unchanged): a save may run
+ * in pieces (ext2_write_save_step, at most a given number of disk commands
+ * per call; ext2_write_save is the same without a limit), and while one is
+ * in progress every operation answers EXT2_EAGAIN at once, changing
+ * nothing (the caller finishes the save, then tries again). keep_ino: a
+ * name removed by unlink or by a rename's replace is not followed by R3's
+ * deletion of that inode while the inode is still open (the caller sets
+ * keep_ino to it around the call; `kept` says it happened); the caller
+ * calls ext2_write_forget at the last close, and R3 then runs from the
+ * next save on. ext2_write_mark_clean writes the clean state (the
+ * unmount's last step) as its own change.
  *
  * It reads through the read core (ext2_core.h), whose reads go through the
  * block layer's write-back part (kernel/storage/blk_core_save.h), so every
@@ -122,6 +133,10 @@ struct ext2_wfs {
     uint32_t gen;
     uint32_t pend_n, fresh_n, pool_n;
     uint32_t pend_floor;        /* entries below it are being carried out: never merged into */
+    uint32_t keep_ino;          /* stage 10: an open inode whose R3 deletion waits (0: none) */
+    bool kept;                  /* set when a removed name of keep_ino was not queued */
+    uint16_t state_read;        /* stage 10: the superblock's state as the mount read it */
+    bool clean_read;            /* and whether it was clean */
     struct ext2_w_pend pend[EXT2_W_PEND_MAX];
     uint32_t fresh[EXT2_W_FRESH_MAX];
     uint32_t pool[EXT2_W_POOL_MAX];
@@ -163,6 +178,18 @@ int ext2_write_truncate(struct ext2_wfs *w, uint32_t ino, uint64_t size);
 /* One save (C5's classes), then the steps of R3 that it allows. EXT2_OK or
  * EXT2_EIO (read-only from then on, D9). */
 int ext2_write_save(struct ext2_wfs *w);
+/* Stage 10: one save in pieces: at most `max_cmds` disk commands per call;
+ * *done when the save and its R3 steps are finished. EXT2_OK or EXT2_EIO
+ * (read-only from then on). A read-only volume is done at once. */
+int ext2_write_save_step(struct ext2_wfs *w, uint32_t max_cmds, bool *done);
+/* True while a save is in progress (every operation answers EXT2_EAGAIN). */
+bool ext2_write_saving(const struct ext2_wfs *w);
+/* Stage 10: the last close of an inode whose name keep_ino kept: R3 runs
+ * for it from the next save on. */
+void ext2_write_forget(struct ext2_wfs *w, uint32_t ino);
+/* Stage 10: the clean state put into the superblock (written by the next
+ * save): EXT2_OK, EXT2_EAGAIN (a save in progress) or EXT2_EIO. */
+int ext2_write_mark_clean(struct ext2_wfs *w);
 /* A full save: saves until nothing is dirty or pending. */
 int ext2_write_sync(struct ext2_wfs *w);
 /* A full save, then the clean state written (its own save). */

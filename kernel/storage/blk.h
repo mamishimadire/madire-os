@@ -22,7 +22,7 @@
  * one "diskread:" line per read with the CRC32 of the sectors read; the
  * test compares them with the image's (tests/disk_image.py). Then the
  * reader's longest turn, the read speed and the cache's figures (report
- * only), and "diskread: DONE" or "diskread: FAILED ...". No write exists.
+ * only), and "diskread: DONE" or "diskread: FAILED ...". It writes nothing.
  */
 
 #include <stdbool.h>
@@ -40,5 +40,15 @@ int blk_read(uint64_t lba, uint32_t count, uint8_t *dst);
 
 /* test=diskread (thread 0, at boot). */
 void blk_diskread(void);
+
+/* 1.4 stage 10: one WRITE DMA EXT of `sectors` sectors at `lba` from the
+ * frames phys[0..pages-1] (ahci_disk_write: refused unless the guard allows),
+ * then the cached pages it reached are dropped (blk_cache_forget); and
+ * FLUSH CACHE EXT. 0 or -BLK_EIO. One caller at a time (the VFS lock's
+ * holder). */
+int blk_write(uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages);
+int blk_flush(void);
+/* The attached disk's AHCI port. */
+uint32_t blk_port_number(void);
 
 #endif

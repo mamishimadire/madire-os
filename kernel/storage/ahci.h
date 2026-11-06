@@ -21,7 +21,8 @@
  * and they all come between the PCI: line and the Storage: line. Stage 5:
  * after the attach the disk's partition table is read and the write
  * guard decided (guard.h); the decision is kept here (ahci_disk_guard).
- * READ ONLY: no command that writes exists in stage 4 (ahci_core.h).
+ * 1.4 stage 10: writes and flushes exist, and the pure core's one command
+ * builder sends them only as that decision allows (ahci_core.h).
  * Disk commands are for one caller at a time (stage 4: thread 0 at boot,
  * then the test=diskread reader; from stage 8 the VFS lock's holder).
  */
@@ -48,5 +49,33 @@ bool ahci_disk_guard_allows(uint32_t port);
 /* The driver's figures (report only): commands sent, the longest
  * command's register reads and ticks. */
 void ahci_figures(uint64_t *commands, uint64_t *polls_longest, uint64_t *ticks_longest);
+
+/* 1.4 stage 10: WRITE DMA EXT and FLUSH CACHE EXT on port `port` (ahci_write
+ * and ahci_flush in ahci_core.h: refused, nothing sent, unless the guard
+ * allows); an error is logged once, as for a read. 0 or -AHCI_EIO. */
+int ahci_disk_write(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages);
+int ahci_disk_flush(uint32_t port);
+
+/* Write figures (report only): writes and flushes sent, writes or flushes
+ * the builder refused, the longest flush in ticks. */
+void ahci_write_figures(uint64_t *writes, uint64_t *flushes, uint64_t *refused, uint64_t *flush_ticks);
+
+/* True while port `port`'s disk is in use (not failed). */
+bool ahci_disk_usable(uint32_t port);
+
+/* test=blkdebug only (1.4 stage 10): the next read command fails once
+ * (`read_once`), and every write command fails (`writes`), as if the device
+ * reported an error (the PxIS task-file error bit seen while the command is
+ * waited for): the driver's own error path runs (logged, the port stopped,
+ * reset only if needed, errors counted; 3 make the disk failed). */
+void ahci_debug_arm(bool read_once, bool writes);
+/* True while an armed read error has not been used by a read command. */
+bool ahci_debug_read_pending(void);
+
+/* test=diskwrite on a disk the guard refused (1.4 stage 10, C4): one
+ * WRITE DMA EXT of one sector at `lba` from frame `phys`, then one FLUSH
+ * CACHE EXT, through the same calls as every write; each must be refused
+ * by the command builder (nothing sent). Their results. */
+void ahci_write_attempt(uint32_t port, uint64_t lba, uint32_t phys, int *write_r, int *flush_r);
 
 #endif

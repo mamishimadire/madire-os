@@ -17,10 +17,13 @@
  *   guard: port P partition I: writes would be ALLOWED (...)
  *   guard: port P partition I: writes would be REFUSED: <first failed condition>
  *   guard: port P: decided once, kept by the AHCI driver: writes would be
- *          ALLOWED on partition I (LBA F, S sectors) | REFUSED; no write
- *          command exists in stage 5
+ *          ALLOWED on partition I (LBA F, S sectors); the AHCI command
+ *          builder checks this decision before every write and flush
+ *          | REFUSED; the AHCI command builder refuses every write and
+ *          flush to this disk
  *
- * Stage 5 has no write path: nothing else reads the decision.
+ * 1.4 stage 10: the AHCI driver's one command builder reads the decision
+ * before every write and flush (ahci_core.h); nothing else reads it.
  */
 
 #include <stdbool.h>

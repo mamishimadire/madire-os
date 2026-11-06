@@ -1,4 +1,5 @@
-/* The write guard at attach (1.4 stage 5): see guard.h. Read only. */
+/* The write guard at attach (1.4 stage 5): see guard.h. It reads only; the
+ * decision it records is what the AHCI command builder checks (stage 10). */
 #include "kernel/storage/guard.h"
 #include "kernel/kprintf.h"
 #include "kernel/storage/ahci.h"
@@ -151,12 +152,12 @@ void guard_attach(uint32_t port, const char *model, uint64_t sectors, struct gua
     if (s->allows) {
         ksnprintf(s->result, sizeof(s->result), "ALLOWED on partition %u", s->partition);
         klogf("guard: port %u: decided once, kept by the AHCI driver: writes would be ALLOWED on partition %u (LBA "
-              "%llu, %llu sectors); no write command exists in stage 5\n", port, s->partition,
-              (ull)chosen->first, (ull)chosen->sectors);
+              "%llu, %llu sectors); the AHCI command builder checks this decision before every write and flush\n",
+              port, s->partition, (ull)chosen->first, (ull)chosen->sectors);
     } else {
         ksnprintf(s->result, sizeof(s->result), "REFUSED: %s",
                   why_short ? why_short : "the decision was not recorded");
-        klogf("guard: port %u: decided once, kept by the AHCI driver: writes would be REFUSED; no write command "
-              "exists in stage 5\n", port);
+        klogf("guard: port %u: decided once, kept by the AHCI driver: writes would be REFUSED; the AHCI command "
+              "builder refuses every write and flush to this disk\n", port);
     }
 }

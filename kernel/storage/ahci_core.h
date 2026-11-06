@@ -10,13 +10,20 @@
  * injected errors and timeouts. kernel/storage/ahci.c gives the real ones
  * and logs what this part found.
  *
- * READ ONLY in 1.4 stage 4: the only ATA commands this code can build are
- * IDENTIFY DEVICE (0xEC) and READ DMA EXT (0x25). Their opcodes are the two
- * bytes of one table, ahci_opcodes (ahci_core.c), read through a volatile
- * access so they stay in the kernel's read-only data, where part static's
- * check reads them back from madire.elf; a command header's "write" bit is
- * never set. WRITE DMA EXT and FLUSH CACHE EXT come in stage 10, behind the
- * write guard (C4).
+ * The ATA commands this code can build are IDENTIFY DEVICE (0xEC), READ
+ * DMA EXT (0x25) and, since 1.4 stage 10, WRITE DMA EXT (0x35) and FLUSH
+ * CACHE EXT (0xEA). Their opcodes are the four bytes of one table,
+ * ahci_opcodes (ahci_core.c), read through a volatile access so they stay
+ * in the kernel's read-only data, where part static's check reads them
+ * back from madire.elf. THE WRITE GUARD (C4, D5): the one function that
+ * builds a command (ahci_command) refuses a WRITE DMA EXT or a FLUSH CACHE
+ * EXT, sending nothing to the controller, unless ahci_guard_allows() for
+ * that port and, for a write, every sector lies inside the partition the
+ * guard's decision was made for, past its first two sectors (the Madire
+ * test marker's sector and the one after it, which ext2 never uses, are
+ * never written). There is no other path to a disk write: ahci_write and
+ * ahci_flush only call it. A command header's "write" bit is set only for
+ * WRITE DMA EXT.
  *
  * What it does, in this order (AHCI 1.3.1):
  *   1. BIOS/OS hand-off, only if the controller offers it (CAP2.BOH): the OS
@@ -48,16 +55,18 @@
  *      its port is stopped and its pages returned.
  *
  * One command at a time, in command slot 0 (D1); polling only (D2): every
- * wait reads registers until done, bounded by the clock (5 s for IDENTIFY
- * and a read, 1 s for a port reset or for a device to become ready, 500 ms
- * for an engine to stop) and by a count of register reads
+ * wait reads registers until done, bounded by the clock (5 s for IDENTIFY,
+ * a read or a write, 10 s for a flush, 1 s for a port reset or for a
+ * device to become ready, 500 ms for an engine to stop) and by a count of
+ * register reads
  * (AHCI_POLLS_PER_MS for each millisecond of the limit), which also ends a
  * wait if the clock stops. A command that fails or times out (D9): the
  * port's registers are kept for one log line (the caller's), the engine is
  * stopped and, only if the port is still busy or does not stop, reset once
  * (COMRESET); then the port is started again and the command ends with
  * -AHCI_EIO. It is never retried here. After AHCI_ERRORS_FAILED errors the
- * disk is marked failed and every later read ends with -AHCI_EIO at once.
+ * disk is marked failed and every later read, write or flush ends with
+ * -AHCI_EIO at once.
  *
  * The idea of splitting the controller from its ports, and a port from its
  * disk, follows SerenityOS's AHCI driver (docs/plans/1.4.md, section M,
@@ -130,6 +139,7 @@
 /* The time limits (D2), in milliseconds, and the register reads allowed
  * per millisecond of a limit. */
 #define AHCI_LIMIT_CMD_MS   5000u
+#define AHCI_LIMIT_FLUSH_MS 10000u
 #define AHCI_LIMIT_RESET_MS 1000u
 #define AHCI_LIMIT_READY_MS 1000u
 #define AHCI_LIMIT_STOP_MS  500u
@@ -138,6 +148,7 @@
 #define AHCI_LIMIT_BB_MS    2000u
 #define AHCI_POLLS_PER_MS   2000u
 #define AHCI_ERRORS_FAILED  3u
+#define AHCI_GUARD_SKIP     2u          /* the partition's first sectors a write never reaches */
 
 struct ahci_ops {
     uint32_t (*read)(void *ctx, uint32_t off);          /* a 32-bit controller register */
@@ -168,7 +179,7 @@ enum ahci_port_state {
     AHCI_PORT_STUCK,    /* its engine did not stop: left alone */
     AHCI_PORT_ATAPI,    /* an ATAPI device: ignored, never sent a command */
     AHCI_PORT_OTHER,    /* another signature: ignored */
-    AHCI_PORT_DISK,     /* an ATA disk, in use (read only) */
+    AHCI_PORT_DISK,     /* an ATA disk, in use (written only as the guard allows) */
     AHCI_PORT_REFUSED,  /* an ATA disk Madire does not use (see why) */
     AHCI_PORT_FAILED,   /* a disk whose set-up failed, or with too many errors */
 };
@@ -176,6 +187,8 @@ enum ahci_port_state {
 enum ahci_op {
     AHCI_OP_IDENTIFY,   /* IDENTIFY DEVICE */
     AHCI_OP_READ,       /* READ DMA EXT */
+    AHCI_OP_WRITE,      /* WRITE DMA EXT (1.4 stage 10: only as the guard allows) */
+    AHCI_OP_FLUSH,      /* FLUSH CACHE EXT (likewise) */
     AHCI_OPS,
 };
 
@@ -227,6 +240,10 @@ struct ahci_hba {
     uint64_t polls_longest; /* the most register reads one command's wait took */
     uint64_t ticks_longest; /* the most clock ticks one command took */
     uint32_t ends_time, ends_cap;
+    /* 1.4 stage 10 (report only): write and flush commands sent, and those
+     * the builder refused (the guard, or a sector outside its partition). */
+    uint64_t writes, flushes, guard_refused;
+    uint64_t flush_ticks_longest;
 };
 
 /* The bytes of register space the implemented ports `pi` need. */
@@ -243,6 +260,18 @@ void ahci_start(struct ahci_hba *h, const struct ahci_ops *ops);
 int ahci_read(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, const uint32_t *phys,
               uint32_t pages);
 
+/* 1.4 stage 10: WRITE DMA EXT of `sectors` sectors at `lba` from `pages`
+ * pages (as ahci_read). Built only if ahci_guard_allows(h, p) and every
+ * sector lies in [guard_first + AHCI_GUARD_SKIP, guard_first +
+ * guard_sectors); otherwise nothing is sent (guard_refused counted) and the
+ * result is -AHCI_EIO without an error counted. 0 or -AHCI_EIO. */
+int ahci_write(struct ahci_hba *h, uint32_t p, uint64_t lba, uint32_t sectors, const uint32_t *phys,
+               uint32_t pages);
+
+/* 1.4 stage 10: FLUSH CACHE EXT (no data; 10 s), only if
+ * ahci_guard_allows(h, p) (else nothing is sent, as above). 0 or -AHCI_EIO. */
+int ahci_flush(struct ahci_hba *h, uint32_t p);
+
 /* IDENTIFY DEVICE's 256 words: the disk's model, size and features; false
  * (with *why) if Madire does not use it. */
 bool ahci_parse_identify(const uint16_t *w, struct ahci_disk *d, const char **why);
@@ -251,9 +280,9 @@ bool ahci_parse_identify(const uint16_t *w, struct ahci_disk *d, const char **wh
  * recorded once: true if recorded; false, and nothing changed, if `p` is
  * not a disk in use or its decision was already made. A decision to allow
  * needs a partition [first, first + sectors) inside the disk, else it is
- * recorded as refused. Stage 5 has no write command: nothing reads the
- * decision but the boot's log; from stage 10 the command that writes
- * refuses unless ahci_guard_allows. */
+ * recorded as refused. Since stage 10 the one command builder refuses a
+ * write or a flush unless ahci_guard_allows (and, for a write, the sectors
+ * lie inside this partition). */
 bool ahci_guard_decide(struct ahci_hba *h, uint32_t p, bool allows, uint64_t first, uint64_t sectors);
 
 /* True only if port `p`'s disk is in use and its decision allows writing. */

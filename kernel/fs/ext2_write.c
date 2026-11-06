@@ -1,5 +1,5 @@
 /* ext2, the write core (1.4 stage 9): see ext2_write.h for the save design
- * (R1-R4) and the policy. Pure; not linked into the kernel in stage 9.
+ * (R1-R4) and the policy. Pure; linked into the kernel since stage 10.
  * Every static is ext2_w_-prefixed and every byte loop is written out (no
  * libc call, so the kernel's flags need nothing more: part static checks
  * it). */
@@ -171,6 +171,10 @@ static uint32_t ext2_w_group_inodes(const struct ext2_fs *fs, uint32_t g)
 
 static void ext2_w_pend_add(struct ext2_wfs *w, uint8_t kind, uint32_t num, uint32_t count)
 {
+    if (kind == EXT2_W_PEND_NAME && w->keep_ino && num == w->keep_ino) {
+        w->kept = true;                 /* stage 10: still open; ext2_write_forget at its last close */
+        return;
+    }
     if (kind == EXT2_W_PEND_BLOCKS && w->pend_n > w->pend_floor) {
         struct ext2_w_pend *last = &w->pend[w->pend_n - 1u];
         if (last->kind == EXT2_W_PEND_BLOCKS && last->num + last->count == num) {
@@ -1066,7 +1070,7 @@ static int ext2_w_begin(struct ext2_wfs *w)
 {
     if (!w->rw || w->failed)
         return EXT2_EROFS;
-    if (!blk_sv_room(w->sv, EXT2_W_ROOM_CHUNKS) || w->pend_n + 256u > EXT2_W_PEND_MAX ||
+    if (w->sv->saving || !blk_sv_room(w->sv, EXT2_W_ROOM_CHUNKS) || w->pend_n + 256u > EXT2_W_PEND_MAX ||
         w->fresh_n + 16u > EXT2_W_FRESH_MAX) {
         w->eagain++;
         return EXT2_EAGAIN;
@@ -1596,18 +1600,54 @@ static void ext2_w_after_save(struct ext2_wfs *w)
         ext2_w_fail(w, "a step after a save failed");
 }
 
-int ext2_write_save(struct ext2_wfs *w)
+int ext2_write_save_step(struct ext2_wfs *w, uint32_t max_cmds, bool *done)
 {
+    *done = false;
     if (w->failed)
         return EXT2_EIO;
-    if (!w->rw)
+    if (!w->rw) {
+        *done = true;
         return EXT2_OK;
-    if (blk_sv_save(w->sv) != 0) {
+    }
+    bool fin = false;
+    if (blk_sv_save_step(w->sv, max_cmds, &fin) != 0) {
         ext2_w_fail(w, "a save failed");
         return EXT2_EIO;
     }
+    if (!fin)
+        return EXT2_OK;
     ext2_w_after_save(w);
+    *done = true;
     return w->failed ? EXT2_EIO : EXT2_OK;
+}
+
+int ext2_write_save(struct ext2_wfs *w)
+{
+    bool done = false;
+    int r = ext2_write_save_step(w, 0xFFFFFFFFu, &done);
+    return r ? r : (done ? EXT2_OK : EXT2_EIO);
+}
+
+bool ext2_write_saving(const struct ext2_wfs *w)
+{
+    return w->sv->saving;
+}
+
+void ext2_write_forget(struct ext2_wfs *w, uint32_t ino)
+{
+    if (w->rw && !w->failed && ino)
+        ext2_w_pend_add(w, EXT2_W_PEND_NAME, ino, 1);
+}
+
+int ext2_write_mark_clean(struct ext2_wfs *w)
+{
+    if (!w->rw || w->failed)
+        return w->failed ? EXT2_EIO : EXT2_OK;
+    if (w->sv->saving)
+        return EXT2_EAGAIN;
+    w->fs.state |= EXT2_STATE_VALID;
+    w->fs.state_clean = true;
+    return ext2_w_sb_put(w);
 }
 
 bool ext2_write_busy(const struct ext2_wfs *w)
@@ -1634,9 +1674,7 @@ int ext2_write_unmount(struct ext2_wfs *w)
     int r = ext2_write_sync(w);
     if (r)
         return r;
-    w->fs.state |= EXT2_STATE_VALID;
-    w->fs.state_clean = true;
-    r = ext2_w_sb_put(w);
+    r = ext2_write_mark_clean(w);
     if (r)
         return r;
     return ext2_write_save(w);
@@ -1708,6 +1746,8 @@ int ext2_write_mount(struct ext2_wfs *w, struct blk_sv *sv, uint64_t part_bytes,
     if (r)
         return r;
     struct ext2_fs *fs = &w->fs;
+    w->state_read = fs->state;                      /* stage 10: as read, for the mount's line */
+    w->clean_read = fs->state_clean;
     uint64_t lim = (fs->rev >= EXT2_REV_DYNAMIC && (fs->ro_compat & EXT2_RO_COMPAT_LARGE_FILE)) ? 0xFFFFFFFFull
                                                                                               : 0x7FFFFFFFull;
     w->file_max = ext2_max_size(fs) < lim ? ext2_max_size(fs) : lim;

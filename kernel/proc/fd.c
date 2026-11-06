@@ -1,5 +1,6 @@
 /* File descriptors, the kernel side (see fd.h). */
 #include <stddef.h>
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/fsys_core.h"
 #include "kernel/fs/ramfs_core.h"
@@ -619,6 +620,7 @@ int64_t fd_file_write(uint32_t file, uint64_t buf, uint64_t count)
     uint8_t kbuf[FD_CHUNK];
     uint64_t done = 0;
     int64_t err = 0;
+    uint32_t tries = 0;
     bool append = (files.f[file].access & OF_APPEND) != 0;
     busy_take(file);
     wmark_take(n);                                  /* stage 5: one writer per node at a time */
@@ -655,7 +657,20 @@ int64_t fd_file_write(uint32_t file, uint64_t buf, uint64_t count)
             files.f[file].offset = off + (uint64_t)put;
             stamp(n);
         }
+        /* 1.4 stage 10: ext2 needs a save before the rest (or before any). */
+        bool again = put == -FS_EAGAIN || (put >= 0 && (uint64_t)put < want && ext2_disk_again());
         hold_end(&h, HOLD_DATA);
+        if (again) {
+            int rr = -FS_EAGAIN;
+            if (put > 0)
+                tries = 0;                          /* progress: a new run of saves */
+            done += put > 0 ? (uint64_t)put : 0u;
+            if (ext2_disk_retry(&rr, &tries))
+                continue;                           /* the rest, after the save */
+            if (done == 0)
+                err = rr;
+            break;
+        }
         if (put < 0) {
             err = put;
             break;
@@ -682,14 +697,20 @@ int fd_node_truncate(struct vnode *n, uint64_t length)
     wmark_take(n);
     int r;
     bool first = true;
+    uint32_t tries = 0;
     do {
         struct hold h;
         hold_begin(&h);
         r = vfs_truncate_step(vfs_root(), n, length, FSYS_TRUNC_STEP);
         if (first && r >= 0)
             stamp(n);
-        first = false;
+        if (r != -FS_EAGAIN)
+            first = false;
         hold_end(&h, HOLD_TRUNC);
+        if (ext2_disk_retry(&r, &tries)) {          /* 1.4 stage 10: again after a save */
+            r = 1;
+            continue;
+        }
         if (r == 1 && thread_need_resched())
             thread_yield();
     } while (r == 1);
@@ -713,6 +734,21 @@ int64_t fd_file_lseek(uint32_t file, int64_t off, uint64_t whence)
 
 /* ---- 1.0 stage 6: getdents64 ---- */
 
+int64_t fd_dir_records(struct vnode *n, uint64_t cur, uint8_t *buf, uint32_t room, uint64_t *next, bool *more)
+{
+    uint32_t used = fsys_dir_list(vfs_root(), n, cur, buf, room, next, more);
+    /* 1.4 stage 10: a listing that stopped early because the folder's
+     * filesystem could not give the next entry (ext2: no node free, or a
+     * disk read failed) is that error once nothing was listed; the records
+     * before it come first. */
+    int e = *more ? 0 : vfs_lookup_error(vfs_root(), n);
+    if (e < 0 && used == 0)
+        return e;
+    if (e < 0)
+        *more = false;
+    return used;
+}
+
 int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count)
 {
     struct vnode *n = files.f[file].node;           /* fixed while the call holds a reference */
@@ -732,13 +768,19 @@ int64_t fd_file_getdents(uint32_t file, uint64_t buf, uint64_t count)
         hold_begin(&h);
         uint64_t cur = files.f[file].offset, next = cur;
         bool more = false, gone = n->nlink == 0;
-        uint32_t used = gone ? 0 : fsys_dir_list(vfs_root(), n, cur, kbuf, room, &next, &more);
+        int64_t listed = gone ? 0 : fd_dir_records(n, cur, kbuf, room, &next, &more);
         hold_end(&h, HOLD_DIR);
         if (gone) {
             if (done == 0)
                 err = -FS_ENOENT;                   /* a removed folder (Linux) */
             break;
         }
+        if (listed < 0) {                           /* 1.4 stage 10: ENOMEM or EIO from the folder's filesystem */
+            if (done == 0)
+                err = listed;
+            break;
+        }
+        uint32_t used = (uint32_t)listed;
         if (used == 0) {
             if (more && done == 0)
                 err = -FS_EINVAL;                   /* the next record does not fit */

@@ -33,6 +33,8 @@
 #include "kernel/display/pointer.h"
 #include "kernel/display/splash.h"
 #include "kernel/fs/dirtest.h"
+#include "kernel/fs/disktest.h"
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
@@ -638,6 +640,12 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=diskread")) {    /* 1.4 stage 4 */
         diag_message("Disk read test: chosen sectors through the block cache (read only)...");
         blk_diskread();
+    } else if (cmdline_has("test=diskwrite")) {   /* 1.4 stage 10 */
+        diag_message("Disk write test: writes behind the guard, saves and their figures...");
+        disktest_write();
+    } else if (cmdline_has("test=disknodes")) {   /* 1.4 stage 10 */
+        diag_message("Disk node test: more files than the node table holds...");
+        disktest_nodes();
     } else if (cmdline_has("test=filecontend")) { /* 1.0 stage 5 */
         diag_message("File contention test: the busy mark and the VFS lock under load...");
         diag_message(fsiotest_contend() ? "File contention test: done"
@@ -1114,7 +1122,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
      * ready (docs/plans/1.4.md, sections C2 and C9). 1.4 stage 4: with an
      * AHCI controller, the driver's start and the block cache between
      * them (after vfs_boot(), so the RAM filesystem's budget is as
-     * before, C3). */
+     * before, C3). 1.4 stage 10: the mount's options first: no automatic
+     * save on a test= boot (D8), test=diskro (read-only), test=blkdebug
+     * (injected disk errors). */
+    ext2_disk_options((cmdline_has("test=") ? EXT2_DISK_TEST_BOOT : 0u) |
+                      (cmdline_has("test=diskro") ? EXT2_DISK_RO : 0u) |
+                      (cmdline_has("test=blkdebug") ? EXT2_DISK_BLKDEBUG : 0u));
     pci_boot();
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
