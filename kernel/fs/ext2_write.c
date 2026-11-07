@@ -101,7 +101,12 @@ static int ext2_w_bput(struct ext2_wfs *w, uint32_t blk, const uint8_t *buf, uin
 {
     if (blk < w->fs.first_data_block || blk == 0 || blk >= w->fs.blocks_count)
         return EXT2_ECORRUPT;
-    int r = blk_sv_put(w->sv, (uint64_t)blk * ext2_w_bs(w), ext2_w_bs(w), buf, cls);
+    uint64_t off = (uint64_t)blk * ext2_w_bs(w);
+    /* R5 (stage 11): a folder block that holds a cross-block rename's new
+     * name stays in class 4 whatever else changes in it before the save. */
+    if (cls == BLK_SV_FOLDER && blk_sv_class(w->sv, off) == BLK_SV_NAME)
+        cls = BLK_SV_NAME;
+    int r = blk_sv_put(w->sv, off, ext2_w_bs(w), buf, cls);
     if (r == -BLK_SV_FULL)
         return EXT2_EAGAIN;
     if (r)
@@ -959,9 +964,11 @@ static void ext2_w_put_name(const struct ext2_wfs *w, uint8_t *e, const char *na
         e[EXT2_DIRENT_HEAD + i] = (uint8_t)name[i];
 }
 
-/* The entry added (room made sure first), then the folder's record. */
+/* The entry added (room made sure first), then the folder's record; the
+ * folder block goes in class `cls` (BLK_SV_FOLDER, or BLK_SV_NAME for a
+ * cross-block rename's new name, R5). */
 static int ext2_w_add(struct ext2_wfs *w, struct ext2_inode *d, const char *name, uint32_t len, uint32_t ino,
-                      uint32_t ft, int32_t dlinks)
+                      uint32_t ft, int32_t dlinks, uint32_t cls)
 {
     struct ext2_w_loc loc = { 0, 0, 0, 0, 0, -1 };
     bool fresh = false;
@@ -980,7 +987,7 @@ static int ext2_w_add(struct ext2_wfs *w, struct ext2_inode *d, const char *name
     ext2_w_p32(e, ino);
     ext2_w_p16(e + 4, rec);
     ext2_w_put_name(w, e, name, len, ft);
-    r = ext2_w_bput(w, loc.pb, w->db, BLK_SV_FOLDER);
+    r = ext2_w_bput(w, loc.pb, w->db, cls);
     if (r)
         return r;
     ext2_w_touch(w, ino);
@@ -1005,9 +1012,10 @@ static int ext2_w_remove(struct ext2_wfs *w, struct ext2_inode *d, const struct 
     return ext2_w_dir_changed(w, d, dlinks);
 }
 
-/* The entry at *loc names `ino` from now on. */
+/* The entry at *loc names `ino` from now on; a block the disk already uses
+ * goes in class `cls` (as ext2_w_add's). */
 static int ext2_w_retarget(struct ext2_wfs *w, struct ext2_inode *d, const struct ext2_w_loc *loc, uint32_t ino,
-                           uint32_t ft, int32_t dlinks)
+                           uint32_t ft, int32_t dlinks, uint32_t cls)
 {
     int r = ext2_w_bread(w, loc->pb, w->db);
     if (r)
@@ -1015,7 +1023,7 @@ static int ext2_w_retarget(struct ext2_wfs *w, struct ext2_inode *d, const struc
     ext2_w_p32(w->db + loc->pos, ino);
     if (w->fs.filetype)
         w->db[loc->pos + 7] = (uint8_t)ft;
-    r = ext2_w_bput(w, loc->pb, w->db, ext2_w_is_fresh(w, loc->pb) ? BLK_SV_DATA : BLK_SV_FOLDER);
+    r = ext2_w_bput(w, loc->pb, w->db, ext2_w_is_fresh(w, loc->pb) ? BLK_SV_DATA : cls);
     if (r)
         return r;
     ext2_w_touch(w, loc->ino);
@@ -1120,7 +1128,7 @@ int ext2_write_create(struct ext2_wfs *w, uint32_t dir, const char *name, uint32
     if (!r)
         r = ext2_w_iput(w, &in);
     if (!r)
-        r = ext2_w_add(w, &d, name, len, n, ext2_w_ftype(mode), 0);
+        r = ext2_w_add(w, &d, name, len, n, ext2_w_ftype(mode), 0, BLK_SV_FOLDER);
     if (r)
         return r;
     *ino = n;
@@ -1182,7 +1190,7 @@ int ext2_write_mkdir(struct ext2_wfs *w, uint32_t dir, const char *name, uint32_
     in.blocks512 = bs / 512u;
     r = ext2_w_iput(w, &in);
     if (!r)
-        r = ext2_w_add(w, &d, name, len, n, 2, 1);
+        r = ext2_w_add(w, &d, name, len, n, 2, 1, BLK_SV_FOLDER);
     if (r)
         return r;
     *ino = n;
@@ -1293,13 +1301,14 @@ int ext2_write_rename(struct ext2_wfs *w, uint32_t odir, const char *oname, uint
         }
     }
     r = ext2_w_find(w, &nd, nname, nlen, &nl);
+    bool tdir = false, replace = r == EXT2_OK;
     if (r == EXT2_OK) {
         if (nl.ino == s.ino)
             return EXT2_OK;
         r = ext2_inode_get(&w->fs, nl.ino, &t);
         if (r)
             return r;
-        bool tdir = ext2_w_is_dir(&t);
+        tdir = ext2_w_is_dir(&t);
         if (tdir && !sdir)
             return EXT2_EISDIR;
         if (!tdir && sdir)
@@ -1309,23 +1318,49 @@ int ext2_write_rename(struct ext2_wfs *w, uint32_t odir, const char *oname, uint
             if (r)
                 return r;
         }
-        int32_t dl = (tdir ? -1 : 0) + ((sdir && cross) ? 1 : 0);
-        r = ext2_inode_get(&w->fs, ndir, &nd);
-        if (!r)
-            r = ext2_w_retarget(w, &nd, &nl, s.ino, ext2_w_ftype(s.mode), dl);
-        if (r)
-            return r;
-        ext2_w_pend_add(w, EXT2_W_PEND_NAME, t.ino, 1);    /* R3: the replaced inode */
     } else if (r == EXT2_ENOENT) {
         if (sdir && cross && nd.links >= EXT2_W_LINK_MAX)
             return EXT2_EMLINK;
         r = ext2_w_room(w, &nd, nlen);
-        if (!r)
-            r = ext2_w_add(w, &nd, nname, nlen, s.ino, ext2_w_ftype(s.mode), (sdir && cross) ? 1 : 0);
         if (r)
             return r;
+        /* Where the new name will go (the block ext2_w_add takes). */
+        bool fresh = false;
+        r = ext2_w_slot(w, &nd, ext2_w_reclen(nlen), &nl, &fresh);
+        if (r)
+            return r == EXT2_ENOENT ? EXT2_EAGAIN : r;
     } else {
         return r;
+    }
+    /* R5 (stage 11): when the new name and the old one are in different
+     * folder blocks, the new name's block goes in class 4 (written and
+     * flushed first) and the old name's removal in class 5, so a cut never
+     * leaves the file or folder under neither name. A block already holding
+     * another rename's old-name removal (class 5) cannot take a new name,
+     * and a class-4 block cannot take an old-name removal: then a save runs
+     * first (EXT2_EAGAIN, before anything changes; R4's limit of 3 saves). */
+    uint32_t ncls = BLK_SV_FOLDER;
+    if (nl.pb != ol.pb) {
+        uint32_t bs = ext2_w_bs(w);
+        if (blk_sv_class(w->sv, (uint64_t)ol.pb * bs) == BLK_SV_NAME ||
+            blk_sv_class(w->sv, (uint64_t)nl.pb * bs) == BLK_SV_FOLDER) {
+            w->eagain++;
+            return EXT2_EAGAIN;
+        }
+        ncls = BLK_SV_NAME;
+    }
+    if (replace) {
+        int32_t dl = (tdir ? -1 : 0) + ((sdir && cross) ? 1 : 0);
+        r = ext2_inode_get(&w->fs, ndir, &nd);
+        if (!r)
+            r = ext2_w_retarget(w, &nd, &nl, s.ino, ext2_w_ftype(s.mode), dl, ncls);
+        if (r)
+            return r;
+        ext2_w_pend_add(w, EXT2_W_PEND_NAME, t.ino, 1);    /* R3: the replaced inode */
+    } else {
+        r = ext2_w_add(w, &nd, nname, nlen, s.ino, ext2_w_ftype(s.mode), (sdir && cross) ? 1 : 0, ncls);
+        if (r)
+            return r;
     }
     /* The old name, found again (its block may have changed). */
     r = ext2_inode_get(&w->fs, odir, &od);
@@ -1342,7 +1377,7 @@ int ext2_write_rename(struct ext2_wfs *w, uint32_t odir, const char *oname, uint
         struct ext2_w_loc up = { 0, 0, 0, 0, 0, -1 };
         r = ext2_w_find(w, &s, "..", 2, &up);
         if (!r)
-            r = ext2_w_retarget(w, &s, &up, ndir, 2, 0);    /* the moved folder's ".." */
+            r = ext2_w_retarget(w, &s, &up, ndir, 2, 0, BLK_SV_FOLDER);    /* the moved folder's ".." (class 5) */
         return r;
     }
     s.ctime = ext2_w_now(w);

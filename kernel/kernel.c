@@ -646,6 +646,15 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=disknodes")) {   /* 1.4 stage 10 */
         diag_message("Disk node test: more files than the node table holds...");
         disktest_nodes();
+    } else if (cmdline_has("test=diskcut")) {     /* 1.4 stage 11 */
+        diag_message("Disk cut test: the owner's case, every disk write numbered...");
+        disktest_cut();
+    } else if (cmdline_has("test=diskcheck")) {   /* 1.4 stage 11 */
+        diag_message("Disk check: the cut tests' files read back...");
+        disktest_check();
+    } else if (cmdline_has("test=diskchurn")) {   /* 1.4 stage 11 */
+        diag_message("Disk churn test: 1000 create, write and delete cycles...");
+        disktest_churn();
     } else if (cmdline_has("test=filecontend")) { /* 1.0 stage 5 */
         diag_message("File contention test: the busy mark and the VFS lock under load...");
         diag_message(fsiotest_contend() ? "File contention test: done"
@@ -1124,10 +1133,18 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
      * them (after vfs_boot(), so the RAM filesystem's budget is as
      * before, C3). 1.4 stage 10: the mount's options first: no automatic
      * save on a test= boot (D8), test=diskro (read-only), test=blkdebug
-     * (injected disk errors). */
+     * (injected disk errors). 1.4 stage 11: test=autosave (the automatic
+     * save on in that test boot), test=diskcut[=N] (the writes numbered,
+     * the power cut after write N). */
     ext2_disk_options((cmdline_has("test=") ? EXT2_DISK_TEST_BOOT : 0u) |
                       (cmdline_has("test=diskro") ? EXT2_DISK_RO : 0u) |
-                      (cmdline_has("test=blkdebug") ? EXT2_DISK_BLKDEBUG : 0u));
+                      (cmdline_has("test=blkdebug") ? EXT2_DISK_BLKDEBUG : 0u) |
+                      (cmdline_has("test=autosave") ? EXT2_DISK_AUTOSAVE : 0u));
+    if (cmdline_has("test=diskcut")) {
+        uint32_t cut_after = 0;
+        bool cut = cmdline_u32("test=diskcut=", &cut_after);
+        ext2_disk_cut(cut, cut_after);
+    }
     pci_boot();
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */

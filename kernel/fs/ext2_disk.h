@@ -59,7 +59,15 @@
 #define EXT2_DISK_TEST_BOOT  0x1u       /* a test= boot: no automatic save (D8) */
 #define EXT2_DISK_RO         0x2u       /* test=diskro: mounted read-only */
 #define EXT2_DISK_BLKDEBUG   0x4u       /* test=blkdebug: injected disk errors */
+#define EXT2_DISK_AUTOSAVE   0x8u       /* test=autosave: the automatic save on, each save logged (stage 11) */
 void ext2_disk_options(uint32_t flags);
+
+/* Stage 11, test=diskcut[=N] (docs/plans/1.4.md, section D (b)): every disk
+ * write the saves send is logged ("blk: write <n> class <c>: partition byte
+ * <off>, <len> bytes"); with `cut`, the power is cut after write `after`:
+ * one "blk: test=diskcut=<N>: ..." line, then no more disk commands and the
+ * CPU halts (the test kills QEMU). Before the mount. */
+void ext2_disk_cut(bool cut, uint32_t after);
 
 /* Mounts the ext2 volume of partition `partition` (LBA `first`, `sectors`
  * sectors) of the disk on port `port`, attached to the block cache. Fills

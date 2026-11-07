@@ -2555,7 +2555,12 @@ section "[1.4] The ext2 write core and the save order: host sequences, the cut s
 # save before where the list says so), every file saved before the cut reads
 # back exactly (debugfs), and in the owner's case A is exact or gone, gone
 # once save 2 has finished, B never holds a block of A, and after saves 3-4
-# only leaks and counts. (16) The sweep again with the tool built with
+# only leaks and counts. Stage 11 (changed, the owner's approval): every
+# saved path the cut save renames must read back exactly at its old path or
+# its new path (the stage 9 checker accepted "at neither path"); A9 no
+# longer accepts a folder moved in the cut save (R5 keeps it under at least
+# one name); A14 (a folder under two names) only for a folder moved to
+# another folder in the cut save. (16) The sweep again with the tool built with
 # -fsanitize=address,undefined: no report, byte-identical images. Nothing
 # boots; everything stays under $OUT/ext2-write.
 E9_T0=$(date +%s)
@@ -2787,7 +2792,7 @@ else
     fail "[1.4] host cut sweep, a hard-linked file: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-hardlink.txt)"
 fi
 if e9_sweep_ok dirs; then
-    pass "[1.4] host cut sweep, folders ($(e9_cuts dirs) cuts): mkdir, a file in a fresh folder (R4), a file replaced by rename, a file and a folder moved to other folders (\"..\", both parents), rmdir: only the allowed list, every saved file exact"
+    pass "[1.4] host cut sweep, folders ($(e9_cuts dirs) cuts): mkdir, a file in a fresh folder (R4), a file replaced by rename, a file and a folder moved to other folders (\"..\", both parents; R5), rmdir: only the allowed list, every saved file exact, every renamed saved path exactly at its old or its new path"
 else
     fail "[1.4] host cut sweep, folders: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-dirs.txt)"
 fi
@@ -2802,7 +2807,7 @@ else
     fail "[1.4] host cut sweep, indirect blocks: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-indirect.txt)"
 fi
 if e9_sweep_ok grow; then
-    pass "[1.4] host cut sweep, a folder grown past its blocks ($(e9_cuts grow) cuts): 45 names (the empty block added, then a save, R4), 15 removed, one renamed: only the allowed list, every saved file exact"
+    pass "[1.4] host cut sweep, a folder grown past its blocks ($(e9_cuts grow) cuts): 45 names (the empty block added, then a save, R4), 15 removed, one renamed (R5): only the allowed list, every saved file exact, the renamed file exactly at its old or its new path"
 else
     fail "[1.4] host cut sweep, a growing folder: something not on the allowed list, or a saved file damaged (see $E9_W/sweep-grow.txt)"
 fi
@@ -3132,3 +3137,142 @@ else
     fail "[1.4] test=blkdebug: the session did not end normally after the disk failed, a PANIC or FAILED line, or more than three disk errors (see serial-blkdebug.log)"
 fi
 echo "      [1.4] disk writes: $(( $(date +%s) - E10_T0 )) s (report only)"
+
+# ---- 1.4 stage 11: power cuts in QEMU, the unordered sweep, test=autosave ----
+
+section "[1.4] Power cuts: the unordered host sweep, test=diskcut at N1 and N2 with the remount, test=autosave (stage 11)"
+# docs/plans/1.4.md, S11 (C5 with R5, section D with A14 and the narrowed
+# A9, G4; risks 32, 39). (1-6) The unordered host sweep: a real disk may
+# store the writes between two FLUSHes in any order, so for each of stage
+# 9's six sequences, a cut inside every flush interval whose writes cover
+# two or more filesystem blocks, with a subset of them on the disk (every
+# proper non-empty subset up to 8 blocks, a fixed sample above):
+# e2fsck -fn only the allowed list in its contexts, every saved file
+# exact, every renamed saved path exact at its old or new path, the
+# owner's case rules. A sector torn inside a block stays outside the model.
+# (7) test=diskcut, uncut: the owner's case through the VFS (save 1 writes
+# A; A removed and B made with no save between; saves 2 to 4); the kernel's
+# writes equal the host model's one by one (tests/diskcut-lib.sh). (8-11)
+# The two sharded cut points (section D): N1, the last file-data write of
+# save 2 (B's data on the disk, none of its pointers, A not yet removed),
+# and N2, the last write before save 2's first folder write (B's inode
+# written, the folder block that removes A and adds B not yet): each a cut
+# boot judged on the image (e2fsck -fn's allowed list in the model's
+# contexts, every saved file exact, A exact, B never holding A's blocks)
+# and a remount boot on the same image (the D12 recount, read-write, A and
+# B read back as debugfs reads them). The other cut points run in the
+# stress part. (12-14) test=autosave: a file written at the console, the
+# automatic save's line awaited, then QEMU killed (no sync, no reboot): the
+# image holds the file exactly, e2fsck -fn reports only leaks and counts,
+# and the remount boot reads it back. The longest VFS lock hold of a save
+# after System ready is reported (the owner's 2-tick rule).
+E11_T0=$(date +%s)
+. "$(dirname "$0")/diskcut-lib.sh"
+E11_W=$OUT/power-cut
+rm -rf "${E11_W:?}" && mkdir -p "$E11_W"
+
+# (1-6) The unordered host sweep.
+declare -A E11_URC=()
+for e11_s in owner:small hardlink:hard dirs:small rmdir:small indirect:small grow:small; do
+    e11_seq=${e11_s%%:*}
+    "${E9_PY[@]}" usweep "$E9_TOOL" "$E9_W/${e11_s#*:}.img" "$e11_seq" "$E11_W/usweep-$e11_seq" \
+        > "$E11_W/usweep-$e11_seq.txt" 2>&1
+    E11_URC[$e11_seq]=$?
+    grep -E '^(UNORDERED|  cut )' "$E11_W/usweep-$e11_seq.txt" | head -n 30 | sed "s/^/      $e11_seq: /"
+    grep -E '^(UACCEPT|UFIRST) ' "$E11_W/usweep-$e11_seq.txt" | sed 's/^/      /'
+done
+e11_uok() { [ "${E11_URC[$1]:-1}" -eq 0 ] && grep -qE "^UNORDERED $1: ok;" "$E11_W/usweep-$1.txt"; }
+e11_ucuts() { sed -nE "s/^UNORDERED $1: .*; ([0-9]+) cuts, bad .*/\1/p" "$E11_W/usweep-$1.txt"; }
+e11_uinfo() { sed -nE "s/^UNORDERED $1: ok; ([0-9]+ flush intervals, [0-9]+ with 2 or more units \([0-9]+ with every subset, [0-9]+ sampled\)).*/\1/p" "$E11_W/usweep-$1.txt"; }
+for e11_spec in "owner|the owner's case" "hardlink|a hard-linked file" \
+                "dirs|folders (a file and a folder moved to other folders: R5)" "rmdir|folders removed" \
+                "indirect|indirect blocks" "grow|a folder grown past its blocks (a rename across its blocks: R5)"; do
+    e11_seq=${e11_spec%%|*}
+    e11_what=${e11_spec#*|}
+    if e11_uok "$e11_seq"; then
+        pass "[1.4] unordered host sweep, $e11_what ($(e11_ucuts "$e11_seq") cuts; $(e11_uinfo "$e11_seq")): any subset of a flush interval's blocks on the disk at the cut; e2fsck -fn reports only the allowed list in its contexts, every saved file reads back exactly, every renamed saved path exactly at its old or its new path"
+    else
+        fail "[1.4] unordered host sweep, $e11_what: a cut left something not on the allowed list, or a saved file damaged or at neither of its paths (see $E11_W/usweep-$e11_seq.txt)"
+    fi
+done
+
+# (7) The uncut run and the model.
+dc_setup "$E11_W/owner" "$E9_TOOL" static
+echo "      N1=$DC_N1 N2=$DC_N2; the model's writes before its unmount: $DC_TOTAL"
+grep -E '^QWRITE ' "$DC_W/model.txt" | sed 's/^/      model: /'
+if [ "$DC_SETUP_OK" -eq 1 ]; then
+    pass "[1.4] test=diskcut, uncut: the owner's case through the VFS (save 1 writes A; A removed and B made with no save between; saves 2 to 4) ends with 'diskcut: DONE', and the kernel's $DC_TOTAL disk writes equal the host model's one by one (number, class, partition offset, length; R5's classes); no PANIC or FAILED line"
+else
+    fail "[1.4] test=diskcut, uncut: the model failed, the boot did not end with DONE, or the kernel's writes differ from the model's (see $DC_W/model.txt, $DC_W/compare.txt, ${DC_UNCUT##*/})"
+fi
+
+# (8-11) The two sharded cut points.
+for e11_p in "N1|${DC_N1:-0}|the last file-data write of save 2: B's data on the disk, none of B's pointers, A not yet removed" \
+             "N2|${DC_N2:-0}|the last write before save 2's first folder write: B's inode written, the folder block not yet"; do
+    IFS='|' read -r e11_name e11_n e11_what <<< "$e11_p"
+    DC_CUT_OK=0
+    DC_RE_OK=0
+    [ "$DC_SETUP_OK" -eq 1 ] && dc_point "$e11_n"
+    if [ "$DC_CUT_OK" -eq 1 ]; then
+        pass "[1.4] power cut $e11_name (test=diskcut=$e11_n; $e11_what): the boot halted after exactly $e11_n writes; e2fsck -fn reports only the allowed list in its contexts, every saved file reads back exactly, A is exact and B holds none of A's blocks"
+    else
+        fail "[1.4] power cut $e11_name (test=diskcut=$e11_n): the boot did not halt after exactly $e11_n writes, or the image failed section D's checks (see $DC_W/qcut-$e11_n.txt)"
+    fi
+    if [ "$DC_RE_OK" -eq 1 ]; then
+        pass "[1.4] power cut $e11_name, the remount boot on the same image: the D12 recount (not cleanly unmounted), mounted read-write, and Madire reads A and B exactly as debugfs does ($(sed -nE 's/^QVIEW ok; //p' "$DC_W/qview-$e11_n.txt"))"
+    else
+        fail "[1.4] power cut $e11_name, the remount boot: no recount, not read-write, or Madire's reading differs from debugfs's (see $DC_W/qview-$e11_n.txt)"
+    fi
+done
+
+# (12-14) test=autosave.
+E11_AS=$E11_W/autosave
+mkdir -p "$E11_AS"
+E11_ASOK=1
+disk_mkfs "$E11_AS/fs.img" 4096 1024 256 256 "" > "$E11_AS/mkfs.txt" 2>&1 &&
+    disk_image mbr "$E11_AS/fs.img" "$E11_AS/disk.img" > /dev/null 2>&1 || E11_ASOK=0
+E11_ASTEXT="autosave-test-line"
+E11_ASLOG=$OUT/serial-autosave.log
+boot_text "$E11_ASLOG" 120 "System ready." "x{wait:1}echo $E11_ASTEXT > auto.txt{ret}" 0.05 \
+    $'\next2: automatic save (test=autosave): ' -m 128M -kernel "$KERNEL" -append "test=autosave" \
+    -drive file="$E11_AS/disk.img",if=none,id=e11as-disk,format=raw -device ich9-ahci,id=e11as-ahci,addr=0x5 \
+    -device ide-hd,drive=e11as-disk,bus=e11as-ahci.0
+grep -E '^(mount: changes|ext2: automatic save|madire> echo|madire> sync|Saving files)' "$E11_ASLOG" | sed 's/^/      autosave: /'
+E11_HOLD=$(sed -nE 's/^ext2: automatic save \(test=autosave\): .*; the longest VFS lock hold in a save so far ([0-9]+ us \([0-9]+ ticks\)).*/\1/p' "$E11_ASLOG" | tail -n 1)
+echo "      [1.4] the longest VFS lock hold of a save after System ready (the automatic save; report only, the owner's 2-tick rule): ${E11_HOLD:-none}"
+if [ "$E11_ASOK" -eq 1 ] && dc_health "$E11_ASLOG" &&
+   grep -qE '^mount: changes are kept in memory .*; automatic save every 5 s: on \(test=autosave\)$' "$E11_ASLOG" &&
+   grep -qxF "madire> echo $E11_ASTEXT > auto.txt" "$E11_ASLOG" &&
+   grep -qE '^ext2: automatic save \(test=autosave\): saved; [1-9][0-9]* saves, [1-9][0-9]* writes, [1-9][0-9]* flushes; ' "$E11_ASLOG" &&
+   ! grep -qE '^(madire> sync|Saving files)' "$E11_ASLOG"; then
+    pass "[1.4] test=autosave: the automatic save on in this test boot; a file written at the console was saved by the automatic save within 5 s (its line logged), with no sync and no reboot; then QEMU was killed (the power cut)"
+else
+    fail "[1.4] test=autosave: the automatic save was not on, its line never came, or a sync or reboot ran (see serial-autosave.log)"
+fi
+disk_image extract "$E11_AS/disk.img" "$E11_AS/part.img" > /dev/null 2>&1
+"${DC_PY[@]}" fsckstrict "$E11_AS/part.img" > "$E11_AS/fsck.txt" 2>&1
+E11_FRC=$?
+sed 's/^/      autosave: /' "$E11_AS/fsck.txt"
+E11_GOT=$(disk_debugfs "$E11_AS/part.img" "cat /auto.txt" | sha256sum | cut -d' ' -f1)
+E11_EXP=$(printf '%s\n' "$E11_ASTEXT" | sha256sum | cut -d' ' -f1)
+echo "      autosave: /auto.txt on the image: SHA-256 $E11_GOT (expected $E11_EXP)"
+if [ "$E11_ASOK" -eq 1 ] && [ "$E11_FRC" -eq 0 ] && [ "$E11_GOT" = "$E11_EXP" ]; then
+    pass "[1.4] test=autosave: after the cut the image holds /auto.txt exactly ('$E11_ASTEXT' and a newline), and e2fsck -fn reports only leaks and counts"
+else
+    fail "[1.4] test=autosave: after the cut /auto.txt is not exact, or e2fsck -fn reported more than leaks and counts (see $E11_AS/fsck.txt)"
+fi
+E11_ASR=$OUT/serial-autosave-remount.log
+dc_boot "$E11_ASR" 90 "$DC_READY" "test=diskcheck" "$E11_AS/disk.img"
+disk_image extract "$E11_AS/disk.img" "$E11_AS/after.img" > /dev/null 2>&1
+"${DC_PY[@]}" qview "$E11_AS/after.img" "$E11_ASR" auto.txt > "$E11_AS/qview.txt" 2>&1
+E11_VRC=$?
+grep -E '^(ext2: warning|diskcheck): ' "$E11_ASR" | sed 's/^/      autosave remount: /'
+sed 's/^/      autosave remount: /' "$E11_AS/qview.txt"
+E11_WANT=$(printf '%s\n' "$E11_ASTEXT" | python3 -I -B -c 'import sys, zlib; b = sys.stdin.buffer.read(); print("%d bytes CRC32 0x%08x" % (len(b), zlib.crc32(b)))')
+if [ "$E11_ASOK" -eq 1 ] && [ "$E11_VRC" -eq 0 ] && grep -qF "auto.txt: Madire $E11_WANT, debugfs $E11_WANT" "$E11_AS/qview.txt" &&
+   grep -qE "$DC_RECOUNT" "$E11_ASR" && grep -qE "$DC_RW" "$E11_ASR" && dc_health "$E11_ASR"; then
+    pass "[1.4] test=autosave: the next boot (the D12 recount, read-write) reads /auto.txt back exactly ($E11_WANT)"
+else
+    fail "[1.4] test=autosave: the next boot did not recount, mount read-write or read /auto.txt back exactly (want $E11_WANT; see $E11_AS/qview.txt)"
+fi
+echo "      [1.4] power cuts: $(( $(date +%s) - E11_T0 )) s (report only)"

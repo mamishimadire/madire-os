@@ -38,7 +38,7 @@
  *     whole map, so size, i_blocks and the map always agree on the disk (for
  *     writes and for truncate). A fresh indirect block is changed in place.
  *  R3 Removing a name: save E writes the folder without the entry (class
- *     4); after save E the inode is written as deleted (links 0, dtime) or,
+ *     5); after save E the inode is written as deleted (links 0, dtime) or,
  *     for a hard-linked file, with its link count one lower (class 3 of save
  *     E+1); after save E+1 the bitmap bits of a deleted inode and its blocks
  *     are cleared (class 2 of save E+2). A block or inode is never reused
@@ -54,6 +54,16 @@
  *     caller saves at most 3 times for one operation, then gives up with
  *     EXT2_ENOSPC (stage 10: a save inside an operation must keep the lock
  *     hold limits, in pieces of about 8 commands).
+ *  R5 (stage 11) A rename's new name reaches the disk before its old name
+ *     is removed: when the two are in different folder blocks, the new
+ *     name's block is written in class 4 and FLUSHed before the other
+ *     folder blocks (class 5: the old name's removal, a moved folder's
+ *     ".."). A cut then leaves a saved file or folder under its old name,
+ *     its new name, or both, never under neither. A rename that would put
+ *     an old-name removal into a class-4 block, or a new name into a block
+ *     already changed in class 5, returns EXT2_EAGAIN first (a save; R4's
+ *     limit of 3 saves). Folder blocks never written by a rename this way
+ *     are class 5; the descriptors and the superblock class 6.
  *  Save 0: a read-write mount writes the volume's "not clean" state at once
  *  (its own save). A full save (ext2_write_sync) repeats saves until nothing
  *  is dirty or pending; e2fsck -fn then reports nothing.

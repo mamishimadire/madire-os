@@ -3,13 +3,16 @@
  * D9) against a fake disk that logs every write command (its bytes, its
  * class) and every FLUSH: reads see the dirty chunks over the disk; a put is
  * all or nothing (bad range, bad class, no room); a chunk put again takes
- * the new bytes and class; the save writes class 1 to 5 in order, ascending
+ * the new bytes and class; the save writes class 1 to 6 in order, ascending
  * chunks within a class, neighbouring chunks of one class in one command of
  * at most 16, a FLUSH after each class that wrote and none after an empty
  * class; the superblock's chunk (bytes 1024-2047) is written alone, never
  * the partition's first sector; a failed write or flush ends the save with
  * EIO, leaves the rest dirty and the layer failed (no retry); room is half
- * the table. The module is included directly. */
+ * the table. Stage 11 (R5): class 4 (a cross-block rename's new name) is
+ * written and FLUSHed before class 5 (the other folder blocks), and
+ * blk_sv_class reads a dirty chunk's class. The module is included
+ * directly. */
 #include <stdbool.h>
 #include <string.h>
 #include "tests/unit/unit.h"
@@ -137,7 +140,7 @@ static void test_put_rules(void)
     CHECK_EQ(blk_sv_put(&sv, 100, BLK_SV_CHUNK, buf, BLK_SV_DATA), -BLK_EIO);           /* misaligned */
     CHECK_EQ(blk_sv_put(&sv, 0, 100, buf, BLK_SV_DATA), -BLK_EIO);
     CHECK_EQ(blk_sv_put(&sv, 0, BLK_SV_CHUNK, buf, 0), -BLK_EIO);                       /* class 0 */
-    CHECK_EQ(blk_sv_put(&sv, 0, BLK_SV_CHUNK, buf, 6), -BLK_EIO);                       /* class 6 */
+    CHECK_EQ(blk_sv_put(&sv, 0, BLK_SV_CHUNK, buf, BLK_SV_CLASSES + 1u), -BLK_EIO);     /* class 7 */
     CHECK_EQ(blk_sv_put(&sv, FK_BYTES, BLK_SV_CHUNK, buf, 1), -BLK_EIO);                /* beyond */
     CHECK_EQ(blk_sv_put(&sv, FK_BYTES - BLK_SV_CHUNK, 2 * BLK_SV_CHUNK, buf, 1), -BLK_EIO);
     CHECK_EQ(blk_sv_dirty(&sv), 0);
@@ -179,11 +182,13 @@ static void test_save_order(void)
     put(2, 1, BLK_SV_SUPER, 0x0A);
     CHECK_EQ(blk_sv_save(&sv), 0);
     /* Class 1: 6-7, 9, 100-115, 116-119, FLUSH; class 2: 3, FLUSH; class 3:
-     * 8, 30-31, FLUSH; class 4: 40, FLUSH; class 5: 1-2, FLUSH. */
+     * 8, 30-31, FLUSH; class 5 (folders): 40, FLUSH; class 6: 1-2, FLUSH
+     * (stage 11: the folder and superblock classes are 5 and 6; class 4,
+     * empty here, writes nothing and needs no FLUSH). */
     const char *kinds = "WWWWFWFWWFWFWF";
     static const uint32_t offs[] = { 6, 9, 100, 116, 0, 3, 0, 8, 30, 0, 40, 0, 1, 0 };
     static const uint32_t lens[] = { 2, 1, 16, 4, 0, 1, 0, 1, 2, 0, 1, 0, 2, 0 };
-    static const uint32_t cls[] = { 1, 1, 1, 1, 0, 2, 0, 3, 3, 0, 4, 0, 5, 0 };
+    static const uint32_t cls[] = { 1, 1, 1, 1, 0, 2, 0, 3, 3, 0, 5, 0, 6, 0 };
     CHECK_EQ(nops, 14);
     bool ok = nops == 14;
     for (uint32_t i = 0; ok && i < 14; i++) {
@@ -204,12 +209,40 @@ static void test_save_order(void)
     CHECK_EQ(blk_sv_save(&sv), 0);
     CHECK_EQ(nops, 0);
     CHECK_EQ(sv.saves, 2);
-    /* Only class 2 and 4 dirty: two FLUSHes. */
+    /* Only the bitmaps and a folder block dirty: two FLUSHes. */
     put(12, 1, BLK_SV_FOLDER, 0x30);
     put(13, 1, BLK_SV_BITMAP, 0x31);
     CHECK_EQ(blk_sv_save(&sv), 0);
     CHECK_EQ(nops, 4);
-    CHECK(oplog[0].kind == 'W' && oplog[0].cls == 2 && oplog[1].kind == 'F' && oplog[2].cls == 4 && oplog[3].kind == 'F');
+    CHECK(oplog[0].kind == 'W' && oplog[0].cls == BLK_SV_BITMAP && oplog[1].kind == 'F' &&
+          oplog[2].cls == BLK_SV_FOLDER && oplog[3].kind == 'F');
+}
+
+/* Stage 11 (R5): a cross-block rename's new name (class 4) is written and
+ * FLUSHed before the other folder blocks (class 5), whatever their order
+ * on the disk; blk_sv_class reads a dirty chunk's class (0 when clean). */
+static void test_name_class(void)
+{
+    reset();
+    put(10, 1, BLK_SV_FOLDER, 0x41);            /* the old name's block, lower on the disk */
+    put(20, 2, BLK_SV_NAME, 0x42);              /* the new name's block (2 KiB) */
+    put(1, 1, BLK_SV_SUPER, 0x43);
+    CHECK_EQ(BLK_SV_NAME, 4);
+    CHECK_EQ(BLK_SV_FOLDER, 5);
+    CHECK_EQ(BLK_SV_SUPER, 6);
+    CHECK_EQ(blk_sv_class(&sv, 10u * BLK_SV_CHUNK), BLK_SV_FOLDER);
+    CHECK_EQ(blk_sv_class(&sv, 21u * BLK_SV_CHUNK + 5u), BLK_SV_NAME);
+    CHECK_EQ(blk_sv_class(&sv, 11u * BLK_SV_CHUNK), 0);
+    CHECK_EQ(blk_sv_save(&sv), 0);
+    /* W 20-21 (class 4), F, W 10 (class 5), F, W 1 (class 6), F. */
+    CHECK_EQ(nops, 6);
+    CHECK(oplog[0].kind == 'W' && oplog[0].off == 20u * BLK_SV_CHUNK && oplog[0].cls == BLK_SV_NAME);
+    CHECK(oplog[1].kind == 'F');
+    CHECK(oplog[2].kind == 'W' && oplog[2].off == 10u * BLK_SV_CHUNK && oplog[2].cls == BLK_SV_FOLDER);
+    CHECK(oplog[3].kind == 'F');
+    CHECK(oplog[4].kind == 'W' && oplog[4].cls == BLK_SV_SUPER && oplog[5].kind == 'F');
+    CHECK_EQ(blk_sv_class(&sv, 20u * BLK_SV_CHUNK), 0);
+    CHECK(disk_is(10, 0x41) && disk_is(20, 0x42) && disk_is(21, 0x42));
 }
 
 static void test_superblock_chunk(void)
@@ -356,6 +389,7 @@ int main(void)
     RUN(test_read_merge);
     RUN(test_put_rules);
     RUN(test_save_order);
+    RUN(test_name_class);
     RUN(test_superblock_chunk);
     RUN(test_failures);
     RUN(test_steps);

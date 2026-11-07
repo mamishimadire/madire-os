@@ -118,6 +118,12 @@ int blk_sv_put(struct blk_sv *s, uint64_t off, uint32_t len, const uint8_t *buf,
     return 0;
 }
 
+uint32_t blk_sv_class(const struct blk_sv *s, uint64_t off)
+{
+    uint32_t at = 0;
+    return blk_sv_find(s, off / BLK_SV_CHUNK, &at) ? s->ents[at].cls : 0u;
+}
+
 uint32_t blk_sv_dirty(const struct blk_sv *s)
 {
     return s->n;

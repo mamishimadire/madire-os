@@ -27,11 +27,36 @@
  *   holds given back, the folder lists all 1100 again; then everything
  *   removed and saved. "disknodes: DONE" or "disknodes: FAILED".
  *
- * Both run on thread 0 at boot (diskwrite's work on its own thread), and
+ * Stage 11 (section D (b), G5):
+ *
+ * test=diskcut[=N] (disktest_cut)
+ *   The owner's case through the VFS on a read-write volume: /home/A (3000
+ *   bytes of tests/ext2write.c's pattern, seed 1) made, closed, sync (save
+ *   1); A removed and /home/B (seed 2) made with no save between, closed,
+ *   sync (saves 2 to 4, R3). The disk writes are logged one by one
+ *   (ext2_disk_cut); with N the power is cut after write N (the boot
+ *   halts there), otherwise "diskcut: DONE". Each file is closed before it
+ *   is removed (note D: unlink-while-open is outside the cut sequences).
+ *
+ * test=diskcheck (disktest_check)
+ *   The remount boot after a cut: /home/A, /home/B and /home/auto.txt
+ *   looked up; each one's size and CRC32 (read through the VFS), or
+ *   "absent"; then "diskcheck: DONE". The mount itself does the D12
+ *   recount of a volume not cleanly unmounted.
+ *
+ * test=diskchurn (disktest_churn, the stress part)
+ *   1000 cycles: a file made in /home, 1000 to 4072 bytes written, closed,
+ *   removed; a sync every 50 and one at the end; the free block and inode
+ *   counts must come back to their start. "diskchurn: DONE" or "FAILED".
+ *
+ * All run on thread 0 at boot (diskwrite's work on its own thread), and
  * take the VFS lock for each call, as the system calls do.
  */
 
 void disktest_write(void);
 void disktest_nodes(void);
+void disktest_cut(void);
+void disktest_check(void);
+void disktest_churn(void);
 
 #endif

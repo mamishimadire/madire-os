@@ -2,6 +2,7 @@
  * dt_-prefixed. */
 #include "kernel/fs/disktest.h"
 #include "kernel/fs/ext2_disk.h"
+#include "kernel/fs/ext2_write.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/kprintf.h"
@@ -437,4 +438,158 @@ void disktest_nodes(void)
     klogf("%s", ok ? "disknodes: DONE (more files than the node table holds, listed with eviction; ENOMEM when "
                      "every node is in use)\n"
                    : "disknodes: FAILED (see the lines above)\n");
+}
+
+/* ---- test=diskcut, test=diskcheck, test=diskchurn (stage 11) ---- */
+
+#define DT_CUT_LEN      3000u                   /* the owner's case: A and B, 3000 bytes each */
+#define DT_CHURN        1000u
+#define DT_CHURN_SAVE   50u
+
+/* Byte j of a file written with `seed`: the same pattern as tests/
+ * ext2write.c's model (its ew_gen), so the host tool's expected contents
+ * hold for the files the kernel writes. */
+static uint8_t dt_gen(uint32_t seed, uint64_t j)
+{
+    uint64_t x = (j + 1u) * 0x9E3779B97F4A7C15ull ^ ((uint64_t)seed << 32 | seed);
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9ull;
+    x ^= x >> 32;
+    return (uint8_t)x;
+}
+
+/* A file made at path, `len` (at most DT_CHUNK) bytes of the pattern
+ * written, then closed (the node given back): 0 or an error. */
+static int dt_pattern_file(const char *path, uint32_t seed, uint32_t len, struct dt_hold *h)
+{
+    struct vnode *n = 0;
+    int r = dt_make(path, VNODE_FILE, &n);
+    if (r)
+        return r;
+    for (uint32_t i = 0; i < len; i++)
+        dt_buf[i] = dt_gen(seed, i);
+    r = dt_write(n, 0, dt_buf, len, h);
+    dt_drop(n);
+    return r;
+}
+
+void disktest_cut(void)
+{
+    if (!ext2_disk_rw()) {
+        klogf("diskcut: FAILED (no read-write volume on /home)\n");
+        return;
+    }
+    /* Note D (stage 10): every file is closed before it is removed, so no
+     * inode stays unattached while open; unlink-while-open is outside the
+     * cut sequences. */
+    klogf("diskcut: the owner's case: save 1 writes /home/A; /home/A removed and /home/B made with no save "
+          "between, then saves 2 to 4 (R3); each file closed before it is removed\n");
+    struct dt_hold h = { 0, 0 };
+    uint64_t blocks = 0;
+    const char *fail = 0;
+    if (dt_pattern_file("/home/A", 1, DT_CUT_LEN, &h) != 0)
+        fail = "A could not be written";
+    else if (ext2_disk_sync(&blocks) != EXT2_DISK_SAVED)
+        fail = "the first sync failed";
+    else if (dt_unlink("/home/A") != 0)
+        fail = "A could not be removed";
+    else if (dt_pattern_file("/home/B", 2, DT_CUT_LEN, &h) != 0)
+        fail = "B could not be written";
+    else if (ext2_disk_sync(&blocks) != EXT2_DISK_SAVED)
+        fail = "the second sync failed";
+    struct ext2_disk_figs f;
+    ext2_disk_figures(&f);
+    if (fail)
+        klogf("diskcut: FAILED (%s)\n", fail);
+    else
+        klogf("diskcut: DONE (uncut: %llu disk writes and %llu flushes since the mount; the longest VFS lock hold in a "
+              "save %llu us (%llu ticks))\n", (ull)f.writes, (ull)f.flushes, (ull)ext2_disk_us(f.hold_cycles),
+              (ull)f.hold_ticks);
+}
+
+void disktest_check(void)
+{
+    static const char *const names[3] = { "/home/A", "/home/B", "/home/auto.txt" };
+    if (!ext2_disk_mounted()) {
+        klogf("diskcheck: FAILED (nothing mounted on /home)\n");
+        return;
+    }
+    for (uint32_t i = 0; i < 3; i++) {
+        struct vnode *n = 0;
+        fd_vfs_acquire();
+        int r = vfs_lookup(vfs_root(), vfs_root()->root, names[i], &n);
+        bool file = r == 0 && n->type == VNODE_FILE;
+        uint64_t size = file ? n->size : 0;
+        if (r == 0)
+            vfs_hold(n);
+        fd_vfs_release();
+        if (r != 0) {
+            klogf("diskcheck: %s: absent (%s)\n", names[i], fs_errno_name(r));
+            continue;
+        }
+        uint32_t crc = 0;
+        int e = file ? dt_crc(n, size, &crc) : 0;
+        if (!file)
+            klogf("diskcheck: %s: not a file\n", names[i]);
+        else if (e != 0)
+            klogf("diskcheck: %s: %llu bytes, unreadable (%s)\n", names[i], (ull)size, fs_errno_name(e));
+        else
+            klogf("diskcheck: %s: %llu bytes, CRC32 0x%08x\n", names[i], (ull)size, crc);
+        dt_drop(n);
+    }
+    klogf("diskcheck: DONE (3 names looked up)\n");
+}
+
+/* The volume's free blocks and inodes now (under the VFS lock). */
+static void dt_free_counts(uint32_t *blocks, uint32_t *inodes)
+{
+    fd_vfs_acquire();
+    const struct ext2_wfs *w = ext2_disk_wfs();
+    *blocks = w ? w->fs.free_blocks : 0;
+    *inodes = w ? w->fs.free_inodes : 0;
+    fd_vfs_release();
+}
+
+void disktest_churn(void)
+{
+    if (!ext2_disk_rw()) {
+        klogf("diskchurn: FAILED (no read-write volume on /home)\n");
+        return;
+    }
+    struct dt_hold h = { 0, 0 };
+    struct ext2_disk_figs f0, f1;
+    uint32_t b0 = 0, i0 = 0, b1 = 0, i1 = 0, syncs = 0, done = 0;
+    uint64_t blocks = 0;
+    const char *fail = 0;
+    dt_free_counts(&b0, &i0);
+    ext2_disk_figures(&f0);
+    for (uint32_t i = 0; i < DT_CHURN && !fail; i++) {
+        char path[32];
+        ksnprintf(path, sizeof(path), "/home/churn-%04u", i);
+        if (dt_pattern_file(path, 100u + i, 1000u + (i % 7u) * 512u, &h) != 0)
+            fail = "a file could not be written";
+        else if (dt_unlink(path) != 0)
+            fail = "a file could not be removed";
+        else if ((i + 1u) % DT_CHURN_SAVE == 0) {
+            syncs++;
+            if (ext2_disk_sync(&blocks) != EXT2_DISK_SAVED)
+                fail = "a sync failed";
+        }
+        done += fail ? 0u : 1u;
+    }
+    if (!fail && ext2_disk_sync(&blocks) != EXT2_DISK_SAVED)
+        fail = "the last sync failed";
+    dt_free_counts(&b1, &i1);
+    ext2_disk_figures(&f1);
+    klogf("diskchurn: %u cycles (create, write 1000 to 4072 bytes, close, delete), a sync every %u (%u syncs) and one "
+          "at the end; free blocks %u -> %u, free inodes %u -> %u; %llu saves, %llu writes, %llu flushes; the "
+          "longest VFS lock hold in a save %llu us (%llu ticks) (report only)\n", done, DT_CHURN_SAVE, syncs, b0, b1,
+          i0, i1, (ull)(f1.saves - f0.saves), (ull)(f1.writes - f0.writes), (ull)(f1.flushes - f0.flushes),
+          (ull)ext2_disk_us(f1.hold_cycles), (ull)f1.hold_ticks);
+    if (fail)
+        klogf("diskchurn: FAILED (%s)\n", fail);
+    else if (b1 != b0 || i1 != i0)
+        klogf("diskchurn: FAILED (the free counts did not come back to their start)\n");
+    else
+        klogf("diskchurn: DONE (%u cycles; the free blocks and inodes back to their start)\n", done);
 }

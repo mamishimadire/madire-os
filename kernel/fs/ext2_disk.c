@@ -51,6 +51,9 @@ static bool ext2_d_on;                  /* a volume is mounted on /home */
 static bool ext2_d_dbg_read;            /* test=blkdebug: the read error injected (once) */
 static int32_t ext2_d_saver = -1;       /* the automatic save's thread */
 static struct ext2_disk_figs ext2_d_figs;
+static bool ext2_d_cut_log, ext2_d_cut_on;  /* test=diskcut: writes logged; the cut armed */
+static uint32_t ext2_d_cut_after;       /* the cut after this write */
+static uint32_t ext2_d_cut_n;           /* writes sent so far */
 
 uint64_t ext2_disk_us(uint64_t cycles)
 {
@@ -60,6 +63,23 @@ uint64_t ext2_disk_us(uint64_t cycles)
 void ext2_disk_options(uint32_t flags)
 {
     ext2_d_flags = flags;
+}
+
+void ext2_disk_cut(bool cut, uint32_t after)
+{
+    ext2_d_cut_log = true;
+    ext2_d_cut_on = cut;
+    ext2_d_cut_after = after;
+}
+
+/* test=diskcut=N: the power cut. No disk command follows; the CPU stops
+ * with interrupts off (the test kills QEMU and checks the image). */
+static void ext2_d_cut_now(void)
+{
+    klogf("blk: test=diskcut=%u: the power cut after write %u: no more disk commands; halted\n", ext2_d_cut_after,
+          ext2_d_cut_n);
+    for (;;)
+        __asm__ volatile ("cli; hlt");
 }
 
 /* ---- the block layer's three calls: reads, writes, flushes ---- */
@@ -98,11 +118,12 @@ static int ext2_d_read(void *ctx, uint64_t off, uint32_t len, uint8_t *buf)
 static int ext2_d_write(void *ctx, uint64_t off, uint32_t len, const uint8_t *buf, uint32_t cls)
 {
     (void)ctx;
-    (void)cls;
     uint8_t *run = (uint8_t *)(uintptr_t)VM_SV_RUN_BASE;
     if (!ext2_d_store_n || off % EXT2_D_SECTOR || len % EXT2_D_SECTOR || len == 0 ||
         len > VM_SV_RUN_PAGES * VM_PAGE_SIZE || off > ext2_d_bytes || len > ext2_d_bytes - off)
         return -1;
+    if (ext2_d_cut_on && ext2_d_cut_n >= ext2_d_cut_after)
+        ext2_d_cut_now();               /* test=diskcut=0: before the first write */
     if (buf != run)
         for (uint32_t i = 0; i < len; i++)
             run[i] = buf[i];
@@ -113,7 +134,15 @@ static int ext2_d_write(void *ctx, uint64_t off, uint32_t len, const uint8_t *bu
     ext2_d_figs.writes++;
     ext2_d_figs.write_bytes += len;
     ext2_d_figs.write_cycles += c;
-    return r ? -1 : 0;
+    if (r)
+        return -1;
+    if (ext2_d_cut_log) {
+        ext2_d_cut_n++;
+        klogf("blk: write %u class %u: partition byte %llu, %u bytes\n", ext2_d_cut_n, cls, (ull)off, len);
+        if (ext2_d_cut_on && ext2_d_cut_n == ext2_d_cut_after)
+            ext2_d_cut_now();
+    }
+    return 0;
 }
 
 static int ext2_d_flush(void *ctx)
@@ -394,13 +423,15 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     klogf("mount: file-size limits from each filesystem's ops table: / %llu bytes, /home %llu bytes\n",
           (ull)ram_max, (ull)disk_max);
     if (rw) {
-        bool autosave = !(ext2_d_flags & EXT2_DISK_TEST_BOOT);
+        bool tested = (ext2_d_flags & EXT2_DISK_AUTOSAVE) != 0;
+        bool autosave = !(ext2_d_flags & EXT2_DISK_TEST_BOOT) || tested;
         if (autosave)
             ext2_d_saver = thread_create("autosave", ext2_d_autosave, 0, true);
         klogf("mount: changes are kept in memory (%u KiB, %u chunks of 1 KiB) until a save writes them, at most "
               "%u disk commands per hold of the VFS lock; automatic save every 5 s: %s\n", ext2_d_store_n * 4u,
               ext2_d_store_n * 4u, EXT2_D_PIECE,
-              autosave ? (ext2_d_saver >= 0 ? "on" : "off (no thread)") : "off (a test= boot)");
+              autosave ? (ext2_d_saver < 0 ? "off (no thread)" : tested ? "on (test=autosave)" : "on")
+                       : "off (a test= boot)");
         if (ext2_d_flags & EXT2_DISK_BLKDEBUG) {
             ahci_debug_arm(false, true);
             klogf("blk: test=blkdebug: armed: the first disk read during a file read fails once, and every disk "
@@ -584,7 +615,8 @@ enum ext2_disk_save ext2_disk_restart_save(void)
 }
 
 /* The automatic save (C5, D8): every 5 s, a full save if something is
- * dirty or pending; not on test= boots. */
+ * dirty or pending; not on test= boots but test=autosave (stage 11), which
+ * logs each automatic save that wrote. */
 static int32_t ext2_d_autosave(void *arg)
 {
     (void)arg;
@@ -593,8 +625,16 @@ static int32_t ext2_d_autosave(void *arg)
         if (!ext2_d_w.rw)
             continue;
         uint32_t saves = 0;
-        if (ext2_d_full_save(0, &saves) == EXT2_DISK_SAVED && saves)
+        uint64_t w0 = ext2_d_figs.writes, f0 = ext2_d_figs.flushes;
+        enum ext2_disk_save s = ext2_d_full_save(0, &saves);
+        if (s == EXT2_DISK_SAVED && saves)
             ext2_d_figs.autosaves++;
+        if ((ext2_d_flags & EXT2_DISK_AUTOSAVE) && saves)
+            klogf("ext2: automatic save (test=autosave): %s; %u saves, %llu writes, %llu flushes; the longest VFS "
+                  "lock hold in a save so far %llu us (%llu ticks) (report only)\n",
+                  s == EXT2_DISK_SAVED ? "saved" : "not saved", saves, (ull)(ext2_d_figs.writes - w0),
+                  (ull)(ext2_d_figs.flushes - f0), (ull)ext2_disk_us(ext2_d_figs.hold_cycles),
+                  (ull)ext2_d_figs.hold_ticks);
     }
     return 0;
 }

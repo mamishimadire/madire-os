@@ -616,7 +616,8 @@ static void test_create_write(void)
 
 /* The classes of one create-and-write (R1): its data and its new
  * indirect block in class 1, the bitmaps 2, the inode table 3, the folder
- * 4, the descriptors and the superblock 5, in that order. */
+ * 5, the descriptors and the superblock 6, in that order (stage 11: class
+ * 4, a cross-block rename's new name, does not occur here). */
 static void test_classes(void)
 {
     mkimg(1024, 256, 1, 1, 2048, 64, 0);
@@ -625,7 +626,7 @@ static void test_classes(void)
     CHECK_EQ(ext2_write_create(&w, 2, "f", 1, 0644, &ino), EXT2_OK);
     CHECK_EQ(write_all(ino, 0, 14 * 1024, 2), 14 * 1024);      /* 12 direct + the single indirect */
     CHECK_EQ(save(), EXT2_OK);
-    bool order = true, seen[6] = { false, false, false, false, false, false };
+    bool order = true, seen[7] = { false, false, false, false, false, false, false };
     uint32_t last = 0;
     struct ext2_inode in;
     memset(&in, 0, sizeof in);
@@ -644,7 +645,7 @@ static void test_classes(void)
             root_cls = wlog[i].cls;
     }
     CHECK(order);
-    CHECK(seen[1] && seen[2] && seen[3] && seen[4] && seen[5]);
+    CHECK(seen[1] && seen[2] && seen[3] && !seen[4] && seen[5] && seen[6]);
     CHECK_EQ(ind_cls, BLK_SV_DATA);
     CHECK_EQ(it_cls, BLK_SV_INODE);
     CHECK_EQ(root_cls, BLK_SV_FOLDER);
@@ -918,6 +919,72 @@ static void test_dirs_rename(void)
     CHECK_EQ(inode_raw(d1).links, 0);
     CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
     CHECK(clean());
+}
+
+/* R5 (stage 11): a rename across folder blocks puts the new name's block
+ * in class 4 and the old name's in class 5 (written in that order); a
+ * rename inside one block is class 5; a plain change keeps a class-4 block
+ * in class 4; a rename whose old name is in a class-4 block, or whose new
+ * name would go into a block already changed in class 5, answers
+ * EXT2_EAGAIN before changing anything, and succeeds after a save; a
+ * folder move's ".." goes with the old name (class 5). */
+static void test_rename_r5(void)
+{
+    mkimg(1024, 256, 1, 1, 1024, 64, 0);
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    uint32_t d1 = 0, d2 = 0, d3 = 0, f = 0, g = 0, h = 0, x = 0, n = 0;
+    CHECK_EQ(ext2_write_mkdir(&w, 2, "d1", 2, 0755, &d1), EXT2_OK);
+    CHECK_EQ(ext2_write_mkdir(&w, 2, "d2", 2, 0755, &d2), EXT2_OK);
+    CHECK_EQ(ext2_write_mkdir(&w, 2, "d3", 2, 0755, &d3), EXT2_OK);
+    CHECK_EQ(save(), EXT2_OK);
+    CHECK_EQ(retry_create(d1, "f", &f), EXT2_OK);
+    CHECK_EQ(write_all(f, 0, 2500, 21), 2500);
+    CHECK_EQ(retry_create(d1, "g", &g), EXT2_OK);
+    CHECK_EQ(retry_create(d2, "h", &h), EXT2_OK);
+    CHECK_EQ(retry_create(d3, "x", &x), EXT2_OK);
+    CHECK_EQ(save(), EXT2_OK);
+    uint32_t b1 = inode_raw(d1).block[0], b2 = inode_raw(d2).block[0], b3 = inode_raw(d3).block[0];
+    uint32_t br = inode_raw(2).block[0], mark = nw;
+    CHECK(b1 && b2 && b3 && br && b1 != b2 && b2 != b3);
+    CHECK_EQ(ext2_write_rename(&w, d1, "f", 1, d2, "f2", 2), EXT2_OK);     /* across folders */
+    CHECK_EQ(blk_sv_class(&sv, boff(b2)), BLK_SV_NAME);
+    CHECK_EQ(blk_sv_class(&sv, boff(b1)), BLK_SV_FOLDER);
+    CHECK_EQ(ext2_write_rename(&w, d2, "h", 1, d3, "h", 1), EXT2_EAGAIN);  /* old name in a class-4 block */
+    CHECK_EQ(lookup(d2, "h"), h);
+    CHECK_EQ(lookup(d3, "h"), 0);
+    CHECK_EQ(ext2_write_rename(&w, d3, "x", 1, d1, "x", 1), EXT2_EAGAIN);  /* new name into a class-5 block */
+    CHECK_EQ(lookup(d3, "x"), x);
+    CHECK_EQ(lookup(d1, "x"), 0);
+    CHECK_EQ(blk_sv_class(&sv, boff(b3)), 0);                               /* nothing changed */
+    CHECK_EQ(ext2_write_rename(&w, d1, "g", 1, d1, "g2", 2), EXT2_OK);     /* inside one block */
+    CHECK_EQ(blk_sv_class(&sv, boff(b1)), BLK_SV_FOLDER);
+    CHECK_EQ(ext2_write_create(&w, d2, "new", 3, 0644, &n), EXT2_OK);      /* a plain add: stays class 4 */
+    CHECK_EQ(blk_sv_class(&sv, boff(b2)), BLK_SV_NAME);
+    CHECK_EQ(save(), EXT2_OK);
+    int64_t i1 = -1, i2 = -1;
+    for (uint32_t i = mark; i < nw && i < WLOG; i++) {
+        if (wlog[i].off == boff(b1))
+            i1 = i;
+        if (wlog[i].off == boff(b2))
+            i2 = i;
+    }
+    CHECK(i2 >= 0 && i1 > i2);                      /* the new name's block first */
+    CHECK(i2 >= 0 && wlog[i2].cls == BLK_SV_NAME);
+    CHECK(i1 >= 0 && wlog[i1].cls == BLK_SV_FOLDER);
+    CHECK_EQ(ext2_write_rename(&w, d2, "h", 1, d3, "h", 1), EXT2_OK);      /* after the save */
+    CHECK_EQ(save(), EXT2_OK);
+    /* A folder moved: the new name in class 4, the old name and its ".." in 5. */
+    CHECK_EQ(ext2_write_rename(&w, 2, "d3", 2, d2, "d3", 2), EXT2_OK);
+    CHECK_EQ(blk_sv_class(&sv, boff(b2)), BLK_SV_NAME);
+    CHECK_EQ(blk_sv_class(&sv, boff(br)), BLK_SV_FOLDER);
+    CHECK_EQ(blk_sv_class(&sv, boff(b3)), BLK_SV_FOLDER);
+    CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
+    CHECK(clean());
+    CHECK(reads_back(lookup(d2, "f2"), 0, 2500, 21));
+    CHECK_EQ(lookup(d3, "h"), h);
+    CHECK_EQ(lookup(d2, "d3"), d3);
+    CHECK_EQ(lookup(2, "d3"), 0);
+    CHECK_EQ(lookup(d1, "g2"), g);
 }
 
 static void test_dir_index_flag(void)
@@ -1269,6 +1336,7 @@ int main(void)
     RUN(test_full_disk);
     RUN(test_folder_growth);
     RUN(test_dirs_rename);
+    RUN(test_rename_r5);
     RUN(test_dir_index_flag);
     RUN(test_attr_blocks);
     RUN(test_tind_large);

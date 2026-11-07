@@ -290,5 +290,15 @@
 # Stage 10, the owner's option 2: 1 more (part static): the boot-time
 # read-write mount's hold of the VFS lock before System ready, with no
 # other thread asking for the lock or waiting (122 -> 123).
-1.4 123
+# Stage 11: 14 more, all in part static: the unordered host sweep of the
+# six stage 9 sequences (6); test=diskcut uncut, the kernel's writes equal
+# to the host model's (1); the cut points N1 and N2, each the cut boot
+# judged on the image and the remount boot (4); test=autosave (3). Changed,
+# not added (the owner's approval, before the commit): the six stage 9
+# sweep checks (the checker now wants every renamed saved path exact at its
+# old or new path, A9 without the moved case, A14), two of their texts;
+# the unit suites blk_core_save and ext2_write (the classes 4-6, R5's new
+# cases). The stress part's 15 power-cut checks and its churn check are
+# [stress], counted apart.
+1.4 137
 unit-suites 106

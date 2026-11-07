@@ -445,10 +445,11 @@ test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)
 # the parts: bash tests/qemu-tests.sh --list-parts), for the parallel jobs
 # of .github/workflows/regression.yml. The unit tests and make repro run
 # only with SHARD=static, so a sharded run runs them once; the padded test
-# kernel (1.0) is built only for part 4, which boots it.
+# kernel (1.0) is built only for part 4, which boots it. 1.4 stage 11: the
+# stress part's power cuts need the host tool ext2write (their model).
 SHARD ?= static
 test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit ext2core) \
-            $(if $(filter 4,$(SHARD)),padkernel)
+            $(if $(filter 4,$(SHARD)),padkernel) $(if $(filter stress,$(SHARD)),$(EXT2WRITE))
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)
