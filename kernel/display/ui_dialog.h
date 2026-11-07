@@ -34,6 +34,9 @@
 #define UI_DIALOG_TITLE "Restart"
 #define UI_DIALOG_LINE1 "Restart Madire OS now?"
 #define UI_DIALOG_LINE2 "Files in Live mode are lost."
+/* 1.4 stage 12 (docs/plans/1.4.md, C10): the second line in Disk mode. */
+#define UI_DIALOG_LINE2_DISK   "Files in /home are saved first."
+#define UI_DIALOG_LINE2_DISKRO "Disk is read-only; /home is unchanged."
 
 enum ui_dialog_button { UI_DLG_CANCEL, UI_DLG_RESTART, UI_DLG_BUTTONS };
 enum ui_dialog_part { UI_DLG_NONE, UI_DLG_BODY, UI_DLG_PART_CANCEL, UI_DLG_PART_RESTART, UI_DLG_PART_CLOSE };
@@ -55,6 +58,11 @@ void ui_dialog_size(uint32_t s, int32_t *w, int32_t *h);
  * button normal. d's window paints d itself: d is not to be copied. */
 void ui_dialog_init(struct ui_dialog *d, uint32_t s, const struct ui_fonts *f, int32_t width, int32_t bar_y,
                     bool ring);
+
+/* 1.4 stage 12: the second line every dialog paints from now on
+ * (UI_DIALOG_LINE2 until set): UI_DIALOG_LINE2_DISK or _DISKRO in Disk
+ * mode. The desktop sets it once, before any dialog opens. */
+void ui_dialog_set_line2(const char *text);
 
 /* Button b's rectangle on the screen. */
 struct rect ui_dialog_button_rect(const struct ui_dialog *d, enum ui_dialog_button b);

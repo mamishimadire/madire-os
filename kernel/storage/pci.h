@@ -10,6 +10,7 @@
  *   PCI: <n> buses, <n> devices, <n> functions, <n> PCI-to-PCI bridges
  *        (<n> secondary buses refused); storage: <n> AHCI, <n> other;
  *        configuration read only
+ *   (1.4 stage 12: "1 bus" and "1 PCI-to-PCI bridge" for a count of one)
  *   Storage: no AHCI controller (Live mode)
  *   Storage: AHCI controller at bb:dd.f (vvvv:dddd, BAR5 0x<register>
  *        refused: <reason>), not used (Live mode)

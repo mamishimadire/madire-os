@@ -607,7 +607,10 @@ def main():
     ap.add_argument("--timeout", type=float, default=150)
     ap.add_argument("--about", action="store_true")         # 1.3 stage 4a
     ap.add_argument("--shadow")                                 # 1.3 stage 4b
+    ap.add_argument("--diskmode", choices=("rw", "ro"))         # 1.4 stage 12: Disk mode's texts
     a = ap.parse_args()
+    if a.diskmode:
+        desktop_ref.set_disk_mode(a.diskmode)
     dump = a.socket + ".ppm"
     try:
         size = None

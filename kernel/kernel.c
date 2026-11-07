@@ -1148,6 +1148,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     pci_boot();
 
     key_logging_init();                     /* 0.9.2: before any diagnostic reads keys */
+    /* 1.4 stage 12: the home folders on a read-write Disk-mode mount (D18;
+     * none on a test= boot), after "Key events:" so the Storage: line stays
+     * right before it. */
+    ext2_disk_home();
     run_diagnostics();
     /* 1.0 stage 4: every process so far (the boot self-test's, a
      * diagnostic's) has closed its descriptors. */

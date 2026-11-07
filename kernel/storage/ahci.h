@@ -35,6 +35,26 @@
  * command register was written (pci.c). */
 void ahci_boot(const struct pci_ahci *a);
 
+/* 1.4 stage 12: what the boot found, as its Storage: line said, for the
+ * shell's "disk" (read only). AHCI_REPORT_NONE: ahci_boot never ran (no
+ * AHCI controller). AHCI_REPORT_OTHER: no disk in use; `summary` holds the
+ * Storage: line's text after "Storage: " (e.g. "AHCI 00:05.0, no disk
+ * (Live mode)"). AHCI_REPORT_DISK: the first disk, its rows below. */
+enum ahci_report_kind { AHCI_REPORT_NONE, AHCI_REPORT_OTHER, AHCI_REPORT_DISK };
+struct ahci_report {
+    enum ahci_report_kind kind;
+    char summary[112];
+    char where[12];             /* "00:05.0" */
+    uint32_t port;
+    char model[41];
+    char size[24];              /* "17 MiB" */
+    char table[40];             /* the guard's "MBR, 1 partition" */
+    char guard[64];             /* the guard's "ALLOWED on partition 1" or "REFUSED: ..." */
+    char use[96];               /* "ext2 'madire-test' mounted read-write on /home", "read only, not mounted: ..." */
+    bool mounted, more_disks;
+};
+const struct ahci_report *ahci_report(void);
+
 /* READ DMA EXT on port `port` (see ahci_read in ahci_core.h); an error is
  * logged once ("ahci: port P: READ DMA EXT ... failed: ..."). 0 or
  * -AHCI_EIO. */

@@ -56,9 +56,11 @@ void pci_boot(void)
     const struct pci_access acc = { pci_read32, 0 };
     struct pci_scan s;
     pci_scan(&acc, &s);
-    klogf("PCI: %u buses, %u devices, %u functions, %u PCI-to-PCI bridges (%u secondary buses refused); "
+    /* 1.4 stage 12: "1 bus" and "1 PCI-to-PCI bridge" (was "1 buses"). */
+    klogf("PCI: %u bus%s, %u devices, %u functions, %u PCI-to-PCI bridge%s (%u secondary buses refused); "
           "storage: %u AHCI, %u other; configuration read only\n",
-          s.buses, s.devices, s.functions, s.bridges, s.refused, s.ahci, s.storage_other);
+          s.buses, s.buses == 1 ? "" : "es", s.devices, s.functions, s.bridges, s.bridges == 1 ? "" : "s",
+          s.refused, s.ahci, s.storage_other);
     if (!s.found) {
         klogf("Storage: no AHCI controller (Live mode)\n");
         return;

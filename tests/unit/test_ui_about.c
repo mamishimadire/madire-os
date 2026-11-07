@@ -99,6 +99,12 @@ static void test_values(void)
         CHECK(ui_text_width(f.regular, a.values[1]) <= ui_about_value_px(s));
         size_t need = ui_about_scratch(s, 4096, 4096);
         CHECK(need > 0 && need <= UI_ABOUT_SCRATCH);
+        /* 1.4 stage 12: Disk mode's Mode rows fit their column whole (C10). */
+        ui_about_set_mode(&a, UI_ABOUT_MODE_DISK);
+        CHECK(strcmp(a.values[4], "Disk (home is saved)") == 0);
+        ui_about_set_mode(&a, UI_ABOUT_MODE_DISKRO);
+        CHECK(strcmp(a.values[4], "Disk (home read-only)") == 0);
+        CHECK(strcmp(a.values[0], "1.3") == 0);         /* the other rows untouched */
     }
 }
 

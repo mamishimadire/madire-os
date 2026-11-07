@@ -1001,3 +1001,99 @@ reject "$CK_LOG" "^key: |PANIC|FAILED|Screen output from thread" "[1.3] console 
 section "[1.3] The splash-to-desktop handover at 800x600x24: the default path (still desktoplog mouselog; stage 8)"
 # desktop_handover_case (tests/qemu-lib.sh): 7 checks, one boot.
 desktop_handover_case 800 800x600x24 100 "handover at 800x600x24" 1.3 "resolution: 800x600x24"
+
+# ---- 1.4 stage 12: Disk mode on the desktop and at the console ----
+
+section "[1.4] Disk mode: the About window and the Restart dialog against tests/desktop_ref.py, Restart saves first; a console session with version, df, du, disk, sync, mv and cd (stage 12)"
+# docs/plans/1.4.md, C10-C12, G1 part 3. (1-3) The desktop at 1024x768x32
+# with a marked disk on ich9-ahci (test=desktop desktopabout: no home
+# folders, the automatic save off): the About window at start, its Mode
+# row "Disk (home is saved)" (logged, and the screen pixel for pixel as
+# tests/desktop_ref.py --diskmode rw draws it); closed; the M menu's
+# Restart opens the dialog "Files in /home are saved first." (pixel for
+# pixel); Restart: the save before Restart marks the volume clean, then the
+# reset (QEMU -no-reboot exits); e2fsck -fn reports nothing. (4-10) A
+# -kernel boot with a marked disk and no test= option (the home folders
+# made at the mount): the console's Disk-mode lines and the start folder
+# /home/user; version's Disk-mode line; df (the RAM block as before, then
+# the disk's, its totals the image's); du in KiB from the disk's blocks;
+# disk (port, model, size, partitions, the guard, the mount); sync; mv
+# from /home to /tmp refused with its message; cd alone back to /home/user.
+D12_W=$OUT/disk-mode
+rm -rf "${D12_W:?}" && mkdir -p "$D12_W"
+D12_OK=1
+disk_mkfs "$D12_W/fs.img" 4096 1024 256 256 "" > "$D12_W/mkfs.txt" 2>&1 &&
+    disk_image mbr "$D12_W/fs.img" "$D12_W/desktop-disk.img" > /dev/null 2>&1 &&
+    cp "$D12_W/desktop-disk.img" "$D12_W/console-disk.img" || D12_OK=0
+D12_BLOCKS=$(disk_debugfs "$D12_W/fs.img" stats | sed -nE 's/^Block count:[[:space:]]*([0-9]+).*/\1/p')
+D12_INODES=$(disk_debugfs "$D12_W/fs.img" stats | sed -nE 's/^Inode count:[[:space:]]*([0-9]+).*/\1/p')
+# (1-3) The desktop.
+D12_LOG=$OUT/serial-desktop-disk.log
+desktop_iso "disk" "test=desktop desktopabout desktoplog mouselog" ""
+DT_OUT=""; DT_EXITED=no
+if [ -n "$DT_ISO" ] && [ "$D12_OK" -eq 1 ]; then
+    DT_DISK=$D12_W/desktop-disk.img desktop_boot_end "$D12_LOG" "$DT_ISO" 1024x768 wshot rel:-1000,-1000 \
+        to:close press release wshot to:m click "to:row@Restart" click wshot "to:btn@Restart" press release \
+        "wait:Restart: keyboard controller reset (0xfe to port 0x64)" --about --diskmode rw
+else : > "$D12_LOG"; fi
+grep -E "^(Storage|Desktop: Restart|ext2: save before restart|Restart: )|^desktop: (about Mode|dialog Restart opened)" "$D12_LOG" |
+    sed 's/^/      /'
+d12_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$DT_OUT"; }
+if grep -qxF "desktop: about Mode: Disk (home is saved)" "$D12_LOG" &&
+   grep -qE "^Storage: .*; ext2 'madire-test' mounted read-write on /home \(Disk mode\)$" "$D12_LOG" && d12_ws 1; then
+    pass "[1.4] Disk-mode desktop at 1024x768x32: the About window's Mode row is 'Disk (home is saved)' (logged), and the screen equals tests/desktop_ref.py's Disk-mode rendering pixel for pixel"
+else
+    fail "[1.4] Disk-mode desktop: the About window's Mode row or its screen ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '); see ${D12_LOG##*/})"
+fi
+if grep -qE "^desktop: dialog Restart opened at " "$D12_LOG" && d12_ws 2 && d12_ws 3; then
+    pass "[1.4] Disk-mode desktop: the About window closed (the plain desktop) and the Restart dialog with 'Files in /home are saved first.', both screens pixel for pixel as tests/desktop_ref.py draws them"
+else
+    fail "[1.4] Disk-mode desktop: the Restart dialog or the desktop before it differs ($(grep -E '^(WSCREEN [23]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+fi
+disk_image extract "$D12_W/desktop-disk.img" "$D12_W/desktop-part.img" > /dev/null 2>&1
+D12_STATE=$(disk_debugfs "$D12_W/desktop-part.img" stats | sed -nE 's/^Filesystem state:[[:space:]]*(.*)$/\1/p')
+D12_FSCK=$(disk_fsck "$D12_W/desktop-part.img"); D12_FRC=$?
+D12_FX=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$D12_FSCK")
+echo "      after Restart: state ${D12_STATE:-?}; e2fsck -fn exit $D12_FRC${D12_FX:+: $D12_FX}; QEMU exited by itself: $DT_EXITED"
+if [ "$DT_EXITED" = yes ] && awk '/^ext2: save before restart: done in [0-9]+ ms .*; the volume marked clean$/ { s = NR }
+        /^Restart: keyboard controller reset \(0xfe to port 0x64\)$/ { r = NR } END { exit !(s && r && s < r) }' "$D12_LOG" &&
+   [ "$D12_STATE" = clean ] && [ "$D12_FRC" -eq 0 ] && [ -z "$D12_FX" ]; then
+    pass "[1.4] Disk-mode desktop: Restart saved first (the volume marked clean, logged before the reset), then restarted (QEMU -no-reboot exited by itself); the disk is clean and e2fsck -fn reports nothing"
+else
+    fail "[1.4] Disk-mode desktop: Restart did not save first, the reset did not come, or the disk is not clean afterwards (see ${D12_LOG##*/})"
+fi
+# (4-10) The console session.
+D12_CL=$OUT/serial-disk-console.log
+D12_K="x{wait:1}pwd{ret}version{ret}df{ret}du{ret}disk{ret}echo hello > note.txt{ret}{wait:1}du note.txt{ret}"
+D12_K+="sync{ret}{wait:2}mv note.txt /tmp/note.txt{ret}{wait:1}cd /tmp{ret}cd{ret}pwd{ret}echo end-of-disk-session{ret}"
+if [ "$D12_OK" -eq 1 ]; then
+    boot_text "$D12_CL" 120 "System ready." "$D12_K" 0.05 $'\nend-of-disk-session\n' -m 128M -kernel "$KERNEL" \
+        -drive file="$D12_W/console-disk.img",if=none,id=d12-disk,format=raw -device ich9-ahci,id=d12-ahci,addr=0x5 \
+        -device ide-hd,drive=d12-disk,bus=d12-ahci.0
+else : > "$D12_CL"; fi
+grep -E '^(home: |Disk mode|Files elsewhere|madire> |Filesystem: |Blocks: |Inodes: |Disk on port|  (Partitions|Write guard|Use): |sync: |mv: |[0-9]+ KiB )' "$D12_CL" |
+    sed 's/^/      console: /'
+D12_NEXT="^(console: |madire> )"
+expect_in_order "$D12_CL" "[1.4] Disk-mode console: the home folders made at the mount; the start lines say Disk mode (C10) and the shell starts in /home/user (C11)" \
+    "^home: 8 folders made, 0 already there " "^Disk mode: files in /home are saved on the disk\.$" \
+    "^Files elsewhere \(such as /tmp\) are lost when the computer restarts\.$" "^madire> pwd$" "^/home/user$"
+expect_lines "$D12_CL" "[1.4] Disk-mode console: version's second line is 'Disk mode (/home is saved on the disk)'" \
+    "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$" "^Disk mode \(/home is saved on the disk\)$" \
+    "$D12_NEXT"
+expect_lines "$D12_CL" "[1.4] Disk-mode console: df shows the RAM filesystem as before, then the disk's volume on /home with its blocks and inodes (the image's $D12_BLOCKS blocks and $D12_INODES inodes)" \
+    "^madire> df$" "^Filesystem: live \(RAM\), mounted on / \(files in memory only\)$" "^Nodes: " "^Pages: " \
+    "^Space: " "^Filesystem: ext2 'madire-test' \(disk 0, partition 1\), mounted on /home$" \
+    "^Blocks:      *[0-9]+ used of ${D12_BLOCKS:-x} \([0-9]+ free\), 1 KiB each$" \
+    "^Inodes:      *[0-9]+ used of ${D12_INODES:-x} \([0-9]+ free\)$" "$D12_NEXT"
+expect_in_order "$D12_CL" "[1.4] Disk-mode console: du counts the disk's own blocks in KiB: the 7 empty home folders 0 KiB, a 6-byte file 1 KiB (one 1 KiB block)" \
+    "^madire> du$" "^0 KiB on the disk in 0 files and 7 folders$" "^madire> du note\.txt$" \
+    "^1 KiB on the disk in 1 file and 0 folders$"
+expect_lines "$D12_CL" "[1.4] Disk-mode console: disk shows the disk (port 0, QEMU's model and size, AHCI 00:05.0), its partitions, the write guard's decision and the read-write mount on /home" \
+    "^madire> disk$" "^Disk on port 0: QEMU HARDDISK, [0-9]+ MiB \(AHCI 00:05\.0\)$" "^  Partitions:  MBR, 1 partition$" \
+    "^  Write guard: ALLOWED on partition 1$" "^  Use:         ext2 'madire-test' mounted read-write on /home \(Disk mode\)$" \
+    "$D12_NEXT"
+expect_in_order "$D12_CL" "[1.4] Disk-mode console: sync saves the new file; mv from /home to /tmp is refused with 'mv: cannot move between filesystems (copy, then remove).'" \
+    "^madire> sync$" "^sync: [1-9][0-9]* blocks? saved\.$" "^madire> mv note\.txt /tmp/note\.txt$" \
+    "^mv: cannot move between filesystems \(copy, then remove\)\.$"
+expect_in_order "$D12_CL" "[1.4] Disk-mode console: cd alone goes back to /home/user (C11)" \
+    "^madire> cd /tmp$" "^madire> cd$" "^madire> pwd$" "^/home/user$"

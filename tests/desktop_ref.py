@@ -1771,9 +1771,33 @@ def scale_of(w, h):
     return None
 
 
+# 1.4 stage 12 (docs/plans/1.4.md, C10): Disk mode's About Mode row and
+# Restart line (ui_about.h, ui_dialog.h); "rw" or "ro", None for Live mode.
+DISK_TEXTS = {
+    "rw": (b"Disk (home is saved)", b"Files in /home are saved first."),
+    "ro": (b"Disk (home read-only)", b"Disk is read-only; /home is unchanged."),
+}
+LIVE_TEXTS = (ABOUT_MODE, DIALOG_LINES[1])
+
+
+def set_disk_mode(kind):
+    """The About and Restart texts of Live mode (None) or Disk mode ("rw",
+    "ro"), for every later rendering (tests/qmp_desktop.py --diskmode)."""
+    global ABOUT_MODE, DIALOG_LINES
+    mode, line = DISK_TEXTS[kind] if kind else LIVE_TEXTS
+    ABOUT_MODE = mode
+    DIALOG_LINES = (DIALOG_LINES[0], line)
+
+
 def render(w, h, scene):
     tok = colours()
     s = scale_of(w, h)
+    # 1.4 stage 12: <base>_disk and <base>_diskro: <base> in Disk mode.
+    for suffix, kind in (("_diskro", "ro"), ("_disk", "rw")):
+        if scene.endswith(suffix) and scene[:-len(suffix)] in SCENES:
+            set_disk_mode(kind)
+            scene = scene[:-len(suffix)]
+            break
     if s is None or scene not in SCENES:
         raise ValueError("no scene %s on %dx%d" % (scene, w, h))
     scr = Screen(w, h, tok["bg.deep"])

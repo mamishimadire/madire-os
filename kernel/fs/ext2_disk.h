@@ -125,6 +125,31 @@ struct ext2_disk_figs {
 };
 void ext2_disk_figures(struct ext2_disk_figs *f);
 
+/* 1.4 stage 12 (D18, docs/plans/1.4.md C11): the home folders. On a
+ * read-write mount, /home/user and its Desktop, Documents, Downloads,
+ * Pictures, Music, Videos and Trash are made if missing (one never
+ * recreated or touched), then saved; one "home:" line. Nothing on a
+ * read-only mount, in Live mode or on a test= boot (as D8's automatic save:
+ * the disk tests' writes stay their own). kernel.c, after the "Key events:"
+ * line, before the diagnostics (thread 0). The save pieces' longest-hold
+ * figure starts again after it (boot-time, before System ready). */
+void ext2_disk_home(void);
+
+/* 1.4 stage 12, for "du": the KiB a file or folder on the disk really
+ * uses (its i_blocks, indirect blocks included); 0 for a node not on the
+ * disk. Under the VFS lock. */
+struct vnode;
+uint64_t ext2_disk_kib(const struct vnode *n);
+
+/* 1.4 stage 12, for "df": the mounted volume's figures (in memory: the
+ * frees not yet saved count as used). false in Live mode. */
+struct ext2_disk_dfinfo {
+    char label[17];
+    uint32_t port, partition, block_size;
+    uint64_t blocks, blocks_free, inodes, inodes_free;
+};
+bool ext2_disk_df(struct ext2_disk_dfinfo *out);
+
 /* For the disk tests (disktest.c): the mounted volume's VFS adapter and
  * write core (NULL in Live mode), and the disk's port. */
 struct ext2_vfs *ext2_disk_vfs(void);

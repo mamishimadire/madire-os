@@ -300,5 +300,21 @@
 # the unit suites blk_core_save and ext2_write (the classes 4-6, R5's new
 # cases). The stress part's 15 power-cut checks and its churn check are
 # [stress], counted apart.
-1.4 137
-unit-suites 106
+# Stage 12: 34 more: Disk mode's About and Restart scenes against
+# tests/desktop_ref.py, read-write and read-only, five modes (20, part
+# static); the home folders: made once, not recreated, none read-only, none
+# in Live mode (4, part 1); a Disk-mode desktop boot: the About window, the
+# Restart dialog, Restart saving first (3, part 3); a Disk-mode console
+# session: the start lines and folder, version, df, du, disk, sync and mv,
+# cd (7, part 3); 1 unit suite (shell_disk12), a new case in ui_about.
+# Changed, not added (the owner's approval, before the commit): the help
+# lists (G2: [0.12] help's files line, [0.12] help sections 40 -> 42,
+# [1.0] help 40 -> 42, [1.0] help <section> rows 40 -> 42, [1.0] help files
+# 13 -> 15, the VirtualBox shell group's help files rows); stage 5's and
+# stage 8's disk boots booted with test=nohome (D18: no home folders on a
+# test= boot) and stage 8's read-write mount line (automatic save off);
+# stage 10's write session and persistence (cd /home first; the expected
+# tree holds the home folders); desktop_boot and desktop_boot_end take
+# DT_DISK.
+1.4 171
+unit-suites 107

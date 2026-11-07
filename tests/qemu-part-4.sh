@@ -621,8 +621,9 @@ expect_in_order "$LOG" "[1.0] Live label: the console's first lines after the ti
 expect_lines "$LOG" "[1.0] version: the version line, then 'Live mode (files in memory only)'" \
     "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$" "^Live mode \(files in memory only\)$" "$NEXT"
 expect_lines "$LOG" "[1.0] pwd: the shell starts in /home" "^madire> pwd$" "^/home$" "$NEXT"
-# 1.0 stage 9: rm, cp, mv, df and du after cat (13 commands; was 8).
-expect_lines "$LOG" "[1.0] help files: the section's title and its 13 commands in help order" \
+# 1.0 stage 9: rm, cp, mv, df and du after cat (13 commands; was 8). 1.4
+# stage 12: sync and disk after du (15).
+expect_lines "$LOG" "[1.0] help files: the section's title and its 15 commands in help order" \
     "^madire> help files$" "^files: Files and folders$" "^  pwd      Show the current folder$" \
     "^  cd       Change the current folder: cd \[path\]$" "^  ls       List a folder: ls \[-l\] \[path\]$" \
     "^  mkdir    Create a folder: mkdir <path>$" "^  rmdir    Remove an empty folder: rmdir <path>$" \
@@ -631,7 +632,8 @@ expect_lines "$LOG" "[1.0] help files: the section's title and its 13 commands i
     "^  cat      Show a file's contents: cat <path>$" \
     "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$" "^  cp       Copy a file: cp \[-y\] <from> <to>$" \
     "^  mv       Move or rename: mv \[-y\] <from> <to>$" "^  df       Show the filesystem's nodes and pages in use$" \
-    "^  du       Show the pages under a folder: du \[path\]$" "$NEXT"
+    "^  du       Show the pages under a folder: du \[path\]$" "^  sync     Save changed files to the disk$" \
+    "^  disk     Show disks and how they are used$" "$NEXT"
 expect_lines "$LOG" "[1.0] help cat: purpose and usage" \
     "^madire> help cat$" "^cat: Show a file's contents: cat <path>$" "^Usage: cat <path>$" "$NEXT"
 expect_lines "$LOG" "[1.0] ls --help: purpose and usage" \

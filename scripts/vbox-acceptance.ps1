@@ -1517,7 +1517,8 @@ if (Want "files") {
         "^  cat      Show a file's contents: cat <path>$",
         "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$", "^  cp       Copy a file: cp \[-y\] <from> <to>$",
         "^  mv       Move or rename: mv \[-y\] <from> <to>$", "^  df       Show the filesystem's nodes and pages in use$",
-        "^  du       Show the pages under a folder: du \[path\]$")
+        "^  du       Show the pages under a folder: du \[path\]$", "^  sync     Save changed files to the disk$",
+        "^  disk     Show disks and how they are used$")
     Start-Sleep -Seconds 1; Shot "files-help"
 
     # folders, redirection, stat

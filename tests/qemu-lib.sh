@@ -359,8 +359,11 @@ desktop_boot() {
     shift 3
     rm -f "$log" "$sock"
     t0=$(date +%s%N)
+    # 1.4 stage 12: DT_DISK (a disk image), when set, on ich9-ahci (Disk mode).
     timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
-        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" \
+        ${DT_DISK:+-drive file="$DT_DISK",if=none,id=dt-disk,format=raw -device ich9-ahci,id=dt-ahci,addr=0x5} \
+        ${DT_DISK:+-device ide-hd,drive=dt-disk,bus=dt-ahci.0} >/dev/null 2>&1 &
     qpid=$!
     DT_OUT=$(python3 "$QMPDESKTOP" "$sock" "$log" "$@" --size "$size" ${DT_UNTIL:+--until "$DT_UNTIL"} \
              --timeout 180 2>&1)
@@ -745,8 +748,11 @@ desktop_boot_end() {
     shift 3
     rm -f "$log" "$sock"
     t0=$(date +%s%N)
+    # 1.4 stage 12: DT_DISK as desktop_boot's.
     timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
-        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" >/dev/null 2>&1 &
+        -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" \
+        ${DT_DISK:+-drive file="$DT_DISK",if=none,id=dt-disk,format=raw -device ich9-ahci,id=dt-ahci,addr=0x5} \
+        ${DT_DISK:+-device ide-hd,drive=dt-disk,bus=dt-ahci.0} >/dev/null 2>&1 &
     qpid=$!
     DT_OUT=$(python3 "$QMPDESKTOP" "$sock" "$log" "$@" --size "$size" --timeout 200 2>&1)
     grep -v '^MISMATCH ' <<< "$DT_OUT" | sed 's/^/      /'

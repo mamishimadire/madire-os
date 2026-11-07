@@ -253,18 +253,31 @@ void ahci_figures(uint64_t *commands, uint64_t *polls_longest, uint64_t *ticks_l
     *ticks_longest = ahci_hba.ticks_longest;
 }
 
+/* 1.4 stage 12: the boot's findings for "disk" (ahci.h). */
+static struct ahci_report ahci_rep;
+
+const struct ahci_report *ahci_report(void)
+{
+    return &ahci_rep;
+}
+
 void ahci_boot(const struct pci_ahci *a)
 {
     char where[12], size[24];
     ksnprintf(where, sizeof(where), "%02x:%02x.%x", a->bus, a->dev, a->fn);
+    ksnprintf(ahci_rep.where, sizeof(ahci_rep.where), "%s", where);
+    ahci_rep.kind = AHCI_REPORT_OTHER;
     if (!paging_enabled()) {
         klogf("Storage: AHCI %s, not used: paging is off (Live mode)\n", where);
+        ksnprintf(ahci_rep.summary, sizeof(ahci_rep.summary), "AHCI %s, not used: paging is off (Live mode)", where);
         return;
     }
     uint32_t tables0 = paging_stats()->page_tables, page = a->base & ~(uint32_t)(VM_PAGE_SIZE - 1);
     uint32_t off = a->base - page;
     if (!ahci_map_regs(page, 0, 1)) {
         klogf("Storage: AHCI %s, not used: its registers could not be mapped (Live mode)\n", where);
+        ksnprintf(ahci_rep.summary, sizeof(ahci_rep.summary),
+                  "AHCI %s, not used: its registers could not be mapped (Live mode)", where);
         return;
     }
     ahci_regs = (volatile uint8_t *)(uintptr_t)(VM_DEVREG_BASE + off);
@@ -273,6 +286,8 @@ void ahci_boot(const struct pci_ahci *a)
     if (pages > VM_DEVREG_PAGES || !ahci_map_regs(page, 1, pages)) {
         klogf("Storage: AHCI %s, not used: its registers (%u pages) could not be mapped (Live mode)\n", where,
               pages);
+        ksnprintf(ahci_rep.summary, sizeof(ahci_rep.summary),
+                  "AHCI %s, not used: its registers could not be mapped (Live mode)", where);
         return;
     }
     uint64_t pte_phys = 0, pte_flags = 0;
@@ -342,10 +357,22 @@ void ahci_boot(const struct pci_ahci *a)
         klogf("Storage: AHCI %s, port %d disk %s %s, %s, writes would be %s%s%s (%s)\n", where, disk,
               pt->disk.model, size, gs.table, gs.result, tail, disks > 1 ? "; more disks not used" : "",
               mounted ? ext2_disk_mode() : "Live mode");
+        ahci_rep.kind = AHCI_REPORT_DISK;
+        ahci_rep.port = (uint32_t)disk;
+        ahci_rep.mounted = mounted;
+        ahci_rep.more_disks = disks > 1;
+        ksnprintf(ahci_rep.model, sizeof(ahci_rep.model), "%s", pt->disk.model);
+        ksnprintf(ahci_rep.size, sizeof(ahci_rep.size), "%s", size);
+        ksnprintf(ahci_rep.table, sizeof(ahci_rep.table), "%s", gs.table);
+        ksnprintf(ahci_rep.guard, sizeof(ahci_rep.guard), "%s", gs.result);
+        ksnprintf(ahci_rep.use, sizeof(ahci_rep.use), "%s", tail[0] == ';' && tail[1] == ' ' ? tail + 2 : tail);
     } else if (refused >= 0) {
         klogf("Storage: AHCI %s, no usable disk (port %d: %s) (Live mode)\n", where, refused,
               h->port[refused].why ? h->port[refused].why : "unknown");
+        ksnprintf(ahci_rep.summary, sizeof(ahci_rep.summary), "AHCI %s, no usable disk (port %d: %s) (Live mode)",
+                  where, refused, h->port[refused].why ? h->port[refused].why : "unknown");
     } else {
         klogf("Storage: AHCI %s, no disk (Live mode)\n", where);
+        ksnprintf(ahci_rep.summary, sizeof(ahci_rep.summary), "AHCI %s, no disk (Live mode)", where);
     }
 }

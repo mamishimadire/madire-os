@@ -1209,7 +1209,10 @@ section "[1.4] The PCI scan: the PCI: and Storage: lines against QEMU's own view
 # "blk:") come between the PCI: line and the Storage: line.
 PCI_T0=$(date +%s)
 PCI_READY="System ready. Press any key to open the console."
-PCI_LINE_RE='^PCI: ([0-9]+) buses, ([0-9]+) devices, ([0-9]+) functions, ([0-9]+) PCI-to-PCI bridges \(([0-9]+) secondary buses refused\); storage: ([0-9]+) AHCI, ([0-9]+) other; configuration read only$'
+# 1.4 stage 12 (changed, the owner's approval): "1 bus" and "1 PCI-to-PCI
+# bridge"; the words are captured (\2, \6) and pcitest_agree accepts only
+# the singular for exactly 1 and the plural for any other count.
+PCI_LINE_RE='^PCI: ([0-9]+) (bus|buses), ([0-9]+) devices, ([0-9]+) functions, ([0-9]+) PCI-to-PCI (bridge|bridges) \(([0-9]+) secondary buses refused\); storage: ([0-9]+) AHCI, ([0-9]+) other; configuration read only$'
 # pcitest_boot <name> <qemu args...>: the boot (log serial-pci-<name>.log);
 # PCI_Q holds qmp_pci.py's output (also kept in serial-pci-<name>.qpci.txt).
 pcitest_boot() {
@@ -1232,8 +1235,15 @@ pcitest_boot() {
 # Sets PK (the kernel's "buses devices functions bridges refused ahci
 # other"), PQ_AHCI and PQ_BAR5 (QEMU's controller and its BAR5).
 pcitest_agree() {
-    local q b d f r qa q5 qx qo
-    PK=$(sed -nE "s/$PCI_LINE_RE/\1 \2 \3 \4 \5 \6 \7/p" "$1")
+    local q b d f r qa q5 qx qo nb wb nr wr
+    PK=$(sed -nE "s/$PCI_LINE_RE/\1 \3 \4 \5 \7 \8 \9/p" "$1")
+    # 1.4 stage 12: each count's word exactly right (1 bus, 2 buses, 0 buses;
+    # 1 bridge, 0 bridges); a wrong form leaves PK empty.
+    read -r nb wb nr wr <<< "$(sed -nE "s/$PCI_LINE_RE/\1 \2 \5 \6/p" "$1")"
+    if [ "${wb:-}" != "$([ "${nb:-}" = 1 ] && echo bus || echo buses)" ] ||
+       [ "${wr:-}" != "$([ "${nr:-}" = 1 ] && echo bridge || echo bridges)" ]; then
+        PK=""
+    fi
     read -r b d f r qa q5 <<< "$(sed -nE 's/^QPCI_SUMMARY buses=([0-9]+) devices=([0-9]+) functions=([0-9]+) bridges=([0-9]+) ahci=([^ ]+) bar5=([^ ]+)$/\1 \2 \3 \4 \5 \6/p' <<< "$2")"
     qx=$(grep -cE '^QPCI .* class 01\.06 ' <<< "$2")
     qo=$(( $(grep -cE '^QPCI .* class 01\.' <<< "$2") - qx ))
@@ -1656,7 +1666,10 @@ gd_boot() {
     local name=$1 img=$2 model=${3:-} log=$OUT/serial-guard-$1.log run=$GD_W/$1-after.img
     cp "$img" "$run"
     GD_SHA0[$name]=$(sha256sum < "$run" | cut -d' ' -f1)
-    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" \
+    # 1.4 stage 12 (changed, the owner's decision): test=nohome, so the
+    # read-write mounts make no home folders (D18: none on a test= boot);
+    # the diffs below stay save 0's alone.
+    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" -append "test=nohome" \
         -drive file="$run",if=none,id=gdtest-disk,format=raw -device ich9-ahci,id=gdtest-ahci,addr=0x5 \
         -device "ide-hd,drive=gdtest-disk,bus=gdtest-ahci.0${model:+,model=$model}"
     GD_SHA1[$name]=$(sha256sum < "$run" | cut -d' ' -f1)
@@ -2228,7 +2241,8 @@ sed 's/^/      [1.4] (report only) /' "$E8_W/sizeof.txt"
 e8_boot() {
     local name=$1 img=$2 log=$OUT/serial-ext2-$1.log
     E8_SHA0[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
-    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" \
+    # 1.4 stage 12 (changed, the owner's decision): test=nohome, as gd_boot.
+    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" -append "test=nohome" \
         -drive file="$img",if=none,id=e8test-disk,format=raw -device ich9-ahci,id=e8test-ahci,addr=0x5 \
         -device ide-hd,drive=e8test-disk,bus=e8test-ahci.0
     E8_SHA1[$name]=$(sha256sum < "$img" | cut -d' ' -f1)
@@ -2360,13 +2374,14 @@ fi
 # mount that stage had, with the warning that the recount would come.)
 # e8_rw <name> <state regex>: the volume's line, the mount's four lines
 # (read-write, save 0 with at least one write and one flush, the lock hold,
-# the limits, the store: automatic save on), 'Disk mode', no disk error.
+# the limits, the store: automatic save off, as on every test= boot since
+# 1.4 stage 12's test=nohome), 'Disk mode', no disk error.
 E8_RWTAIL="; ext2 'madire-test' mounted read-write on /home (Disk mode)"
 e8_rw() {
     local log=$1
     [ "$E8_OK" -eq 1 ] && [ -f "$log" ] && [ "$(grep -c '^mount: ' "$log")" -eq 4 ] && e8_fsline "$log" "$2" &&
         [ "$(grep -cE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; the RAM folder /home is under it, / and /tmp stay in memory; [0-9]+ disk reads, 0 failed; save 0 \(the volume marked not clean on the disk\): [1-9][0-9]* writes, [1-9][0-9]* flushes$" "$log")" -eq 1 ] &&
-        [ "$(grep -cE '^mount: changes are kept in memory \(([0-9]+) KiB, \1 chunks of 1 KiB\) until a save writes them, at most 8 disk commands per hold of the VFS lock; automatic save every 5 s: on$' "$log")" -eq 1 ] &&
+        [ "$(grep -cE '^mount: changes are kept in memory \(([0-9]+) KiB, \1 chunks of 1 KiB\) until a save writes them, at most 8 disk commands per hold of the VFS lock; automatic save every 5 s: off \(a test= boot\)$' "$log")" -eq 1 ] &&
         [ "$(grep '^Storage: ' "$log" | grep -cF ", writes would be ALLOWED on partition 1$E8_RWTAIL")" -eq 1 ] &&
         [ "$(grep -c '^Storage: ' "$log")" -eq 1 ] && ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$log"
 }
@@ -2963,9 +2978,14 @@ rm -rf "$E10_EXP" && cp -a "$E8_TREE" "$E10_EXP" && (
     cd "$E10_EXP" && mkdir -p work/sub &&
     printf 'first line\nsecond line\n' > work/one.txt && cat big.txt big.txt > work/big2.txt &&
     printf 'inner\n' > work/sub/inner.txt && mv notes.txt work/notes-moved.txt && mv z-last.txt last.txt &&
-    rm m-middle.txt && rmdir empty && printf 'after sync\n' > work/late.txt && rm docs/b.txt
+    rm m-middle.txt && rmdir empty && printf 'after sync\n' > work/late.txt && rm docs/b.txt &&
+    mkdir -p user/Desktop user/Documents user/Downloads user/Pictures user/Music user/Videos user/Trash
 ) || E10_OK=0
-E10_KA="x{wait:1}mkdir work{ret}echo first line > work/one.txt{ret}{wait:1}echo second line >> work/one.txt{ret}{wait:1}"
+# 1.4 stage 12 (changed, the owner's decision): boot A, a normal boot, makes
+# the home folders at the mount (D18; in the expected tree above) and the
+# shell starts in /home/user, so both sessions begin with "cd /home" (the
+# commands after it as before); boot B finds the folders and makes none.
+E10_KA="x{wait:1}cd /home{ret}mkdir work{ret}echo first line > work/one.txt{ret}{wait:1}echo second line >> work/one.txt{ret}{wait:1}"
 E10_KA+="cp -y big.txt work/big2.txt{ret}{wait:2}cat big.txt >> work/big2.txt{ret}{wait:3}mkdir work/sub{ret}"
 E10_KA+="echo inner > work/sub/inner.txt{ret}{wait:1}mv -y notes.txt work/notes-moved.txt{ret}{wait:1}"
 E10_KA+="mv -y z-last.txt last.txt{ret}{wait:1}rm -y m-middle.txt{ret}{wait:1}rmdir empty{ret}mkdir gone{ret}rmdir gone{ret}"
@@ -3009,7 +3029,7 @@ if [ "$E10_OK" -eq 1 ] && grep -qE '^TREE ok [0-9]+ paths$' "$E10_W/tree-a.txt";
 else
     fail "[1.4] write session: debugfs's tree after boot A differs from the expected tree (see $E10_W/tree-a.txt)"
 fi
-E10_KB="x{wait:1}ls -l{ret}ls -l work{ret}ls -l work/sub{ret}ls -l docs{ret}cat work/one.txt{ret}{wait:1}"
+E10_KB="x{wait:1}cd /home{ret}ls -l{ret}ls -l work{ret}ls -l work/sub{ret}ls -l docs{ret}cat work/one.txt{ret}{wait:1}"
 E10_KB+="cat work/sub/inner.txt{ret}{wait:1}cat work/notes-moved.txt{ret}{wait:2}cat work/late.txt{ret}{wait:1}"
 E10_KB+="cat last.txt{ret}{wait:1}cat work/big2.txt{ret}{wait:6}echo end-of-persistence{ret}"
 E10_LB=$OUT/serial-diskwrite-persist.log
@@ -3276,3 +3296,41 @@ else
     fail "[1.4] test=autosave: the next boot did not recount, mount read-write or read /auto.txt back exactly (want $E11_WANT; see $E11_AS/qview.txt)"
 fi
 echo "      [1.4] power cuts: $(( $(date +%s) - E11_T0 )) s (report only)"
+
+# ---- 1.4 stage 12: Disk mode's About and Restart scenes ----
+
+section "[1.4] Disk mode's About window and Restart dialog against tests/desktop_ref.py, five modes (stage 12)"
+# docs/plans/1.4.md, C10: the toolkit built into the host tool
+# (build/desktopdump) draws stage 4a's two About windows and stage 5's
+# Restart dialog with Disk mode's texts, read-write ("Disk (home is
+# saved)", "Files in /home are saved first.") and read-only ("Disk (home
+# read-only)", "Disk is read-only; /home is unchanged."): scenes
+# windows_disk, windows_diskro, dialog_disk and dialog_diskro; each equals
+# tests/desktop_ref.py's rendering pixel for pixel. Five modes, both pixel
+# formats. Live mode's scenes (stages 4a and 5) are unchanged.
+desktop12_static() {   # desktop12_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.4] the Disk-mode scene $4 at $1x$2x$(($3 * 8)) (ui_about.c, ui_dialog.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.4] the Disk-mode scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in windows_disk windows_diskro dialog_disk dialog_diskro; do
+        # shellcheck disable=SC2086
+        desktop12_static $mode $scene
+    done
+done

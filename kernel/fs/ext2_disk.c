@@ -54,6 +54,7 @@ static struct ext2_disk_figs ext2_d_figs;
 static bool ext2_d_cut_log, ext2_d_cut_on;  /* test=diskcut: writes logged; the cut armed */
 static uint32_t ext2_d_cut_after;       /* the cut after this write */
 static uint32_t ext2_d_cut_n;           /* writes sent so far */
+static uint32_t ext2_d_port, ext2_d_part;   /* stage 12: the mounted volume's disk port and partition */
 
 uint64_t ext2_disk_us(uint64_t cycles)
 {
@@ -291,6 +292,8 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     enum ext2_d_end end = EXT2_D_MOUNTED;
     int err = 0, id = -1;
     uint64_t ram_max = 0, disk_max = 0;
+    ext2_d_port = port;
+    ext2_d_part = partition;
     ext2_d_first = first;
     ext2_d_bytes = sectors * EXT2_D_SECTOR;
     if (!v->root) {                     /* no filesystem booted (the kernel heap is off) */
@@ -637,6 +640,101 @@ static int32_t ext2_d_autosave(void *arg)
                   (ull)ext2_d_figs.hold_ticks);
     }
     return 0;
+}
+
+/* ---- stage 12: the home folders (D18), du's KiB, df's figures ---- */
+
+static const char *const ext2_d_home_names[7] = { "Desktop", "Documents", "Downloads", "Pictures", "Music",
+                                                  "Videos", "Trash" };
+
+/* The folder at path made if missing (again after a save when the disk
+ * needs one first, R4): 1 made, 0 a folder already there (never touched),
+ * or an error (-FS_ENOTDIR: something else has the name). */
+static int ext2_d_home_dir(const char *path)
+{
+    struct vfs *v = vfs_root();
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        r = vfs_create(v, v->root, path, VNODE_DIR, 0755u, 0);
+        if (r == -FS_EEXIST) {
+            struct vnode *n = 0;
+            r = (vfs_lookup(v, v->root, path, &n) == 0 && n->type == VNODE_DIR) ? 0 : -FS_ENOTDIR;
+            fd_vfs_release();
+            return r;
+        }
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
+    return r == 0 ? 1 : r;
+}
+
+void ext2_disk_home(void)
+{
+    if (!ext2_d_on || !ext2_d_w.rw || (ext2_d_flags & EXT2_DISK_TEST_BOOT))
+        return;
+    char path[40];
+    uint32_t made = 0, there = 0;
+    int r = ext2_d_home_dir("/home/user");
+    const char *bad = "/home/user";
+    if (r >= 0) {
+        made += (uint32_t)r;
+        there += r == 0;
+        for (uint32_t i = 0; i < 7 && r >= 0; i++) {
+            ksnprintf(path, sizeof(path), "/home/user/%s", ext2_d_home_names[i]);
+            bad = ext2_d_home_names[i];
+            r = ext2_d_home_dir(path);
+            made += r > 0;
+            there += r == 0;
+        }
+    }
+    if (r < 0) {
+        klogf("home: not finished: %s: %s (%u folders made, %u already there)\n", bad,
+              r == -FS_ENOTDIR ? "not a folder" : fs_errno_name(r), made, there);
+        return;
+    }
+    if (!made) {
+        klogf("home: /home/user and its 7 folders are already there; nothing made (D18: never recreated)\n");
+        return;
+    }
+    uint32_t saves = 0;
+    uint64_t w0 = ext2_d_figs.writes;
+    enum ext2_disk_save s = ext2_d_full_save(0, &saves);
+    klogf("home: %u folders made, %u already there (/home/user with Desktop, Documents, Downloads, Pictures, "
+          "Music, Videos and Trash); %s: %u saves, %llu writes; the longest VFS lock hold in a save %llu us "
+          "(%llu ticks) (report only, before System ready)\n", made, there, s == EXT2_DISK_SAVED ? "saved" : "NOT saved",
+          saves, (ull)(ext2_d_figs.writes - w0), (ull)ext2_disk_us(ext2_d_figs.hold_cycles),
+          (ull)ext2_d_figs.hold_ticks);
+    ext2_d_figs.hold_cycles = 0;            /* the later figures: after the boot */
+    ext2_d_figs.hold_ticks = 0;
+}
+
+uint64_t ext2_disk_kib(const struct vnode *n)
+{
+    struct ext2_inode in;
+    if (!ext2_d_on || !n || n->fs_id == 0 || n->ino == 0 || n->ino > 0xFFFFFFFFull)
+        return 0;
+    if (ext2_inode_get(&ext2_d_w.fs, (uint32_t)n->ino, &in) != EXT2_OK)
+        return 0;
+    return in.blocks512 / 2u;
+}
+
+bool ext2_disk_df(struct ext2_disk_dfinfo *out)
+{
+    if (!ext2_d_on)
+        return false;
+    const struct ext2_fs *fs = &ext2_d_w.fs;
+    for (uint32_t i = 0; i < sizeof(out->label); i++)
+        out->label[i] = fs->label[i];
+    out->label[sizeof(out->label) - 1] = 0;
+    out->port = ext2_d_port;
+    out->partition = ext2_d_part;
+    out->block_size = fs->block_size;
+    out->blocks = fs->blocks_count;
+    out->blocks_free = fs->free_blocks;
+    out->inodes = fs->inodes_count;
+    out->inodes_free = fs->free_inodes;
+    return true;
 }
 
 /* Field by field: no structure is copied whole (no libc call in the kernel). */

@@ -421,6 +421,9 @@ static int scene_taskbar(struct surface *s, const struct fbcon_layout *cl)
 /* ---- 1.3 stage 4a: the windows ---- */
 
 static const char dump_loader[] = "Limine 12.9.3 (a boot loader name much longer than the column)";
+/* 1.4 stage 12: a scene named <base>_disk or <base>_diskro draws <base>
+ * with Disk mode's About Mode row (and Restart line, ui_dialog_set_line2). */
+static const char *dump_mode;
 static uint16_t about_scratch[2][UI_ABOUT_SCRATCH];
 
 static int scene_windows(struct surface *s, const struct fbcon_layout *cl, enum ui_button_state close,
@@ -439,6 +442,8 @@ static int scene_windows(struct surface *s, const struct fbcon_layout *cl, enum 
     for (int i = 0; i < 2; i++) {
         int32_t w, h;
         ui_about_setup(&about[i], sc, &f, "1.3", dump_loader, display, "127 MB", about_scratch[i], UI_ABOUT_SCRATCH);
+        if (dump_mode)
+            ui_about_set_mode(&about[i], dump_mode);
         ui_about_size(sc, &w, &h);
         win[i] = (struct ui_window){ .name = "About", .title = UI_ABOUT_TITLE, .icon = UI_ICON_ABOUT, .w = w, .h = h,
                                      .esc_closes = true, .paint = ui_about_paint, .ctx = &about[i] };
@@ -676,6 +681,22 @@ int main(int argc, char **argv)
     ui_canvas_init(&c, &s);
     ui_fill(&c, (struct rect){ 0, 0, (int32_t)w, (int32_t)h }, UI_BG_DEEP);
     int rc = 0;
+    /* 1.4 stage 12: <base>_disk and <base>_diskro draw <base> with Disk
+     * mode's texts (a pairs file, if asked for, names <base>). */
+    static char base[64];
+    const char *scene = argv[4];
+    size_t len = strlen(scene);
+    if (len < sizeof(base)) {
+        bool ro = len > 7 && strcmp(scene + len - 7, "_diskro") == 0;
+        bool rw = !ro && len > 5 && strcmp(scene + len - 5, "_disk") == 0;
+        if (ro || rw) {
+            memcpy(base, scene, len - (ro ? 7 : 5));
+            base[len - (ro ? 7 : 5)] = 0;
+            dump_mode = ro ? UI_ABOUT_MODE_DISKRO : UI_ABOUT_MODE_DISK;
+            ui_dialog_set_line2(ro ? UI_DIALOG_LINE2_DISKRO : UI_DIALOG_LINE2_DISK);
+            argv[4] = base;
+        }
+    }
     if (strcmp(argv[4], "prims") == 0) {
         scene_prims(&c, (int32_t)w, (int32_t)h);
     } else if (strcmp(argv[4], "icons") == 0) {

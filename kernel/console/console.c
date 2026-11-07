@@ -669,8 +669,14 @@ static int st_du_open(void *ctx, const char *path, struct shell_du *t)
     int r = vfs_lookup(vfs_root(), cwd_node(), path, &n);
     if (r == 0 && n->type == VNODE_FILE) {
         t->files = 1;
-        t->pages = vfs_pages(vfs_root(), n);
+        if (n->fs_id != 0) {                /* 1.4 stage 12: on the disk, its blocks' KiB */
+            t->kib = ext2_disk_kib(n);
+            t->disk = true;
+        } else {
+            t->pages = vfs_pages(vfs_root(), n);
+        }
     } else if (r == 0) {
+        t->disk = n->fs_id != 0;            /* 1.4 stage 12: a folder on the disk (empty: 0 KiB) */
         vfs_hold(n);                        /* where the walk started */
         vfs_hold(n);                        /* where it is */
         du_root = du_cur = n;
@@ -725,7 +731,12 @@ static int st_du_next(void *ctx, struct shell_du *t)
             du_depth++;
         } else {
             t->files++;
-            t->pages += vfs_pages(v, e);
+            if (e->fs_id != 0) {            /* 1.4 stage 12: on the disk, its blocks' KiB */
+                t->kib += ext2_disk_kib(e);
+                t->disk = true;
+            } else {
+                t->pages += vfs_pages(v, e);
+            }
             du_seq = vfs_entry_pos(v, e) + 1;
         }
     }
@@ -847,7 +858,67 @@ static enum shell_sync_end disk_sync(void *ctx, uint64_t *blocks)
     }
 }
 
-static const struct shell_disk disk_ops = { disk_sync, 0 };
+/* 1.4 stage 12: what "disk", "df", "version" and "cd" need (shell.h):
+ * the mount's mode, the volume's figures, the boot's disk report. */
+static void disk_info(void *ctx, struct shell_disk_info *out)
+{
+    (void)ctx;
+    struct ext2_disk_dfinfo f = { { 0 }, 0, 0, 0, 0, 0, 0, 0 };
+    const struct ahci_report *a = ahci_report();
+    bool mounted = ext2_disk_mounted();
+    out->mode = !mounted ? SHELL_DISK_LIVE : ext2_disk_rw() ? SHELL_DISK_RW : SHELL_DISK_RO;
+    fd_vfs_acquire();
+    bool have = mounted && ext2_disk_df(&f);
+    fd_vfs_release();
+    for (uint32_t i = 0; i < sizeof(out->label); i++)
+        out->label[i] = have ? f.label[i] : 0;
+    out->label[sizeof(out->label) - 1] = 0;
+    out->disk = have ? f.port : 0;
+    out->partition = have ? f.partition : 0;
+    out->block_size = have ? f.block_size : 0;
+    out->blocks = have ? f.blocks : 0;
+    out->blocks_free = have ? f.blocks_free : 0;
+    out->inodes = have ? f.inodes : 0;
+    out->inodes_free = have ? f.inodes_free : 0;
+    out->controller = a->kind != AHCI_REPORT_NONE;
+    out->has_disk = a->kind == AHCI_REPORT_DISK;
+    out->more_disks = a->more_disks;
+    out->summary = a->summary;
+    out->where = a->where;
+    out->model = a->model;
+    out->size = a->size;
+    out->table = a->table;
+    out->guard = a->guard;
+    out->use = a->use;
+    out->port = a->port;
+}
+
+/* 1.4 stage 12: true when path (or, for a name not there yet, its folder)
+ * is on the disk. */
+static bool disk_on_disk(void *ctx, const char *path)
+{
+    (void)ctx;
+    static char dir[256];
+    struct vnode *n = 0;
+    bool disk = false;
+    uint32_t len = 0, cut = 0;
+    while (path[len] && len + 1 < sizeof(dir)) {
+        dir[len] = path[len];
+        if (path[len] == '/')
+            cut = len;
+        len++;
+    }
+    dir[cut ? cut : (path[0] == '/' ? 1u : 0u)] = 0;
+    fd_vfs_acquire();
+    if (vfs_lookup(vfs_root(), cwd_node(), path, &n) == 0)
+        disk = n->fs_id != 0;
+    else if (vfs_lookup(vfs_root(), cwd_node(), dir[0] ? dir : ".", &n) == 0)
+        disk = n->fs_id != 0;
+    fd_vfs_release();
+    return disk;
+}
+
+static const struct shell_disk disk_ops = { disk_sync, 0, disk_info, disk_on_disk };
 
 /* ---- Programs (0.11) ---- */
 
@@ -1478,17 +1549,27 @@ void console_start(const struct memory_stats *mem)
          * port (not in the kernel log); the shell starts in /home, where
          * "cd" alone goes (S8-13). */
         static const char *const live[] = { SHELL_LIVE_LINE1 "\n", SHELL_LIVE_LINE2 "\n" };
+        /* 1.4 stage 12 (C10, C11): in Disk mode the Disk-mode lines, and
+         * the shell starts in /home/user (in /home if the volume has none). */
+        static const char *const disk_rw[] = { SHELL_DISK_LINE1 "\n", SHELL_DISK_LINE2 "\n" };
+        static const char *const disk_ro[] = { SHELL_DISKRO_LINE1 "\n", SHELL_DISKRO_LINE2 "\n" };
+        bool on_disk = ext2_disk_mounted();
+        const char *const *lines = !on_disk ? live : ext2_disk_rw() ? disk_rw : disk_ro;
         for (uint32_t i = 0; i < 2; i++) {
-            write_screen(live[i], ATTR_TITLE);
+            write_screen(lines[i], ATTR_TITLE);
             preempt_disable();
-            serial_write(live[i]);
+            serial_write(lines[i]);
             preempt_enable();
         }
         write_screen("\n", ATTR_TEXT);
         struct vnode *home = 0;
         fd_vfs_acquire();
-        if (vfs_lookup(vfs_root(), vfs_root()->root, "/home", &home) == 0 &&
+        if (on_disk && vfs_lookup(vfs_root(), vfs_root()->root, SHELL_HOME_DISK, &home) == 0 &&
             home->type == VNODE_DIR) {
+            vfs_hold(home);
+            sh_cwd = home;
+        } else if (vfs_lookup(vfs_root(), vfs_root()->root, "/home", &home) == 0 &&
+                   home->type == VNODE_DIR) {
             vfs_hold(home);
             sh_cwd = home;
         }
