@@ -3037,6 +3037,34 @@ else
     fail "[1.4] persistence: after the second boot e2fsck -fn reported something or the tree changed (see $E10_W/tree-b.txt)"
 fi
 
+# The owner's rule (stage 10, option 2): no VFS lock hold during disk I/O
+# may exceed 2 ticks after System ready; the boot-time read-write mount
+# (thread 0, before System ready, no other thread contending) is exempt,
+# its hold measured and reported. On the four read-write mount boots
+# (diskwrite, the write session's boot A, stage 8's not-clean volume,
+# persistence): the mount's hold line once and before 'System ready.', and
+# no other thread asked for the VFS lock or waited during the mount.
+E10_MH=""
+E10_MBAD=""
+for e10_ml in "$E10_DWLOG" "$E8_L-dirty.log" "$E10_LA" "$E10_LB"; do
+    e10_order=$(awk '/^mount: the mount held the VFS lock / && !h { h = NR } /^System ready\./ && !r { r = NR }
+                     END { if (h && r && h < r) print "ok" }' "$e10_ml" 2>/dev/null)
+    e10_t=$(sed -nE 's/^mount: the mount held the VFS lock ([0-9]+) us \(([0-9]+) ticks\).*/\1 us, \2 ticks/p' "$e10_ml" 2>/dev/null |
+            head -n 1)
+    E10_MH="$E10_MH ${e10_ml##*/} ${e10_t:-no hold line};"
+    if [ "$e10_order" != ok ] || [ "$(grep -c '^mount: the mount held the VFS lock ' "$e10_ml" 2>/dev/null)" != 1 ] ||
+       [ "$(grep -cxF 'blk: disk I/O under the VFS lock at the mount: 0 other threads asked for the lock, 0 wait steps (report only)' \
+            "$e10_ml" 2>/dev/null)" != 1 ]; then
+        E10_MBAD="$E10_MBAD ${e10_ml##*/}"
+    fi
+done
+echo "      [1.4] the read-write mounts' holds of the VFS lock (report only):$E10_MH"
+if [ -z "$E10_MBAD" ]; then
+    pass "[1.4] boot-time read-write mount (exempt from the 2-tick rule): on the four read-write mount boots (diskwrite, the write session's boot A, the not-clean volume, persistence) the mount's hold of the VFS lock is logged once, before 'System ready.', and no other thread asked for the lock or waited during it (0 tickets, 0 wait steps)"
+else
+    fail "[1.4] boot-time read-write mount: the hold line missing, repeated or after 'System ready.', or another thread asked for or waited on the VFS lock during the mount:$E10_MBAD"
+fi
+
 # (16-18) test=blkdebug.
 E10_BD=$E10_W/blkdebug-disk.img
 disk_mkfs "$E10_W/blkdebug-fs.img" 8192 1024 128 256 "$E8_TREE" > "$E10_W/blkdebug-mkfs.txt" 2>&1 &&

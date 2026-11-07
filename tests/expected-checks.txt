@@ -287,5 +287,8 @@
 # the unknown COMPAT boot (read-only), the marked clean disks (read-write)
 # and the read sessions (booted with test=diskro); stage 9's "not linked"
 # check (now linked); the unit suite ahci_core's opcode table (2 -> 4 bytes).
-1.4 122
+# Stage 10, the owner's option 2: 1 more (part static): the boot-time
+# read-write mount's hold of the VFS lock before System ready, with no
+# other thread asking for the lock or waiting (122 -> 123).
+1.4 123
 unit-suites 106

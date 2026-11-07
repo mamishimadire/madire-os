@@ -285,6 +285,13 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
 
     klock_acquire(vfs_lock());
     uint64_t c0 = fd_tsc(), t0 = timer_ticks();
+    /* Stage 10 (the owner's rule: the boot-time mount's hold is exempt from
+     * the 2-tick rule only while no other thread contends): any thread
+     * that asks for the lock during the hold takes a ticket (next) and
+     * counts its wait steps (yields). */
+    const struct klock *vl = vfs_lock();
+    uint32_t asked0 = vl->next;
+    uint64_t steps0 = vl->yields;
     err = ext2_write_mount(&ext2_d_w, &ext2_d_sv, ext2_d_bytes, &ext2_d_wops, ro_mine == 0);
     if (err != EXT2_OK) {
         end = EXT2_D_REFUSED;
@@ -311,6 +318,8 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
         }
     }
     uint64_t hold_cycles = fd_tsc() - c0, hold_ticks = timer_ticks() - t0;
+    uint32_t asked = vl->next - asked0;
+    uint64_t steps = vl->yields - steps0;
     if (end != EXT2_D_MOUNTED || !ext2_d_w.rw)
         ext2_d_unstore();               /* no change will ever be put */
     klock_release(vfs_lock());
@@ -377,6 +386,11 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     ext2_d_per_tick = fd_tsc_per_tick(&spent);
     klogf("mount: the mount held the VFS lock %llu us (%llu ticks) (report only; TSC %llu cycles per tick)\n",
           (ull)ext2_disk_us(hold_cycles), (ull)hold_ticks, (ull)ext2_d_per_tick);
+    /* "blk:": the lines between PCI: and Storage: are the driver's and the
+     * storage layers' (ahci, blk, part, guard, ext2, mount), and the mount:
+     * and ext2: lines are counted exactly by earlier checks. */
+    klogf("blk: disk I/O under the VFS lock at the mount: %u other threads asked for the lock, %llu wait steps "
+          "(report only)\n", asked, (ull)steps);
     klogf("mount: file-size limits from each filesystem's ops table: / %llu bytes, /home %llu bytes\n",
           (ull)ram_max, (ull)disk_max);
     if (rw) {
