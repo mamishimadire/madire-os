@@ -27,13 +27,14 @@ static uint32_t ahci_reg_read(void *ctx, uint32_t off)
 {
     (void)ctx;
     uint32_t v = *(volatile uint32_t *)(ahci_regs + off);
-    /* test=blkdebug: an injected device error, shown only once the real
-     * command has ended (PxCI's slot 0 clear), as a device reports one at
-     * the end of a command: the driver's error path then never stops a
-     * port the device is still using (QEMU crashed when it did, 1.4 S10,
-     * runs 42323216993 and 42330910354). */
-    if (ahci_dbg_port < AHCI_PORTS && off == AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_TFD &&
-        !(*(volatile uint32_t *)(ahci_regs + AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_CI) & 1u))
+    /* test=blkdebug: an injected device error, the status ERR bit in PxTFD.
+     * The command builder acts on ERR only once a command has ended (PxCI
+     * clear; ahci_core.c reads ERR after its wait), as a device reports one
+     * at the end of a command, so the error path never stops a port the
+     * device is still using (QEMU crashed when it did, 1.4 S10, runs
+     * 42323216993 and 42330910354). Its other PxTFD reads test BSY and DRQ
+     * only. */
+    if (ahci_dbg_port < AHCI_PORTS && off == AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_TFD)
         v |= AHCI_TFD_ERR;
     return v;
 }

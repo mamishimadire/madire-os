@@ -33,6 +33,10 @@ struct fk_port {
     uint32_t commands, resets, sctl_reset;
     int fail_next, hang_next, short_next;
     bool busy_until_reset;
+    /* 1.4 stage 10: the next command keeps running for run_polls reads of
+     * PxCI with the status ERR bit already set in PxTFD (not busy), then
+     * ends with PxTFD = run_end_tfd. */
+    uint32_t run_polls, run_left, run_end_tfd;
     uint64_t sectors;
     uint16_t ident[256];
 };
@@ -49,6 +53,8 @@ struct fk {
     uint32_t opcodes[256];
     uint32_t write_bits, bad_dma, bad_prd;
     uint32_t ci_writes;         /* stage 10: PxCI issues of any port */
+    uint32_t ci_polls_running;  /* stage 10: PxCI reads while a run_polls command runs */
+    uint32_t stops_while_ci;    /* stage 10: ST cleared while PxCI's slot 0 was still set */
     uint64_t wr_lba, wr_sum;    /* stage 10: the last write's first sector, and the sum of its bytes */
     uint32_t wr_count;
     uint32_t prd_bytes[AHCI_PRD_MAX], prd_n;
@@ -180,7 +186,16 @@ static uint32_t fk_read(void *ctx, uint32_t off)
     case AHCI_PX_SSTS: return p->device ? p->ssts : 0;
     case AHCI_PX_SCTL: return p->sctl;
     case AHCI_PX_SERR: return p->serr;
-    case AHCI_PX_CI:   return p->ci;
+    case AHCI_PX_CI:
+        if (p->run_left) {
+            fk.ci_polls_running++;
+            if (--p->run_left == 0) {       /* the command ends now */
+                p->tfd = p->run_end_tfd;
+                p->is |= 1u;
+                p->ci &= ~1u;
+            }
+        }
+        return p->ci;
     }
     return 0;
 }
@@ -259,6 +274,13 @@ static void fk_execute(struct fk_port *p)
         moved -= 512u;
     }
     hdr[1] = moved;
+    if (p->run_polls) {                     /* stage 10: still running, ERR already visible */
+        p->run_left = p->run_polls;
+        p->run_polls = 0;
+        p->tfd = 0x51u;                     /* DRDY, ERR; not busy */
+        p->ci |= 1u;
+        return;
+    }
     p->tfd = 0x50u;
     p->is |= 1u;                            /* D2H register FIS */
     p->ci &= ~1u;
@@ -287,8 +309,12 @@ static void fk_write(void *ctx, uint32_t off, uint32_t v)
     case AHCI_PX_IE:   p->ie = v; break;
     case AHCI_PX_SERR: p->serr &= ~v; break;
     case AHCI_PX_CMD:
-        if ((p->cmd & AHCI_CMD_ST) && !(v & AHCI_CMD_ST))
+        if ((p->cmd & AHCI_CMD_ST) && !(v & AHCI_CMD_ST)) {
+            if (p->ci & 1u)
+                fk.stops_while_ci++;        /* stage 10: stopped while a command ran */
             p->ci = 0;                      /* clearing ST clears PxCI */
+            p->run_left = 0;
+        }
         p->cmd = v & (AHCI_CMD_ST | AHCI_CMD_FRE);
         break;
     case AHCI_PX_SCTL:
@@ -499,6 +525,45 @@ static void test_error_recovered(void)
     CHECK_EQ(ahci_read(&hba, 0, 16, 8, &a, 1), 0);         /* the next read works; never a retry */
     CHECK_EQ(fk.port[0].commands, sent + 1);
     CHECK(fk_data_ok(a, 16, 4096));
+    check_read_only();
+}
+
+/* 1.4 stage 10 (the test=blkdebug hook sets PxTFD's ERR bit on every
+ * PxTFD read while armed): the builder acts on ERR only once the command
+ * has ended. ERR visible while PxCI's slot 0 is still set does not enter
+ * the error path (the port is never stopped, no error counted) until the
+ * poll ends DONE; then a command that ended with ERR is an error, and one
+ * that ended without it is not. */
+static void test_err_only_after_end(void)
+{
+    fk_reset();
+    fk_disk(0, 4096);
+    ahci_start(&hba, &fk_ops);
+    uint32_t a = fk_data_page();
+    /* Running for 50 polls with ERR set, then ended with ERR. */
+    fk.port[0].run_polls = 50;
+    fk.port[0].run_end_tfd = 0x51u;
+    uint32_t sent = fk.port[0].commands;
+    CHECK_EQ(ahci_read(&hba, 0, 16, 8, &a, 1), -AHCI_EIO);
+    CHECK_EQ(fk.port[0].commands, sent + 1);
+    CHECK_EQ(fk.ci_polls_running, 50);                      /* polled until it ended */
+    CHECK_EQ(fk.stops_while_ci, 0);                         /* never stopped while it ran */
+    CHECK_EQ(hba.port[0].errors, 1);                        /* then the error path, once */
+    CHECK_EQ(hba.port[0].last.end, AHCI_END_ERROR);
+    CHECK_EQ(hba.port[0].last.ci & 1u, 0);                  /* PxCI clear when it was taken */
+    CHECK_EQ(hba.port[0].last.tfd & 0xFFu, 0x51);
+    CHECK(!hba.port[0].last.reset);
+    CHECK(hba.port[0].last.recovered);
+    CHECK_EQ(hba.port[0].state, AHCI_PORT_DISK);
+    /* Running for 50 polls with ERR set, then ended without it: no error. */
+    fk.ci_polls_running = 0;
+    fk.port[0].run_polls = 50;
+    fk.port[0].run_end_tfd = 0x50u;
+    CHECK_EQ(ahci_read(&hba, 0, 24, 8, &a, 1), 0);
+    CHECK_EQ(fk.ci_polls_running, 50);
+    CHECK_EQ(fk.stops_while_ci, 0);
+    CHECK_EQ(hba.port[0].errors, 1);                        /* unchanged */
+    CHECK(fk_data_ok(a, 24, 4096));
     check_read_only();
 }
 
@@ -810,6 +875,7 @@ int main(void)
     RUN(test_start_qemu_like);
     RUN(test_read);
     RUN(test_error_recovered);
+    RUN(test_err_only_after_end);
     RUN(test_timeout_reset);
     RUN(test_clock_stopped);
     RUN(test_three_errors);

@@ -293,8 +293,13 @@ void disktest_write(void)
     klogf("diskwrite: wrote %u KiB to /home/diskwrite.bin in %llu us (%llu KiB/s into memory); the first sync: "
           "%llu us, %llu blocks (report only)\n", DT_FILE / 1024u, (ull)wus,
           (ull)(wus ? (uint64_t)(DT_FILE / 1024u) * 1000000u / wus : 0), (ull)sus, (ull)w->sync_blocks);
+    /* The count and the total are this test's; the longest flush is kept
+     * for the whole mount (ext2_disk.c) and can be the mount's own save 0,
+     * before this test: it is named so (1.4 S10: it read as longer than
+     * the total). */
     klogf("diskwrite: disk writes: %llu commands, %llu KiB in %llu us, %llu KiB/s; FLUSH CACHE EXT: %llu, %llu us "
-          "in all, the longest %llu us (report only)\n", (ull)(f1.writes - f0.writes), (ull)(dbytes / 1024u),
+          "in all; the longest flush since the mount (its save 0 included) %llu us (report only)\n",
+          (ull)(f1.writes - f0.writes), (ull)(dbytes / 1024u),
           (ull)dus, (ull)(dus ? dbytes / 1024u * 1000000u / dus : 0), (ull)nfl, (ull)flus,
           (ull)fd_cycles_us(f1.flush_longest, per));
     klogf("diskwrite: the longest VFS lock hold: a write call %llu us (%llu ticks), a save piece %llu us (%llu "
