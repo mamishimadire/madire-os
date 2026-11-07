@@ -18,19 +18,23 @@ static struct ahci_hba ahci_hba;
 static volatile uint8_t *ahci_regs;          /* the controller's registers (BAR5) */
 static uint32_t ahci_dma_slots[VM_STORAGE_DMA_PAGES / 32];  /* VM_STORAGE_BASE's pages in use */
 static uint32_t ahci_dma_pages;             /* DMA pages mapped now */
-/* test=blkdebug (ahci_debug_arm): the port whose PxIS reads show the
- * task-file error bit while one command is waited for (AHCI_PORTS: none). */
+/* test=blkdebug (ahci_debug_arm): the port whose PxTFD reads show the
+ * status ERR bit once its command has ended (AHCI_PORTS: none). */
 static uint32_t ahci_dbg_port = AHCI_PORTS;
 static bool ahci_dbg_read_once, ahci_dbg_writes;
-
-#define AHCI_IS_TFES        0x40000000u     /* PxIS: task-file error status */
 
 static uint32_t ahci_reg_read(void *ctx, uint32_t off)
 {
     (void)ctx;
     uint32_t v = *(volatile uint32_t *)(ahci_regs + off);
-    if (ahci_dbg_port < AHCI_PORTS && off == AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_IS)
-        v |= AHCI_IS_TFES;                  /* test=blkdebug: an injected device error */
+    /* test=blkdebug: an injected device error, shown only once the real
+     * command has ended (PxCI's slot 0 clear), as a device reports one at
+     * the end of a command: the driver's error path then never stops a
+     * port the device is still using (QEMU crashed when it did, 1.4 S10,
+     * runs 42323216993 and 42330910354). */
+    if (ahci_dbg_port < AHCI_PORTS && off == AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_TFD &&
+        !(*(volatile uint32_t *)(ahci_regs + AHCI_PORT_BASE(ahci_dbg_port) + AHCI_PX_CI) & 1u))
+        v |= AHCI_TFD_ERR;
     return v;
 }
 

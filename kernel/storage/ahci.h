@@ -65,8 +65,9 @@ bool ahci_disk_usable(uint32_t port);
 
 /* test=blkdebug only (1.4 stage 10): the next read command fails once
  * (`read_once`), and every write command fails (`writes`), as if the device
- * reported an error (the PxIS task-file error bit seen while the command is
- * waited for): the driver's own error path runs (logged, the port stopped,
+ * reported an error (the status ERR bit in PxTFD, shown once the command
+ * has ended, PxCI clear, never while the device still moves data): the
+ * driver's own error path runs (logged, the port stopped,
  * reset only if needed, errors counted; 3 make the disk failed). */
 void ahci_debug_arm(bool read_once, bool writes);
 /* True while an armed read error has not been used by a read command. */

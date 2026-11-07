@@ -3047,16 +3047,15 @@ E10_LD=$OUT/serial-blkdebug.log
 T0S=$(date +%s%N)
 # Stage 10 diagnostics (decide no check): the blkdebug boot runs as
 # boot_text runs it (the same keys, gap, done text, time limit, -no-reboot
-# and the same "[0.5] key injection" failure), with three additions: QEMU's
-# stderr and exit status are kept, and QEMU logs guest errors and every CPU
-# reset (-d guest_errors,cpu_reset; a guest triple fault is logged as
-# "Triple fault"), so a guest fault can be told apart from QEMU ending by
-# itself. The files go to $QEMU_WATCH_DIR (uploaded with the run).
+# and the same "[0.5] key injection" failure), and QEMU's stderr and exit
+# status are kept, so QEMU ending by itself is seen (S10: QEMU 8.2.2
+# segfaulted when the old injection stopped a port during a write, runs
+# 42323216993, 42323230806 and 42330910354). The stderr file goes to
+# $QEMU_WATCH_DIR (uploaded with the run).
 E10_QERR=$QEMU_WATCH_DIR/blkdebug-qemu-stderr.txt
-E10_QD=$QEMU_WATCH_DIR/blkdebug-qemu-d.log
-rm -f "$E10_LD" "$OUT/qmp.sock" "$E10_QERR" "$E10_QD"
+rm -f "$E10_LD" "$OUT/qmp.sock" "$E10_QERR"
 timeout 150 qemu-system-x86_64 -display none -no-reboot -serial file:"$E10_LD" \
-    -qmp unix:"$OUT/qmp.sock",server=on,wait=off -d guest_errors,cpu_reset -D "$E10_QD" -m 128M -kernel "$KERNEL" \
+    -qmp unix:"$OUT/qmp.sock",server=on,wait=off -m 128M -kernel "$KERNEL" \
     -append "test=blkdebug" \
     -drive file="$E10_BD",if=none,id=e10d-disk,format=raw -device ich9-ahci,id=e10d-ahci,addr=0x5 \
     -device ide-hd,drive=e10d-disk,bus=e10d-ahci.0 > /dev/null 2> "$E10_QERR" &
@@ -3076,11 +3075,6 @@ boot_seconds "$E10_LD" "$T0S"
 echo "      [1.4] blkdebug diagnostics (report only): QEMU running when the keys ended: $E10_QALIVE; exit status $E10_QEXIT (143: stopped by the harness, 124: the time limit, 134: abort)"
 echo "      [1.4] blkdebug diagnostics: QEMU stderr ($(cat "$E10_QERR" 2>/dev/null | wc -l) lines):"
 sed 's/^/      blkdebug stderr: /' "$E10_QERR" 2>/dev/null | head -n 40
-E10_QRESETS=$(grep -c 'CPU Reset' "$E10_QD" 2>/dev/null)
-E10_QTRIPLE=$(grep -c 'Triple fault' "$E10_QD" 2>/dev/null)
-echo "      [1.4] blkdebug diagnostics: -d log: ${E10_QRESETS:-0} CPU resets, ${E10_QTRIPLE:-0} triple faults; its lines but the register dumps:"
-grep -vE '^ *([A-Z][A-Z0-9]{1,3} *=|[A-Z]{2,4}=|(GDT|IDT|LDT|TR|CR[0-9]|DR[0-9]|EFER|FCW|FPR|XMM|YMM|MXCSR|CCS|CCD|CCO|PDPTE)[0-9]*[ =])' \
-    "$E10_QD" 2>/dev/null | head -n 60 | sed 's/^/      blkdebug -d: /'
 echo "      [1.4] blkdebug diagnostics: the serial log's last lines:"
 tail -n 5 "$E10_LD" | sed 's/^/      blkdebug tail: /'
 grep -E '^(ahci: port 0: (READ|WRITE)|blk: test=|ext2: sync|sync: |cat: |Output to )' "$E10_LD" | sed 's/^/      blkdebug: /'
