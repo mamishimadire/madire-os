@@ -241,7 +241,7 @@ static void test_cd_home(void)
 
 static void test_df(void)
 {
-    static char live[2048];
+    static char live[8192];             /* as large as out (gcc 15: no possible truncation) */
     reset(false);
     CHECK_EQ(run("df"), SHELL_OK);
     snprintf(live, sizeof(live), "%s", out);
