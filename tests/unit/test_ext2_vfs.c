@@ -218,7 +218,7 @@ static void t_full(uint32_t max_nodes)
 }
 
 static const struct ramfs_mem r_mem = { t_alloc, t_free };
-static const struct ext2_vfs_mem e_mem = { t_alloc, t_free, t_full };
+static const struct ext2_vfs_mem e_mem = { .alloc = t_alloc, .free = t_free, .full = t_full };
 static const struct ext2_ops t_ops = { t_read, 0 };
 
 static struct ramfs rfs;

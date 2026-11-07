@@ -561,7 +561,14 @@ echo "BOOT_LOGS_PACKED=$(tar -tzf "$root/boot-logs.tar.gz" | wc -l) files"
 set -euo pipefail
 root=__ROOT__
 cd "$root/source/build"
-tar -cf "$root/trial-evidence.tar" repro/sha256.txt repro/result
+# A failed make leaves the repro files out: record that, never abort.
+: > "$root/trial-evidence.txt"
+files=()
+for f in repro/sha256.txt repro/result; do
+    if [ -f "$f" ]; then files+=("$f"); echo "$f produced" >> "$root/trial-evidence.txt"
+    else echo "$f not produced" >> "$root/trial-evidence.txt"; echo "TRIAL_EVIDENCE_MISSING=$f"; fi
+done
+tar -cf "$root/trial-evidence.tar" -C "$root" trial-evidence.txt -C "$root/source/build" ${files[@]+"${files[@]}"}
 echo "TRIAL_EVIDENCE_PACKED=$(tar -tf "$root/trial-evidence.tar" | wc -l) files"
 '@
 
