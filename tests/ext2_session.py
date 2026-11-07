@@ -24,7 +24,9 @@ import sys
 
 OTHER = re.compile(r"^(console: |\[pid \d+\] |\[process \d+ |uptime: \d+ s$|key: )")
 ROW = re.compile(r"^([d-]) +(\d+) \d{4}-\d{2}-\d{2} \d{2}:\d{2} (.+)$")
-DU = re.compile(r"^(\d+) pages? \((\d+) KiB\) in (\d+) files? and (\d+) folders?$")
+# 1.4 stage 12 (changed, the owner's approval): du on the disk counts the
+# KiB of the blocks the files really use ("<n> KiB on the disk in ...").
+DU = re.compile(r"^(\d+) KiB on the disk in (\d+) files? and (\d+) folders?$")
 WRITE_LINES = [
     ("touch new.txt", "touch: 'new.txt': the filesystem is read-only."),
     ("touch notes.txt", "touch: 'notes.txt': the filesystem is read-only."),
@@ -72,18 +74,23 @@ def stat(img, path):
 
 
 def walk(img, folder):
-    """Every path under folder (itself not counted): (files, folders, pages)."""
-    files = folders = pages = 0
+    """Every path under folder (itself not counted): (files, folders, pages,
+    KiB). 1.4 stage 12: KiB is the files' i_blocks / 2 (the KiB of the
+    blocks they really use, indirect blocks included), as debugfs reads
+    them; folders' own blocks are not counted (as Madire's du)."""
+    files = folders = pages = kib = 0
     for name, _, mode, _ in ls_p(img, folder):
         p = (folder.rstrip("/") or "") + "/" + name
         if is_dir(mode):
             folders += 1
-            f, d, g = walk(img, p)
-            files, folders, pages = files + f, folders + d, pages + g
+            f, d, g, k = walk(img, p)
+            files, folders, pages, kib = files + f, folders + d, pages + g, kib + k
         else:
             files += 1
-            pages += (stat(img, p)["blocks512"] + 7) // 8
-    return files, folders, pages
+            b = stat(img, p)["blocks512"]
+            pages += (b + 7) // 8
+            kib += b // 2
+    return files, folders, pages, kib
 
 
 def block(log, command):
@@ -158,14 +165,16 @@ def main():
             bad.append("%s: got %s, want %s" % (path, rows, want))
     check("stat", not bad, "; ".join(bad))
 
-    # du: pages, files and folders under / and /docs.
+    # du: KiB (1.4 stage 12; pages until then), files and folders under /
+    # and /docs, each from debugfs.
     bad = []
     for command, folder in (("du", "/"), ("du docs", "/docs")):
         got, _ = block(log, command)
-        f, d, p = walk(img, folder)
+        f, d, p, k = walk(img, folder)
         m = DU.match(got[0]) if got else None
-        print("DU %s: %s (debugfs: %d pages, %d files, %d folders)" % (folder, got[0] if got else "none", p, f, d))
-        if not m or (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))) != (p, 4 * p, f, d):
+        print("DU %s: %s (debugfs: %d KiB in the files' blocks, %d files, %d folders)" % (
+            folder, got[0] if got else "none", k, f, d))
+        if not m or (int(m.group(1)), int(m.group(2)), int(m.group(3))) != (k, f, d):
             bad.append(folder)
     check("du", not bad, " ".join(bad))
 

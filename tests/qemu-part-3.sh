@@ -1092,8 +1092,22 @@ expect_lines "$D12_CL" "[1.4] Disk-mode console: disk shows the disk (port 0, QE
     "^madire> disk$" "^Disk on port 0: QEMU HARDDISK, [0-9]+ MiB \(AHCI 00:05\.0\)$" "^  Partitions:  MBR, 1 partition$" \
     "^  Write guard: ALLOWED on partition 1$" "^  Use:         ext2 'madire-test' mounted read-write on /home \(Disk mode\)$" \
     "$D12_NEXT"
-expect_in_order "$D12_CL" "[1.4] Disk-mode console: sync saves the new file; mv from /home to /tmp is refused with 'mv: cannot move between filesystems (copy, then remove).'" \
-    "^madire> sync$" "^sync: [1-9][0-9]* blocks? saved\.$" "^madire> mv note\.txt /tmp/note\.txt$" \
+# The automatic save (on: a normal boot) may save note.txt before sync
+# does, so sync says either line (runs 42376255543, 42376272505); the file
+# on the disk is checked after the session (below).
+expect_in_order "$D12_CL" "[1.4] Disk-mode console: sync answers (blocks saved, or nothing to save when the automatic save came first); mv from /home to /tmp is refused with 'mv: cannot move between filesystems (copy, then remove).'" \
+    "^madire> sync$" "^sync: ([1-9][0-9]* blocks? saved|nothing to save)\.$" "^madire> mv note\.txt /tmp/note\.txt$" \
     "^mv: cannot move between filesystems \(copy, then remove\)\.$"
 expect_in_order "$D12_CL" "[1.4] Disk-mode console: cd alone goes back to /home/user (C11)" \
     "^madire> cd /tmp$" "^madire> cd$" "^madire> pwd$" "^/home/user$"
+# The file on the disk after the session (QEMU stopped, no reboot): saved
+# by sync or the automatic save, still in /home/user (mv was refused).
+disk_image extract "$D12_W/console-disk.img" "$D12_W/console-part.img" > /dev/null 2>&1
+D12_NOTE=$(disk_debugfs "$D12_W/console-part.img" "cat /user/note.txt" | od -An -c | tr -s ' ' | tr -d '\n')
+echo "      console: /user/note.txt on the image:${D12_NOTE:- (none)}"
+if [ "$D12_OK" -eq 1 ] && [ "$(disk_debugfs "$D12_W/console-part.img" "cat /user/note.txt" | sha256sum | cut -d' ' -f1)" = \
+     "$(printf 'hello\n' | sha256sum | cut -d' ' -f1)" ]; then
+    pass "[1.4] Disk-mode console: after the session /user/note.txt on the disk image is exactly 'hello' and a newline (saved; still in /home/user after the refused mv)"
+else
+    fail "[1.4] Disk-mode console: /user/note.txt on the disk image is not exactly 'hello' and a newline (got:${D12_NOTE:- nothing})"
+fi

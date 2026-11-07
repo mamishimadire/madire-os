@@ -315,6 +315,10 @@
 # test= boot) and stage 8's read-write mount line (automatic save off);
 # stage 10's write session and persistence (cd /home first; the expected
 # tree holds the home folders); desktop_boot and desktop_boot_end take
-# DT_DISK.
-1.4 171
+# DT_DISK. After runs 42376255543 / 42376272505: 1 more (part 3): the
+# Disk-mode console's note.txt on the image exactly (debugfs); changed (the
+# owner's approval): stage 8's read-session du checks (KiB from debugfs's
+# i_blocks), the Disk-mode console's sync line (either answer), -boot d
+# with DT_DISK.
+1.4 172
 unit-suites 107

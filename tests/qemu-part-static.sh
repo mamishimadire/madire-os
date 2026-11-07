@@ -2505,7 +2505,7 @@ e8_results() {
             ls) pass "[1.4] ext2 read session, $2: ls -l of /home, /home/docs and /home/docs/nested lists debugfs's entries in their on-disk order, with their types and sizes" ;;
             cat) pass "[1.4] ext2 read session, $2: cat of three files (one through the single indirect block at 1 KiB) prints them exactly: the SHA-256s of debugfs's cat, the byte counts on the console's cat lines" ;;
             stat) pass "[1.4] ext2 read session, $2: stat of two files, a folder and /home: the size, pages (i_blocks), node (inode number) and links as debugfs reads them" ;;
-            du) pass "[1.4] ext2 read session, $2: du of /home and /home/docs: the pages, files and folders debugfs's tree gives" ;;
+            du) pass "[1.4] ext2 read session, $2: du of /home and /home/docs: the KiB of the files' blocks (i_blocks / 2), the files and folders debugfs's tree gives (stage 12: KiB on the disk, was pages)" ;;
             cd) pass "[1.4] ext2 read session, $2: the shell starts in the mounted /home; cd docs, cd .., cd .. (to /, the RAM root) and cd alone (the mounted /home again), as pwd shows" ;;
             writes) pass "[1.4] ext2 read session, $2: touch (new and existing), mkdir, rmdir, rm, '>' and '>>', cp and mv are each refused with 'the filesystem is read-only' (mkdir of an existing folder: already exists), and the listing afterwards is the same" ;;
             esac
@@ -3010,7 +3010,7 @@ if [ "$E10_OK" -eq 1 ] && e10_health "$E10_LA" &&
    grep -qE "^madire> sync$" "$E10_LA" &&
    grep -qxF "Saving files... done." "$E10_LA" && grep -qxF "Restarting..." "$E10_LA" &&
    grep -qE '^ext2: save before restart: done in [0-9]+ ms \([0-9]+ saves, [0-9]+ writes; 0 open files with no name left forgotten first\); the volume marked clean$' "$E10_LA" &&
-   ! grep -qE ': (the filesystem is read-only|I/O error|no room|already exists|no such file or folder)\.$' "$E10_LA" &&
+   ! grep -qE ': (the filesystem is read-only|I/O error|no room|already exists|no such file or folder|no room left on the disk|the file is at the disk.s size limit)\.$' "$E10_LA" &&
    ! grep -qE '^ahci: port [0-9]+: .* failed: ' "$E10_LA"; then
     pass "[1.4] write session on a marked disk (read-write, the automatic save on): mkdir, '>' and '>>', cp, cat '>>' through the single indirect block, mv in a folder and between folders, rm, rmdir; sync ($E10_SYNC1 with blocks to save), a second sync had nothing to save; reboot saved first ('Saving files... done.', the volume marked clean) and restarted; no error line"
 else
