@@ -3045,11 +3045,44 @@ E10_KD="x{wait:1}cat big.txt{ret}{wait:3}cat big.txt{ret}{wait:4}echo hi > new.t
 E10_KD+="echo x > n2.txt{ret}{wait:1}cat docs/a.txt{ret}{wait:1}echo end-of-blkdebug{ret}"
 E10_LD=$OUT/serial-blkdebug.log
 T0S=$(date +%s%N)
-boot_text "$E10_LD" 150 "System ready." "$E10_KD" 0.05 $'\nend-of-blkdebug\n' -m 128M -kernel "$KERNEL" \
+# Stage 10 diagnostics (decide no check): the blkdebug boot runs as
+# boot_text runs it (the same keys, gap, done text, time limit, -no-reboot
+# and the same "[0.5] key injection" failure), with three additions: QEMU's
+# stderr and exit status are kept, and QEMU logs guest errors and every CPU
+# reset (-d guest_errors,cpu_reset; a guest triple fault is logged as
+# "Triple fault"), so a guest fault can be told apart from QEMU ending by
+# itself. The files go to $QEMU_WATCH_DIR (uploaded with the run).
+E10_QERR=$QEMU_WATCH_DIR/blkdebug-qemu-stderr.txt
+E10_QD=$QEMU_WATCH_DIR/blkdebug-qemu-d.log
+rm -f "$E10_LD" "$OUT/qmp.sock" "$E10_QERR" "$E10_QD"
+timeout 150 qemu-system-x86_64 -display none -no-reboot -serial file:"$E10_LD" \
+    -qmp unix:"$OUT/qmp.sock",server=on,wait=off -d guest_errors,cpu_reset -D "$E10_QD" -m 128M -kernel "$KERNEL" \
     -append "test=blkdebug" \
     -drive file="$E10_BD",if=none,id=e10d-disk,format=raw -device ich9-ahci,id=e10d-ahci,addr=0x5 \
-    -device ide-hd,drive=e10d-disk,bus=e10d-ahci.0
+    -device ide-hd,drive=e10d-disk,bus=e10d-ahci.0 > /dev/null 2> "$E10_QERR" &
+E10_QPID=$!
+E10_KOUT=$(python3 "$QMPKEYS" "$OUT/qmp.sock" "$E10_LD" "System ready." --text "$E10_KD" --gap 0.05 \
+           --done $'\nend-of-blkdebug\n' 2>&1)
+echo "$E10_KOUT"
+case "$E10_KOUT" in *ERROR*) fail "[0.5] key injection into $E10_LD" ;; esac
+E10_QALIVE=no
+kill -0 "$E10_QPID" 2>/dev/null && E10_QALIVE=yes
+sleep 2
+kill "$E10_QPID" 2>/dev/null
+wait "$E10_QPID" 2>/dev/null
+E10_QEXIT=$?
+[ -f "$E10_LD" ] || : > "$E10_LD"
 boot_seconds "$E10_LD" "$T0S"
+echo "      [1.4] blkdebug diagnostics (report only): QEMU running when the keys ended: $E10_QALIVE; exit status $E10_QEXIT (143: stopped by the harness, 124: the time limit, 134: abort)"
+echo "      [1.4] blkdebug diagnostics: QEMU stderr ($(cat "$E10_QERR" 2>/dev/null | wc -l) lines):"
+sed 's/^/      blkdebug stderr: /' "$E10_QERR" 2>/dev/null | head -n 40
+E10_QRESETS=$(grep -c 'CPU Reset' "$E10_QD" 2>/dev/null)
+E10_QTRIPLE=$(grep -c 'Triple fault' "$E10_QD" 2>/dev/null)
+echo "      [1.4] blkdebug diagnostics: -d log: ${E10_QRESETS:-0} CPU resets, ${E10_QTRIPLE:-0} triple faults; its lines but the register dumps:"
+grep -vE '^ *([A-Z][A-Z0-9]{1,3} *=|[A-Z]{2,4}=|(GDT|IDT|LDT|TR|CR[0-9]|DR[0-9]|EFER|FCW|FPR|XMM|YMM|MXCSR|CCS|CCD|CCO|PDPTE)[0-9]*[ =])' \
+    "$E10_QD" 2>/dev/null | head -n 60 | sed 's/^/      blkdebug -d: /'
+echo "      [1.4] blkdebug diagnostics: the serial log's last lines:"
+tail -n 5 "$E10_LD" | sed 's/^/      blkdebug tail: /'
 grep -E '^(ahci: port 0: (READ|WRITE)|blk: test=|ext2: sync|sync: |cat: |Output to )' "$E10_LD" | sed 's/^/      blkdebug: /'
 E10_BIG=$(stat -c%s "$E8_TREE/big.txt" 2>/dev/null)
 E10_E1=$(grep -cE '^ahci: port 0: READ DMA EXT LBA [0-9]+, [0-9]+ sectors failed: the device reported an error \(PxIS 0x[0-9a-f]{8}, PxTFD 0x[0-9a-f]{8}, PxSERR 0x[0-9a-f]{8}, PxCI 0x[0-9a-f]{8}\); (no port reset|port reset \(COMRESET\) once); port running again; error 1 of 3, then EIO$' "$E10_LD")
