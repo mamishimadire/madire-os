@@ -16,9 +16,12 @@ The steps run in order:
                      (the splash with that many dots lit, rendered by
                      scripts/make-wallpaper.py, the one reference algorithm),
                      ready (1.2 stage 10: the splash's ready state, from
-                     the same) or console (the framebuffer console's cell grid,
+                     the same), console (the framebuffer console's cell grid,
                      rendered by tests/fbcon_ref.py from the kernel's
-                     vga_shadow, read at physical SHADOW_PHYS);
+                     vga_shadow, read at physical SHADOW_PHYS) or bootscreen
+                     (1.4 stage 15b: console, for the boot screen at System
+                     ready, whose live rows the idle loop rewrites; see
+                     "Retakes" below);
     wait:LINE        wait until LINE is a whole line of the serial log;
     type:TEXT        type TEXT on the guest's PS/2 keyboard (QMP send-key,
                      20 ms per key, 50 ms apart; TEXT as for
@@ -50,6 +53,19 @@ the serial log ("UNTIL ..."). --size renders the splash's references for
 a WxH screen before the guest starts, so a held screen is taken within its
 3 s. One QMP client at a time. Any error prints
 "qmp_splash: ERROR: ..." and exits 1.
+
+Retakes (1.4 stage 15b, bootscreen only): after System ready the idle loop
+rewrites the boot screen's Uptime row once a second (kernel/bootscreen.c,
+live_row: each cell written to vga_shadow, then drawn), so a screen taken
+between the two differs in one cell. When a bootscreen screen differs and
+every differing pixel lies in a cell of rows 19-20, columns 44-79 (Uptime
+and Last key), the screen is taken again, 0.3 s later, at most 3 screens in
+all; each retake prints
+
+    RETAKE <n>.<k> differ=<pixels> cells=<row>:<col>,...
+
+and the SCREEN line reports the last screen. A difference anywhere else
+takes no retake (the SCREEN line reports it at once).
 """
 import argparse
 import importlib.util
@@ -87,6 +103,30 @@ def row_text(shadow, r):
 
 
 _splash = {}
+
+# 1.4 stage 15b: the boot screen's live cells (kernel/bootscreen.c,
+# UPTIME_ROW 19, LAST_KEY_ROW 20, RIGHT_COL 44 to the end of the row).
+LIVE_ROWS = (19, 20)
+LIVE_COL = 44
+SCREENS = 3
+RETAKE_GAP = 0.3
+
+
+def differing_cells(got, want, w, h):
+    """The (row, col) cells holding differing pixels, or None if a differing
+    pixel lies outside the console's cell grid."""
+    lay = fbcon_ref.layout(w, h)
+    if lay is None or len(got) != len(want):
+        return None
+    cw, ch, x0, y0 = lay
+    cells = set()
+    for o in range(0, len(want), 3):
+        if got[o:o + 3] != want[o:o + 3]:
+            x, y = (o // 3) % w - x0, (o // 3) // w - y0
+            if not (0 <= x < 80 * cw and 0 <= y < 25 * ch):
+                return None
+            cells.add((y // ch, x // cw))
+    return cells
 
 
 def splash_ref(w, h, phase, fontdir):
@@ -162,27 +202,36 @@ def main():
                 print(f"MARKER {n} {line!r}: not seen in {left:.0f} s", flush=True)
                 return 0
             print(f"MARKER {n} {line!r}: seen after {seen:.1f} s", flush=True)
-            qmp.command("stop")
-            w, h, pix = qmp.screendump(dump)
-            if os.path.exists(mem):
-                os.remove(mem)
-            qmp.command("pmemsave", val=int(a.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
-            held = f"splash test: hold {n} over" not in serial_text(a.serial).splitlines()
-            qmp.command("cont")
-            if ref == "console":
-                want, desc = fbcon_ref.render(a.fontdir, open(mem, "rb").read(), w, h)
-                desc = "the console's cell grid: " + desc
-            elif ref in ("dots0", "dots1", "dots2", "dots3"):
-                want, desc = splash_ref(w, h, int(ref[4]), a.fontdir)
-            elif ref == "ready":
-                want, desc = splash_ref(w, h, "ready", a.fontdir)
-            else:
-                raise ValueError(f"unknown reference {ref!r}")
-            differ, first = fbcon_ref.compare(pix, want, w)
+            for take in range(1, SCREENS + 1):
+                qmp.command("stop")
+                w, h, pix = qmp.screendump(dump)
+                if os.path.exists(mem):
+                    os.remove(mem)
+                qmp.command("pmemsave", val=int(a.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
+                held = f"splash test: hold {n} over" not in serial_text(a.serial).splitlines()
+                qmp.command("cont")
+                if ref in ("console", "bootscreen"):
+                    want, desc = fbcon_ref.render(a.fontdir, open(mem, "rb").read(), w, h)
+                    desc = "the console's cell grid: " + desc
+                elif ref in ("dots0", "dots1", "dots2", "dots3"):
+                    want, desc = splash_ref(w, h, int(ref[4]), a.fontdir)
+                elif ref == "ready":
+                    want, desc = splash_ref(w, h, "ready", a.fontdir)
+                else:
+                    raise ValueError(f"unknown reference {ref!r}")
+                differ, first = fbcon_ref.compare(pix, want, w)
+                if ref != "bootscreen" or differ == 0 or take == SCREENS:
+                    break
+                cells = differing_cells(pix, want, w, h)
+                if not cells or any(r not in LIVE_ROWS or c < LIVE_COL for r, c in cells):
+                    break                       # a difference outside the live cells: no retake
+                print(f"RETAKE {n}.{take} differ={differ} cells=" +
+                      ",".join("%d:%d" % rc for rc in sorted(cells)), flush=True)
+                time.sleep(RETAKE_GAP)
             extra = "" if first is None else ", first at %d,%d: screen %s, reference %s" % first
             print(f"SCREEN {n} size={w}x{h} held={'yes' if held else 'no'} differ={differ} ({desc}{extra})",
                   flush=True)
-            if ref == "console":
+            if ref in ("console", "bootscreen"):
                 shadow = open(mem, "rb").read()
                 print(f"ROWS {n} top={ascii(row_text(shadow, 0))} bottom={ascii(row_text(shadow, 24))}", flush=True)
                 for r in range(25) if a.rows else ():
