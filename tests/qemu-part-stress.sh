@@ -27,6 +27,13 @@
 #    dragging the About window by its title bar; three checks (exact
 #    packets, the final rectangle, the longest composition and the screen),
 #    and a report-only burst over the Console window with keys typed.
+# 8. Power cuts in QEMU (1.4 stage 11, docs/plans/1.4.md section D (b), G5):
+#    the owner's case (test=diskcut) cut after every write N but the two the
+#    sharded run takes (N1, N2): each a cut boot judged on the image and a
+#    remount boot (tests/diskcut-lib.sh); one check per N.
+# 9. The churn (1.4 stage 11, G5): test=diskchurn, 1000 create, write and
+#    delete cycles in /home with a sync every 50; then e2fsck -fn clean and
+#    the free block and inode counts back to the image's own; one check.
 # The always-on self-check (stage 2b) panics on a switch to a thread that is
 # not ready, a CR3 that is not a live address space, or a return to ring 3
 # without a live process; the stall capture records the tables if a boot
@@ -408,3 +415,57 @@ awk '/^desktop: frames during the drag: / { f = $6; next }
      /^desktop: damage during the drag: / { d++; printf "DRAGBURST_DAMAGE drag %d: %d frames; rectangles per frame %.2f before the merge, %.2f composed; pixels %s before, %s composed (%.2f times fewer)\n",
                                              d, f, f ? $6 / f : 0, f ? $10 / f : 0, $11, $14, $14 ? $11 / $14 : 0 }' "$LOG"
 grep -E "^desktop: keys during the drag: " "$LOG" | sed 's/^/DRAGBURST_KEY_LATENCY /'
+
+section "[stress] Power cuts in QEMU: the owner's case cut after every other write N, and the churn (1.4 stage 11)"
+# tests/diskcut-lib.sh: the model and the uncut run as in part static, then
+# every N from 0 to the model's last write but one, except N1 and N2 (part
+# static's): a cut boot judged on the image (e2fsck -fn's allowed list in
+# the model's contexts, every saved file exact, the owner's case rules) and
+# a remount boot (the D12 recount unless nothing was written, read-write, A
+# and B read back as debugfs reads them).
+SC_T0=$(date +%s)
+. "$(dirname "$0")/diskcut-lib.sh"
+dc_setup "$OUT/power-cut-stress" "$OUT/ext2write" stress
+echo "      N1=$DC_N1 N2=$DC_N2 (part static's); the model's writes before its unmount: $DC_TOTAL"
+if [ "$DC_SETUP_OK" -eq 1 ]; then
+    pass "[stress] power cuts: the uncut run's $DC_TOTAL disk writes equal the host model's one by one, diskcut: DONE"
+    SC_N=0
+    for ((sc_n = 0; sc_n < DC_TOTAL; sc_n++)); do
+        [ "$sc_n" -eq "$DC_N1" ] || [ "$sc_n" -eq "$DC_N2" ] && continue
+        SC_N=$((SC_N + 1))
+        dc_point "$sc_n"
+        if [ "$DC_CUT_OK" -eq 1 ] && [ "$DC_RE_OK" -eq 1 ]; then
+            pass "[stress] power cut after write $sc_n (${DC_WHERE:-?} next): halted after exactly $sc_n writes; e2fsck -fn only the allowed list in its contexts, every saved file exact, the owner's case rules; the remount boot read-write and reading A and B as debugfs does"
+        else
+            fail "[stress] power cut after write $sc_n: the cut boot ($DC_CUT_OK) or the remount boot ($DC_RE_OK) failed (see $DC_W/qcut-$sc_n.txt, $DC_W/qview-$sc_n.txt)"
+        fi
+    done
+    echo "      [stress] power cuts: $SC_N cut points, $(( $(date +%s) - SC_T0 )) s (report only)"
+else
+    fail "[stress] power cuts: the model failed, the uncut run did not end with DONE, or its writes differ from the model's (see $DC_W/model.txt, $DC_W/compare.txt)"
+fi
+
+# The churn: 16 MiB, 1 KiB blocks, 2048 inodes, empty.
+SC_T1=$(date +%s)
+SC_W=$OUT/churn
+rm -rf "${SC_W:?}" && mkdir -p "$SC_W"
+SC_OK=1
+disk_mkfs "$SC_W/fs.img" 16384 1024 256 2048 "" > "$SC_W/mkfs.txt" 2>&1 &&
+    disk_image mbr "$SC_W/fs.img" "$SC_W/disk.img" > /dev/null 2>&1 || SC_OK=0
+SC_FREE0=$(disk_debugfs "$SC_W/fs.img" stats | sed -nE 's/^Free (blocks|inodes):[[:space:]]*([0-9]+).*/\1=\2/p' | tr '\n' ' ')
+SC_LOG=$OUT/serial-diskchurn.log
+dc_boot "$SC_LOG" 900 "$DC_READY" "test=diskchurn" "$SC_W/disk.img"
+grep -E '^(diskchurn|ext2: sync): ' "$SC_LOG" | tail -n 4 | sed 's/^/      churn: /'
+disk_image extract "$SC_W/disk.img" "$SC_W/part.img" > /dev/null 2>&1 || SC_OK=0
+SC_FSCK=$(disk_fsck "$SC_W/part.img")
+SC_FRC=$?
+sed 's/^/      churn e2fsck: /' <<< "$SC_FSCK"
+SC_EXTRA=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$SC_FSCK")
+SC_FREE1=$(disk_debugfs "$SC_W/part.img" stats | sed -nE 's/^Free (blocks|inodes):[[:space:]]*([0-9]+).*/\1=\2/p' | tr '\n' ' ')
+echo "      churn: free counts on the image before ${SC_FREE0:-?}, after ${SC_FREE1:-?}; $(( $(date +%s) - SC_T1 )) s (report only)"
+if [ "$SC_OK" -eq 1 ] && grep -qE '^diskchurn: DONE \(1000 cycles; the free blocks and inodes back to their start\)$' "$SC_LOG" &&
+   [ "$SC_FRC" -eq 0 ] && [ -z "$SC_EXTRA" ] && [ -n "$SC_FREE0" ] && [ "$SC_FREE0" = "$SC_FREE1" ] && dc_health "$SC_LOG"; then
+    pass "[stress] churn: 1000 create, write, close and delete cycles in /home with a sync every 50: done, the kernel's free counts back to their start; e2fsck -fn reports nothing and the image's free blocks and inodes equal the empty image's (${SC_FREE1% })"
+else
+    fail "[stress] churn: not DONE, e2fsck -fn reported something, or the free counts differ (${SC_FREE0:-?} -> ${SC_FREE1:-?}; see serial-diskchurn.log)"
+fi

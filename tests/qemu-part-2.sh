@@ -723,7 +723,7 @@ expect_lines "$LOG" "[0.12] help: one screen, the commands by section, then the 
     "^system: Information about the system$" \
     "^  version  uptime  mem  cpu  uname  hostname  date  dmesg  reboot  display$" \
     "^programs: Programs and processes$" "^  ps  run  kill$" \
-    "^files: Files and folders$" "^  pwd  cd  ls  mkdir  rmdir  touch  stat  cat  rm  cp  mv  df  du$" \
+    "^files: Files and folders$" "^  pwd  cd  ls  mkdir  rmdir  touch  stat  cat  rm  cp  mv  df  du  sync  disk$" \
     "^Purposes and usage: help <command>; one section: help <section>\.$" \
     "^Scroll back: Shift\+PgUp and Shift\+PgDn\.$" "$NEXT"
 expect_lines "$LOG" "[0.12] help shell: the shell's commands" \
@@ -742,7 +742,8 @@ expect_lines "$LOG" "[0.12] help programs: programs and processes" \
 # stage 8: the section "files" and its 8 commands, 34 in all; stage 9: rm,
 # cp, mv, df and du in "files", 39 in all; 1.0 stage 10: help lists
 # several names per line, so every word of its indented lines is read;
-# 1.2 stage 10b: display in "system", 40 in all).
+# 1.2 stage 10b: display in "system", 40 in all; 1.4 stage 12: sync and
+# disk in "files", 42 in all).
 if awk '
         /^madire> / { cur = $0; next }
         cur == "madire> help" && /^  [a-z]/ { for (i = 1; i <= NF; i++) all[$i] = 1; next }
@@ -752,9 +753,9 @@ if awk '
             for (c in in_sec) if (!(c in all)) bad = 1
             split("shell system programs files", s, " ")
             for (i = 1; i <= 4; i++) if (s[i] in all) bad = 1
-            exit !(na == 40 && !bad)
+            exit !(na == 42 && !bad)
         }' "$LOG"; then
-    pass "[0.12] help sections: each of the 40 commands in exactly one section, no section named like a command"
+    pass "[0.12] help sections: each of the 42 commands in exactly one section, no section named like a command"
 else
     fail "[0.12] help sections: a command missing from the sections, in two, or a section named like a command"
 fi
@@ -797,12 +798,12 @@ HELP_SEC_NAMES=$(printf '%s\n' "$HELP_OUT" | awk '
 if [ -n "$HELP_OUT" ] && printf '%s\n' "$HELP_OUT" | awk -v want="$ALL_SEC" '
         /^  [a-z]/ { for (i = 1; i <= NF; i++) { seen[$i]++; total++ } }
         END {
-            n = split(want, w, " "); if (n != 40 || total != 40) exit 1
+            n = split(want, w, " "); if (n != 42 || total != 42) exit 1
             for (i = 1; i <= n; i++) if (seen[w[i]] != 1) exit 1
         }'; then
-    pass "[1.0] help: each of the 40 commands listed exactly once"
+    pass "[1.0] help: each of the 42 commands listed exactly once"
 else
-    fail "[1.0] help: a command missing, listed twice, or not 40 in all"
+    fail "[1.0] help: a command missing, listed twice, or not 42 in all"
 fi
 if [ -n "$HELP_OUT" ] && [ "$HELP_SEC_NAMES" = "$SEC_NAMES" ]; then
     pass "[1.0] help: each section's names in the order help <section> lists them"
@@ -816,7 +817,8 @@ else
     fail "[1.0] help: titles '$HELP_TITLES', help <section> '$SEC_TITLES'"
 fi
 # The 39 purpose rows, word for word as help listed them before stage 10,
-# now in the four sections; 1.2 stage 10b: and display's, the 40th.
+# now in the four sections; 1.2 stage 10b: and display's, the 40th; 1.4
+# stage 12: sync's and disk's, the 41st and 42nd.
 rows_after() {   # rows_after <typed line> <regex...>: the lines right after it
     local typed=$1
     shift
@@ -853,8 +855,9 @@ if rows_after "help shell" "^shell: The shell's own commands$" \
         "^  stat     Show a file's or folder's details: stat <path>$" "^  cat      Show a file's contents: cat <path>$" \
         "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$" "^  cp       Copy a file: cp \[-y\] <from> <to>$" \
         "^  mv       Move or rename: mv \[-y\] <from> <to>$" "^  df       Show the filesystem's nodes and pages in use$" \
-        "^  du       Show the pages under a folder: du \[path\]$" "$NEXT"; then
-    pass "[1.0] help <section>: the 40 rows with their purposes: the 39 word for word as help listed them before stage 10, and display's (1.2)"
+        "^  du       Show the pages under a folder: du \[path\]$" "^  sync     Save changed files to the disk$" \
+        "^  disk     Show disks and how they are used$" "$NEXT"; then
+    pass "[1.0] help <section>: the 42 rows with their purposes: the 39 word for word as help listed them before stage 10, display's (1.2), sync's and disk's (1.4)"
 else
     fail "[1.0] help <section>: a row differs from the purposes help listed before stage 10"
 fi

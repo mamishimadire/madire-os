@@ -46,6 +46,21 @@ ISO    := $(BUILD)/madire-os.iso
 # 1.3 stage 3b: the whole toolkit is linked (the desktop draws with it);
 # TOOLKIT_SRCS still names it for the host tools and part static's checks.
 TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
+# 1.4 stage 6: the ext2 read core (kernel/fs/ext2_core.c) is pure code,
+# compiled with the kernel's flags (make ext2core) for part static's checks,
+# and built into the host tool tests/ext2dump.c and its unit suite. 1.4
+# stage 8: it is linked into the kernel (ext2 mounted read-only at /home),
+# with ext2_vfs.c (the VFS adapter) and ext2_disk.c (the mount at boot);
+# EXT2_SRCS names the core alone, for the host tool and those checks.
+EXT2_SRCS := kernel/fs/ext2_core.c
+EXT2_OBJS := $(EXT2_SRCS:%.c=$(BUILD)/%.o)
+# 1.4 stage 9: the ext2 write core and the block layer's save order are pure
+# code, compiled with the kernel's flags (make ext2core) for part static's
+# checks, and built into the host tool tests/ext2write.c and the unit
+# suites. 1.4 stage 10: linked into the kernel too (behind the write guard),
+# as every other file under kernel/.
+EXT2_WRITE_SRCS := kernel/fs/ext2_write.c kernel/storage/blk_core_save.c
+EXT2_WRITE_OBJS := $(EXT2_WRITE_SRCS:%.c=$(BUILD)/%.o)
 ASM_SRCS := boot/boot.asm $(sort $(shell find kernel drivers -name '*.asm'))
 C_SRCS   := $(sort $(shell find kernel drivers -name '*.c'))
 OBJS     := $(ASM_SRCS:%.asm=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
@@ -132,10 +147,10 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/proc/loadplan.c kernel/proc/diagwait_core.c \
                             kernel/fs/path_core.c kernel/fs/vfs_core.c kernel/fs/ramfs_core.c \
                             kernel/proc/klock_core.c kernel/proc/fdtable_core.c \
-                            kernel/fs/fsys_core.c)
+                            kernel/fs/fsys_core.c kernel/fs/mount_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core repro padkernel clean
 
 all: $(KERNEL)
 
@@ -283,6 +298,7 @@ $(BUILD)/unit/%: tests/unit/%.c tests/unit/unit.h $(UNIT_MODULES) $(wildcard ker
                  $(wildcard drivers/keyboard/*.h drivers/ps2/*.h drivers/pit/*.h kernel/input/*.h kernel/console/*.h kernel/shell/*.h) \
                  $(wildcard drivers/mouse/*.h drivers/mouse/*_core.c) \
                  $(wildcard kernel/proc/*.h kernel/fs/*.h kernel/display/*.h kernel/display/*_core.c) \
+                 $(wildcard kernel/storage/*.h kernel/storage/*_core.c) \
                  $(TOOLKIT_SRCS) kernel/display/compositor.c $(GEN)/splash_data.h
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -I$(GEN) $< $(UNIT_MODULES) -o $@
@@ -348,6 +364,37 @@ $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.
 
 desktopdump: $(DESKTOPDUMP)
 
+# 1.4 stage 6: the ext2 read core as a host tool (tests/ext2dump.c, built
+# from kernel/fs/ext2_core.c itself); part static compares it with debugfs
+# and builds it a second time with the sanitizers. make ext2core also
+# compiles the core with the kernel's own flags (not linked).
+EXT2DUMP := $(BUILD)/ext2dump
+$(EXT2DUMP): tests/ext2dump.c $(EXT2_SRCS) $(wildcard kernel/fs/ext2_*.h)
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/ext2dump.c $(EXT2_SRCS) -o $@
+
+# 1.4 stage 9: the write core as a host tool (tests/ext2write.c, built from
+# the write core, the read core and the block layer's save order); part
+# static runs its sequences and the cut sweep (tests/ext2_cut.py), and builds
+# it a second time with the sanitizers.
+EXT2WRITE := $(BUILD)/ext2write
+$(EXT2WRITE): tests/ext2write.c $(EXT2_SRCS) $(EXT2_WRITE_SRCS) $(wildcard kernel/fs/ext2_*.h) kernel/storage/blk_core.h \
+              kernel/storage/blk_core_save.h
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/ext2write.c $(EXT2_SRCS) $(EXT2_WRITE_SRCS) -o $@
+
+ext2core: $(EXT2_OBJS) $(EXT2DUMP) $(EXT2_WRITE_OBJS) $(EXT2WRITE)
+
+$(BUILD)/unit/test_ext2_core: $(EXT2_SRCS)
+# 1.4 stage 8: the VFS adapter's suite includes it and the core.
+$(BUILD)/unit/test_ext2_vfs: $(EXT2_SRCS) kernel/fs/ext2_vfs.c
+# 1.4 stage 9: the write core's and the save order's suites include them.
+$(BUILD)/unit/test_ext2_write: $(EXT2_SRCS) $(EXT2_WRITE_SRCS)
+$(BUILD)/unit/test_blk_core_save: kernel/storage/blk_core_save.c
+# 1.4 stage 10: the read-write VFS adapter's suite includes the adapter, its
+# writer, the write core and the save order.
+$(BUILD)/unit/test_ext2_vfs_rw: $(EXT2_SRCS) $(EXT2_WRITE_SRCS) kernel/fs/ext2_vfs.c kernel/fs/ext2_vfs_rw.c
+
 toolkit: $(TOOLKIT_OBJS)
 
 # Reproducible build (0.8): copy the sources into two fresh trees and build
@@ -391,17 +438,18 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck splashdump desktopdump toolkit $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
 # the parts: bash tests/qemu-tests.sh --list-parts), for the parallel jobs
 # of .github/workflows/regression.yml. The unit tests and make repro run
 # only with SHARD=static, so a sharded run runs them once; the padded test
-# kernel (1.0) is built only for part 4, which boots it.
+# kernel (1.0) is built only for part 4, which boots it. 1.4 stage 11: the
+# stress part's power cuts need the host tool ext2write (their model).
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit) \
-            $(if $(filter 4,$(SHARD)),padkernel)
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit ext2core) \
+            $(if $(filter 4,$(SHARD)),padkernel) $(if $(filter stress,$(SHARD)),$(EXT2WRITE))
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 
 run: $(ISO)
@@ -410,4 +458,4 @@ run: $(ISO)
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d)
+-include $(OBJS:.o=.d) $(TOOLKIT_SRCS:%.c=$(BUILD)/%.d) $(EXT2_OBJS:.o=.d) $(EXT2_WRITE_OBJS:.o=.d)

@@ -22,7 +22,9 @@ slot 510 is not a table). The count is compared with the kernel's
 boot, slot 506 is also modelled with the background cache's area
 (desktop_slot below; its own PAGETABLES_DESKTOP line). 1.3 stage 4a: and
 again with the window surfaces after the cache (desktop_surfaces below;
-its own PAGETABLES_SURFACES line).
+its own PAGETABLES_SURFACES line). 1.4 stage 4: on a boot with an AHCI
+controller, slot 508's storage areas (storage_slot below; its own
+PAGETABLES_STORAGE lines).
 
     python3 tests/pagetables.py <serial log> --label <name>
 
@@ -120,7 +122,57 @@ def main():
         "none" if not disp else "%d/%s" % (display_slot, disp.group(5)), "MATCH" if ok else "DIFFER"))
     desktop_slot(text, disp, say, a.label)
     desktop_surfaces(text, disp, say, a.label)
+    storage_slot(text, win, say, a.label)
     return 0 if ok else 1
+
+
+STORAGE_BASE = 0xFFFFFE0080000000       # vm_layout.h: VM_STORAGE_BASE (the DMA pages)
+BLK_CACHE_BASE = 0xFFFFFE0080200000     # VM_BLK_CACHE_BASE (the block cache's pages)
+
+
+def storage_slot(text, win, say, label):
+    """1.4 stage 4: on a boot that started the AHCI driver (its "ahci:
+    slot 508: registers ..." line), slot 508 is modelled after the driver's
+    start and, on a test=diskread boot, after the reads: the window's page
+    table (no page mapped: the window and the test page are unmapped),
+    the registers' pages from the page of their logged address, the DMA
+    pages from VM_STORAGE_BASE and the block cache's pages from
+    VM_BLK_CACHE_BASE, as many as each line gives. Each model's tables and
+    pages must equal the kernel's walk of the slot ("slot 508 now"), and
+    the registers' first page must be mapped to their frame with PCD and
+    PWT (0x18) set. One PAGETABLES_STORAGE line for each walk; they decide
+    nothing about PAGETABLES_RESULT or the exit status."""
+    regs = re.search(r"^ahci: slot 508: registers 0x([0-9a-f]{8}) at 0x([0-9a-f]{16}) \((\d+) pages, uncached: "
+                     r"PCD and PWT\); the first page's entry: frame 0x([0-9a-f]+), flags 0x([0-9a-f]+)$", text, re.M)
+    if not regs:
+        return
+    start = re.search(r"^ahci: slot 508 now: (\d+) page tables, (\d+) pages mapped \(walked\); (\d+) page tables "
+                      r"added, (\d+) DMA pages, (\d+) cache pages$", text, re.M)
+    read = re.search(r"^diskread: slot 508 now: (\d+) page tables, (\d+) pages mapped \(walked\)$", text, re.M)
+    cache = re.search(r"^diskread: cache: (\d+) of (\d+) pages made, ", text, re.M)
+    bar, va, n = int(regs.group(1), 16), int(regs.group(2), 16), int(regs.group(3))
+    frame, flags = int(regs.group(4), 16), int(regs.group(5), 16)
+    uncached = frame == bar & ~(PAGE - 1) and flags & 0x18 == 0x18 and flags & 1
+    reg_vas = {(va & ~(PAGE - 1)) + i * PAGE for i in range(n)}
+    say("storage: registers 0x%08x, %d pages at 0x%016x; first entry frame 0x%x flags 0x%x (%s)" % (
+        bar, n, va & ~(PAGE - 1), frame, flags, "uncached" if uncached else "NOT uncached"))
+    if not start:
+        print("PAGETABLES_STORAGE label=%s at=start no 'ahci: slot 508 now' line MISSING" % label)
+        return
+    window = {int(win.group(1), 16)}
+    walks = [("start", start, int(start.group(4)), int(start.group(5)))]
+    if read and cache:
+        walks.append(("diskread", read, int(start.group(4)), int(cache.group(1))))
+    for at, walk, dma, made in walks:
+        vas = reg_vas | {STORAGE_BASE + i * PAGE for i in range(dma)} | {BLK_CACHE_BASE + i * PAGE for i in range(made)}
+        every = vas | window
+        tables = len({v >> 39 for v in every}) + len({v >> 30 for v in every}) + len({v >> 21 for v in every})
+        logged = (int(walk.group(1)), int(walk.group(2)))
+        ok = uncached and (tables, len(vas)) == logged
+        say("storage at %s: %d register pages, %d DMA pages, %d cache pages; %d tables modelled" % (
+            at, len(reg_vas), dma, made, tables))
+        print("PAGETABLES_STORAGE label=%s at=%s registers=%d dma=%d cache=%d computed=%d/%d logged=%d/%d %s" % (
+            label, at, len(reg_vas), dma, made, tables, len(vas), logged[0], logged[1], "MATCH" if ok else "DIFFER"))
 
 
 def desktop_slot(text, disp, say, label):

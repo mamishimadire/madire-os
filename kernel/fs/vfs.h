@@ -5,7 +5,9 @@
  * The kernel's filesystem (1.0): the live RAM filesystem mounted at "/",
  * holding /home and /tmp at boot (Live mode: nothing is read from or
  * written to any disk). kernel/fs/vfs.c; the logic is in the pure
- * path_core.c, vfs_core.c and ramfs_core.c.
+ * path_core.c, vfs_core.c and ramfs_core.c. 1.4 stage 8: on a boot with
+ * a marked test disk, its ext2 volume is mounted read-only on the RAM
+ * folder /home (kernel/fs/ext2_disk.h); / and /tmp stay in memory.
  */
 
 #include <stdbool.h>

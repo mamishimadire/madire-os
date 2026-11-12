@@ -26,19 +26,19 @@ These projects are **references, not part of Madire OS**. They may be read to le
 | <a id="ref-toaruos"></a>**ToaruOS** | https://github.com/klange/toaruos | NCSA (GitHub; verified 2026-10-16). **Reclassified in 1.0** from the "Other references" list below: ideas only, nothing copied | A small from-scratch x86-64 OS: kernel, compositor, userland; thread and process structures (0.9), its window system and mouse handling (graphics) | Graphics and desktop |
 | <a id="ref-lvgl"></a>**LVGL** | https://github.com/lvgl/lvgl | MIT (GitHub; verified 2026-10-16) | A small embedded GUI library: widgets, styles, input devices on a framebuffer. Ideas; **a possible library only if the owner approves it** (AGENTS.md section 11, item 2) | Graphics |
 | <a id="ref-mesa"></a>**Mesa** | https://gitlab.freedesktop.org/mesa/mesa | Mostly MIT: "The core Mesa library is licensed according to the terms of the MIT license" (https://docs.mesa3d.org/license.html, verified 2026-10-16); the GLX client code under SGI Free Software License B, some drivers and files under their own licences (each file's SPDX identifier). **The GitLab page refused the automated check** (bot filter), so the licence was read from Mesa's own documentation | How OpenGL and Vulkan drivers are built on a kernel's graphics interface; ideas and documentation only | Graphics (far future) |
-| <a id="ref-sdl"></a>**SDL** | https://github.com/libsdl-org/SDL | Zlib (GitHub; verified 2026-10-16) | A portable layer for windows, input, audio and timers that games use; what such a layer needs from the OS. Ideas; **a possible library only if approved** | Graphics, audio, games as separate applications |
+| <a id="ref-sdl"></a>**SDL** | https://github.com/libsdl-org/SDL | Zlib (GitHub; verified 2026-10-16 and 2026-11-12) | A portable layer for windows, input, audio and timers that games use; what such a layer needs from the OS. Ideas; **a possible library only if approved** | Graphics, audio, games as separate applications |
 | <a id="ref-stb"></a>**stb_truetype** (in stb) | https://github.com/nothings/stb (`stb_truetype.h`) | Dual: MIT or the Unlicense (public domain), the user's choice (`LICENSE`; GitHub names none; verified 2026-10-16) | A TrueType rasterizer; **the candidate rasterizer** (a library, with approval). **If it is ever used, only fonts shipped with Madire OS are loaded:** its own header warns "NO SECURITY GUARANTEE -- DO NOT USE THIS ON UNTRUSTED FONT FILES" | Graphics (fonts) |
 | <a id="ref-vulkan"></a>**Vulkan-Samples** | https://github.com/KhronosGroup/Vulkan-Samples | Apache-2.0 (GitHub; verified 2026-10-16) | Learning Vulkan; far future | Graphics (far future) |
 | **Vulkan-Loader** | https://github.com/KhronosGroup/Vulkan-Loader | Mostly Apache-2.0 (`LICENSE.txt`: "The majority of files in this project use the Apache 2.0 License … Any license deviations from Apache 2.0 are 'more permissive' licenses"; verified 2026-10-16) | How Vulkan drivers are found and loaded; learning, far future | Graphics (far future) |
 | <a id="ref-openxr"></a>**OpenXR SDK** | https://github.com/KhronosGroup/OpenXR-SDK | Apache-2.0 (GitHub; verified 2026-10-16) | The standard VR/AR interface; far future | VR (far future) |
 | <a id="ref-tinyusb"></a>**TinyUSB** | https://github.com/hathach/tinyusb | MIT (GitHub; verified 2026-10-16) | A small USB stack: host and device classes. Ideas, or **a possible library for the USB milestone if approved** | USB (modernisation track) |
 | <a id="ref-musl"></a>**musl** | https://musl.libc.org/ (official git: https://git.musl-libc.org/cgit/musl) | MIT (`COPYRIGHT`: "musl as a whole is licensed under the following standard MIT license"). **The proposed mirror `https://github.com/bminor/musl` returned 404 (2026-10-12)**, so it isn't listed; the official git is used instead | A C library on the Linux system-call interface; **allowed as a library** (with approval, in `third_party/musl/`) | The C-library milestone |
-| <a id="ref-lwip"></a>**lwIP** | https://github.com/lwip-tcpip/lwip (a mirror of Savannah; official: https://savannah.nongnu.org/projects/lwip/) | BSD-3-Clause (`COPYING`) | A small TCP/IP stack; the first candidate for networking, **only behind Madire's own Linux-compatible socket layer** | Networking |
+| <a id="ref-lwip"></a>**lwIP** | https://github.com/lwip-tcpip/lwip (a mirror of Savannah; official: https://savannah.nongnu.org/projects/lwip/) | BSD-3-Clause (`COPYING`; verified 2026-11-12) | A small TCP/IP stack; the first candidate for networking, **only behind Madire's own Linux-compatible socket layer** | Networking |
 | <a id="ref-ladybird"></a>**Ladybird** | https://github.com/LadybirdBrowser/ladybird | BSD-2-Clause | An independent browser engine; what a browser needs from the OS | Madire Browser |
 | <a id="ref-chromium"></a>**Chromium** | https://chromium.googlesource.com/chromium/src | BSD-3-Clause (`LICENSE`); its `third_party/` components keep their own licences, to be checked one by one | The Chromium-based Madire Browser: what it needs from the OS (browse, never clone) | Madire Browser |
 | <a id="ref-mbedtls"></a>**Mbed TLS** | https://github.com/Mbed-TLS/mbedtls | Dual **Apache-2.0 OR GPL-2.0-or-later** (`LICENSE`); Madire would use it under Apache-2.0 | TLS; a candidate library in `third_party/mbedtls/` (with approval) | TLS |
 | <a id="ref-limine"></a>**Limine** | https://github.com/limine-bootloader/limine (redirects to `github.com/Limine-Bootloader/Limine`) | BSD-2-Clause (`COPYING`); its bundled parts are listed in its `3RDPARTY.md` (see [evaluations/limine.md](evaluations/limine.md)). **Since 0.13 also used as a tool:** the unmodified binary package of v12.9.3, fetched at build time with a pinned SHA-256 (AGENTS.md section 11, item 5); being used doesn't change its READ FULLY rule: its code is still never copied into Madire OS. **Boot branding (study only, added 2026-10-16):** its configuration documentation, https://github.com/Limine-Bootloader/Limine/blob/v12.x/CONFIG.md, describes `interface_branding` (and its colour) and `wallpaper` / `wallpaper_style` | The bootloader to replace GRUB; later its own boot protocol (framebuffer, all CPU cores, ACPI); the menu's branding options for the boot-branding step | 0.13, UEFI, boot branding |
-| <a id="ref-dunst"></a>**Dunst** | https://github.com/dunst-project/dunst | BSD-3-Clause (`LICENSE`; GitHub names no licence) | A notification daemon: notification queues, timeouts, urgency, grouping | Desktop (notifications) |
+| <a id="ref-dunst"></a>**Dunst** | https://github.com/dunst-project/dunst | BSD-3-Clause (`LICENSE`; GitHub names no licence; verified 2026-11-12) | A notification daemon: notification queues, timeouts, urgency, grouping | Desktop (notifications) |
 
 ## Study only (README, licence and design documents; not the source)
 
@@ -63,7 +63,7 @@ These projects are **references, not part of Madire OS**. They may be read to le
 | **Dolphin** | https://github.com/KDE/dolphin | Per file (REUSE `LICENSES/`, mainly GPL and LGPL) | A file manager | Desktop (file manager) |
 | **KDE System Settings** | https://github.com/KDE/systemsettings | Per file (REUSE `LICENSES/`, mainly GPL and LGPL) | How settings are grouped and searched | Settings |
 | <a id="ref-gnome"></a>**GNOME Shell** | https://github.com/GNOME/gnome-shell | GPL-2.0 (GitHub) | A desktop shell, its overview and search | Desktop |
-| **Nautilus** | https://github.com/GNOME/nautilus | GPL-3.0 (GitHub) | A file manager | Desktop (file manager) |
+| **Nautilus** | https://github.com/GNOME/nautilus | GPL-3.0 (GitHub; verified 2026-11-12) | A file manager (study only: its README and design; feature ideas for the Files app) | Desktop (file manager) |
 | <a id="ref-elementary"></a>**elementary** (Gala, Granite, AppCenter, HIG) | https://github.com/elementary | Gala GPL-3.0, Granite LGPL-3.0, AppCenter GPL-3.0 (GitHub); the HIG (https://github.com/elementary/hig) has **no licence file**, so it is read as guidance only | A consistent design language and human interface guidelines; an app centre | Graphics (design stage), Madire Store |
 | <a id="ref-plank"></a>**Plank** | https://github.com/elementary/plank | **Returned 404 (2026-10-12): the link is dead.** A search finds the project on Launchpad (https://launchpad.net/plank) and at https://github.com/ricotz/plank (GPL-3.0, last change 2024-07-16; not confirmed as the official home) | A simple dock | Desktop (taskbar, as background) |
 | <a id="ref-xfce"></a>**XFCE** | https://gitlab.xfce.org/xfce | Per project (the group page loads: "Xfce core components and applications"; the projects' licences are not verified one by one) | A light desktop: panel, window manager, settings | Desktop |
@@ -76,7 +76,7 @@ These projects are **references, not part of Madire OS**. They may be read to le
 
 | Project | Link | Licence (verified 2026-10-12) | Used for | Roadmap |
 |---|---|---|---|---|
-| <a id="ref-fluent"></a>**Fluent UI System Icons** | https://github.com/microsoft/fluentui-system-icons | MIT (GitHub) | The feel of a modern icon set only. **Madire designs its own icon set**, so that it doesn't look like Windows | Graphics (icons) |
+| <a id="ref-fluent"></a>**Fluent UI System Icons** | https://github.com/microsoft/fluentui-system-icons | MIT (GitHub; verified 2026-11-12) | The feel of a modern icon set only. **Madire designs its own icon set**, so that it doesn't look like Windows | Graphics (icons) |
 
 ## Specifications and learning (added in 1.0)
 
@@ -101,6 +101,27 @@ For the storage milestone (likely v1.3, after graphics in v1.2) and its decision
 | <a id="ref-osdev-ext2"></a>**OSDev Wiki: Ext2** | https://wiki.osdev.org/Ext2 | **Mixed** (as the OSDev wiki entry above: content since 2011 public-domain compatible, older content not necessarily). **The site answered HTTP 403** to the automated check again; not re-read. Ideas only; nothing quoted | The ext2 on-disk format: superblock, block groups, inodes, folders; a starting point for the specification | The storage milestone, the ext2 decision |
 | <a id="ref-osdev-notes"></a>**OSDev Notes**, the VFS chapter | https://github.com/dreamportdev/Osdev-Notes (`08_VirtualFileSystem/02_VirtualFileSystem.md`) | **CC BY-NC 4.0** (the README and `LICENSE.md`; GitHub names no licence). Non-commercial, not on any permitted list: **reading only**, nothing quoted | How a VFS layer joins several filesystems (mount points, the node interface), as a comparison with Madire's 1.0 VFS | The storage milestone |
 | <a id="ref-littlefs"></a>**littlefs** | https://github.com/littlefs-project/littlefs | BSD-3-Clause (GitHub) | A small filesystem for flash memory that survives power loss (copy-on-write, wear levelling). **Only if flash storage is ever targeted** | Storage (only for flash) |
+
+## <a id="ref-storage"></a>Storage: specifications and test tools (added in 1.4 stage 0)
+
+For the storage milestone ([plans/1.4.md](plans/1.4.md)): the disk controller, partitions and ext2. **ext2 is written from its specification only** (AGENTS.md section 11): the documents below are read for facts (field offsets, sizes, flag values, command codes); nothing is copied, quoted or closely reproduced, and no source code of any filesystem or driver is read. Verified on 2026-10-31.
+
+| Reference | Link | Licence (verified 2026-10-31) | Read rule | Used for |
+|---|---|---|---|---|
+| <a id="ref-ext2-doc"></a>**The Second Extended File System: Internal Layout** (Dave Poirier) | https://www.nongnu.org/ext2-doc/ext2.html (PDF: https://www.nongnu.org/ext2-doc/ext2.pdf) | GNU Free Documentation License, version 1.1 or any later version, no Invariant Sections or Cover Texts (the HTML's notice: "Copyright © 2001-2002 by Dave Poirier"; read from the GWDG mirror of the same page, since nongnu.org answered HTTP 429; the PDF is said to carry 2001-2019). The FDL is not on AGENTS.md section 11's lists: **facts only, nothing quoted** | Specification (facts only) | The main ext2 specification: superblock, block group descriptors, bitmaps, inode table, inodes and their block pointers (direct, single, double, triple indirect), directory entries (`rec_len`, `name_len`, `file_type`), the revision 0 and 1 values, the feature flags |
+| <a id="ref-linux-ext2-docs"></a>**Linux kernel documentation: `filesystems/ext2`** and the on-disk layout chapter of `filesystems/ext4` | https://docs.kernel.org/filesystems/ext2.html, https://docs.kernel.org/filesystems/ext4/index.html | Part of the Linux kernel's documentation (GPL-2.0 kernel tree; the page's footer: "©The kernel development community"); see [Linux](#ref-linux) | **STUDY ONLY** (documentation; never the source code under `fs/`) | A second reading of the feature-flag rules (an unknown INCOMPAT flag: no mount; an unknown RO_COMPAT flag: read-only), the clean and error states, the reserved inodes, the field list of the superblock and the inode |
+| <a id="ref-ahci"></a>**Serial ATA AHCI Specification, revision 1.3.1** (Intel) | https://www.intel.com/content/www/us/en/io/serial-ata/serial-ata-ahci-spec-rev1-3-1.html | © Intel Corporation; a public download page with no specification-specific licence (the site's general terms of use apply). **Facts only** | Specification (facts only) | The AHCI controller: its registers (CAP, GHC, PI, the port registers PxCLB, PxFB, PxIS, PxCMD, PxTFD, PxSIG, PxSSTS, PxSERR, PxCI), the command list, the received-FIS area, the command table and its physical region descriptors, port start and stop, the error recovery steps |
+| <a id="ref-ata-acs"></a>**ATA/ATAPI Command Set (ACS-3), T13/2161-D** (working drafts; the standard is ANSI INCITS 522-2014) | https://www.t13.org/ (document archive; ACS-3 draft d2161) | T13/INCITS copyright; working drafts published by T13, the final standard sold by ANSI. **Facts only** | Specification (facts only) | The commands Madire uses: IDENTIFY DEVICE (0xEC: the model string, the 48-bit sector count, the logical sector size), READ DMA EXT (0x25), WRITE DMA EXT (0x35), FLUSH CACHE EXT (0xEA); the status and error bits |
+| <a id="ref-uefi-gpt"></a>**UEFI Specification 2.11**, chapter 5 "GUID Partition Table (GPT) Disk Layout" (with the legacy MBR description) | https://uefi.org/specs/UEFI/2.11/ | © the UEFI Forum; published on uefi.org (its pages refused the automated check with HTTP 403 on 2026-10-31; the chapter's title and number were read from search results and Wikipedia's GPT article). **Facts only** | Specification (facts only) | The MBR partition table (four entries, the 0x55AA signature, the protective MBR's type 0xEE), the GPT header and its CRC32s, the partition entries (type GUID, name in UTF-16LE) |
+| **PCI configuration space** (the configuration mechanism through ports 0xCF8/0xCFC; header type 0; class codes; BAR5) | [OSDev wiki](https://wiki.osdev.org) (see *Other references*); the PCI-SIG's specifications are for members | OSDev: mixed (see above); **ideas only, nothing quoted** | Ideas only | Bus, device and function numbers, the vendor, device and class fields, the command register (memory space, bus master, interrupt disable), BAR decoding, PCI-to-PCI bridges' secondary bus |
+
+**Test tools (programs run on the test machines only; never in the repository or the ISO).** Approved by the owner in 1.4 stage 0 (the design report's question 2), with the same status as QEMU, `xorriso` and `mtools`: unmodified programs installed by the operating system's own packages on the GitHub Actions runner or on the local Kali VM, called by the test scripts. Their source code is **STUDY ONLY** and is never read; only their manual pages and documented options are used.
+
+| Tool | Where | Licence (verified 2026-10-31) | Used for |
+|---|---|---|---|
+| <a id="ref-e2fsprogs"></a>**e2fsprogs** (`mke2fs`, `e2fsck`, `debugfs`) | https://e2fsprogs.sourceforge.net/ (the project's site; refused an automated check with 403 on 2026-11-12, a bot block), the repository https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git (opened 2026-11-12) and its mirror https://github.com/tytso/e2fsprogs (the Ubuntu and Kali packages `e2fsprogs`) | The programs GPL-2.0; `lib/ext2fs` and `lib/e2p` LGPL-2.0; `lib/uuid` BSD-style; `lib/et` and `lib/ss` MIT-style (its `NOTICE` file; verified 2026-11-12). **STUDY ONLY** (manual pages only, `e2fsck.conf(5)` included; the source is never read) | The independent check of Madire's ext2 (decision D13, option A): `mke2fs` makes the test images Madire reads; `e2fsck -fn` checks every image Madire writes; `debugfs` lists names, sizes and contents |
+| **util-linux `sfdisk`** | https://github.com/util-linux/util-linux | Per file; GPL-2.0-or-later is the default for code without its own licence (`README.licensing`). **STUDY ONLY** (manual page only) | If present on the runner (the stage 2 probe): a cross-check of the partition tables the test helper writes (`sfdisk --dump`) |
+| **`qemu-img`** (QEMU) | https://www.qemu.org/ | QEMU: GPL-2.0, parts under their own licences (its `LICENSE`, per the QEMU documentation's licence page). **STUDY ONLY** | On Kali only: converting the VirtualBox disk saved by the `storage` group from VDI to raw, for `e2fsck` and `debugfs` (owner-run) |
 
 ## Fonts (assets; AGENTS.md section 11, item 6)
 
@@ -155,7 +176,7 @@ These entries come from earlier milestones. They were **not re-verified or recla
 | Project | Link | Could be useful for | Licence (to be verified) |
 |---|---|---|---|
 | GNU Bash (a mirror of GNU Bash) | https://github.com/bminor/bash | Shell-language design: variables, `if` and loops, pipes, redirection, quoting, job control. Possibly a future installable APPLICATION (a separate program, with the GPL's source obligations). No code may be copied into Madire OS | GPL-3.0 |
-| PowerShell | https://github.com/PowerShell/PowerShell | Design inspiration: pipelines of structured objects, consistent verb-noun naming, built-in help for every command. It needs .NET, so it isn't a porting target for now | MIT |
+| PowerShell | https://github.com/PowerShell/PowerShell | Design inspiration: pipelines of structured objects, consistent verb-noun naming, built-in help for every command. It needs .NET, so it isn't a porting target for now | MIT (GitHub; verified 2026-11-12) |
 
 ### Terminal, desktop and app-platform references (Windows)
 
@@ -163,10 +184,10 @@ These are Windows-specific technologies: none of them can run on Madire OS. They
 
 | Project | Link | Could be useful for | Phase | Licence (to be verified) |
 |---|---|---|---|---|
-| Windows Terminal | https://github.com/microsoft/terminal | A future Madire terminal app: parsing terminal control codes, fast text rendering, tabs, themes | GUI | MIT |
-| PowerToys | https://github.com/microsoft/PowerToys | Feature ideas for the Madire desktop: window snapping, a quick launcher, a colour picker, keyboard remapping, extracting text from the screen | Desktop | MIT |
-| WinUI | https://github.com/microsoft/microsoft-ui-xaml | Designing Madire's own UI toolkit: controls, layout, theming, accessibility | GUI toolkit | MIT |
-| Windows universal samples | https://github.com/microsoft/Windows-universal-samples | A checklist of the app capabilities a modern OS provides (sensors, Bluetooth, camera, notifications, permissions), for Madire's app interface and permission model | Apps | MIT |
+| Windows Terminal | https://github.com/microsoft/terminal | A future Madire terminal app: parsing terminal control codes, fast text rendering, tabs, themes | GUI | MIT (GitHub; verified 2026-11-12) |
+| PowerToys | https://github.com/microsoft/PowerToys | Feature ideas for the Madire desktop: window snapping, a quick launcher, a colour picker, keyboard remapping, extracting text from the screen | Desktop | MIT (GitHub; verified 2026-11-12) |
+| WinUI | https://github.com/microsoft/microsoft-ui-xaml | Designing Madire's own UI toolkit: controls, layout, theming, accessibility | GUI toolkit | MIT (GitHub; verified 2026-11-12) |
+| Windows universal samples | https://github.com/microsoft/Windows-universal-samples | A checklist of the app capabilities a modern OS provides (sensors, Bluetooth, camera, notifications, permissions), for Madire's app interface and permission model | Apps | MIT (GitHub; verified 2026-11-12) |
 
 ### Browser engines
 
@@ -188,3 +209,202 @@ Reference only. **Never run against any system.**
 | aircrack-ng | https://github.com/aircrack-ng/aircrack-ng | Wi-Fi security auditing | GPL-2.0 |
 | WPScan | https://github.com/wpscanteam/wpscan | WordPress security scanning | WPScan Public Source License (restricts commercial use) |
 | nuclei | https://github.com/projectdiscovery/nuclei | Template-based vulnerability scanning | MIT |
+
+## <a id="ref-owner-list"></a>The owner's classified repository list (added in 1.4 stage 15a)
+
+The owner supplied this list on 12 November 2026 with the source's licence claims marked as unverified. **Every link was opened and every licence checked on the repository itself on 2026-11-12**: "GitHub" is GitHub's detection of the repository's own licence file, "file" means the licence file was read, "README" the README's licence statement, "model card" the Hugging Face model card. A moved repository is listed at its new address with the old one named; a dead link says so. Projects already listed above keep their entries there (dated 2026-11-12) and are named here with a link to them.
+
+**The licence rule (AGENTS.md section 11):** only **MIT, BSD, Apache-2.0, zlib, 0BSD and CC0-1.0** may ever be used, and a library only with the owner's approval per library (`third_party/`, its licence, `THIRD_PARTY_NOTICES`). **GPL, LGPL, MPL, APSL, MS-PL, the Unicode licence, proprietary licences, "free SDKs" and no licence** mean study only or avoid. Nothing below is copied or closely reproduced; READ FULLY means ideas, architecture and design only.
+
+**The classes:** **READ FULLY** (permissive; ideas only); **STUDY ONLY** (README, licence and design documents, man pages; never the source); **INSPIRATION ONLY** (the published result, for the feel); **LIBRARY CANDIDATE** (permissive; usable only with the owner's approval per library); **NOT APPLICABLE** (Windows-only, .NET, web or Python stacks Madire can't use as code; a permissive one may still give feature ideas); **AVOID**.
+
+### Avoid
+
+| Item | Link | Licence (2026-11-12) | Note |
+|---|---|---|---|
+| freellmapi | https://github.com/tashfeenahmed/freellmapi/releases/tag/v0.16.21 | MIT (GitHub) | **The owner's decision**, whatever its licence |
+| Listary | https://www.listary.com/ | proprietary | Closed source |
+| Tobii SDK | https://developer.tobii.com/ (refused an automated check with 403) | commercial | Closed source |
+| Microsoft Defender APIs | https://learn.microsoft.com/defender-endpoint/api/apis-intro | Microsoft licence | Proprietary service |
+| Xbox GDK samples | https://github.com/microsoft/Xbox-GDK-Samples | MIT (GitHub) | The samples need the proprietary GDK |
+| Microsoft Keyboard Layout Creator | https://www.microsoft.com/en-us/download/details.aspx?id=102134 (refused an automated check with 403) | proprietary | Closed source |
+| Everything and its SDK (voidtools) | https://www.voidtools.com/support/everything/sdk/; the listed https://github.com/voidtools/Everything was **404 on 2026-11-12** | the program closed source; https://github.com/voidtools/everything_sdk3 MIT (file) | It talks to a closed program |
+| Sysinternals Autoruns | https://learn.microsoft.com/sysinternals/downloads/autoruns | Sysinternals licence | Proprietary |
+| Florence (on-screen keyboard) | https://florence.sourceforge.net/ (refused an automated check with 403); the listed https://github.com/florence-osk/florence was **404 on 2026-11-12** | **not verified** | Avoided until its licence is confirmed |
+
+### AI and voice (Madire AI, Mamishi v1)
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Open Voice OS | https://github.com/OpenVoiceOS (organisation); https://github.com/OpenVoiceOS/ovos-core | ovos-core Apache-2.0 (GitHub); per repository | READ FULLY | Assistant architecture: wake word, speech to text, intents, skills, text to speech |
+| Mycroft AI | https://github.com/MycroftAI (organisation); https://github.com/MycroftAI/mycroft-core | Apache-2.0 (GitHub); **archived** | READ FULLY | Design and history; unmaintained |
+| Rhasspy | https://github.com/rhasspy (organisation); https://github.com/rhasspy/rhasspy3 | MIT (GitHub); **archived** | READ FULLY | An offline voice pipeline's design |
+| Piper TTS | https://github.com/rhasspy/piper (**archived**; "Development has moved") → https://github.com/OHF-Voice/piper1-gpl | the old repository MIT (GitHub); the current one **GPL-3.0** (GitHub) | STUDY ONLY | Its design only; not a library choice |
+| Open Interpreter | https://github.com/openinterpreter/openinterpreter (moved from OpenInterpreter/open-interpreter) | Apache-2.0 (GitHub) | NOT APPLICABLE | Ideas: tools that ask before they act |
+| OpenHands | https://github.com/OpenHands/OpenHands (moved from All-Hands-AI/OpenHands) | MIT (file) | NOT APPLICABLE | – |
+| CrewAI | https://github.com/crewAIInc/crewAI | MIT (GitHub) | NOT APPLICABLE | – |
+| AutoGen | https://github.com/microsoft/autogen | code MIT (`LICENSE-CODE`), documents CC-BY-4.0 (README) | NOT APPLICABLE | – |
+| Ollama | https://github.com/ollama/ollama | MIT (GitHub) | NOT APPLICABLE | Ideas for running a local model |
+| LangChain | https://github.com/langchain-ai/langchain | MIT (GitHub) | NOT APPLICABLE | – |
+| Vosk | https://github.com/alphacep/vosk-api | Apache-2.0 (GitHub); its models have their own licences | LIBRARY CANDIDATE | Offline speech to text, later; each model checked separately |
+| Whisper | https://github.com/openai/whisper | MIT (GitHub) | READ FULLY | The model's design |
+| openWakeWord | https://github.com/dscripka/openWakeWord | code Apache-2.0; **its pre-trained models CC BY-NC-SA 4.0** (README) | LIBRARY CANDIDATE (the code only) | The bundled models are **not usable** (non-commercial); a "Hey Mamishi" model would be trained by Madire |
+| Faster-Whisper | https://github.com/SYSTRAN/faster-whisper | MIT (GitHub) | NOT APPLICABLE | – |
+| Phi-3 Mini (model) | https://huggingface.co/microsoft/Phi-3-mini-4k-instruct; cookbook https://github.com/microsoft/PhiCookBook (moved from microsoft/Phi-3CookBook) | the model MIT (model card); the cookbook MIT (GitHub) | LIBRARY CANDIDATE (a model) | With the owner's approval, under the model rule ([roadmap.md](roadmap.md), *Madire AI*) |
+| Qwen (models) | https://github.com/QwenLM/Qwen3; https://huggingface.co/Qwen/Qwen3-4B; the older https://github.com/QwenLM/Qwen | Qwen3's open-weight models Apache-2.0 (README, model card); the older Qwen-7B/14B/72B under the **Tongyi Qianwen licence** (README) | LIBRARY CANDIDATE (Qwen3 only, each model checked) | The older Qwen models are avoided |
+
+### UI, settings, themes and shell (Windows)
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Windows App SDK | https://github.com/microsoft/WindowsAppSDK | MIT (GitHub) | NOT APPLICABLE | – |
+| WinUI Gallery | https://github.com/microsoft/WinUI-Gallery | MIT (GitHub) | NOT APPLICABLE | A catalogue of controls, for ideas |
+| WinUI | listed above (*Terminal, desktop and app-platform references*) | MIT (GitHub) | NOT APPLICABLE | Toolkit ideas |
+| Windows Community Toolkit | https://github.com/CommunityToolkit/Windows | MIT (file, `License.md`) | NOT APPLICABLE | – |
+| **Files** | https://github.com/files-community/Files | MIT (GitHub) | READ FULLY (feature ideas only) | Tabs, the sidebar, Trash restore, previews; **not its Windows 11 look** |
+| ModernWpf | https://github.com/Kinnara/ModernWpf | MIT (GitHub) | NOT APPLICABLE | – |
+| FluentAvalonia | https://github.com/amwx/FluentAvalonia | MIT (GitHub) | NOT APPLICABLE | – |
+| Rectify11 Installer | https://github.com/Rectify11/Installer | GPL-3.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| WinDynamicDesktop | https://github.com/t1m0thyj/WinDynamicDesktop | MPL-2.0 (GitHub) | NOT APPLICABLE (study only) | The idea of a wallpaper that follows the time of day |
+| Lively Wallpaper | https://github.com/lively-community/lively (moved from rocksdanister/lively) | GPL-3.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| OpenRGB | https://github.com/CalcProgrammer1/OpenRGB | GPL-2.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| Cairo Desktop | https://github.com/cairoshell/cairoshell | Apache-2.0 (GitHub) | NOT APPLICABLE | Shell and taskbar ideas |
+| ExplorerPatcher | https://github.com/valinet/ExplorerPatcher | GPL-2.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| PowerToys | listed above | MIT (GitHub) | NOT APPLICABLE | Feature ideas |
+| Flow Launcher | https://github.com/Flow-Launcher/Flow.Launcher | MIT (GitHub) | NOT APPLICABLE | Launcher and search-box ideas |
+| Wox | https://github.com/Wox-launcher/Wox | GPL-3.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| Windows Terminal | listed above | MIT (GitHub) | READ FULLY | Terminal parsing and rendering ideas |
+| PowerShell | listed above (*Shells*) | MIT (GitHub) | NOT APPLICABLE | Design ideas |
+| NanaZip | https://github.com/M2Team/NanaZip | its own code MIT; the 7-Zip parts under the 7-Zip licence; its logo CC BY-ND 4.0 (file) | NOT APPLICABLE | – |
+| 7-Zip | https://github.com/ip7z/7zip | LGPL-2.1 with the unRAR restriction; some files BSD or public domain (file, `DOC/License.txt`) | STUDY ONLY | Possibly a separate Store app later |
+| fonttools | https://github.com/fonttools/fonttools | MIT (GitHub) | NOT APPLICABLE | A possible host build tool, with its own approval |
+| Google Fonts | https://github.com/google/fonts | no repository licence; per font, in the folders `ofl/`, `apache/`, `ufl/`, `cc-by-sa/` (file) | asset source, per font | AGENTS.md section 11, item 6: OFL and Apache fonts allowed; UFL reviewed first; CC BY-SA only with the owner's approval |
+
+### Devices, audio, drivers and hardware monitoring
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Windows universal samples | listed above | MIT (GitHub) | NOT APPLICABLE | – |
+| Windows classic samples | https://github.com/microsoft/Windows-classic-samples | MIT (file) | NOT APPLICABLE | – |
+| Windows driver samples | https://github.com/microsoft/Windows-driver-samples | MS-PL (GitHub) | NOT APPLICABLE | MS-PL isn't on the allowed list |
+| DriverStoreExplorer | https://github.com/lostindark/DriverStoreExplorer | GPL-2.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| EarTrumpet | https://github.com/File-New-Project/EarTrumpet | MIT **with a clause excluding named companies** (file) | NOT APPLICABLE | A modified MIT; per-app volume ideas |
+| AudioSwitcher | https://github.com/xenolightning/AudioSwitcher | MS-PL (GitHub) | NOT APPLICABLE | – |
+| LibreHardwareMonitor | https://github.com/LibreHardwareMonitor/LibreHardwareMonitor | MPL-2.0 (GitHub) | STUDY ONLY | – |
+| OpenHardwareMonitor | https://github.com/openhardwaremonitor/openhardwaremonitor | MPL-2.0 (file, `Licenses/License.html`) | STUDY ONLY | – |
+| GPUOpen libraries and SDKs | https://github.com/GPUOpen-LibrariesAndSDKs (organisation, 85 repositories) | per repository, not checked one by one | NOT APPLICABLE (now) | Each repository checked when one is used |
+| PresentMon | https://github.com/GameTechDev/PresentMon | MIT (GitHub) | NOT APPLICABLE | – |
+| System Informer | https://github.com/winsiderss/systeminformer | MIT (GitHub) | READ FULLY | Task manager and system-information ideas (Windows-specific) |
+| psutil | https://github.com/giampaolo/psutil | BSD-3-Clause (GitHub) | READ FULLY | Which system figures a `system` command and Mamishi's System tool show |
+
+### Networking
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| SharpPcap | https://github.com/dotpcap/sharppcap | MIT (file, `LICENSES/MIT.txt`) | NOT APPLICABLE | – |
+| Pcap.Net | https://github.com/PcapDotNet/Pcap.Net | BSD-3-Clause (GitHub) | NOT APPLICABLE | – |
+| lwIP | [listed above](#ref-lwip) | BSD-3-Clause (file) | LIBRARY CANDIDATE | The networking stack candidate, behind Madire's own socket layer |
+| smoltcp | https://github.com/smoltcp-rs/smoltcp | 0BSD (GitHub) | READ FULLY | How a small TCP/IP stack is structured (Rust) |
+| Fuchsia | https://fuchsia.googlesource.com/fuchsia | BSD-3-Clause style (file, `LICENSE`) | READ FULLY | Netstack and component ideas |
+| gVisor | https://github.com/google/gvisor | Apache-2.0 (GitHub) | READ FULLY | Its netstack, and its Linux system-call compatibility layer (Go) |
+| Apache Mynewt NimBLE | https://github.com/apache/mynewt-nimble | Apache-2.0 (GitHub) | LIBRARY CANDIDATE | Bluetooth LE, later |
+
+### Packages, updates and the store
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| winget-cli | https://github.com/microsoft/winget-cli | MIT (GitHub) | READ FULLY | Package-manager design |
+| winget-pkgs | https://github.com/microsoft/winget-pkgs | MIT (GitHub) | READ FULLY | The manifest format |
+| UniGetUI | https://github.com/Devolutions/UniGetUI (moved from marticliment/UniGetUI) | MIT (GitHub) | NOT APPLICABLE | – |
+| Squirrel.Windows | https://github.com/Squirrel/Squirrel.Windows | MIT (GitHub) | NOT APPLICABLE | Update-flow ideas |
+| NetSparkle | https://github.com/NetSparkleUpdater/NetSparkle | MIT (GitHub) | NOT APPLICABLE | – |
+| semver (C#) | https://github.com/WalkerCodeRanger/semver (moved from maxhauser/semver) | MIT (GitHub) | NOT APPLICABLE | The semver.org specification is the reference |
+| Scoop | https://github.com/ScoopInstaller/Scoop | Unlicense or MIT (file) | NOT APPLICABLE | – |
+| Chocolatey | https://github.com/chocolatey/choco | Apache-2.0 (file) | NOT APPLICABLE | – |
+
+### Accounts, security and privacy
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Azure AD native UWP sample | https://github.com/Azure-Samples/active-directory-dotnet-native-uwp-v2 | MIT (GitHub); **archived** | NOT APPLICABLE | – |
+| fido2-net-lib | https://github.com/passwordless-lib/fido2-net-lib | MIT (GitHub) | NOT APPLICABLE | The WebAuthn specification is the reference later |
+| passwordless-lib | https://github.com/passwordless-lib (organisation, 2 repositories) | per repository | NOT APPLICABLE | – |
+| OneDrive API docs | https://github.com/OneDrive/onedrive-api-docs | MIT (GitHub) | NOT APPLICABLE | A proprietary cloud service |
+| Microsoft Graph .NET SDK | https://github.com/microsoftgraph/msgraph-sdk-dotnet | MIT (file) | NOT APPLICABLE | – |
+| LiteDB | https://github.com/litedb-org/LiteDB | MIT (GitHub) | NOT APPLICABLE | Embedded-database ideas |
+| CredentialManagement | https://github.com/ilyalozovyy/credentialmanagement (the probable original; the owner's link https://github.com/davotronic5000/CredentialManagement was **404 on 2026-11-12**) | Apache-2.0 (GitHub) | NOT APPLICABLE | – |
+| ASP.NET Core | https://github.com/dotnet/aspnetcore | MIT (GitHub) | NOT APPLICABLE | – |
+| SecretManagement | https://github.com/PowerShell/SecretManagement | MIT (GitHub); **archived** | NOT APPLICABLE | – |
+| BouncyCastle C# | https://github.com/bcgit/bc-csharp | MIT (GitHub) | NOT APPLICABLE | Cryptography in C stays [Mbed TLS](#ref-mbedtls) |
+| KeePassXC | https://github.com/keepassxreboot/keepassxc | GPL-2.0/3.0 (file, `COPYING`); some parts BSD or CC0 | STUDY ONLY | – |
+
+### Language, typing and input
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Hunspell | https://github.com/hunspell/hunspell | LGPL-2.1 (GitHub) | STUDY ONLY | – |
+| LibreOffice dictionaries | https://github.com/LibreOffice/dictionaries | per dictionary (English: its own licence and WordNet's; German: GPL, LGPL and OASIS) (file) | STUDY ONLY | Each dictionary checked as data if one is ever used |
+| LanguageTool | https://github.com/languagetool-org/languagetool | LGPL-2.1 (GitHub) | STUDY ONLY | – |
+| ibus | https://github.com/ibus/ibus | LGPL-2.1 (GitHub) | STUDY ONLY | – |
+| Fcitx5 | https://github.com/fcitx/fcitx5 | LGPL-2.1-or-later (file, `LICENSES/`) | STUDY ONLY | – |
+| ICU | https://github.com/unicode-org/icu | Unicode License v3 (file) | STUDY ONLY | Not on the allowed list; the owner decides if it is ever needed |
+
+### Gaming
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| SDL | [listed above](#ref-sdl) | Zlib (GitHub) | LIBRARY CANDIDATE | Only if approved |
+| GLFW | https://github.com/glfw/glfw | Zlib (GitHub) | LIBRARY CANDIDATE | Later; needs a window-system backend |
+| Playnite | https://github.com/JosefNemec/Playnite | MIT (GitHub) | NOT APPLICABLE | – |
+| Heroic Games Launcher | https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher | GPL-3.0 (GitHub) | NOT APPLICABLE (study only) | – |
+| Steamworks.NET | https://github.com/rlabrecque/Steamworks.NET | MIT (GitHub) | NOT APPLICABLE | It wraps the proprietary Steamworks |
+| discord-rpc-csharp | https://github.com/Lachee/discord-rpc-csharp | MIT (GitHub) | NOT APPLICABLE | – |
+| DirectX Graphics Samples | https://github.com/microsoft/DirectX-Graphics-Samples | MIT (GitHub) | NOT APPLICABLE | – |
+
+### Accessibility
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| NVDA | https://github.com/nvaccess/nvda | GPL-2.0-or-later with two exceptions (file, `copying.txt`) | STUDY ONLY | Screen-reader design from its documents |
+| liblouis | https://github.com/liblouis/liblouis | LGPL-2.1 (GitHub) | STUDY ONLY | – |
+| OpenGazer | https://github.com/opengazer/OpenGazer | GPL-2.0 (GitHub) | STUDY ONLY | – |
+| SharpHook | https://github.com/TolikPylypchuk/SharpHook | MIT (GitHub) | NOT APPLICABLE | – |
+| Tesseract OCR | https://github.com/tesseract-ocr/tesseract | Apache-2.0 (GitHub); its trained data licensed separately | LIBRARY CANDIDATE | Much later |
+| Color Oracle | https://github.com/nvkelso/color-oracle-java | MIT (GitHub) | READ FULLY | Colour-blindness simulation, to check the Design Guide's contrast |
+
+### Location and maps
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| GPS.NET | https://github.com/jperson2000/GPS.Net (probable; the owner's link https://github.com/indigo744/Gps.Net was **404 on 2026-11-12**) | LGPL-2.1 (file) | STUDY ONLY | – |
+| Mapsui | https://github.com/Mapsui/Mapsui | MIT (GitHub) | NOT APPLICABLE | – |
+| OsmSharp | https://github.com/OsmSharp/core | MIT (file) | NOT APPLICABLE | – |
+| NetTopologySuite | https://github.com/NetTopologySuite/NetTopologySuite | BSD-3-Clause (file) | NOT APPLICABLE | – |
+
+### Notifications, calendar, clock and focus
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Dunst | [listed above](#ref-dunst) | BSD-3-Clause (file) | READ FULLY | Notification ideas |
+| Mako | https://github.com/emersion/mako | MIT (GitHub) | READ FULLY | Notification ideas (C) |
+| SwayNotificationCenter | https://github.com/ErikReider/SwayNotificationCenter | GPL-3.0 (GitHub) | STUDY ONLY | – |
+| Evolution Data Server | https://github.com/GNOME/evolution-data-server | LGPL-2.0 (file, `COPYING`) | STUDY ONLY | – |
+| Kalendar / Merkuro (KDE) | https://github.com/KDE/kalendar (last change 2023-07-12); the current https://github.com/KDE/merkuro | mixed under REUSE: GPL and LGPL, with BSD and CC0 parts (file, `LICENSES/`) | STUDY ONLY | – |
+| Thunderbird (comm-central) | https://github.com/mozilla/releases-comm-central | MPL-2.0 (file headers; no licence file at the root) | STUDY ONLY | – |
+| GNOME Clocks | https://github.com/GNOME/gnome-clocks | GPL-2.0 (GitHub) | STUDY ONLY | – |
+| KClock | https://github.com/KDE/kclock | GPL-2.0 (GitHub) | STUDY ONLY | – |
+| Super Productivity | https://github.com/super-productivity/super-productivity (moved from johannesjo/super-productivity) | MIT (GitHub) | NOT APPLICABLE | Focus-timer ideas |
+| ActivityWatch | https://github.com/ActivityWatch/activitywatch | MPL-2.0 (GitHub) | STUDY ONLY | A privacy-first activity tracker's design |
+| Pomatez | https://github.com/zidoro/pomatez | MIT (GitHub) | NOT APPLICABLE | – |
+
+### Already agreed (1.4 stage 15a)
+
+| Item | Link | Licence (2026-11-12) | Class | How we may use it |
+|---|---|---|---|---|
+| Files | in *UI, settings, themes and shell* above | MIT (GitHub) | READ FULLY (feature ideas only) | – |
+| <a id="ref-trash-spec"></a>FreeDesktop Trash specification | https://specifications.freedesktop.org/trash/latest/ (version 1.0, 2014-01-02); the agreed https://specifications.freedesktop.org/trash-spec/latest/ was **404 on 2026-11-12** | its section 10.1: "Use and distribute as you wish … Implementation under any license at all is explicitly allowed" (read) | specification, facts only | `files/` and `info/` with each item's original path; Restore and Empty (1.5's Trash) |
+| e2fsprogs (manual pages only) | [listed above](#ref-e2fsprogs): https://e2fsprogs.sourceforge.net/ and https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git | GPL-2.0 for the programs (file, `NOTICE`) | STUDY ONLY | The manual pages, `e2fsck.conf(5)` included; the tools are run, never read |
+| Nautilus | https://github.com/GNOME/nautilus (in the *Study only* table above) | GPL-3.0 (GitHub) | STUDY ONLY | Its README and design; feature ideas for the Files app |
+| Fluent UI System Icons | [listed above](#ref-fluent) | MIT (GitHub) | INSPIRATION ONLY | Madire designs its own icons |
+
+The source list's other claims (copying another project's Settings architecture, keeping code closed) do not apply: Madire's code is written from scratch and is open under Apache 2.0 (AGENTS.md section 11).

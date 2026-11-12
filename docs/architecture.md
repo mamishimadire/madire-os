@@ -191,7 +191,11 @@ kernel/               architecture-independent kernel code
                       the ELF checks, program modules and load plans (0.11);
                       descriptors, the VFS lock, the start-up block (1.0)
   fs/                 (1.0) paths, the VFS, the RAM filesystem, file pages,
-                      the file and folder system calls, storage diagnostics
+                      the file and folder system calls, storage diagnostics;
+                      (1.4) the mount table, ext2 (read core, write core,
+                      the VFS adapter, the disk glue), the disk tests
+  storage/            (1.4) the PCI scan, the AHCI driver, the block layer
+                      and its save classes, MBR/GPT, the write guard
 drivers/              hardware drivers
   vga/  serial/  pit/  keyboard/
 user/                 (0.10) the user programs: crt0, system-call stubs, a
@@ -1110,7 +1114,7 @@ Users, permissions, application permissions, and a secure boot/update chain: the
 - **Nodes:** a file or a folder, with its node number, size, times, mode, link count, an open count and its parent. A node is freed when it has no name left **and** no open file refers to it (Linux's unlink-while-open): an unlinked file stays readable through its open descriptors until the last close.
 - **Descriptors:** 16 per process (`EMFILE`), 256 open files system-wide (`ENFILE`). An open file (offset, flags, node, reference count) is shared by `dup` and `dup2`. Every process starts with fd 0 (console, read-only; reads return 0), 1 and 2 (console, write-only: today's `write` path). `open` and `dup` return the lowest free number. Teardown closes every descriptor, also after a fault or a kill.
 - **Paths:** absolute from `/`, relative from the start folder (the process's current folder, or the `*at` call's `dirfd`). Repeated `/` count as one; a trailing `/` requires a folder; `..` of `/` is `/`. Names 1–255 bytes (any byte but `/` and NUL); paths at most 4096 bytes with the NUL (`ENAMETOOLONG`). Lookup is iterative, so depth has no fixed limit. The shell prints bytes outside `0x20`–`0x7E` as `?`.
-- **Current folder:** one per process (a node reference); a program starts in the shell's current folder; the shell starts in `/home`. A removed current folder answers `ENOENT` (`getcwd`, lookups through `..`); the shell goes back to `/` after removing its own.
+- **Current folder:** one per process (a node reference); a program starts in the shell's current folder; the shell starts in `/home` (in Disk mode, since 1.4, in `/home/user`). A removed current folder answers `ENOENT` (`getcwd`, lookups through `..`); the shell goes back to `/` after removing its own.
 
 ### The RAM filesystem and its limits
 
@@ -1164,7 +1168,23 @@ Each answer is one Linux could give, never an invented errno:
 
 These keep returning `-ENOSYS` in 1.0 (why each is needed is in [plans/1.0.md](plans/1.0.md), B1): `readv`/`writev`, `ioctl`, `fcntl`, `renameat`/`renameat2`, `pread64`/`pwrite64`, `preadv`/`pwritev`, `fsync`/`fdatasync`, `truncate`, `fchdir`, `access`/`faccessat`/`faccessat2`, `readlink`/`readlinkat`, `statx`, `dup3`, `pipe`/`pipe2`, `openat2`, `close_range`, `utimensat`, `chmod`/`fchmod`/`fchmodat`, `umask`, `link`/`symlink`/`linkat`/`symlinkat`, `mmap`/`munmap`/`brk`, `fadvise64`, `sendfile`, `copy_file_range`, `poll`/`select`/`ppoll`/`pselect6`, `flock`. With them: `AT_RANDOM` and a larger start-up block, a correct `AT_PHDR` for files whose headers are in a loaded segment, quoting in the shell, `run > file` and pipes.
 
-**Next:** a disk driver and a writable disk filesystem behind the same ops table (the storage milestone); the RAM filesystem stays for Live mode.
+**Next:** a disk driver and a writable disk filesystem behind the same ops table (the storage milestone); the RAM filesystem stays for Live mode. **Done in 1.4** (*Storage*, below).
+
+## Storage [built: 1.4]
+
+The design and its decisions are in [plans/1.4.md](plans/1.4.md); this is the summary. Pure cores (`*_core.c`, unit-tested on the host) hold the logic; thin glue files talk to the hardware and the kernel.
+
+- **PCI** (`kernel/storage/pci*`): the configuration mechanism (`outl`/`inl`, added to `io.h` in 1.4), one scan at boot, one `PCI:` summary line.
+- **AHCI** (`ahci*`): the controller's registers mapped uncached (`PTE_PCD|PTE_PWT`) in PML4 slot 508, its command structures and the cache in normal pages of the same slot (no new slot; nothing mapped without a controller). Every implemented port is stopped first; only disks (DET=3, not ATAPI) get a FIS page. **Polled, one command at a time** (slot 0, no NCQ, no interrupts), bounded by the timer (5 s a read or a write, 10 s a flush, 1 s a port reset) and by a read count. Commands: IDENTIFY DEVICE, READ DMA EXT, WRITE DMA EXT, FLUSH CACHE EXT. An error: logged once, one port reset at most, `EIO`; three errors: the disk has failed and `/home` becomes read-only.
+- **The block layer** (`blk*`): a write-back cache (2 MiB or 1/16 of the free pages, the smaller); **the save** (`blk_core_save`) writes the changed blocks in six ordered classes with a FLUSH after each class that wrote (R1–R5: new blocks whole first; indirect blocks never changed in place; a removed name over three saves; a rename's new name on the disk before its old name goes); a freed block or inode is not reused until the save that removes its pointers has finished. Saves run in pieces of at most about 8 commands per VFS-lock hold.
+- **Partitions** (`part*`): MBR and GPT read, never written.
+- **The write guard** (`guard*`): a disk is writable only if (a) its model is a virtual disk's, (b) its first sector holds the Madire test marker (CRC-checked) and (c) its ext2 superblock has the magic and the label `madire-test`. The decision is made once per disk; every write command passes it. Any other disk is read only, and Madire stays in Live mode.
+- **ext2** (`kernel/fs/ext2_*`), from its specification only: the read core (superblock, group descriptors, inodes, folders, block maps to triple indirect; the inode size from the superblock, 128 or 256), the write core (allocation, folders, renames, truncation, the pending frees; folders grow only between saves, `EXT2_EAGAIN`, at most 3 saves, then `ENOSPC`), the VFS adapter (a 1024-node table with eviction of the least recently used node nothing needs; `ENOMEM` when none can go) and the disk glue (the mount, the automatic save thread, the save before Restart). Feature policy: an unknown INCOMPAT feature refuses the disk; an unknown RO_COMPAT feature, an unknown COMPAT feature or the error state mounts read-only; a volume not cleanly unmounted is mounted read-write after recounting its free blocks and inodes.
+- **The mount table** (`mount_core`, 4 entries): the RAM filesystem keeps `/`; **ext2 is mounted at `/home`** in Disk mode. `rename` between filesystems answers `EXDEV` (the shell's `mv` says to copy, then remove).
+- **Disk mode** (a marked test disk, read-write): `/home/user` with Desktop, Documents, Downloads, Pictures, Music, Videos and Trash made at the first mount (never on a `test=` boot); the shell starts in `/home/user`; `sync` saves now, the automatic save runs every 5 s (off on `test=` boots), Restart saves first (a failed save restarts anyway and logs it). The About window's Mode row says `Disk (home is saved)` or `Disk (home read-only)`. Without a usable disk: **Live mode**, exactly as in 1.3.
+- **Locking:** a save holds the VFS lock across its disk commands and FLUSHes (the rule: after System ready at most 2 ticks without a report, 20 at most; the boot mounts exempt and reported). A per-disk I/O lock comes in 1.5.
+- **Tests:** `test=diskread`, `diskro`, `diskwrite`, `disknodes`, `blkdebug` (injected disk errors), `diskcut=N` (a power cut after write N), `diskcheck`, `diskchurn`, `autosave`, `nohome`; every image Madire writes is checked by `e2fsck -fn` and `debugfs` on the test machines (never in the ISO).
+- **Limits:** see [PROGRESS.md](PROGRESS.md), *Known limitations*, 1.4 (no journal; file times in the RTC's local time on VirtualBox; about 139 KiB of the write core's tables in `.bss`).
 
 ## System services [planned]
 

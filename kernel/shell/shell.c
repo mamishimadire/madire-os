@@ -114,6 +114,19 @@ enum { SECTION_SHELL, SECTION_SYSTEM, SECTION_PROGRAMS, SECTION_FILES, SECTION_C
 
 static enum shell_result cmd_help(int, char **, const struct shell_context *, const struct shell_output *);
 
+/* 1.4 stage 12: the mode of /home (Live without disk->info). */
+static enum shell_disk_mode disk_mode(const struct shell_context *c, struct shell_disk_info *i)
+{
+    if (!c->disk || !c->disk->info)
+        return SHELL_DISK_LIVE;
+    c->disk->info(c->disk->ctx, i);
+    return i->mode;
+}
+
+/* The disk interface of the command running (or asking) now, for the
+ * words of a full disk (disk_reason); set by shell_execute and shell_answer. */
+static const struct shell_disk *fs_disk;
+
 static enum shell_result cmd_clear(int argc, char **argv, const struct shell_context *c,
                                    const struct shell_output *o)
 {
@@ -132,8 +145,12 @@ static enum shell_result cmd_version(int argc, char **argv, const struct shell_c
     l_str(&l, long_mode_active(c) ? " (64-bit x86-64, Multiboot 1)"
                                   : " (32-bit x86, Multiboot 1)");
     emit(o, &l, SHELL_TEXT);
-    if (c->files)                           /* 1.0 stage 8: the Live label (D6) */
-        say(o, SHELL_LIVE_VERSION, SHELL_TEXT);
+    if (c->files) {                         /* 1.0 stage 8: the Live label (D6) */
+        static struct shell_disk_info vi;   /* 1.4 stage 12: Disk mode (C10) */
+        enum shell_disk_mode m = disk_mode(c, &vi);
+        say(o, m == SHELL_DISK_RW ? SHELL_DISK_VERSION : m == SHELL_DISK_RO ? SHELL_DISKRO_VERSION
+                                                                           : SHELL_LIVE_VERSION, SHELL_TEXT);
+    }
     return SHELL_OK;
 }
 
@@ -854,8 +871,21 @@ static const char *fs_reason(int err)
     case -FS_ENOSPC:       return "no room (1024 at most)";
     case -FS_ENOMEM:       return "out of kernel memory";
     case -FS_ENAMETOOLONG: return "name too long";
+    case -FS_EROFS:        return "the filesystem is read-only";    /* 1.4 stage 8 */
+    case -FS_EIO:          return "I/O error";                      /* 1.4 stage 8 */
     default:               return 0;
     }
+}
+
+/* 1.4 stage 12: a full disk, or a file at the disk's size limit, in the
+ * disk's own words (the RAM filesystem's speak of its node limit and its
+ * page budget); 0 for anything else or a path not on the disk. */
+static const char *disk_reason(const char *path, int err)
+{
+    if ((err != -FS_ENOSPC && err != -FS_EFBIG) || !path || !fs_disk || !fs_disk->info || !fs_disk->on_disk ||
+        !fs_disk->on_disk(fs_disk->ctx, path))
+        return 0;
+    return err == -FS_ENOSPC ? "no room left on the disk" : "the file is at the disk's size limit";
 }
 
 /* "<cmd>: '<path>': <reason>." and, for a relative path that was not found
@@ -864,7 +894,9 @@ static enum shell_result fs_error(const struct shell_output *o, const struct she
                                   const char *cmd, const char *path, int err)
 {
     struct line l;
-    const char *why = fs_reason(err);
+    const char *why = disk_reason(path, err);
+    if (!why)
+        why = fs_reason(err);
     l_reset(&l);
     l_str(&l, cmd);
     l_str(&l, ": '");
@@ -972,10 +1004,18 @@ static bool fs_path_arg(const char *path, const char *usage, const struct shell_
 static enum shell_result cmd_cd(int argc, char **argv, const struct shell_context *c,
                                 const struct shell_output *o)
 {
-    const char *path = argc == 2 ? argv[1] : "/home";     /* plan B7 */
+    static struct shell_disk_info ci;
+    /* plan B7; 1.4 stage 12 (C11): in Disk mode "cd" alone goes to
+     * /home/user (to /home if the volume has none, e.g. read-only) */
+    bool home = argc != 2 && disk_mode(c, &ci) != SHELL_DISK_LIVE;
+    const char *path = argc == 2 ? argv[1] : home ? SHELL_HOME_DISK : "/home";
     if (!fs_path_arg(path, "cd [path]", o))
         return SHELL_BAD_ARGS;
     int r = c->files->chdir(c->files->ctx, path);
+    if (r == -FS_ENOENT && home) {
+        path = "/home";
+        r = c->files->chdir(c->files->ctx, path);
+    }
     return r < 0 ? fs_error(o, c, "cd", path, r) : SHELL_OK;
 }
 
@@ -1195,6 +1235,26 @@ void shell_cat_end(struct shell_cat *s, const struct shell_output *o)
         cat_emit(s, o);
 }
 
+/* 1.4 stage 8: "cat: '<path>': I/O error." (a read that failed part-way,
+ * after what was printed), as an error line. */
+void shell_cat_error(const char *path, int err, const struct shell_output *o)
+{
+    struct line l;
+    const char *why = fs_reason(err);
+    l_reset(&l);
+    l_str(&l, "cat: '");
+    l_shown(&l, path, str_len(path), FS_PATH_SHOWN);
+    l_str(&l, "': ");
+    if (why) {
+        l_str(&l, why);
+    } else {
+        l_str(&l, "error ");
+        l_uint(&l, (uint32_t)-err, 0, ' ');
+    }
+    l_char(&l, '.');
+    emit(o, &l, SHELL_ERROR);
+}
+
 /* ---- 1.0 stage 9: rm, cp, mv, df, du and output redirection (with storage) ---- */
 
 #define RM_USAGE        "rm [-y] <path>"
@@ -1218,6 +1278,14 @@ static const char *data_reason(int err)
     if (err == -FS_EFBIG)
         return "the file is at its size limit (2 MiB)";
     return fs_reason(err);
+}
+
+/* 1.4 stage 12: a data write's reason for the file at path: the disk's
+ * words when it is on the disk, else as data_reason. */
+static const char *data_reason_at(const char *path, int err)
+{
+    const char *why = disk_reason(path, err);
+    return why ? why : data_reason(err);
 }
 
 static void l_reason(struct line *l, const char *why, int err)
@@ -1377,6 +1445,10 @@ static enum shell_result do_mv(const char *from, const char *to, const struct sh
     int r = c->storage->rename(c->storage->ctx, from, to);
     if (r == 0)
         return SHELL_OK;
+    if (r == -FS_EXDEV) {                   /* 1.4 stage 12 (C12): the planned words, not "error 18" */
+        say(o, SHELL_MV_EXDEV, SHELL_ERROR);
+        return SHELL_BAD_ARGS;
+    }
     l_reset(&l);
     l_str(&l, "mv: ");
     l_quoted(&l, from, FS_PAIR_SHOWN);
@@ -1416,6 +1488,7 @@ enum shell_result shell_answer(const char *answer, const struct shell_context *c
 {
     int op = pending.op;
     pending.op = ASK_NONE;
+    fs_disk = c->disk;                      /* 1.4 stage 12: disk_reason's */
     if (!shell_reboot_confirmed(answer)) {      /* the same exact "yes" rule */
         say(o, op == ASK_RM ? "Remove cancelled." : op == ASK_CP ? "Copy cancelled."
                                                                  : "Move cancelled.", SHELL_TEXT);
@@ -1444,7 +1517,7 @@ void shell_copy_end(const char *to, uint64_t done, uint64_t size, int err, bool 
         l_str(&l, "cp: ");
         l_quoted(&l, to, FS_PATH_SHOWN);
         l_str(&l, ": ");
-        l_reason(&l, data_reason(err), err);
+        l_reason(&l, data_reason_at(to, err), err);
         l_char(&l, '.');
     }
     emit(o, &l, kind);
@@ -1490,6 +1563,35 @@ static enum shell_result cmd_df(int argc, char **argv, const struct shell_contex
     df_row(o, "Nodes:", d.nodes, d.max_nodes, "", "");
     df_row(o, "Pages:", d.pages, d.budget, "", ", 4 KiB each");
     df_row(o, "Space:", d.pages * 4, d.budget * 4, " KiB", "");
+    /* 1.4 stage 12 (C12): in Disk mode, the volume on /home; Live mode
+     * unchanged, word for word. */
+    static struct shell_disk_info di;
+    enum shell_disk_mode m = disk_mode(c, &di);
+    if (m != SHELL_DISK_LIVE) {
+        struct line l;
+        char each[24];
+        l_reset(&l);
+        l_str(&l, "Filesystem: ext2 '");
+        l_str(&l, di.label);
+        l_str(&l, "' (disk ");
+        l_uint(&l, di.disk, 0, ' ');
+        l_str(&l, ", partition ");
+        l_uint(&l, di.partition, 0, ' ');
+        l_str(&l, m == SHELL_DISK_RO ? "), mounted on /home, read-only" : "), mounted on /home");
+        emit(o, &l, SHELL_TEXT);
+        uint32_t kib = di.block_size / 1024u, i = 0;
+        const char *pre = ", ", *post = " KiB each";
+        for (const char *p = pre; *p; p++)
+            each[i++] = *p;
+        if (kib >= 10)
+            each[i++] = (char)('0' + kib / 10u % 10u);
+        each[i++] = (char)('0' + kib % 10u);
+        for (const char *p = post; *p; p++)
+            each[i++] = *p;
+        each[i] = 0;
+        df_row(o, "Blocks:", (uint32_t)(di.blocks - di.blocks_free), (uint32_t)di.blocks, "", each);
+        df_row(o, "Inodes:", (uint32_t)(di.inodes - di.inodes_free), (uint32_t)di.inodes, "", "");
+    }
     return SHELL_OK;
 }
 
@@ -1505,7 +1607,7 @@ static enum shell_result cmd_du(int argc, char **argv, const struct shell_contex
                                 const struct shell_output *o)
 {
     const struct shell_storage *s = c->storage;
-    struct shell_du t = { 0, 0, 0 };
+    struct shell_du t = { 0, 0, 0, 0, false };
     struct line l;
     const char *path = argc == 2 ? argv[1] : ".";
     if (!fs_path_arg(path, DU_USAGE, o))
@@ -1519,9 +1621,20 @@ static enum shell_result cmd_du(int argc, char **argv, const struct shell_contex
     if (r < 0)
         return fs_error(o, c, "du", path, r);
     l_reset(&l);
-    l_count(&l, t.pages, " page (", " pages (");
-    l_u64(&l, t.pages * 4, 0);
-    l_str(&l, " KiB) in ");
+    if (!t.disk) {                          /* the RAM filesystem only: as before */
+        l_count(&l, t.pages, " page (", " pages (");
+        l_u64(&l, t.pages * 4, 0);
+        l_str(&l, " KiB) in ");
+    } else if (t.pages == 0) {              /* 1.4 stage 12 (C12): the disk's own blocks */
+        l_u64(&l, t.kib, 0);
+        l_str(&l, " KiB on the disk in ");
+    } else {
+        l_count(&l, t.pages, " page (", " pages (");
+        l_u64(&l, t.pages * 4, 0);
+        l_str(&l, " KiB) in memory and ");
+        l_u64(&l, t.kib, 0);
+        l_str(&l, " KiB on the disk, in ");
+    }
     l_count(&l, t.files, " file and ", " files and ");
     l_count(&l, t.folders, " folder", " folders");
     emit(o, &l, SHELL_TEXT);
@@ -1611,7 +1724,7 @@ redirect_begin(const char *name, const struct shell_context *c, const struct she
     const char *path = line_redirect.target;
     int r = c->storage->out_open(c->storage->ctx, path, line_redirect.kind == REDIRECT_APPEND);
     if (r < 0) {
-        out_error(o, path, fs_reason(r), r);
+        out_error(o, path, disk_reason(path, r) ? disk_reason(path, r) : fs_reason(r), r);
         if (r == -FS_ENOENT && path[0] != '/' && c->files->cwd_removed(c->files->ctx))
             say(o, FS_HINT, SHELL_ERROR);
         return 0;
@@ -1652,7 +1765,7 @@ void shell_redirect_end(void)
     rd.on = false;
     if (!rd.stopped)
         return;
-    out_error(rd.screen, rd.path, data_reason(rd.err), rd.err);
+    out_error(rd.screen, rd.path, data_reason_at(rd.path, rd.err), rd.err);
     l_reset(&l);
     l_str(&l, "Output to ");
     l_quoted(&l, rd.path, OUT_PATH_SHOWN);
@@ -1818,6 +1931,101 @@ static const struct command storage_commands[] = {
 static const struct command display_command =
     { "display", "display",      "Show the screen's mode and scale",        0, cmd_display, SECTION_SYSTEM };
 
+/* 1.4 stage 10: "sync", a full save of the disk's changed files (C12). */
+static enum shell_result cmd_sync(int argc, char **argv, const struct shell_context *c,
+                                  const struct shell_output *o)
+{
+    struct line l;
+    uint64_t blocks = 0;
+    (void)argc; (void)argv;
+    switch (c->disk->sync(c->disk->ctx, &blocks)) {
+    case SHELL_SYNC_SAVED:
+        if (blocks == 0) {
+            say(o, "sync: nothing to save.", SHELL_TEXT);
+            break;
+        }
+        l_reset(&l);
+        l_str(&l, "sync: ");
+        l_count(&l, blocks, " block saved.", " blocks saved.");
+        emit(o, &l, SHELL_TEXT);
+        break;
+    case SHELL_SYNC_NO_DISK:
+        say(o, "sync: no disk in use (Live mode).", SHELL_TEXT);
+        break;
+    case SHELL_SYNC_READONLY:
+        say(o, "sync: /home is read-only; nothing to save.", SHELL_TEXT);
+        break;
+    default:
+        say(o, "sync: the disk could not be written; /home is read-only now.", SHELL_ERROR);
+        return SHELL_OK;
+    }
+    return SHELL_OK;
+}
+
+/* Offered only when the context has a disk (see shell.h); in the help
+ * lists since 1.4 stage 12, with disk->info (offered()). */
+static const struct command sync_command =
+    { "sync",    "sync",         "Save changed files to the disk",          0, cmd_sync, SECTION_FILES };
+
+/* 1.4 stage 12: "disk" (C12, D19; read only): the disk the boot found, its
+ * partitions, the write guard's decision and how /home uses it. */
+static void disk_row(const struct shell_output *o, const char *label, const char *a, const char *b)
+{
+    struct line l;
+    l_reset(&l);
+    l_str(&l, label);
+    l_shown(&l, a, str_len(a), 56);
+    if (b)
+        l_str(&l, b);
+    emit(o, &l, SHELL_TEXT);
+}
+
+static enum shell_result cmd_disk(int argc, char **argv, const struct shell_context *c,
+                                  const struct shell_output *o)
+{
+    static struct shell_disk_info d;
+    struct line l;
+    (void)argc; (void)argv;
+    enum shell_disk_mode m = disk_mode(c, &d);
+    if (!d.controller) {
+        say(o, "disk: no AHCI controller; no disk in use (Live mode).", SHELL_TEXT);
+        return SHELL_OK;
+    }
+    if (!d.has_disk) {
+        disk_row(o, "disk: ", d.summary ? d.summary : "no disk in use (Live mode)", ".");
+        return SHELL_OK;
+    }
+    l_reset(&l);
+    l_str(&l, "Disk on port ");
+    l_uint(&l, d.port, 0, ' ');
+    l_str(&l, ": ");
+    l_shown(&l, d.model, str_len(d.model), 40);
+    l_str(&l, ", ");
+    l_str(&l, d.size);
+    l_str(&l, " (AHCI ");
+    l_str(&l, d.where);
+    l_char(&l, ')');
+    emit(o, &l, SHELL_TEXT);
+    disk_row(o, "  Partitions:  ", d.table, 0);
+    disk_row(o, "  Write guard: ", d.guard, 0);
+    if (m == SHELL_DISK_LIVE) {
+        disk_row(o, "  Use:         ", d.use ? d.use : "not mounted", " (Live mode)");
+    } else {
+        l_reset(&l);
+        l_str(&l, "  Use:         ext2 '");
+        l_str(&l, d.label);
+        l_str(&l, m == SHELL_DISK_RW ? "' mounted read-write on /home (Disk mode)"
+                                     : "' mounted read-only on /home (Disk mode, read-only)");
+        emit(o, &l, SHELL_TEXT);
+    }
+    if (d.more_disks)
+        say(o, "  More disks:  found, not used (one disk in 1.4)", SHELL_TEXT);
+    return SHELL_OK;
+}
+
+static const struct command disk_command =
+    { "disk",    "disk",         "Show disks and how they are used",        0, cmd_disk, SECTION_FILES };
+
 static const char *const section_names[SECTION_COUNT] = { "shell", "system", "programs", "files" };
 static const char *const section_titles[SECTION_COUNT] = {
     "The shell's own commands",
@@ -1844,7 +2052,7 @@ static const struct command *kill_of(const struct shell_context *c)
 
 /* Every command the context offers, in "help" order. Returns the count. */
 #define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT + FILES_COUNT + \
-                     STORAGE_COUNT + 1)
+                     STORAGE_COUNT + 1 + 2)
 
 static uint32_t offered(const struct shell_context *c, const struct command **list)
 {
@@ -1874,6 +2082,10 @@ static uint32_t offered(const struct shell_context *c, const struct command **li
             list[n++] = &storage_commands[i];
     if (c->display)                         /* 1.2 stage 10b: "help" puts it after "reboot" */
         list[n++] = &display_command;
+    if (c->disk && c->disk->info) {         /* 1.4 stage 12 (G2): files, after "du" */
+        list[n++] = &sync_command;
+        list[n++] = &disk_command;
+    }
     return n;
 }
 
@@ -1892,6 +2104,10 @@ static bool builtin_name(const char *name, const struct shell_context *c)
             if (str_eq(name, storage_commands[i].name))
                 return true;
     if (c->display && str_eq(name, display_command.name))   /* 1.2 stage 10b, likewise */
+        return true;
+    if (c->disk && str_eq(name, sync_command.name))         /* 1.4 stage 10, likewise */
+        return true;
+    if (c->disk && c->disk->info && str_eq(name, disk_command.name))    /* 1.4 stage 12, likewise */
         return true;
     if (str_eq(name, ps_command.name) || str_eq(name, run_command.name) ||
         str_eq(name, kill_command.name))
@@ -1944,6 +2160,10 @@ static const struct command *find_command(const char *name, const struct shell_c
                 return &storage_commands[i];
     if (c->display && str_eq(name, display_command.name))
         return &display_command;
+    if (c->disk && str_eq(name, sync_command.name))     /* 1.4 stage 10; in offered() with info (stage 12) */
+        return &sync_command;
+    if (c->disk && c->disk->info && str_eq(name, disk_command.name))    /* 1.4 stage 12 */
+        return &disk_command;
     return 0;
 }
 
@@ -2843,6 +3063,7 @@ static enum shell_result execute(char *line, const struct shell_context *c,
 enum shell_result shell_execute(char *line, const struct shell_context *c,
                                 const struct shell_output *o)
 {
+    fs_disk = c->disk;                      /* 1.4 stage 12: disk_reason's */
     enum shell_result r = execute(line, c, o);
     if (rd.on && r != SHELL_CAT)            /* 1.0 stage 9: cat ends it later */
         shell_redirect_end();

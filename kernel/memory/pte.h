@@ -13,6 +13,12 @@
 #define PTE_PRESENT   0x001ull
 #define PTE_WRITE     0x002ull
 #define PTE_USER      0x004ull              /* never set in 0.7 */
+/* 1.4 stage 4: write-through and cache-disable, both set for a device's
+ * registers (docs/plans/1.4.md, D4): with the boot-time PAT (never changed)
+ * PCD=1 PWT=1 selects its entry 3, uncacheable (UC). */
+#define PTE_PWT       0x008ull
+#define PTE_PCD       0x010ull
+#define PTE_UNCACHED  (PTE_PCD | PTE_PWT)
 #define PTE_ACCESSED  0x020ull
 #define PTE_DIRTY     0x040ull
 #define PTE_LARGE     0x080ull              /* PS: 2 MiB / 1 GiB page (boot tables only) */

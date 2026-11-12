@@ -199,6 +199,10 @@ void shell_cat_init(struct shell_cat *s);
 void shell_cat_put(struct shell_cat *s, const uint8_t *bytes, uint32_t len,
                    const struct shell_output *o);
 void shell_cat_end(struct shell_cat *s, const struct shell_output *o);
+/* 1.4 stage 8: a read that failed during cat (err < 0, e.g. -FS_EIO from
+ * the disk): "cat: '<path>': I/O error." as an error line, after the text
+ * printed so far (shell_cat_end first). */
+void shell_cat_error(const char *path, int err, const struct shell_output *o);
 
 #define SHELL_CAT_CANCELLED     "cat: cancelled."
 
@@ -210,6 +214,18 @@ void shell_date(int64_t seconds, char out[20]);
 #define SHELL_LIVE_LINE1    "Live mode: files are kept in memory only."
 #define SHELL_LIVE_LINE2    "Nothing is saved: all files are lost when the computer restarts."
 #define SHELL_LIVE_VERSION  "Live mode (files in memory only)"
+
+/* 1.4 stage 12: the Disk-mode labels (docs/plans/1.4.md, C10, for /home):
+ * the console's two lines and version's second line, read-write and
+ * read-only; the shell's start folder and "cd" alone in Disk mode (C11). */
+#define SHELL_DISK_LINE1      "Disk mode: files in /home are saved on the disk."
+#define SHELL_DISK_LINE2      "Files elsewhere (such as /tmp) are lost when the computer restarts."
+#define SHELL_DISK_VERSION    "Disk mode (/home is saved on the disk)"
+#define SHELL_DISKRO_LINE1    "Disk mode: /home is on the disk, read-only."
+#define SHELL_DISKRO_LINE2    "Nothing is saved: changes are lost when the computer restarts."
+#define SHELL_DISKRO_VERSION  "Disk mode (/home is read-only)"
+#define SHELL_HOME_DISK       "/home/user"
+#define SHELL_MV_EXDEV        "mv: cannot move between filesystems (copy, then remove)."
 
 /*
  * 1.0 stage 9: rm, cp, mv, df, du and output redirection (see
@@ -225,6 +241,11 @@ struct shell_dfinfo {
 
 struct shell_du {
     uint64_t pages, files, folders;         /* under the path (a folder itself not counted) */
+    /* 1.4 stage 12: the KiB the files and folders on the disk really use
+     * (ext2's blocks); their pages are not in `pages`. disk: something on
+     * the disk was counted. */
+    uint64_t kib;
+    bool disk;
 };
 
 struct shell_storage {
@@ -275,6 +296,55 @@ struct shell_display {
     uint32_t width, height, bpp;
     uint32_t scale;             /* percent: 100, 125, 150 or 200 */
     uint32_t cell_w, cell_h;    /* the console font's cell, in pixels */
+};
+
+/* 1.4 stage 10: "sync" (docs/plans/1.4.md, C12, D19): a full save of the
+ * disk's changed files. sync returns one of these, with *blocks the
+ * filesystem blocks written. */
+enum shell_sync_end {
+    SHELL_SYNC_SAVED,
+    SHELL_SYNC_NO_DISK,         /* Live mode */
+    SHELL_SYNC_READONLY,        /* /home is read-only: nothing to save */
+    SHELL_SYNC_FAILED,          /* a disk write failed: /home is read-only now */
+};
+
+/* 1.4 stage 12: what "disk", "df", "version", "cd" and the start folder
+ * need to know (docs/plans/1.4.md, C10-C12). */
+enum shell_disk_mode {
+    SHELL_DISK_LIVE,            /* nothing mounted on /home */
+    SHELL_DISK_RW,              /* Disk mode */
+    SHELL_DISK_RO,              /* Disk mode, read-only */
+};
+
+struct shell_disk_info {
+    enum shell_disk_mode mode;
+    /* df's second block (mode not LIVE): the volume on /home */
+    char label[17];
+    uint32_t disk, partition, block_size;
+    uint64_t blocks, blocks_free, inodes, inodes_free;
+    /* "disk": the boot's findings (the Storage: line). controller false:
+     * no AHCI controller. has_disk false: summary says why no disk is used
+     * ("AHCI 00:05.0, no disk (Live mode)"). has_disk: the rows; use is the
+     * Storage: line's end when nothing is mounted ("read only, not mounted:
+     * ...") */
+    bool controller, has_disk, more_disks;
+    const char *summary, *where, *model, *size, *table, *guard, *use;
+    uint32_t port;
+};
+
+struct shell_disk {
+    enum shell_sync_end (*sync)(void *ctx, uint64_t *blocks);
+    void *ctx;
+    /* 1.4 stage 12, optional: when set, "sync" and "disk" are in the help
+     * lists (section files, after "du"), "disk" exists, "version" and the
+     * Disk-mode texts follow info's mode, "cd" alone goes to /home/user in
+     * Disk mode, "df" adds the disk's block and "du" its KiB. NULL leaves
+     * every output exactly as in stage 10. */
+    void (*info)(void *ctx, struct shell_disk_info *out);
+    /* Optional (with info): true when path (from the current folder) is on
+     * the disk, so a full disk or a file at its size limit gets the disk's
+     * words, not the RAM budget's. */
+    bool (*on_disk)(void *ctx, const char *path);
 };
 
 struct shell_context {
@@ -344,6 +414,17 @@ struct shell_context {
      * after "reboot", in the section "system") and shows the screen's mode
      * and scale, or VGA text. NULL leaves every output exactly as before. */
     const struct shell_display *display;
+    /* 1.4 stage 10, optional: when set, "sync" exists (SYSTEM: "Save
+     * changed files to the disk"; "sync --help" and "help sync" work). It
+     * is NOT in the help lists until 1.4 stage 12 adds it there with
+     * "disk" (the owner's decision; docs/plans/1.4.md, G2), so every
+     * "help" output is unchanged. Its lines: "sync: N blocks saved.",
+     * "sync: nothing to save.", "sync: no disk in use (Live mode).",
+     * "sync: /home is read-only; nothing to save." and "sync: the disk
+     * could not be written; /home is read-only now.". NULL leaves every
+     * output exactly as before ("sync" is an unknown command). 1.4 stage
+     * 12: with disk->info, see struct shell_disk. */
+    const struct shell_disk *disk;
 };
 
 enum shell_text {

@@ -21,4 +21,18 @@ static inline void io_wait(void)
     outb(0x80, 0);
 }
 
+/* 1.4 stage 3 (owner approved): 32-bit port access, for PCI configuration
+ * mechanism 1 (its address port 0xCF8 takes only a 32-bit write). */
+static inline void outl(uint16_t port, uint32_t val)
+{
+    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t ret;
+    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 #endif

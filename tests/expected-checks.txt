@@ -192,4 +192,133 @@
 # state check moved from part 1 (the Esc section) to part 2 (the handover
 # at 1024x768x32, where that state is held).
 1.3 271
-unit-suites 94
+# 1.4 stage 2: 7 checks in part static, the test-image tools themselves
+# (tests/disk-lib.sh, tests/mke2fs.conf, tests/disk_image.py): mke2fs makes
+# the same ext2 image twice; disk_image.py the same MBR and GPT disks twice;
+# e2fsck -fn clean on the fresh image (unchanged by it) and in both disks'
+# partitions; debugfs's listing and contents; debugfs's pinned parameters;
+# both markers and the GPT CRC32s against zlib.crc32. The probe lines
+# (E2FSPROGS, SFDISK) and the sfdisk cross-check are report only. Stage 3:
+# 5 more in part static, the PCI scan in three -kernel boots against QEMU's
+# own view (query-pci): the default pc machine, ich9-ahci at 00:05.0 and
+# ich9-ahci behind a pci-bridge (1 each), the memory lines and mem's
+# figures the same on all three (1), the two lines' place, System ready
+# and no PANIC or FAILED line on all three (1); 1 unit suite (pci_core).
+# Stage 4: 10 more in part static: the driver read only, from the source
+# and from madire.elf (2); one test=diskread boot with a disk and an ATAPI
+# drive on ich9-ahci (8: the configuration write and AHCI mode, IDENTIFY
+# against the image, the ATAPI drive ignored, the attach's read check,
+# every test=diskread read against the image's CRC32s, the image's SHA-256
+# unchanged, slot 508 against tests/pagetables.py, the boot's health); 2
+# unit suites (ahci_core, blk_core), new cases in pci_core and vmm.
+# Changed, not added: four of stage 3's checks (the two controller boots'
+# Storage: lines now "no disk", with the controller and BAR5 on the ahci:
+# line; mem's Page tables and Free pages (now) on those boots by exactly
+# the driver's slot 508 figures; the driver's lines between PCI: and
+# Storage:). Stage 4's fix (after runs 41222612792 and 41222637807): 1
+# more in part static, the madire.elf scan's self-test on a test-only
+# sample (tests/ahci_opcode_sample.c: its 0x35 and 0xEA stores flagged).
+# Stage 5: 17 more in part static, partition tables and the write guard in
+# eight -kernel boots with one disk on ich9-ahci (the marked MBR and GPT
+# disks, ALLOWED; no marker, a bad marker CRC32, a wrong label, a model
+# that is not a virtual disk's, the marker's start not the partition's,
+# an empty disk, REFUSED): each boot's part:, guard: and Storage: lines
+# (8) and its image's SHA-256 unchanged (8), and the eight boots' line
+# order and health (1); 2 unit suites (part_core, guard_core). Changed,
+# not added: the test=diskread boot's Storage: line (now also naming the
+# partition table and the guard's result) and pcitest_order (the part:
+# and guard: lines allowed between the PCI: and Storage: lines).
+# Stage 6: 12 more in part static, the ext2 read core (pure, not linked):
+# compiled with the kernel's flags, not in madire.elf (1); tests/ext2dump.c
+# against debugfs on mke2fs images at 1, 2 and 4 KiB blocks, revision 0,
+# large_file, dir_index and ext_attr (7); the feature policy and the states
+# (3: unknown INCOMPAT refused, unknown RO_COMPAT read only, the states
+# reported); the sanitizers over 104 corrupted images (1); 1 unit suite
+# (ext2_core), and a new case in test_guard_core (the label madire-test2).
+# Stage 7: none (the VFS refactor: every existing check unchanged); 1 unit
+# suite (mount_core: two fake filesystems mounted on the RAM tree's
+# folders, crossing, "..", EXDEV, nested mounts and the busy cases).
+# Stage 8: 36 more in part static, ext2 mounted read-only at /home: no
+# kernel caller of the RAM-only wrappers (1); the boot behaviour (D16): no
+# disk, unmarked, the guard's other refusals, not ext2, an unknown INCOMPAT
+# flag, an unknown RO_COMPAT flag, the error bit, not clean, an unknown
+# COMPAT flag, the marked clean disk (10), the six new boots' images
+# unchanged (6) and their line order and health (1); the read sessions at
+# 1 and 4 KiB blocks against debugfs (8 each: the mount and the session,
+# ls, cat, stat, du, cd, the refused writes, the image unchanged) and the
+# per-filesystem file-size limits (1); madire.elf holds no ext2 write-type
+# symbol but the adapter's refusing ops, which call and store nothing (1,
+# the owner's read-only proof); 1 unit suite (ext2_vfs). Changed, not
+# added: stage 6's "not linked" check (madire.elf now holds the core's
+# read calls), the marked MBR and GPT disks' Storage: lines (now mounted
+# read-only on /home) and pcitest_order (the ext2: and mount: lines
+# allowed between the PCI: and Storage: lines; also counted as none on
+# the boot without a controller).
+# Stage 9: 16 more in part static, the ext2 write core and the block
+# layer's save order (pure, not linked): compiled with the kernel's flags,
+# none of their symbols in madire.elf (1); mke2fs's madire type defined and
+# 256-byte inodes in the stage's images but revision 0 (1); the host
+# sequence on mke2fs images at 1 and 4 KiB blocks, dir_index, ext_attr and
+# revision 0, e2fsck -fn clean and debugfs's view exact (5); D12's recount
+# (1); the policy for writes (1); the host cut sweep at every N for six
+# sequences, the owner's case and removed folders included (6); the sweep
+# under the sanitizers (1); 2 unit suites (blk_core_save, ext2_write). No existing check changed.
+# Stage 10: 18 more in part static, disk writes behind the guard: the
+# guard's proof, test=diskwrite on each of the six refused disks (all
+# writes and flushes refused by the command builder, the image unchanged)
+# (6); test=diskwrite on a read-write disk (written, saved, read back;
+# e2fsck -fn clean after it) and the node test in the same boot (eviction,
+# ENOMEM) (3); the write session (the session and reboot's save; e2fsck
+# -fn clean; debugfs's tree exact) (3); persistence on the same image (the
+# volume clean; everything read back; e2fsck -fn clean and the tree still
+# exact) (3); test=blkdebug (a read error, the write errors and the failed
+# disk, the system going on) (3); 2 unit suites (ext2_vfs_rw, shell_sync),
+# new cases in ahci_core, blk_core, blk_core_save and ext2_write. Changed,
+# not added (the owner's approval, before the commit): stage 4's two
+# read-only proofs (now the guarded-write proofs: the source and madire.elf)
+# and its IDENTIFY line's wording; stage 5's decision lines' wording, the
+# model boot's IDENTIFY line, the marked MBR and GPT disks' Storage: lines
+# (read-write) and their SHA-256 checks (now the bounded diff, byte and
+# field level: only save 0's superblock fields, e2fsck -fn clean), gd_boot
+# (booting a copy); stage 8's ELF proof (now the only path to a disk
+# write, no path function's address taken but the two in ext2_d_sv_ops),
+# the not-clean boot
+# (read-write after the recount; its SHA-256 check now the bounded diff),
+# the unknown COMPAT boot (read-only), the marked clean disks (read-write)
+# and the read sessions (booted with test=diskro); stage 9's "not linked"
+# check (now linked); the unit suite ahci_core's opcode table (2 -> 4 bytes).
+# Stage 10, the owner's option 2: 1 more (part static): the boot-time
+# read-write mount's hold of the VFS lock before System ready, with no
+# other thread asking for the lock or waiting (122 -> 123).
+# Stage 11: 14 more, all in part static: the unordered host sweep of the
+# six stage 9 sequences (6); test=diskcut uncut, the kernel's writes equal
+# to the host model's (1); the cut points N1 and N2, each the cut boot
+# judged on the image and the remount boot (4); test=autosave (3). Changed,
+# not added (the owner's approval, before the commit): the six stage 9
+# sweep checks (the checker now wants every renamed saved path exact at its
+# old or new path, A9 without the moved case, A14), two of their texts;
+# the unit suites blk_core_save and ext2_write (the classes 4-6, R5's new
+# cases). The stress part's 15 power-cut checks and its churn check are
+# [stress], counted apart.
+# Stage 12: 34 more: Disk mode's About and Restart scenes against
+# tests/desktop_ref.py, read-write and read-only, five modes (20, part
+# static); the home folders: made once, not recreated, none read-only, none
+# in Live mode (4, part 1); a Disk-mode desktop boot: the About window, the
+# Restart dialog, Restart saving first (3, part 3); a Disk-mode console
+# session: the start lines and folder, version, df, du, disk, sync and mv,
+# cd (7, part 3); 1 unit suite (shell_disk12), a new case in ui_about.
+# Changed, not added (the owner's approval, before the commit): the help
+# lists (G2: [0.12] help's files line, [0.12] help sections 40 -> 42,
+# [1.0] help 40 -> 42, [1.0] help <section> rows 40 -> 42, [1.0] help files
+# 13 -> 15, the VirtualBox shell group's help files rows); stage 5's and
+# stage 8's disk boots booted with test=nohome (D18: no home folders on a
+# test= boot) and stage 8's read-write mount line (automatic save off);
+# stage 10's write session and persistence (cd /home first; the expected
+# tree holds the home folders); desktop_boot and desktop_boot_end take
+# DT_DISK. After runs 42376255543 / 42376272505: 1 more (part 3): the
+# Disk-mode console's note.txt on the image exactly (debugfs); changed (the
+# owner's approval): stage 8's read-session du checks (KiB from debugfs's
+# i_blocks), the Disk-mode console's sync line (either answer), -boot d
+# with DT_DISK.
+1.4 172
+unit-suites 107

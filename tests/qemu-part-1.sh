@@ -2496,3 +2496,92 @@ if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
 else
     fail "[1.2] test=earlypanic: the crash screen differs from the cell grid's rendering, or the message is not on row 3 ($(grep -E '^(MARKER 1|SCREEN 1|ROW 1 3|qmp_splash)' <<< "$SPL_OUT" | tr '\n' ' '))"
 fi
+
+section "[1.4] The home folders (D18): made once on a read-write mount, never recreated, none read-only or in Live mode (stage 12)"
+# docs/plans/1.4.md, C11 and D18 (the checkpoint put these boots in part
+# 1). -kernel boots at -m 128M with no test= option (a test= boot makes no
+# home folders, as D8's automatic save), the disk on ich9-ahci: (1) a
+# fresh marked disk: /home/user with Desktop, Documents, Downloads,
+# Pictures, Music, Videos and Trash made and saved at the mount ("home:"
+# line); debugfs lists exactly those under /user and e2fsck -fn reports
+# nothing. (2) The same image again: nothing made (its line), the folders'
+# inode numbers unchanged. (3) A marked disk with an unknown RO_COMPAT flag
+# (mounted read-only): no home: line, the image unchanged. (4) No disk
+# (Live mode): no home: line.
+H12_W=$OUT/home-folders
+rm -rf "${H12_W:?}" && mkdir -p "$H12_W"
+H12_OK=1
+H12_READY="System ready. Press any key to open the console."
+H12_NAMES="Desktop Documents Downloads Pictures Music Videos Trash"
+disk_mkfs "$H12_W/fs.img" 4096 1024 256 256 "" > "$H12_W/mkfs.txt" 2>&1 &&
+    disk_image mbr "$H12_W/fs.img" "$H12_W/disk.img" > /dev/null 2>&1 || H12_OK=0
+python3 -I -B "$(dirname "$0")/ext2_view.py" set "$H12_W/fs.img" "$H12_W/ro-fs.img" $((1024 + 100)) 4 0x8 or > /dev/null 2>&1 &&
+    disk_image mbr "$H12_W/ro-fs.img" "$H12_W/ro-disk.img" > /dev/null 2>&1 || H12_OK=0
+h12_boot() {   # h12_boot <tag> [disk image]
+    local log=$OUT/serial-home-$1.log
+    if [ -n "${2:-}" ]; then
+        boot_until "$log" 60 "$H12_READY" -m 128M -kernel "$KERNEL" \
+            -drive file="$2",if=none,id=h12-disk,format=raw -device ich9-ahci,id=h12-ahci,addr=0x5 \
+            -device ide-hd,drive=h12-disk,bus=h12-ahci.0
+    else
+        boot_until "$log" 60 "$H12_READY" -m 128M -kernel "$KERNEL"
+    fi
+    grep -E '^(home|Storage): ' "$log" | sed "s/^/      $1: /"
+}
+# h12_user <disk image>: "name inode" per entry of /user (debugfs ls -p),
+# sorted by name; "." and ".." left out.
+h12_user() {
+    disk_image extract "$1" "$H12_W/part.img" > /dev/null 2>&1 &&
+        disk_debugfs "$H12_W/part.img" "ls -p /user" | awk -F/ 'NF >= 7 && $6 != "." && $6 != ".." { print $6, $2, $3 }' |
+        LC_ALL=C sort
+}
+h12_health() { [ -s "$1" ] && grep -qxF "$H12_READY" "$1" && ! grep -qE 'PANIC|FAILED' "$1"; }
+# (1) The first read-write mount.
+h12_boot first "$H12_W/disk.img"
+H12_U1=$(h12_user "$H12_W/disk.img")
+H12_ROOT1=$(disk_debugfs "$H12_W/part.img" "ls -p /" | awk -F/ '$6 == "user" { print $2, $3 }')
+H12_FSCK=$(disk_fsck "$H12_W/part.img"); H12_FRC=$?
+H12_FX=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$H12_FSCK")
+echo "      first: /user $H12_ROOT1; under it: $(tr '\n' ';' <<< "$H12_U1"); e2fsck -fn exit $H12_FRC${H12_FX:+: $H12_FX}"
+H12_WANT=$(for n in $H12_NAMES; do echo "$n"; done | LC_ALL=C sort | tr '\n' ' ')
+H12_GOT=$(awk '$3 ~ /^0?40/ { print $1 }' <<< "$H12_U1" | tr '\n' ' ')
+if [ "$H12_OK" -eq 1 ] && h12_health "$OUT/serial-home-first.log" &&
+   [ "$(grep -c '^home: ' "$OUT/serial-home-first.log")" -eq 1 ] &&
+   grep -qE '^home: 8 folders made, 0 already there \(/home/user with Desktop, Documents, Downloads, Pictures, Music, Videos and Trash\); saved: [1-9][0-9]* saves, [1-9][0-9]* writes; ' "$OUT/serial-home-first.log" &&
+   [ -n "$H12_ROOT1" ] && [ "$H12_GOT" = "$H12_WANT" ] && [ "$(grep -c . <<< "$H12_U1")" -eq 7 ] &&
+   [ "$H12_FRC" -eq 0 ] && [ -z "$H12_FX" ]; then
+    pass "[1.4] home folders, the first read-write mount: /home/user and its 7 folders (Desktop, Documents, Downloads, Pictures, Music, Videos, Trash) made and saved at the mount (one home: line); debugfs lists exactly those 7 folders under /user, e2fsck -fn reports nothing"
+else
+    fail "[1.4] home folders, the first read-write mount: the home: line, the folders on the disk or e2fsck -fn not as expected (see serial-home-first.log)"
+fi
+# (2) The same image again.
+h12_boot second "$H12_W/disk.img"
+H12_U2=$(h12_user "$H12_W/disk.img")
+H12_ROOT2=$(disk_debugfs "$H12_W/part.img" "ls -p /" | awk -F/ '$6 == "user" { print $2, $3 }')
+if [ "$H12_OK" -eq 1 ] && h12_health "$OUT/serial-home-second.log" &&
+   [ "$(grep -c '^home: ' "$OUT/serial-home-second.log")" -eq 1 ] &&
+   grep -qxF "home: /home/user and its 7 folders are already there; nothing made (D18: never recreated)" "$OUT/serial-home-second.log" &&
+   [ -n "$H12_U1" ] && [ "$H12_U1" = "$H12_U2" ] && [ "$H12_ROOT1" = "$H12_ROOT2" ]; then
+    pass "[1.4] home folders, the second mount of the same disk: nothing made (its home: line), /user and its 7 folders keep their inode numbers (never recreated)"
+else
+    fail "[1.4] home folders, the second mount: folders made again, or their inode numbers changed (see serial-home-second.log)"
+fi
+# (3) A read-only mount.
+H12_RO0=$(sha256sum < "$H12_W/ro-disk.img" | cut -d' ' -f1)
+h12_boot readonly "$H12_W/ro-disk.img"
+H12_RO1=$(sha256sum < "$H12_W/ro-disk.img" | cut -d' ' -f1)
+if [ "$H12_OK" -eq 1 ] && h12_health "$OUT/serial-home-readonly.log" &&
+   grep -qE "^Storage: .*; ext2 'madire-test' mounted read-only on /home \(Disk mode, read-only\)$" "$OUT/serial-home-readonly.log" &&
+   ! grep -q '^home: ' "$OUT/serial-home-readonly.log" && [ "$H12_RO0" = "$H12_RO1" ]; then
+    pass "[1.4] home folders, a read-only mount (an unknown RO_COMPAT flag): no home: line, nothing made, the image's SHA-256 unchanged"
+else
+    fail "[1.4] home folders, a read-only mount: a home: line, not read-only, or the image changed (see serial-home-readonly.log)"
+fi
+# (4) Live mode.
+h12_boot live
+if h12_health "$OUT/serial-home-live.log" && grep -qxF "Storage: no AHCI controller (Live mode)" "$OUT/serial-home-live.log" &&
+   ! grep -q '^home: ' "$OUT/serial-home-live.log"; then
+    pass "[1.4] home folders, Live mode (no disk): no home: line, nothing made"
+else
+    fail "[1.4] home folders, Live mode: a home: line, or not Live mode (see serial-home-live.log)"
+fi

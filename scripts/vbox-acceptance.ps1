@@ -40,6 +40,19 @@
 #       -ModuleIso <module iso> -ModuleIsoSha256 <sha256>          # every group
 #   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
 #       -Only risk13 -Risk13 30                                     # the risk 13 sample
+#
+# 1.4 stage 13: the storage group (docs/plans/1.4.md, C13, G6; AGENTS.md
+# section 6, "MadireOS-Test's disk contents"). It needs the pristine copies
+# made by scripts\vbox-disk-prepare.ps1 (-EmptyVdi, -MarkedVdi, each checked
+# against its SHA-256 before anything starts, and the attached disk must be
+# in its resting state, "empty"); it puts "marked" over the attached disk
+# file with the VM powered off, boots twice, copies the used disk into the
+# result folder and puts "empty" back (also after an error, in Finish-Run).
+# The keywindow group also keeps each boot's timing in
+# <Prefix>-keywindow-timings.txt.
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
+#       -Only storage -EmptySha256 <sha256> -MarkedSha256 <sha256>  # the storage group
 param(
     [string]$VM = "MadireOS-Test",
     [string]$VBoxManage = "",
@@ -49,7 +62,7 @@ param(
     [string]$ModuleIsoSha256 = "",      # 1.3 stage 9: checked before the run when given (module group only)
     [string]$OutDir = "",               # default: build\vbox-acceptance-<date>-<time> (1.3 stage 8: always a new folder)
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13
+    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13, storageprobe (1.4 stage 4), storage (1.4 stage 13)
     [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
@@ -58,8 +71,13 @@ param(
     [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64",  # must not be running (0.11)
     [string]$ViewVM = "MadireOS-View",  # 1.3 stage 8: must not be running (AGENTS.md section 6)
     [int]$MinFreeMB = 5500,             # 1.3 stage 8: the owner's threshold for this step (three samples)
-    [string]$RestoreIso = "",           # the resting medium; default: build\v1.2-release\madire-os.iso
-    [string]$RestoreSha256 = "2a2acbe599c003d4e3015a6ab7bfd1632d15c8741dbcffede07381cb8b7292c6"
+    [string]$RestoreIso = "",           # the resting medium; default: build\v1.3-release\madire-os.iso (1.4 stage 1)
+    [string]$RestoreSha256 = "e13054513342d65a133fbab36de1e92d82b6846d2f4b0120f85829adde430e74",
+    [string]$EmptyVdi = "",             # 1.4 stage 13: the pristine "empty" copy; default %USERPROFILE%\madire-vm-disks\MadireOS-Test-empty.vdi
+    [string]$EmptySha256 = "",          # 1.4 stage 13: needed when the storage group runs
+    [string]$MarkedVdi = "",            # 1.4 stage 13: the pristine "marked" copy; default %USERPROFILE%\madire-vm-disks\MadireOS-Test-marked.vdi
+    [string]$MarkedSha256 = "",         # 1.4 stage 13: needed when the storage group runs
+    [string]$DiskUuid = "e708d954-4c99-4b72-bd96-c1362a59c6cf"   # MadireOS-Test.vdi's UUID (docs/testing.md)
 )
 $ErrorActionPreference = "Stop"
 $root = (Get-Item (Split-Path $PSScriptRoot -Parent)).FullName
@@ -67,7 +85,9 @@ $build = Join-Path $root "build"
 if (-not $Iso) { $Iso = Join-Path $build "madire-os.iso" }
 if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
 if (-not $OutDir) { $OutDir = Join-Path $build ("vbox-acceptance-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
-if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.2-release\madire-os.iso" }
+if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.3-release\madire-os.iso" }
+if (-not $EmptyVdi) { $EmptyVdi = Join-Path $env:USERPROFILE "madire-vm-disks\MadireOS-Test-empty.vdi" }
+if (-not $MarkedVdi) { $MarkedVdi = Join-Path $env:USERPROFILE "madire-vm-disks\MadireOS-Test-marked.vdi" }
 
 # ---- 1.3 stage 8: host memory first (AGENTS.md section 6): three samples, 5 s apart ----
 $memSamples = @()
@@ -199,6 +219,28 @@ if ($wantModule) { $isoWanted[$ModuleIso] = $ModuleIsoSha256.ToLower() }
 foreach ($f in $isos) {
     if ($isoWanted[$f] -and $isoHashes[$f] -ne $isoWanted[$f]) { throw "The SHA-256 of $f is $($isoHashes[$f]) (expected $($isoWanted[$f])); refusing to run." }
 }
+# 1.4 stage 13: the storage group needs both pristine copies with their
+# expected SHA-256 (scripts\vbox-disk-prepare.ps1) and the attached disk in
+# its resting state, "empty" (AGENTS.md section 6), before anything starts.
+$wantStorage = ($Only.Count -eq 0) -or ($Only -contains "storage")
+$diskHash0 = ""
+if ($wantStorage) {
+    if (-not $EmptySha256 -or -not $MarkedSha256) { throw "The storage group needs -EmptySha256 and -MarkedSha256 (scripts\vbox-disk-prepare.ps1's summary); refusing to run." }
+    foreach ($p in @(@($EmptyVdi, $EmptySha256, "empty"), @($MarkedVdi, $MarkedSha256, "marked"))) {
+        if (-not (Test-Path -LiteralPath $p[0])) { throw "The pristine '$($p[2])' copy $($p[0]) is missing; refusing to run." }
+        $h = (Get-FileHash -LiteralPath $p[0] -Algorithm SHA256).Hash.ToLower()
+        if ($h -ne $p[1].ToLower()) { throw "The pristine '$($p[2])' copy's SHA-256 is $h (expected $($p[1])); refusing to run." }
+        # Its .sha256 file (written by scripts\vbox-disk-prepare.ps1) must name the same SHA-256.
+        $side = "$($p[0]).sha256"
+        $rec = if (Test-Path -LiteralPath $side) { ((Get-Content -LiteralPath $side -TotalCount 1) -split '\s+')[0].ToLower() } else { "" }
+        if ($rec -ne $h) { throw "The pristine '$($p[2])' copy's $side records '$rec' (expected $h); refusing to run." }
+    }
+    $EmptyVdi = (Get-Item -LiteralPath $EmptyVdi).FullName
+    $MarkedVdi = (Get-Item -LiteralPath $MarkedVdi).FullName
+    if ($info["SATA-ImageUUID-0-0"] -ne $DiskUuid) { throw "SATA port 0's disk has UUID '$($info['SATA-ImageUUID-0-0'])' (expected $DiskUuid); refusing to run." }
+    $diskHash0 = (Get-FileHash -LiteralPath $disk -Algorithm SHA256).Hash.ToLower()
+    if ($diskHash0 -ne $EmptySha256.ToLower()) { throw "MadireOS-Test.vdi's SHA-256 is $diskHash0, not the 'empty' copy's (not in its resting state); refusing to run (nothing is overwritten)." }
+}
 # 1.3 stage 8: one new result folder; an earlier one is never overwritten.
 if ((Test-Path $OutDir) -and @(Get-ChildItem $OutDir -Force).Count) { throw "The result folder $OutDir exists and is not empty; refusing to run (nothing is overwritten)." }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -215,6 +257,9 @@ Note "resting medium (checked before the run): $restoreHash  $RestoreIso"
 Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else; display VBoxSVGA, 128 MB VRAM; pointing device USB tablet)"
 foreach ($f in $isos) {
     Note ("ISO: {0}  {1} ({2})" -f $isoHashes[$f], $f, $(if ($isoWanted[$f]) { "the expected SHA-256: checked" } else { "no expected SHA-256 given" }))
+}
+if ($wantStorage) {
+    Note "storage (checked before the run): the pristine copies $EmptyVdi ($($EmptySha256.ToLower())) and $MarkedVdi ($($MarkedSha256.ToLower())); MadireOS-Test.vdi in its resting state ($diskHash0, UUID $DiskUuid)"
 }
 
 # ---- 1.2 stage 10b: the reference screens (made here, from this tree) ----
@@ -254,7 +299,7 @@ if (($Only.Count -eq 0) -or ($Only -contains "graphics")) {
 # references (tests/screen_ref.py, from tests/desktop_ref.py), the clock's
 # cells masked (decision 12: its time is not known here).
 $Mask = $null
-if (($Only.Count -eq 0) -or ($Only -contains "graphics") -or ($Only -contains "desktop") -or ($Only -contains "risk13")) {
+if (($Only.Count -eq 0) -or ($Only -contains "graphics") -or ($Only -contains "desktop") -or ($Only -contains "risk13") -or ($Only -contains "storage")) {
     foreach ($kind in @("desktop", "desktop-console")) {
         foreach ($l in (Py -I (Join-Path $root "tests\screen_ref.py") $kind 1024 768 (Join-Path $refDir "$kind.rgb"))) {
             Note "reference (report only): $l"
@@ -533,12 +578,47 @@ function Get-MaskedDiffer([string]$shot, [string]$ref) {
 
 $halted = "System halted\. Power off the machine\."
 
+# 1.4 stage 13 (AGENTS.md section 6, "MadireOS-Test's disk contents"): the
+# attached disk's view as VirtualBox reads it (showmediuminfo by UUID, read
+# only), and the resting state put back: the used disk copied into the
+# result folder (if not yet), then the pristine "empty" copy over the
+# attached file (a file copy, VM powered off), its SHA-256 and UUID
+# recorded. Called by the storage group, and by Finish-Run after an error.
+$script:StorageMarked = $false          # the attached disk holds "marked" or a used disk
+$script:StorageSaved = $false           # the used disk is in the result folder
+function Get-DiskMedium([string]$save) {
+    $lines = @(VBox showmediuminfo disk $DiskUuid)
+    if ($save) { $lines | Set-Content -Path (Join-Path $OutDir "$Prefix-$save.txt") -Encoding ascii }
+    $v = @{ Lines = $lines }
+    foreach ($l in $lines) { if ($l -match '^(UUID|State|Capacity|Size on disk):\s+(.*)$') { $v[$Matches[1]] = $Matches[2].Trim() } }
+    return $v
+}
+function Restore-RestingDisk {
+    if (-not $script:StorageMarked) { return }
+    try {
+        if (-not $script:StorageSaved) {
+            $used = Join-Path $OutDir "$Prefix-storage-used.vdi"
+            Copy-Item -LiteralPath $disk -Destination $used
+            $script:StorageSaved = $true
+            Note ("storage (report only): the used disk copied into the result folder (after a stop): SHA-256 {0}" -f (Get-FileHash -LiteralPath $used -Algorithm SHA256).Hash.ToLower())
+        }
+        Copy-Item -LiteralPath $EmptyVdi -Destination $disk -Force
+        $h = (Get-FileHash -LiteralPath $disk -Algorithm SHA256).Hash.ToLower()
+        $m = Get-DiskMedium "storage-mediuminfo-resting"
+        $ok = ($h -eq $EmptySha256.ToLower()) -and $m["UUID"] -eq $DiskUuid -and $m["State"] -eq "created"
+        if ($ok) { $script:StorageMarked = $false }
+        Note ("{0,-16} {1,-8} /the resting disk restored ('empty', a file copy): SHA-256 {2}; showmediuminfo UUID {3}, state {4}, capacity {5}, size on disk {6}/" -f "storage",
+              $(if ($ok) { "OK" } else { "MISSING" }), $h, $m["UUID"], $m["State"], $m["Capacity"], $m["Size on disk"])
+    } catch { Note ("{0,-16} {1,-8} /the resting disk restored: {2}/" -f "storage", "MISSING", $_) }
+}
+
 # 1.3 stage 8 (AGENTS.md section 6): at the end, also after an error: the
 # VM powered off, the resting medium back in the optical drive (its SHA-256
 # and the medium as showvminfo reads it recorded), and showvminfo after the
 # run against before: only the medium and VMStateChangeTime may differ.
 function Finish-Run {
     try { if ((Get-VMInfo)["VMState"] -eq "running") { VBox controlvm $VM poweroff | Out-Null; Start-Sleep -Seconds 2 } } catch {}
+    Restore-RestingDisk                 # 1.4 stage 13: only if the storage group stopped with the marked disk attached
     try {
         VBox storageattach $VM --storagectl SATA --port 1 --device 0 --type dvddrive --medium $RestoreIso | Out-Null
         $now = (Get-VMInfo)["SATA-1-0"]
@@ -1517,7 +1597,8 @@ if (Want "files") {
         "^  cat      Show a file's contents: cat <path>$",
         "^  rm       Remove a file: rm \[-y\] <path> \(asks first\)$", "^  cp       Copy a file: cp \[-y\] <from> <to>$",
         "^  mv       Move or rename: mv \[-y\] <from> <to>$", "^  df       Show the filesystem's nodes and pages in use$",
-        "^  du       Show the pages under a folder: du \[path\]$")
+        "^  du       Show the pages under a folder: du \[path\]$", "^  sync     Save changed files to the disk$",
+        "^  disk     Show disks and how they are used$")
     Start-Sleep -Seconds 1; Shot "files-help"
 
     # folders, redirection, stat
@@ -1739,21 +1820,29 @@ if ($Risk13 -gt 0 -and (Want "risk13")) {
           $(if ($firsts) { $firsts } else { "none" }))
 }
 
-# 1.1: the key window: the 0.13 keyboard error repeated on this VM. Twelve
-# boots; in each, Home is pressed every 300 ms from 0, 0.5, 1, ... 5 or 6 s
-# after startvm until the hidden menu shows (1.2 stage 10b: its header box,
-# Test-MenuShown; until then a screen 1024 wide). A
-# BIOS stopped by keys ("FATAL: Keyboard error") shows no menu and starts no
-# kernel: the row is MISSING, with a screenshot, if the screen stays
-# without the menu and the serial log empty for 30 s (or the kernel starts
-# first).
+# 1.1: the key window: the 0.13 keyboard error repeated on this VM. In each
+# boot, Home is pressed every 300 ms from a given time after startvm until
+# the hidden menu shows (1.2 stage 10b: its header box, Test-MenuShown;
+# until then a screen 1024 wide). A BIOS stopped by keys ("FATAL: Keyboard
+# error") shows no menu and starts no kernel.
+# 1.4 stage 1 (D20, docs/plans/1.4.md G3, an owner-approved exception):
+# eleven counted boots, keys from 0.5, 1, ... 5 or 5.5 s; the row is
+# MISSING, with a screenshot, if the screen stays without the menu and the
+# serial log empty for 30 s (or the kernel starts first). Two report-only
+# boots at the edges, keys from 0 s (the BIOS's keyboard self-test) and 6 s
+# (the end of Limine's 2 s key wait), record what happened (menu shown,
+# kernel started without the menu, or a BIOS keyboard error: no menu and no
+# kernel output for 30 s) and never count as MISSING.
 # A shown menu is held 4 s, then Enter boots the first entry to System ready
 # (report only, with the earliest reveal).
 if (Want "keywindow") {
     $reveals = New-Object System.Collections.Generic.List[int]
     $kwHeld = 0
     $kwReady = 0
-    foreach ($start in @(0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000)) {
+    $kwCounted = @(500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500)
+    $kwTimes = New-Object System.Collections.Generic.List[string]     # 1.4 stage 13: each boot's timing, kept in the result folder
+    foreach ($start in @(@(0) + $kwCounted + @(6000))) {
+        $counted = $kwCounted -contains $start
         $name = "keywindow-{0:D4}" -f $start
         if (Test-Path $serial) { Remove-Item $serial -Confirm:$false }
         VBox startvm $VM --type headless | Out-Null
@@ -1770,28 +1859,44 @@ if (Want "keywindow") {
             while ((Get-Date) -lt $next) { Start-Sleep -Milliseconds 20 }
         }
         $at = [int]((Get-Date) - $t0).TotalMilliseconds
+        $held = $false
+        $ready = $false
         if ($shown) {
-            $reveals.Add($at)
             Start-Sleep -Seconds 4
-            if (-not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Test-MenuShown)) { $kwHeld++ }
+            $held = -not ((Test-Path $serial) -and (Get-Item $serial).Length -gt 0) -and (Test-MenuShown)
             Enter
-            if (Wait-Serial "System ready\." 40) { $kwReady++ }
+            $ready = Wait-Serial "System ready\." 40
         } else {
             Shot $name
         }
-        # A shown menu also proves "no BIOS keyboard error": that error halts
-        # the BIOS during its power-on self-test, before it loads Limine, so
-        # Limine's menu (its header box) can't appear after it.
-        Note ("{0,-16} {1,-8} /menu shown with keys from {2} ms; no BIOS keyboard error/" -f "keywindow",
-              $(if ($shown) { "OK" } else { "MISSING" }), $start)
-        Write-Host ("{0}: keys from {1} ms, {2} after {3} ms" -f $name, $start, $(if ($shown) { "menu shown" } elseif ($booted) { "kernel started without the menu" } else { "no menu, no kernel output" }), $at)
+        $what = $(if ($shown) { "menu shown" } elseif ($booted) { "kernel started without the menu" } else { "BIOS keyboard error (no menu and no kernel output for 30 s)" })
+        if ($counted) {
+            if ($shown) { $reveals.Add($at) }
+            if ($held) { $kwHeld++ }
+            if ($ready) { $kwReady++ }
+            # A shown menu also proves "no BIOS keyboard error": that error halts
+            # the BIOS during its power-on self-test, before it loads Limine, so
+            # Limine's menu (its header box) can't appear after it.
+            Note ("{0,-16} {1,-8} /menu shown with keys from {2} ms; no BIOS keyboard error/" -f "keywindow",
+                  $(if ($shown) { "OK" } else { "MISSING" }), $start)
+        } else {
+            Note ("keywindow (report only): keys from {0} ms: {1} after {2} ms{3}" -f $start, $what, $at,
+                  $(if ($shown) { "; held 4 s with no kernel output: {0}; System ready after Enter: {1}" -f $(if ($held) { "yes" } else { "no" }), $(if ($ready) { "yes" } else { "no" }) } else { "; screenshot $name" }))
+        }
+        Write-Host ("{0}: keys from {1} ms, {2} after {3} ms" -f $name, $start, $what, $at)
+        $kwTimes.Add(("{0}: keys from {1} ms ({2}): {3} after {4} ms after startvm; held 4 s with no kernel output: {5}; System ready after Enter: {6}" -f
+                      $name, $start, $(if ($counted) { "counted" } else { "report only" }), $what, $at,
+                      $(if ($shown) { if ($held) { "yes" } else { "no" } } else { "-" }), $(if ($shown) { if ($ready) { "yes" } else { "no" } } else { "-" })))
         VBox controlvm $VM poweroff | Out-Null
         Start-Sleep -Seconds 2
         if (Test-Path $serial) { Copy-Item $serial (Join-Path $OutDir "$Prefix-$name.serial.log") -Force }
     }
     $rv = $reveals | Measure-Object -Minimum -Maximum
-    Note ("keywindow (report only): menu shown in {0} of 12 boots; earliest reveal {1} ms after startvm, latest {2} ms; held 4 s with no kernel output in {3}; System ready after Enter in {4}" -f
-          $reveals.Count, $(if ($reveals.Count) { $rv.Minimum } else { "none" }), $(if ($reveals.Count) { $rv.Maximum } else { "none" }), $kwHeld, $kwReady)
+    Note ("keywindow (report only): menu shown in {0} of {1} counted boots; earliest reveal {2} ms after startvm, latest {3} ms; held 4 s with no kernel output in {4}; System ready after Enter in {5}" -f
+          $reveals.Count, $kwCounted.Count, $(if ($reveals.Count) { $rv.Minimum } else { "none" }), $(if ($reveals.Count) { $rv.Maximum } else { "none" }), $kwHeld, $kwReady)
+    $kwFile = Join-Path $OutDir "$Prefix-keywindow-timings.txt"
+    $kwTimes | Set-Content -Path $kwFile -Encoding ascii
+    Note ("keywindow (report only): each boot's timing ({0} boots) in {1}" -f $kwTimes.Count, (Split-Path $kwFile -Leaf))
 }
 
 # 0.13: which Diagnostics positions this run booted through the boot menu
@@ -1799,6 +1904,331 @@ if (Want "keywindow") {
 if ($script:DiagBooted.Count) {
     $pos = ($script:DiagBooted.Values | Sort-Object) -join ","
     Note ("boot menu (report only): {0} of 27 Diagnostics positions booted through the menu: {1}" -f $script:DiagBooted.Count, $pos)
+}
+
+# 1.4 stage 4: the read-only storage probe (docs/plans/1.4.md, S4, risk
+# 29), on the "empty" disk, the resting state (nothing restored, nothing
+# attached but the ISO under test). One normal boot to System ready; its
+# serial log's driver lines: the controller and the one configuration
+# write, AHCI mode, the disk on port 0 (VBOX HARDDISK, and its size from
+# IDENTIFY equal to the VDI's capacity as showmediuminfo reads it), the
+# optical drive on port 1 ignored (ATAPI), the attach's read check (the
+# empty disk's first and last sector: zero bytes, CRC32 0xb2aa7578), the
+# Storage: line, no disk error, no PANIC or FAILED. 1.4 stage 5 (two rows
+# added, one changed; not run in stage 5): the empty disk has no partition
+# table, so the part: and guard: lines say so, writes would be REFUSED,
+# and the Storage: line names both. test=diskread itself
+# needs a Diagnostics entry (none in 1.4, D21) or a changed command line,
+# so the read check is the probe's read. 1.4 stage 10 (one row changed):
+# the IDENTIFY line ends "used (written only as the write guard allows)"
+# where it said "used read only" (the same disk and figures; the guard
+# refuses the empty disk, as the guard: and Storage: rows show).
+# MadireOS-Test.vdi's SHA-256 and
+# size before and after (report only): the guard refuses this disk, so no
+# write command reaches it; if
+# they differ, VirtualBox itself rewrote the file (for example the VDI's
+# header when it opens the disk), which the result folder's two values
+# and the driver's lines tell apart. Every storage line and the VDI's
+# figures are also saved to <Prefix>-storageprobe-lines.txt.
+if (Want "storageprobe") {
+    $vdi = $disk
+    $vdiInfo = @(VBox showmediuminfo disk $vdi)
+    $vdiInfo | Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-mediuminfo-before.txt") -Encoding ascii
+    $capLine = @($vdiInfo | Where-Object { $_ -match '^Capacity:\s+([0-9]+) MBytes' })
+    $sectorsRe = "[0-9]+"
+    if ($capLine.Count -and $capLine[0] -match '^Capacity:\s+([0-9]+) MBytes') { $sectorsRe = [string]([long]$Matches[1] * 2048) }
+    $vdiHash0 = (Get-FileHash $vdi -Algorithm SHA256).Hash.ToLower()
+    $vdiLen0 = (Get-Item $vdi).Length
+    Note ("storage (report only): MadireOS-Test.vdi before the boot: SHA-256 {0}, {1} bytes; {2}; IDENTIFY expected: {3} sectors" -f
+          $vdiHash0, $vdiLen0, $(if ($capLine.Count) { $capLine[0].Trim() } else { "no Capacity line" }), $sectorsRe)
+    Start-Run
+    Wait-Serial "^System ready\." 120 | Out-Null
+    Start-Sleep -Seconds 2
+    Shot "storageprobe"
+    Stop-Run "storageprobe" @("^ahci: controller at [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] \([0-9a-f]{4}:[0-9a-f]{4}, BAR5 0x[0-9a-f]{8}\)$",
+        "^ahci: PCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] command register 0x[0-9a-f]{4} -> 0x[0-9a-f]{4} \(memory space on, bus master on, INTx off; read back as written\); the only configuration write$",
+        "^ahci: AHCI version 0x[0-9a-f]{8}, CAP 0x[0-9a-f]{8}, CAP2 0x[0-9a-f]{8}, [0-9]+ ports implemented \(PI 0x[0-9a-f]{8}\); BIOS hand-off: .*; GHC 0x[0-9a-f]{8} -> 0x8[0-9a-f]{7} \(AHCI mode on, interrupts off\); polling$",
+        "^ahci: port 0: signature 0x00000101 \(ATA disk\); IDENTIFY DEVICE: model 'VBOX HARDDISK', $sectorsRe sectors of 512 bytes \([0-9.]+ [MG]iB\), LBA48 yes, DMA yes; used \(written only as the write guard allows\)$",
+        "^ahci: port 1: signature 0xeb140101: ATAPI device, ignored \(no command sent\)$",
+        "^blk: read check: LBA 0 CRC32 0xb2aa7578, LBA [0-9]+ CRC32 0xb2aa7578 \(2 commands, [0-9]+ ticks\)$",
+        "^part: port 0: no partition table \(LBA 0 has no 0x55AA signature\)$",
+        "^guard: port 0: writes would be REFUSED: no partition table$",
+        "^Storage: AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7], port 0 disk VBOX HARDDISK [0-9.]+ [MG]iB, no partition table, writes would be REFUSED: no partition table; read only, not mounted \(Live mode\)$",
+        "^System ready\.")
+    Absent "storageprobe" "^ahci: port [0-9]+: .* failed: "
+    Absent "storageprobe" "PANIC"
+    Absent "storageprobe" "FAILED"
+    $probeLog = Join-Path $OutDir "$Prefix-storageprobe.serial.log"
+    $lines = @()
+    if (Test-Path $probeLog) { $lines = @(Select-String -Path $probeLog -Pattern '^(PCI|ahci|blk|part|guard|Storage): ' -CaseSensitive | ForEach-Object { $_.Line }) }
+    foreach ($l in $lines) { Note "storage (report only): $l" }
+    $vdiHash1 = (Get-FileHash $vdi -Algorithm SHA256).Hash.ToLower()
+    $vdiLen1 = (Get-Item $vdi).Length
+    @(VBox showmediuminfo disk $vdi) | Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-mediuminfo-after.txt") -Encoding ascii
+    Note ("storage (report only): MadireOS-Test.vdi after the boot: SHA-256 {0}, {1} bytes: {2}" -f $vdiHash1, $vdiLen1,
+          $(if ($vdiHash1 -eq $vdiHash0 -and $vdiLen1 -eq $vdiLen0) { "the same as before" } else { "DIFFERENT from before (see the report)" }))
+    @($lines + @("vdi before $vdiHash0 $vdiLen0", "vdi after $vdiHash1 $vdiLen1")) |
+        Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-lines.txt") -Encoding ascii
+}
+
+# 1.4 stage 13: the storage group (docs/plans/1.4.md, C13, G6; AGENTS.md
+# section 6, "MadireOS-Test's disk contents"). Last, so every other group
+# runs on the "empty" disk (Live mode). With no VM running, the pristine
+# "marked" copy (checked against -MarkedSha256 again) is copied over the
+# attached disk file; its SHA-256 and UUID (showmediuminfo, read only) are
+# checked. Boot 1 (the first mount of the marked disk: the home folders
+# made, D18): the desktop, the About window (Disk mode's Mode row), a key
+# opens the Console window, a session from /home writes files (one through
+# the single indirect block at 1 KiB blocks), makes and removes folders,
+# moves files between folders, removes one, "time sync", df, du, disk, one
+# more file after the sync, clear; the Restart dialog ("Files in /home are
+# saved first."), Restart: the save before Restart marks the volume clean.
+# Boot 2: the volume found clean, the home folders not made again, the same
+# screens, a session that lists every folder and prints every file
+# (tests/ext2_tree.py session against scripts/vbox-storage.py expected),
+# then Restart again (the volume marked clean again); the VM is powered off
+# as soon as that save's line is logged, before the third boot's kernel
+# could mount the disk. The serial log keeps both boots. The used disk is
+# copied into the result folder (checked on Kali: scripts\kali-disk.ps1
+# -Step check -Expect session) and "empty" put back. The screens follow
+# scripts/vbox-storage.py plan (tests/screen_ref.py's model, the desktop
+# group's) and are compared with its Disk-mode references, the clock
+# masked. Report only: every storage line, the boot mounts' VFS lock holds
+# (exempt: before System ready), the home folders' save, the longest save
+# piece's hold after System ready as "sync" logs it (the revised rule:
+# above 2 ticks reported, above 20 a MISSING row), "time sync" (the whole
+# save with its FLUSH CACHE EXT commands; S12's kernel logs no FLUSH time
+# on a normal boot) and the two saves before Restart. VirtualBox may ignore
+# FLUSH CACHE (risk 32): this group proves what is written and read back,
+# not power-loss safety.
+if (Want "storage") {
+    $shellSeq = New-Object System.Collections.Generic.List[string]
+    $shellPrompt = "madire> "
+    $SN = 131072            # the marked image's partition: LBA 2048, 131072 sectors (scripts/kali-disk.sh)
+    $CAT = "^console: cat: [0-9]+ bytes in "
+    $CP = "^console: cp: [0-9]+ bytes in [0-9]+ chunks, "
+    $OUTL = "^console: output to '"
+    $TIMEL = "^time: [0-9]+ ticks? \([0-9]+\.[0-9]{2} s\)$"
+    $planLines = @(Py -I (Join-Path $root "scripts\vbox-storage.py") plan 1024 768)
+    $plan = @($planLines | Where-Object { $_ -notmatch '^MASK ' })
+    Note ("storage (report only): the plan per boot: {0} mouse events, {1} key events, {2} texts, {3} shots, {4} session" -f
+          @($plan | Where-Object { $_ -match '^MOUSE ' }).Count, @($plan | Where-Object { $_ -match '^KEYS ' }).Count,
+          @($plan | Where-Object { $_ -match '^TYPE ' }).Count, @($plan | Where-Object { $_ -match '^SHOT ' }).Count,
+          @($plan | Where-Object { $_ -eq 'SESSION' }).Count)
+    $shots = @($plan | Where-Object { $_ -match '^SHOT ' } | ForEach-Object { $_.Substring(5) })
+
+    # The marked disk: no VM running, the pristine copy checked again, copied, checked.
+    $runningNow = @(VBox list runningvms | ForEach-Object { if ($_ -match '^"(.+)" \{') { $Matches[1] } })
+    if ($runningNow.Count) { throw "storage: VMs are running ($($runningNow -join ', ')); the marked disk is not copied" }
+    $null = Get-DiskMedium "storage-mediuminfo-before"
+    $hm = (Get-FileHash -LiteralPath $MarkedVdi -Algorithm SHA256).Hash.ToLower()
+    if ($hm -ne $MarkedSha256.ToLower()) { throw "storage: the pristine 'marked' copy's SHA-256 is now $hm (expected $MarkedSha256)" }
+    $script:StorageMarked = $true
+    Copy-Item -LiteralPath $MarkedVdi -Destination $disk -Force
+    $hd = (Get-FileHash -LiteralPath $disk -Algorithm SHA256).Hash.ToLower()
+    $mm = Get-DiskMedium "storage-mediuminfo-marked"
+    $okm = ($hd -eq $hm) -and $mm["UUID"] -eq $DiskUuid -and $mm["State"] -eq "created"
+    Note ("{0,-16} {1,-8} /the pristine 'marked' copy ({2}) copied over MadireOS-Test.vdi with the VM powered off: the file's SHA-256 {3}; showmediuminfo UUID {4}, state {5}, capacity {6}/" -f
+          "storage", $(if ($okm) { "OK" } else { "MISSING" }), $hm, $hd, $mm["UUID"], $mm["State"], $mm["Capacity"])
+    if (-not $okm) { throw "storage: the marked disk is not in place (see the row above)" }
+
+    # Boot 1's kernel lines (C4, C9, C11): the marked disk read, allowed, mounted read-write, the home folders made.
+    Expect @("^part: port 0: MBR \(disk signature 0x[0-9a-f]{8}\), 1 partition$",
+             "^part: port 0: partition 1: MBR type 0x83 \(Linux\), LBA 2048, $SN sectors$",
+             "^guard: port 0 partition 1: writes would be ALLOWED \(virtual disk 'VBOX HARDDISK'; test marker for LBA 2048, $SN sectors; ext2 label 'madire-test'\)$",
+             "^guard: port 0: decided once, kept by the AHCI driver: writes would be ALLOWED on partition 1 \(LBA 2048, $SN sectors\); the AHCI command builder checks this decision before every write and flush$",
+             "^ext2: port 0 partition 1: revision 1, 1024-byte blocks, 65536 blocks \([0-9]+ free\), 4096 inodes \([0-9]+ free\), [0-9]+ groups, 256-byte inodes, label 'madire-test'; features .*; state 0x1 \(clean, error bit not set\)$",
+             "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; ",
+             "^mount: the mount held the VFS lock [0-9]+ us \([0-9]+ ticks\) ",
+             "^mount: changes are kept in memory .*; automatic save every 5 s: on$",
+             "^Storage: AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7], port 0 disk VBOX HARDDISK [0-9.]+ [MG]iB, MBR, 1 partition, writes would be ALLOWED on partition 1; ext2 'madire-test' mounted read-write on /home \(Disk mode\)$",
+             "^home: 8 folders made, 0 already there \(/home/user with Desktop, Documents, Downloads, Pictures, Music, Videos and Trash\); saved: ",
+             "^System ready\.", "^Desktop: shown on ",
+             "^Disk mode: files in /home are saved on the disk\.$",
+             "^Files elsewhere \(such as /tmp\) are lost when the computer restarts\.$")
+    # Boot 1's session (the expected tree: scripts/vbox-storage.py expected).
+    $session1 = {
+        Start-Sleep -Seconds 1
+        Cmd "pwd" @("^/home/user$")
+        Cmd "version" @("^Madire OS v$VRe \(64-bit x86-64, Multiboot 1\)$", "^Disk mode \(/home is saved on the disk\)$")
+        Cmd "cd /home"
+        Cmd "mkdir user/Documents/work"
+        CmdWait "echo first line > user/Documents/work/one.txt" @("^console: output to 'user/Documents/work/one\.txt': 11 bytes in 1 writes, largest 11$") $OUTL
+        CmdWait "echo second line >> user/Documents/work/one.txt" @("^console: output to 'user/Documents/work/one\.txt': 12 bytes in 1 writes, largest 12$") $OUTL
+        CmdWait "cp -y seed/big.txt user/Documents/big2.txt" @("^console: cp: 14280 bytes in [0-9]+ chunks, [0-9]+ ticks$") $CP
+        $c = CountLines $OUTL
+        Cmd "cat seed/big.txt >> user/Documents/big2.txt" @("^console: output to 'user/Documents/big2\.txt': 14280 bytes in [0-9]+ writes, largest [0-9]+$")
+        WaitMore $OUTL $c 60
+        CmdWait "echo picture > user/Pictures/p.txt" @("^console: output to 'user/Pictures/p\.txt': 8 bytes in 1 writes, largest 8$") $OUTL
+        Cmd "mv -y user/Pictures/p.txt user/Desktop/p-moved.txt"
+        Cmd "mv -y seed/notes.txt user/Documents/notes.txt"
+        Cmd "mkdir user/Music/gone"
+        Cmd "rmdir user/Music/gone"
+        Cmd "rm -y seed/old.txt"
+        $c = CountLines '^time: '
+        Cmd "time sync" @("^sync: ([1-9][0-9]* blocks? saved|nothing to save)\.$", $TIMEL)
+        WaitMore '^time: ' $c 30
+        Cmd "df" @("^Filesystem: live \(RAM\), mounted on / \(files in memory only\)$", "^Nodes: ", "^Pages: ", "^Space: ",
+                   "^Filesystem: ext2 'madire-test' \(disk 0, partition 1\), mounted on /home$",
+                   "^Blocks:      *[0-9]+ used of 65536 \([0-9]+ free\), 1 KiB each$", "^Inodes:      *[0-9]+ used of 4096 \([0-9]+ free\)$")
+        Cmd "du user/Documents" @("^[0-9]+ KiB on the disk in 3 files and 1 folders?$")
+        Cmd "disk" @("^Disk on port 0: VBOX HARDDISK, [0-9.]+ [MG]iB \(AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7]\)$", "^  Partitions:  MBR, 1 partition$",
+                     "^  Write guard: ALLOWED on partition 1$", "^  Use:         ext2 'madire-test' mounted read-write on /home \(Disk mode\)$")
+        CmdWait "echo after sync > user/Documents/work/late.txt" @("^console: output to 'user/Documents/work/late\.txt': 11 bytes in 1 writes, largest 11$") $OUTL
+    }
+    # Boot 2's session: every folder listed and every file printed (tests/ext2_tree.py session).
+    $session2 = {
+        Start-Sleep -Seconds 1
+        Cmd "pwd" @("^/home/user$")
+        Cmd "cd /home"
+        foreach ($d in @("", " seed", " user", " user/Documents", " user/Documents/work", " user/Desktop", " user/Pictures", " user/Music")) { Cmd ("ls -l" + $d) }
+        foreach ($f in @("user/Documents/work/one.txt", "user/Documents/work/late.txt", "user/Desktop/p-moved.txt", "user/Documents/notes.txt")) { CmdWait "cat $f" @() $CAT }
+        $c = CountLines $CAT
+        Cmd "cat seed/big.txt"
+        WaitMore $CAT $c 60
+        $c = CountLines $CAT
+        Cmd "cat user/Documents/big2.txt"
+        WaitMore $CAT $c 90
+        Cmd "echo end-of-storage-session" @("^end-of-storage-session$")
+    }
+    $restart1 = "^ext2: save before restart: done in [0-9]+ ms \([0-9]+ saves, [0-9]+ writes; 0 open files with no name left forgotten first\); the volume marked clean$"
+    Start-Run
+    $ready1 = Wait-Serial "^Desktop: shown on " 120
+    Start-Sleep -Seconds 2
+    $client = New-Object -ComObject VirtualBox.VirtualBoxClient
+    $session = $client.Session
+    $client.VirtualBox.FindMachine($VM).LockMachine($session, 1)    # LockType_Shared: the console only, no setting
+    $restarted = $false
+    $endSeen = $false
+    $offAfterMs = -1
+    try {
+        $mouse = $session.Console.Mouse
+        foreach ($b in @(1, 2)) {
+            if ($b -eq 2 -and -not $restarted) { break }
+            foreach ($p in $plan) {
+                $f = $p -split ' ', 2
+                switch ($f[0]) {
+                    "MOUSE" { $v = @($f[1] -split ' ' | ForEach-Object { [int]$_ }); $mouse.PutMouseEvent($v[0], $v[1], 0, 0, $v[2]); Start-Sleep -Milliseconds 60 }
+                    "KEYS" { Key @($f[1] -split ' '); Start-Sleep -Milliseconds 400 }
+                    "TYPE" { TypeText $f[1] }
+                    "SHOT" { Start-Sleep -Seconds 1; Shot ("storage{0}-{1}" -f $b, $f[1]) }
+                    "SESSION" { if ($b -eq 1) { & $session1 } else { & $session2 } }
+                    "RESTART" {
+                        if ($b -eq 1) {
+                            # The save before Restart, the reset, then boot 2's desktop.
+                            Expect @("^Desktop: Restart chosen in the Restart dialog: restarting$", $restart1,
+                                     "^Restart: keyboard controller reset \(0xfe to port 0x64\)$", "^boot32: start$",
+                                     "^ext2: port 0 partition 1: revision 1, 1024-byte blocks, 65536 blocks \([0-9]+ free\), 4096 inodes \([0-9]+ free\), [0-9]+ groups, 256-byte inodes, label 'madire-test'; features .*; state 0x1 \(clean, error bit not set\)$",
+                                     "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; ",
+                                     "^Storage: AHCI .*, writes would be ALLOWED on partition 1; ext2 'madire-test' mounted read-write on /home \(Disk mode\)$",
+                                     "^home: /home/user and its 7 folders are already there; nothing made \(D18: never recreated\)$",
+                                     "^System ready\.", "^Desktop: shown on ",
+                                     "^Disk mode: files in /home are saved on the disk\.$")
+                            $until = (Get-Date).AddSeconds(150)
+                            do {
+                                Start-Sleep -Milliseconds 500
+                                $n = @(Select-String -Path $serial -Pattern '^Desktop: shown on ' -ErrorAction SilentlyContinue).Count
+                            } while ($n -lt 2 -and (Get-Date) -lt $until)
+                            $restarted = $n -ge 2
+                            Start-Sleep -Seconds 2
+                        } else {
+                            # The second save before Restart: powered off at its line, before boot 3's kernel.
+                            Expect @("^Desktop: Restart chosen in the Restart dialog: restarting$", $restart1,
+                                     "^Restart: keyboard controller reset \(0xfe to port 0x64\)$")
+                            $until = (Get-Date).AddSeconds(60)
+                            do {
+                                Start-Sleep -Milliseconds 200
+                                $n = @(Select-String -Path $serial -Pattern '^ext2: save before restart: ' -ErrorAction SilentlyContinue).Count
+                            } while ($n -lt 2 -and (Get-Date) -lt $until)
+                            $endSeen = $n -ge 2
+                            $t0 = Get-Date
+                            VBox controlvm $VM poweroff | Out-Null
+                            $offAfterMs = [int]((Get-Date) - $t0).TotalMilliseconds
+                        }
+                    }
+                    default { }
+                }
+            }
+        }
+    } finally { try { $session.UnlockMachine() } catch {} }
+    if ((Get-VMInfo)["VMState"] -eq "running") { VBox controlvm $VM poweroff | Out-Null }
+    Start-Sleep -Seconds 2
+    $log = Join-Path $OutDir "$Prefix-storage.serial.log"
+    if (Test-Path $serial) { Copy-Item $serial $log -Force } else { Note "storage: NO SERIAL LOG" }
+    # The used disk into the result folder, then "empty" back.
+    $used = Join-Path $OutDir "$Prefix-storage-used.vdi"
+    Copy-Item -LiteralPath $disk -Destination $used
+    $script:StorageSaved = $true
+    $hu = (Get-FileHash -LiteralPath $used -Algorithm SHA256).Hash.ToLower()
+    $hu2 = (Get-FileHash -LiteralPath $disk -Algorithm SHA256).Hash.ToLower()
+    $null = Get-DiskMedium "storage-mediuminfo-used"
+    Note ("{0,-16} {1,-8} /the used disk copied into the result folder ({2}): SHA-256 {3}, equal to the attached file's; for the Kali check (scripts\kali-disk.ps1 -Step check -Expect session)/" -f
+          "storage", $(if ($hu -eq $hu2 -and $hu -ne $hm) { "OK" } else { "MISSING" }), (Split-Path $used -Leaf), $hu)
+    Restore-RestingDisk
+
+    if (Test-Path $log) {
+        InOrder "storage" $shellSeq
+        $lines = @(Get-Content -LiteralPath $log)
+        foreach ($p in @("^Desktop: a key opened the Console window \(the key is not typed\)$", "^console: started$")) {
+            $n = @($lines | Where-Object { $_ -cmatch $p }).Count
+            Note ("{0,-16} {1,-8} /{2} (once in each boot: {3})/" -f "storage", $(if ($n -eq 2) { "OK" } else { "MISSING" }), $p, $n)
+        }
+        $boots = @($lines | Where-Object { $_ -ceq "boot32: start" }).Count
+        $chosen = @($lines | Where-Object { $_ -ceq "Desktop: Restart chosen in the Restart dialog: restarting" }).Count
+        $saved = @($lines | Where-Object { $_ -cmatch $restart1 }).Count
+        Note ("{0,-16} {1,-8} /two boots, each ended by Restart in the dialog with the save before Restart (the volume marked clean): {2} boots, {3} restarts chosen, {4} saves done; powered off {5} ms after the second save's line (before a third boot's kernel)/" -f "storage",
+              $(if ($ready1 -and $restarted -and $endSeen -and $boots -eq 2 -and $chosen -eq 2 -and $saved -eq 2) { "OK" } else { "MISSING" }), $boots, $chosen, $saved, $offAfterMs)
+        # Boot 2 alone (LF), then every "ls -l" and "cat" of its session against the expected tree.
+        $at = -1; $k = 0
+        for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -ceq "boot32: start") { $k++; if ($k -eq 2) { $at = $i; break } } }
+        $two = Join-Path $OutDir "$Prefix-storage-boot2.serial.log"
+        $exp = Join-Path $OutDir "storage-expected"
+        $sess = @()
+        if ($at -ge 0) {
+            [IO.File]::WriteAllText($two, (($lines[$at..($lines.Count - 1)] -join "`n") + "`n"), [Text.Encoding]::ASCII)
+            Py -I (Join-Path $root "scripts\vbox-storage.py") expected $exp | Set-Content -Path (Join-Path $OutDir "$Prefix-storage-expected.txt") -Encoding ascii
+            $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            try { $sess = @(& $Python -I -B (Join-Path $root "tests\ext2_tree.py") session $two $exp 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $old }
+            $sess | Set-Content -Path (Join-Path $OutDir "$Prefix-storage-session.txt") -Encoding ascii
+            foreach ($l in $sess) { Note "storage (report only): $l" }
+        }
+        Note ("{0,-16} {1,-8} /boot 2 reads everything back exactly: 8 folders listed and 6 files printed as the expected tree holds them (tests/ext2_tree.py session: {2})/" -f "storage",
+              $(if (@($sess | Where-Object { $_ -ceq "SESSION ok 14 commands" }).Count -eq 1) { "OK" } else { "MISSING" }), $(if ($sess.Count) { $sess[-1] } else { "not run" }))
+        # The screens against the Disk-mode references (rendered now: the About window shows this boot's memory).
+        $mb = $null
+        foreach ($l in $lines) { if ($l -cmatch '^Memory: [0-9]+ MB detected, ([0-9]+) MB usable below 4 GiB, ') { $mb = $Matches[1]; break } }
+        if ($mb) {
+            foreach ($l in (Py -I (Join-Path $root "scripts\vbox-storage.py") render 1024 768 $refDir $mb)) { Note "reference (report only): $l" }
+            foreach ($b in @(1, 2)) {
+                foreach ($s in $shots) {
+                    $d = Get-MaskedDiffer ("storage{0}-{1}" -f $b, $s) "storage-$s.rgb"
+                    Note ("{0,-16} {1,-8} /boot {2}: the screen '{3}' equals its Disk-mode reference (scripts/vbox-storage.py render, the clock's box masked): {4} pixels differ outside the clock's box/" -f "storage",
+                          $(if ($d[0] -eq 0) { "OK" } else { "MISSING" }), $b, $s, $d[0])
+                }
+            }
+        } else {
+            Note ("{0,-16} {1,-8} /the usable memory line (for the About window's reference)/" -f "storage", "MISSING")
+        }
+        # Report only: every storage line; the VFS lock holds (the revised rule) and the saves.
+        $sl = @($lines | Where-Object { $_ -cmatch '^(PCI|ahci|blk|part|guard|ext2|mount|home|Storage|sync|time): ' -or $_ -ceq "boot32: start" })
+        $sl | Set-Content -Path (Join-Path $OutDir "$Prefix-storage-lines.txt") -Encoding ascii
+        foreach ($l in @($lines | Where-Object { $_ -cmatch '^(ext2|mount|home|sync|time): ' })) { Note "storage (report only): $l" }
+        $syncHold = @($lines | Where-Object { $_ -cmatch '^ext2: sync: .*the longest VFS lock hold in a save so far ([0-9]+) us \(([0-9]+) ticks\)' } |
+                      ForEach-Object { [void]($_ -cmatch 'so far ([0-9]+) us \(([0-9]+) ticks\)'); @([long]$Matches[1], [long]$Matches[2]) })
+        if ($syncHold.Count -ge 2) {
+            $us = $syncHold[0]; $tk = $syncHold[1]
+            if ($tk -gt 2) { Note ("storage (report only): REPORTED (the revised rule: above 2 ticks after System ready): the longest save piece's VFS lock hold {0} us ({1} ticks)" -f $us, $tk) }
+            Note ("{0,-16} {1,-8} /the longest save piece's VFS lock hold after System ready (sync's figure: the home folders' save reset it; every automatic save and sync after it) at most 20 ticks: {2} us ({3} ticks)/" -f "storage",
+                  $(if ($tk -le 20) { "OK" } else { "MISSING" }), $us, $tk)
+        } else {
+            Note ("{0,-16} {1,-8} /the longest save piece's VFS lock hold after System ready (no 'ext2: sync:' line)/" -f "storage", "MISSING")
+        }
+    }
+    Absent "storage" "PANIC"
+    Absent "storage" "FAILED"
+    Absent "storage" "^ahci: port [0-9]+: .* failed: "
+    Absent "storage" ": (the filesystem is read-only|I/O error|no room|already exists|no such file or folder|no room left on the disk|the file is at the disk.s size limit|the folder is not empty)\.$"
+    Absent "storage" "^ext2: warning|^home: not finished|not saved|NOT saved|save before restart: not finished|^key: |events dropped|Unexpected IRQ"
 }
 
 # 1.0 (stage 11): how long the screen took to exist after startvm (report only).

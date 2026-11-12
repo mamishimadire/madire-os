@@ -238,6 +238,20 @@ uint32_t fsys_dirent_put(uint8_t *buf, uint32_t room, uint64_t ino, uint64_t off
 uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, uint32_t room,
                        uint64_t *next, bool *more)
 {
+    /* RAM-only form for the existing tests; not re-entrant; never used by
+     * kernel paths (1.4 stage 8: part static checks that no kernel file
+     * calls it). The RAM filesystem alone, at number 0 (its listing calls
+     * need no state, ramfs_core.c; no root is named, so ".." is dir's
+     * parent). */
+    static const struct vfs ram_only = {
+        .mounts = { .m = { { .ops = &ramfs_ops } }, .count = 1 },
+    };
+    return fsys_dir_list(&ram_only, dir, cursor, buf, room, next, more);
+}
+
+uint32_t fsys_dir_list(const struct vfs *v, const struct vnode *dir, uint64_t cursor,
+                       uint8_t *buf, uint32_t room, uint64_t *next, bool *more)
+{
     uint32_t used = 0;
     const struct vnode *e = NULL;
     bool looked = false;
@@ -254,21 +268,22 @@ uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, u
             name = ".";
             len = 1;
         } else if (*next == 1) {
-            ino = dir->parent ? dir->parent->ino : dir->ino;
+            const struct vnode *up = vfs_parent(v, dir);    /* 1.4 stage 7: across a mount */
+            ino = up ? up->ino : dir->ino;
             off = 2;
             name = "..";
             len = 2;
         } else {
             if (!looked) {
-                e = ramfs_entry_from(dir, *next - 2);
+                e = vfs_entry_from(v, dir, *next - 2);
                 looked = true;
             }
             if (!e)
                 return used;            /* the end of the folder */
             ino = e->ino;
-            off = (uint64_t)ramfs_seq(e) + 3;
+            off = vfs_entry_pos(v, e) + 3;
             type = e->type == VNODE_DIR ? FS_DT_DIR : FS_DT_REG;
-            name = ramfs_name(e, &len);
+            name = vfs_entry_name(v, e, &len);
         }
         uint32_t r = fsys_dirent_put(buf + used, room - used, ino, off, type, name, len);
         if (r == 0) {
@@ -278,7 +293,7 @@ uint32_t fsys_dir_fill(const struct vnode *dir, uint64_t cursor, uint8_t *buf, u
         used += r;
         *next = off;
         if (e)
-            e = ramfs_next(e);          /* entries are in stamp order */
+            e = vfs_entry_next(v, dir, e);  /* entries are in stamp order */
     }
 }
 
@@ -301,6 +316,22 @@ uint64_t fsys_dir_keep(const uint8_t *buf, uint32_t used, uint32_t valid, uint64
 
 int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *buf, size_t size)
 {
+    /* RAM-only form for the existing tests; not re-entrant; never used by
+     * kernel paths (1.4 stage 8: part static checks that no kernel file
+     * calls it). The RAM filesystem alone, at number 0 (as fsys_dir_fill), with root
+     * as "/". Zeroed as static data and only its root set here: a local
+     * one would need a memset, which the kernel has none of. The VFS lock
+     * held, as for every caller. */
+    static struct vfs ram_only = {
+        .mounts = { .m = { { .ops = &ramfs_ops } }, .count = 1 },
+    };
+    ram_only.root = (struct vnode *)root;       /* only read through v */
+    return fsys_cwd_path_v(&ram_only, cwd, buf, size);
+}
+
+int64_t fsys_cwd_path_v(const struct vfs *v, const struct vnode *cwd, char *buf, size_t size)
+{
+    const struct vnode *root = v->root;
     if (cwd->nlink == 0)
         return -FS_ENOENT;              /* removed: no path names it */
     if (size < 2)
@@ -315,10 +346,11 @@ int64_t fsys_cwd_path(const struct vnode *cwd, const struct vnode *root, char *b
     size_t pos = size;
     buf[--pos] = '\0';
     for (const struct vnode *n = cwd; n != root; n = n->parent) {
+        n = vfs_covered(v, n);          /* 1.4 stage 7: a mounted root: the folder under it */
         if (!n->parent)
             return -FS_ENOENT;          /* cannot happen: only an empty folder is removed */
         size_t len;
-        const char *name = ramfs_name(n, &len);
+        const char *name = vfs_entry_name(v, n, &len);
         if (pos < len + 1)
             return -FS_ENAMETOOLONG;
         pos -= len;

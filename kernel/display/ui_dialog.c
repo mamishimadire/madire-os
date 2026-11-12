@@ -66,12 +66,20 @@ enum ui_dialog_part ui_dialog_hit(const struct ui_dialog *d, int32_t x, int32_t 
     return UI_DLG_BODY;
 }
 
+/* 1.4 stage 12: the second line (ui_dialog_set_line2). */
+static const char *ui_dialog_line2 = UI_DIALOG_LINE2;
+
+void ui_dialog_set_line2(const char *text)
+{
+    ui_dialog_line2 = text ? text : UI_DIALOG_LINE2;
+}
+
 void ui_dialog_paint(const struct ui_canvas *c, struct rect r, void *ctx)
 {
     const struct ui_dialog *d = ctx;
     uint32_t s = d->scale;
     ui_text(c, d->fonts.regular, r.x + ui_px(24, s), r.y + ui_px(56, s), UI_DIALOG_LINE1, UI_TEXT);
-    ui_text(c, d->fonts.regular, r.x + ui_px(24, s), r.y + ui_px(76, s), UI_DIALOG_LINE2, UI_TEXT);
+    ui_text(c, d->fonts.regular, r.x + ui_px(24, s), r.y + ui_px(76, s), ui_dialog_line2, UI_TEXT);
     for (int b = 0; b < UI_DLG_BUTTONS; b++) {
         struct ui_button btn = { dlg_button_at(r, s, (enum ui_dialog_button)b), b ? "Restart" : "Cancel",
                                  UI_ICON_NONE, 0 };

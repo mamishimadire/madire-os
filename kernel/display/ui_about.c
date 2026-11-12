@@ -77,6 +77,11 @@ void ui_about_setup(struct ui_about *a, uint32_t s, const struct ui_fonts *f, co
     a->short_scratch = false;
 }
 
+void ui_about_set_mode(struct ui_about *a, const char *mode)
+{
+    set_value(a, 4, mode);
+}
+
 /* The wordmark as a line, the window at r. */
 static struct wp_line wordmark(uint32_t s, struct rect r)
 {

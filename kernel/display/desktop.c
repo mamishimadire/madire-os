@@ -20,6 +20,7 @@
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_menus.h"
 #include "kernel/display/ui_window.h"
+#include "kernel/fs/ext2_disk.h"
 #include "kernel/kernel.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/memory.h"
@@ -67,6 +68,7 @@ static struct ui_about about;
 static uint16_t about_scratch[UI_ABOUT_SCRATCH];
 static char loader_name[UI_ABOUT_VALUE_MAX] = "-";
 static char about_display[24], about_memory[24];
+static const char *about_mode = UI_ABOUT_MODE;      /* 1.4 stage 12: Disk mode's (C10) */
 static uint32_t usable_mb;
 
 /* 1.3 stage 4b: the frame log, throttled (desktop.h): the last frame
@@ -662,6 +664,14 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
     ksnprintf(about_memory, sizeof(about_memory), "%u MB", usable_mb);
     ui_about_setup(&about, scale, &fonts, MADIRE_OS_VERSION, loader_name, about_display, about_memory,
                    about_scratch, UI_ABOUT_SCRATCH);
+    /* 1.4 stage 12 (C10): Disk mode's Mode row and Restart line; Live mode
+     * keeps 1.3's. The mount happened before the desktop starts. */
+    if (ext2_disk_mounted()) {
+        bool rw = ext2_disk_rw();
+        about_mode = rw ? UI_ABOUT_MODE_DISK : UI_ABOUT_MODE_DISKRO;
+        ui_about_set_mode(&about, about_mode);
+        ui_dialog_set_line2(rw ? UI_DIALOG_LINE2_DISK : UI_DIALOG_LINE2_DISKRO);
+    }
     ui_about_size(scale, &w, &h);
     about_win.w.name = "About";
     about_win.w.title = UI_ABOUT_TITLE;
@@ -681,7 +691,7 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
 static void desk_about_values(void)
 {
     const char *full[UI_ABOUT_ROWS] = { MADIRE_OS_VERSION, loader_name, about_display, about_memory,
-                                        UI_ABOUT_MODE };
+                                        about_mode };
     if (logging)
         for (int i = 0; i < UI_ABOUT_ROWS; i++)
             kserialf("desktop: about %s: %s\n", ui_about_labels[i], full[i]);
@@ -709,6 +719,10 @@ static enum ui_menu_action desk_menu_done(void)
         klogf("Desktop: a menu opened the Console window\n");
     if (desk_menus.restart) {
         klogf("Desktop: Restart chosen in the Restart dialog: restarting\n");
+        /* 1.4 stage 10: in Disk mode /home is saved first (at most 10 s;
+         * a failure is logged and the restart goes on, D9). */
+        if (ext2_disk_rw())
+            (void)ext2_disk_restart_save();
         reset_machine(true);                /* does not return */
     }
     return a;

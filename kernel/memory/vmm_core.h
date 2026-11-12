@@ -13,7 +13,8 @@
  * Rules:
  *   - page 0, the recursive PML4 slot and non-canonical addresses are refused;
  *   - an existing mapping (also one made by a large page) is never replaced;
- *   - only PTE_WRITE and PTE_NX may be requested; never user pages;
+ *   - only PTE_WRITE and PTE_NX may be requested (1.4 stage 4: also
+ *     PTE_PCD and PTE_PWT, for a device's registers); never user pages;
  *   - intermediate entries are present + writable, never NX (NX is decided
  *     per page, at the leaf);
  *   - missing tables are created all or nothing: if a frame for a deeper
@@ -59,7 +60,7 @@ enum vmm_result {
     VMM_ERR_NOT_MAPPED,            /* nothing mapped at va */
     VMM_ERR_NO_FRAME,              /* no frame for a new table */
     VMM_ERR_RESERVED_VA,           /* page 0 or the recursive slot */
-    VMM_ERR_FLAGS,                 /* flags other than PTE_WRITE / PTE_NX */
+    VMM_ERR_FLAGS,                 /* flags other than PTE_WRITE / PTE_NX / PTE_PCD / PTE_PWT */
     VMM_ERR_NONCANONICAL,          /* bits 63..47 not all equal */
     VMM_ERR_FROZEN,                /* 0.10: a new upper-half PML4 entry after the freeze */
 };
@@ -72,7 +73,8 @@ void vmm_freeze_upper(struct vmm *vm);
 /* Creates the PDPT, PD and PT covering va where missing. */
 enum vmm_result vmm_ensure_table(struct vmm *vm, uint64_t va);
 
-/* Maps the page at va to the frame phys; flags: PTE_WRITE and/or PTE_NX. */
+/* Maps the page at va to the frame phys; flags: PTE_WRITE, PTE_NX, PTE_PCD,
+ * PTE_PWT (any of them). */
 enum vmm_result vmm_map(struct vmm *vm, uint64_t va, uint64_t phys, uint64_t flags);
 
 /* Removes the mapping at va (flushes it); *phys_out = the frame it used. */

@@ -44,6 +44,9 @@
 #define UI_ABOUT_VALUE_MAX 64           /* bytes of a value, its NUL included */
 #define UI_ABOUT_TITLE     "About Madire OS"
 #define UI_ABOUT_MODE      "Live (memory only)"
+/* 1.4 stage 12 (docs/plans/1.4.md, C10): the Mode row in Disk mode. */
+#define UI_ABOUT_MODE_DISK     "Disk (home is saved)"
+#define UI_ABOUT_MODE_DISKRO   "Disk (home read-only)"
 #define UI_ABOUT_FOOTER    "SIMPLE \xFA SECURE \xFA FURTHER TOGETHER"
 #define UI_ABOUT_SCRATCH   4096         /* 16-bit entries for the wordmark's coverage */
 
@@ -75,6 +78,10 @@ void ui_text_fit(const struct font *f, const char *text, int32_t max_px, char *o
 void ui_about_setup(struct ui_about *a, uint32_t s, const struct ui_fonts *f, const char *version,
                     const char *loader, const char *display, const char *memory, uint16_t *scratch,
                     size_t entries);
+
+/* 1.4 stage 12: the Mode row's value after setup (UI_ABOUT_MODE until
+ * then): UI_ABOUT_MODE_DISK or UI_ABOUT_MODE_DISKRO in Disk mode. */
+void ui_about_set_mode(struct ui_about *a, const char *mode);
 
 /* The 16-bit entries the wordmark needs at scale s (on a screen of
  * width x height; at most UI_ABOUT_SCRATCH at every scale). */
