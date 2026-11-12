@@ -15,7 +15,15 @@
 #                 be clean, and debugfs's tree must equal the expected tree
 #                 (-Expect seed: the pristine "marked" copy, which with
 #                 -Image must also hold exactly that image and zeros after
-#                 it; -Expect session: a disk the storage group used).
+#                 it; -Expect session: a disk the storage group used, with
+#                 -SerialLog, the storage group's serial log, checked against
+#                 -SerialLogSha256: e2fsck may add only its two "in the
+#                 future (by less than a day ...)" notices, and the
+#                 superblock's last mount and write times must lie inside
+#                 that session and be ahead of Kali's UTC clock by at most
+#                 the host's UTC offset, read from Windows here, and a
+#                 margin; with -Image its sectors 0-2047 must equal the
+#                 image's).
 #
 # An owner-run step (AGENTS.md section 6): run from plain PowerShell with VS
 # Code closed. It refuses to start (one line, "KALI DISK STEP REFUSED:
@@ -37,14 +45,17 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\kali-disk.ps1 -Step check `
 #       -Vdi <disk file> -VdiSha256 <sha256> -Expect seed -Image <image> -ImageSha256 <sha256>
 #   powershell -ExecutionPolicy Bypass -File scripts\kali-disk.ps1 -Step check `
-#       -Vdi <used disk file> -VdiSha256 <sha256> -Expect session
+#       -Vdi <used disk file> -VdiSha256 <sha256> -Expect session `
+#       -SerialLog <serial log> -SerialLogSha256 <sha256> [-Image <image> -ImageSha256 <sha256>]
 param(
     [Parameter(Mandatory = $true)][ValidateSet("image", "check")][string]$Step,
     [string]$Vdi = "",                  # check: the disk file (a copy; never the attached disk)
     [string]$VdiSha256 = "",
     [ValidateSet("", "seed", "session")][string]$Expect = "",
-    [string]$Image = "",                # check, optional: the marked image the disk must hold exactly
+    [string]$Image = "",                # check, optional: the marked image (seed: held exactly; session: sectors 0-2047)
     [string]$ImageSha256 = "",
+    [string]$SerialLog = "",            # check session, required: the storage group's serial log (both boots)
+    [string]$SerialLogSha256 = "",
     [string]$OutDir = "",               # default: build\kali-disk-<step>-<date>-<time>
     [int]$MinFreeMB = 4500,             # the Kali steps' threshold
     [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64",
@@ -136,17 +147,29 @@ if ($Step -eq "check") {
     $h = (Get-FileHash -LiteralPath $Vdi -Algorithm SHA256).Hash.ToLower()
     if ($h -ne $VdiSha256.ToLower()) { Refuse "the disk file's SHA-256 is $h (expected $VdiSha256)" }
     $inputs += [pscustomobject]@{ Path = $Vdi; Remote = "disk.vdi"; Sha = $h }
+    if ($Expect -eq "session") {
+        if (-not $SerialLog -or -not $SerialLogSha256) { Refuse "-Expect session needs -SerialLog and -SerialLogSha256 (the storage group's serial log)" }
+        if (-not (Test-Path -LiteralPath $SerialLog)) { Refuse "not found: $SerialLog" }
+        $SerialLog = (Get-Item -LiteralPath $SerialLog).FullName
+        $h = (Get-FileHash -LiteralPath $SerialLog -Algorithm SHA256).Hash.ToLower()
+        if ($h -ne $SerialLogSha256.ToLower()) { Refuse "the serial log's SHA-256 is $h (expected $SerialLogSha256)" }
+        $inputs += [pscustomobject]@{ Path = $SerialLog; Remote = "serial.log"; Sha = $h }
+    } elseif ($SerialLog) {
+        Refuse "-SerialLog is for -Expect session only"
+    }
     if ($Image) {
-        if ($Expect -ne "seed") { Refuse "-Image is for -Expect seed (the pristine marked copy) only" }
         if (-not (Test-Path -LiteralPath $Image)) { Refuse "not found: $Image" }
         $Image = (Get-Item -LiteralPath $Image).FullName
         $h = (Get-FileHash -LiteralPath $Image -Algorithm SHA256).Hash.ToLower()
         if ($h -ne $ImageSha256.ToLower()) { Refuse "the image's SHA-256 is $h (expected $ImageSha256)" }
         $inputs += [pscustomobject]@{ Path = $Image; Remote = "madire-test-disk.img"; Sha = $h }
     }
-} elseif ($Vdi -or $Expect -or $Image) {
-    Refuse "-Step image takes no -Vdi, -Expect or -Image"
+} elseif ($Vdi -or $Expect -or $Image -or $SerialLog) {
+    Refuse "-Step image takes no -Vdi, -Expect, -Image or -SerialLog"
 }
+# check session: the host's UTC offset now, in seconds (Madire stores
+# VirtualBox's local-time clock as UTC).
+$utcOffset = [int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalSeconds
 if (Test-Path -LiteralPath $OutDir) { Refuse "the result folder $OutDir exists (nothing is overwritten)" }
 
 # The repository files sent to Kali (provenance, report only).
@@ -172,6 +195,7 @@ Note ("started {0}; {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"), $memLi
 Note "Kali: $KaliVM, memory $kaliMem MB; $TestVM and $ViewVM powered off"
 foreach ($i in $inputs) { Note "input: $($i.Sha)  $($i.Path) (expected: OK)" }
 if ($Step -eq "check") { Note "expected tree: $Expect" }
+if ($Expect -eq "session") { Note ("host UTC offset: {0} s ({1})" -f $utcOffset, (Get-Date -Format "zzz")) }
 Note ("repository: HEAD {0}; files sent with local changes: {1}" -f $head, $dirty)
 foreach ($f in $sent) { Note ("sent: {0}  {1}" -f (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLower(), $f.Substring($root.Length + 1)) }
 
@@ -210,12 +234,14 @@ try {
     $shArgs = @("bash", "$remote/kali-disk.sh", $Step, $remote)
     if ($Step -eq "check") {
         $shArgs += $Expect
+        if ($Expect -eq "session") { $shArgs += @("serial.log", [string]$utcOffset) }
         if ($Image) { $shArgs += "madire-test-disk.img" }
     }
+    if ($Expect -eq "session") { Note ("Windows clock at the call: UTC epoch {0} (report only)" -f [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) }
     $run = Ssh $shArgs -AllowFailure
     Write-Lf (Join-Path $OutDir "kali-disk.log") $run.Output
     foreach ($l in $run.Output) {
-        if ($l -match '^KDISK_(E2FSPROGS|QEMU_IMG|IMAGE_SHA256|FS_SHA256|IMAGE_SECTORS|VDI_SHA256|COMPARE|REST_ZERO|E2FSCK |STATE|TREE_LINE: TREE|DONE|CHECK_FAILED|.*_FAILED|.*_MISSING|.*_DIFFERS|.*_NOT_CLEAN)') { Note $l }
+        if ($l -match '^KDISK_(E2FSPROGS|QEMU_IMG|IMAGE_SHA256|FS_SHA256|IMAGE_SECTORS|VDI_SHA256|SERIAL_SHA256|COMPARE|REST_ZERO|HEAD |E2FSCK |E2FSCK_NOTICE|TIME |STATE|TREE_LINE: TREE|DONE|CHECK_FAILED|BAD_ARGS|.*_FAILED|.*_MISSING|.*_DIFFERS|.*_NOT_CLEAN)') { Note $l }
     }
     if ($run.ExitCode -ne 0 -or -not ($run.Output -contains "KDISK_DONE")) { throw "kali-disk.sh $Step failed (exit $($run.ExitCode)); see kali-disk.log" }
     if ($Step -eq "image") {
@@ -228,6 +254,14 @@ try {
     } else {
         $kaliHash = (@($run.Output | Where-Object { $_ -match '^KDISK_VDI_SHA256=' }) -replace '^KDISK_VDI_SHA256=', '') | Select-Object -First 1
         if ($kaliHash -ne $VdiSha256.ToLower()) { throw "the disk file on Kali has SHA-256 $kaliHash (expected $VdiSha256)" }
+        if ($Expect -eq "session") {
+            $kaliHash = (@($run.Output | Where-Object { $_ -match '^KDISK_SERIAL_SHA256=' }) -replace '^KDISK_SERIAL_SHA256=', '') | Select-Object -First 1
+            if ($kaliHash -ne $SerialLogSha256.ToLower()) { throw "the serial log on Kali has SHA-256 $kaliHash (expected $SerialLogSha256)" }
+            if ($Image) {
+                $kaliHash = (@($run.Output | Where-Object { $_ -match '^KDISK_IMAGE_SHA256=' }) -replace '^KDISK_IMAGE_SHA256=', '') | Select-Object -First 1
+                if ($kaliHash -ne $ImageSha256.ToLower()) { throw "the image on Kali has SHA-256 $kaliHash (expected $ImageSha256)" }
+            }
+        }
     }
     $null = Ssh @("rm", "-rf", "--", $remote) -AllowFailure
     $result = "PASS"
