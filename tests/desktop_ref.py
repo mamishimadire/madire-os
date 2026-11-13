@@ -37,11 +37,13 @@ rounded shape; a fixed grid, DUMP_GRID; the last scene is console_about,
 drawn by the C side through the exposure path); desktop_windows also
 draws Console windows (a window with a "grid": the cells, the palette and
 the cursor, as shadow_grid reads them from a saved vga_shadow).
-1.3 stage 5: the menus, the M button and the Restart dialog
+1.3 stage 5: the menus, the M button and the Restart dialog (1.5 stage 6:
+the power dialog; the M menu's row Power...)
 (kernel/display/ui_menu.h, ui_dialog.h, desktop_core.h's M button
 states): the scenes mbutton_hover, mbutton_pressed, menu_mouse, menu_key,
 menu_hover, menu_desktop, dialog, dialog_key, dialog_tab,
-dialog_pressed_cancel and dialog_pressed_restart (tests/desktopdump.c
+dialog_pressed_cancel, dialog_pressed_restart and (1.5 stage 6)
+dialog_pressed_shutdown (tests/desktopdump.c
 describes them; menu_tiles and dialog_tiles are menu_key and dialog_tab
 painted by the C side in tiles); Menus, the rules of ui_menus.h written
 again (what the pointer and the keys do to the menus and the dialog, and
@@ -1189,8 +1191,8 @@ def scene_console(scr, tok, s, kind):
 # dividers in dp, each row's label, icon and action.
 MENU_DEFS = {
     "M": {"w": 288, "h": 182, "header": True, "rows": [61, 97, 142], "dividers": [56, 137],
-          "labels": [b"About", b"Console", b"Restart"], "icons": ["about", "console", "restart"],
-          "actions": ["about", "console", "restart"]},
+          "labels": [b"About", b"Console", b"Power..."], "icons": ["about", "console", "restart"],
+          "actions": ["about", "console", "power"]},
     "desktop": {"w": 224, "h": 80, "header": False, "rows": [4, 40], "dividers": [],
                 "labels": [b"Open Console", b"About Madire OS"], "icons": ["console", "about"],
                 "actions": ["console", "about"]},
@@ -1282,20 +1284,27 @@ def menu_draw(scr, tok, m):
     frame_round(scr, r, R, e, 15, tok["border.panel"])
 
 
-DIALOG_LINES = (b"Restart Madire OS now?", b"Files in Live mode are lost.")
-DIALOG_PARTS = ("Cancel", "Restart", "the close button")
+DIALOG_LINES = (b"Shut down or restart Madire OS?", b"Files in Live mode are lost.")
+# 1.5 stage 6: the power dialog's buttons left to right (Tab's order), then
+# its close button, as the desktoplog lines name them.
+DIALOG_PARTS = ("Cancel", "Restart", "Shut down", "the close button")
+DIALOG_LABELS = (b"Cancel", b"Restart", b"Shut down")
+DIALOG_HITS = ("cancel", "restart", "shutdown")
 
 
 def dialog_new(w, h, s, ring):
-    """The Restart dialog (ui_dialog.h) on a w x h screen: centred above
+    """The power dialog (ui_dialog.h) on a w x h screen: centred above
     the taskbar, Cancel focused, the ring as given, every button normal."""
     dw, dh, bar = px(360, s), px(172, s), h - px(40, s)
     return {"r": ((w - dw) // 2, max((bar - dh) // 2, 0), dw, dh), "s": s, "focus": 0, "ring": ring,
-            "btn": ["normal", "normal"], "close": "normal"}
+            "btn": ["normal", "normal", "normal"], "close": "normal"}
 
 
 def dialog_button(r, s, b):
-    x0, x1 = (px(136, s), px(232, s)) if b == 0 else (px(240, s), px(336, s))
+    """Button b (0 Cancel, 1 Restart, 2 Shut down): 96 dp wide from 32,
+    136 or 240 dp across, from 116 to 148 dp down."""
+    a = (32, 136, 240)[b]
+    x0, x1 = px(a, s), px(a + 96, s)
     return (r[0] + x0, r[1] + px(116, s), x1 - x0, px(148, s) - px(116, s))
 
 
@@ -1306,14 +1315,16 @@ def dialog_hit(dlg, x, y):
     tb = px(32, s)
     if WM.inside((r[0] + r[2] - tb, r[1], tb, tb), x, y):
         return "close"
-    for b, name in ((0, "cancel"), (1, "restart")):
+    for b, name in enumerate(DIALOG_HITS):
         if WM.inside(dialog_button(r, s, b), x, y):
             return name
     return "body"
 
 
 def dialog_draw(scr, tok, s, dlg):
-    """The dialog: a window (always active) with its text and buttons."""
+    """The dialog: a window (always active) with its text and buttons
+    (Cancel and Restart in the neutral style, Shut down in the accent
+    style, bold)."""
     t = tok
     st = [([t["surface.active"], t["surface.hover"], t["accent.pressed"]], [t["text"]] * 3, False, 4, 15),
           ([t["accent"], t["accent.hover"], t["accent.pressed"]], [t["text.on.accent"], t["text.on.accent"], t["text"]],
@@ -1323,10 +1334,10 @@ def dialog_draw(scr, tok, s, dlg):
         f = font(s, False)
         text(scr_, f, r[0] + px(24, s), r[1] + px(56, s), DIALOG_LINES[0], tok["text"])
         text(scr_, f, r[0] + px(24, s), r[1] + px(76, s), DIALOG_LINES[1], tok["text"])
-        for b in (0, 1):
-            button(scr_, tok, dialog_button(r, s, b), st[b], dlg["btn"][b], dlg["ring"] and dlg["focus"] == b, s,
-                   lab=(b"Cancel", b"Restart")[b])
-    window(scr, tok, s, dlg["r"], b"Restart", "restart", True, dlg["close"], client)
+        for b in (0, 1, 2):
+            button(scr_, tok, dialog_button(r, s, b), st[1 if b == 2 else 0], dlg["btn"][b],
+                   dlg["ring"] and dlg["focus"] == b, s, lab=DIALOG_LABELS[b])
+    window(scr, tok, s, dlg["r"], b"Power", "restart", True, dlg["close"], client)
 
 
 MENU_NAMES = {"M": "M", "desktop": "desktop"}
@@ -1350,7 +1361,7 @@ class Menus:
         self.x, self.y = wm.x, wm.y
         self.left, self.press = False, None
         self.m_state = "normal"
-        self.done, self.restart = None, False
+        self.done, self.restart, self.shutdown = None, False, False
         self.events = []
 
     def ev(self, line):
@@ -1426,35 +1437,39 @@ class Menus:
 
     def dlg_open(self, ring):
         self.dlg = dialog_new(self.wm.w, self.wm.h, self.wm.s, ring)
-        self.ev("dialog Restart opened at (%d, %d) %dx%d, Cancel focused%s" % (
+        self.ev("dialog Power opened at (%d, %d) %dx%d, Cancel focused%s" % (
             self.dlg["r"] + (" (the focus ring on)" if ring else "",)))
         self.dlg_states()
 
     def dlg_close(self, why):
         self.dlg = None
-        self.ev("dialog Restart closed (%s)" % WHY[why])
+        self.ev("dialog Power closed (%s)" % WHY[why])
         self.wm_follows()
 
     def do_restart(self):
         self.restart = True
-        self.ev("dialog Restart: Restart chosen")
+        self.ev("dialog Power: Restart chosen")
+
+    def do_shutdown(self):
+        self.shutdown = True
+        self.ev("dialog Power: Shut down chosen")
 
     def dlg_states(self):
         at = dialog_hit(self.dlg, self.x, self.y)
-        for i, part in enumerate(("cancel", "restart", "close")):
+        for i, part in enumerate(DIALOG_HITS + ("close",)):
             over = at == part
             if self.left and self.press == part:
                 st = "pressed" if over else "normal"
             else:
                 st = "hover" if over and not self.left else "normal"
-            now = self.dlg["btn"][i] if i < 2 else self.dlg["close"]
+            now = self.dlg["btn"][i] if i < 3 else self.dlg["close"]
             if st == now:
                 continue
-            if i < 2:
+            if i < 3:
                 self.dlg["btn"][i] = st
             else:
                 self.dlg["close"] = st
-            self.ev("dialog Restart: %s %s" % (DIALOG_PARTS[i], st))
+            self.ev("dialog Power: %s %s" % (DIALOG_PARTS[i], st))
 
     def update_m(self):
         over = self.over_m()
@@ -1488,7 +1503,7 @@ class Menus:
             at = dialog_hit(self.dlg, x, y)
             if down and not self.left:
                 self.left = True
-                self.press = at if at in ("cancel", "restart", "close") else "outside"
+                self.press = at if at in DIALOG_HITS + ("close",) else "outside"
             closed = False
             if up and self.left:
                 press, self.left, self.press = self.press, False, None
@@ -1500,6 +1515,8 @@ class Menus:
                     closed = True
                 elif press == "restart" and at == "restart":
                     self.do_restart()
+                elif press == "shutdown" and at == "shutdown":
+                    self.do_shutdown()
             if not closed:
                 self.dlg_states()
         elif self.menu:
@@ -1541,11 +1558,13 @@ class Menus:
             if pressed and k == "enter":
                 if self.dlg["focus"] == 0:
                     self.dlg_close("cancel")
-                else:
+                elif self.dlg["focus"] == 1:
                     self.do_restart()
+                else:
+                    self.do_shutdown()
             elif pressed and k == "tab":
-                self.dlg["focus"], self.dlg["ring"] = 1 - self.dlg["focus"], True
-                self.ev("dialog Restart: %s focused" % DIALOG_PARTS[self.dlg["focus"]])
+                self.dlg["focus"], self.dlg["ring"] = (self.dlg["focus"] + 1) % 3, True
+                self.ev("dialog Power: %s focused" % DIALOG_PARTS[self.dlg["focus"]])
             elif pressed and k == "esc":
                 self.dlg_close("esc")
         elif k == "windows":
@@ -1594,13 +1613,15 @@ def scene_menus(scr, tok, s, name):
         if name == "dialog":
             dlg["close"] = "hover"
         elif name == "dialog_key":
-            dlg["ring"], dlg["btn"][1] = True, "hover"
+            dlg["ring"], dlg["btn"][2] = True, "hover"      # 1.5 stage 6: Shut down (was Restart)
         elif name == "dialog_tab":
             dlg["focus"], dlg["ring"], dlg["btn"][0] = 1, True, "hover"
         elif name == "dialog_pressed_cancel":
             dlg["focus"], dlg["ring"], dlg["btn"][0] = 1, True, "pressed"
         elif name == "dialog_pressed_restart":
             dlg["ring"], dlg["btn"][1] = True, "pressed"
+        elif name == "dialog_pressed_shutdown":                 # 1.5 stage 6
+            dlg["ring"], dlg["btn"][2] = True, "pressed"
     taskbar(scr, tok, FIXED_CLOCK, m)
     desc = "the M button %s" % m
     if menu is not None:
@@ -1609,14 +1630,15 @@ def scene_menus(scr, tok, s, name):
             (menu["kind"],) + menu["r"] + (menu["sel"], ", the ring on" if menu["ring"] else ""))
     if dlg is not None:
         dialog_draw(scr, tok, s, dlg)
-        desc += "; the dialog at (%d, %d) %dx%d, focus %s%s, buttons %s %s, close %s" % (
+        desc += "; the dialog at (%d, %d) %dx%d, focus %s%s, buttons %s %s %s, close %s" % (
             dlg["r"] + (DIALOG_PARTS[dlg["focus"]], " (ring)" if dlg["ring"] else "", dlg["btn"][0], dlg["btn"][1],
-                        dlg["close"]))
+                        dlg["btn"][2], dlg["close"]))
     return desc
 
 
 MENU_SCENES = ("mbutton_hover", "mbutton_pressed", "menu_mouse", "menu_key", "menu_hover", "menu_desktop", "dialog",
-               "dialog_key", "dialog_tab", "dialog_pressed_cancel", "dialog_pressed_restart")
+               "dialog_key", "dialog_tab", "dialog_pressed_cancel", "dialog_pressed_restart",
+               "dialog_pressed_shutdown")
 
 
 # ---- The contrast check (1.3 stage 4a; the Design Guide, section 12) ----

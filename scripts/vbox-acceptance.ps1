@@ -53,6 +53,12 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
 #       -Only storage -EmptySha256 <sha256> -MarkedSha256 <sha256>  # the storage group
+#
+# 1.5 stage 6: the power group (Live mode, the resting "empty" disk): the VM
+# must power itself off after "poweroff -y" (see the group below).
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
+#       -Only power                                                 # the power probe
 param(
     [string]$VM = "MadireOS-Test",
     [string]$VBoxManage = "",
@@ -62,7 +68,7 @@ param(
     [string]$ModuleIsoSha256 = "",      # 1.3 stage 9: checked before the run when given (module group only)
     [string]$OutDir = "",               # default: build\vbox-acceptance-<date>-<time> (1.3 stage 8: always a new folder)
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13, storageprobe (1.4 stage 4), storage (1.4 stage 13)
+    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13, storageprobe (1.4 stage 4), power (1.5 stage 6), storage (1.4 stage 13)
     [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
@@ -1991,6 +1997,56 @@ if (Want "storageprobe") {
           $(if ($vdiHash1 -eq $vdiHash0 -and $vdiLen1 -eq $vdiLen0) { "the same as before" } else { "DIFFERENT from before (see the report)" }))
     @($lines + @("vdi before $vdiHash0 $vdiLen0", "vdi after $vdiHash1 $vdiLen1")) |
         Set-Content -Path (Join-Path $OutDir "$Prefix-storageprobe-lines.txt") -Encoding ascii
+}
+
+# 1.5 stage 6: the power group, the owner-run power probe (docs/plans/1.5.md,
+# the S6 row, G and H4; -Only power). Live mode on the resting "empty" disk
+# (nothing is copied or restored; the disk is not written in Live mode).
+# One boot: a key opens the Console window, "poweroff -y" is typed, and the
+# VM must reach the state "poweroff" BY ITSELF within 30 s (its ACPI S5
+# power-off; the script powers it off only if it did not, after the row is
+# noted). Then the serial log's lines: the console's line, "Power: shutting
+# down (Live mode)", one ACPI: line (the tables, _S5's SLP_TYPa and SLP_TYPb,
+# PM1a_CNT, SCI_EN); no fallback screen, PANIC or FAILED line. Report only:
+# the ACPI: line and the seconds to "poweroff". The VM check before the run
+# also reads acpi="on" (1.5 stage 1, decision 18).
+if (Want "power") {
+    Start-Run
+    Wait-Serial "^System ready\." 120 | Out-Null
+    Start-Sleep -Seconds 2
+    Key 39 b9; Start-Sleep -Seconds 2       # a key opens the Console window (not typed)
+    Shot "power-console"
+    TypeText "poweroff -y"; Enter
+    $powT0 = Get-Date
+    $powState = ""
+    for ($i = 0; $i -lt 60; $i++) {         # 30 s, every 0.5 s
+        $powState = (Get-VMInfo)["VMState"]
+        if ($powState -eq "poweroff") { break }
+        Start-Sleep -Milliseconds 500
+    }
+    $powSecs = [math]::Round(((Get-Date) - $powT0).TotalSeconds, 1)
+    $powOff = $powState -eq "poweroff"
+    Note ("{0,-16} {1,-8} /the VM reached poweroff by itself within 30 s of poweroff -y: VMState '{2}' after {3} s/" -f
+          "power", $(if ($powOff) { "OK" } else { "MISSING" }), $powState, $powSecs)
+    if (-not $powOff) {
+        Shot "power-after-30s"
+        VBox controlvm $VM poweroff | Out-Null
+    }
+    Start-Sleep -Seconds 2
+    $powLog = Join-Path $OutDir "$Prefix-power.serial.log"
+    if (Test-Path $serial) { Copy-Item $serial $powLog -Force } else { Note "power: NO SERIAL LOG" }
+    if (Test-Path $powLog) {
+        foreach ($p in @("^console: power-off confirmed \(-y\)$", "^Power: shutting down \(Live mode\)$",
+                         "^ACPI: RSDP at 0x[0-9a-f]+ \(revision [0-9]+\), (RSDT|XSDT) at 0x[0-9a-f]+ \([0-9]+ entries\), FADT at 0x[0-9a-f]+ \([0-9]+ bytes\), DSDT at 0x[0-9a-f]+ \([0-9]+ bytes\); _S5 SLP_TYPa [0-7], SLP_TYPb [0-7]; PM1a_CNT 0x[0-9a-f]+, PM1b_CNT (0x[0-9a-f]+|none); SCI_EN (set|set after ACPI_ENABLE 0x[0-9a-f]+ to SMI_CMD 0x[0-9a-f]+)$")) {
+            $n = @(Select-String -Path $powLog -Pattern $p -CaseSensitive).Count
+            Note ("{0,-16} {1,-8} /{2}/" -f "power", $(if ($n -eq 1) { "OK" } else { "MISSING" }), $p)
+        }
+        $acpi = @(Select-String -Path $powLog -Pattern '^ACPI: ' -CaseSensitive | ForEach-Object { $_.Line })
+        foreach ($l in $acpi) { Note "power (report only): $l" }
+    }
+    Absent "power" "It is now safe to turn off the computer"
+    Absent "power" "PANIC"
+    Absent "power" "FAILED"
 }
 
 # 1.4 stage 13: the storage group (docs/plans/1.4.md, C13, G6; AGENTS.md

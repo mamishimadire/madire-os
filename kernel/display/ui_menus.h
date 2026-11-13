@@ -2,21 +2,22 @@
 #define MADIRE_DISPLAY_UI_MENUS_H
 
 /*
- * The desktop's menus and the Restart dialog: what the pointer and the keys
+ * The desktop's menus and the power dialog (1.3's Restart dialog; 1.5
+ * stage 6: Cancel, Restart and Shut down): what the pointer and the keys
  * do to them, the pure part (1.3 stage 5; docs/plans/1.3.md, C5, decisions
- * 9 and 20; the Design Guide, sections 9 and 10; host unit tests in
- * tests/unit/test_ui_menus.c; the kernel side is desktop.c). The window
- * manager (ui_window.h) gets what they leave. tests/desktop_ref.py's Menus
- * follows the same rules.
+ * 9 and 20; docs/plans/1.5.md, C3; the Design Guide, sections 9 and 10;
+ * host unit tests in tests/unit/test_ui_menus.c; the kernel side is
+ * desktop.c). The window manager (ui_window.h) gets what they leave.
+ * tests/desktop_ref.py's Menus follows the same rules.
  *
  * The pointer, each packet (the hot spot, the left button pressed and
  * released, the right button pressed), from the top down:
  *   - the dialog open: it keeps every packet. A left press on Cancel,
- *     Restart or its close button presses it; released on the same one, it
- *     is chosen (Cancel and the close button cancel); a press elsewhere
- *     does nothing. Each of the three is pressed while the press on it is
- *     held and the pointer is over it, on hover while the pointer is over
- *     it and no left press is held, else normal;
+ *     Restart, Shut down or its close button presses it; released on the
+ *     same one, it is chosen (Cancel and the close button cancel); a press
+ *     elsewhere does nothing. Each of the four is pressed while the press
+ *     on it is held and the pointer is over it, on hover while the pointer
+ *     is over it and no left press is held, else normal;
  *   - a menu open: it keeps every packet. The pointer on a row selects it
  *     (the ring off); on no row, a selection made by the pointer is cleared
  *     (one made by the keyboard stays). A left press inside the menu,
@@ -38,8 +39,9 @@
  *
  * The keys, each event pressed or released:
  *   - the dialog open: it keeps every key: Enter pressed presses the
- *     focused button, Tab moves the focus to the other one (the ring on),
- *     Esc cancels; nothing else does anything (the Windows key included);
+ *     focused button, Tab moves the focus to the next one (Cancel, Restart,
+ *     Shut down, Cancel ...; the ring on), Esc cancels; nothing else does
+ *     anything (the Windows key included);
  *   - the Windows key (decision 20), pressed: closes the M menu if it is
  *     open; else closes the desktop menu if it is open, lets go of a left
  *     press (the menus' and the window manager's: ui_wm_cancel) and opens
@@ -52,9 +54,10 @@
  * Choosing a row closes its menu first. About opens (or raises and
  * focuses) the About window and Console the Console window (ui_wm_open;
  * the caller logs the About values, or starts the console if it is not
- * running: ui_menus_take_done); Restart opens the dialog (its ring on if
+ * running: ui_menus_take_done); Power... opens the dialog (its ring on if
  * chosen by the keyboard). Restart pressed in the dialog: restart is set
- * (the caller restarts the machine); the dialog stays.
+ * (the caller restarts the machine); Shut down pressed: shutdown is set
+ * (the caller shuts down, power.h); the dialog stays.
  * When a menu or the dialog closes, the window manager gets the pointer's
  * place with no button (ui_wm_pointer), so its close buttons follow it.
  * Each change is an event (for the log, in order) and damage.
@@ -76,7 +79,7 @@ enum ui_menus_route { UI_MENUS_TAKEN, UI_MENUS_TO_WM };
 
 /* What a kept left press was on. */
 enum ui_menus_press { UI_MPRESS_NONE, UI_MPRESS_M, UI_MPRESS_MENU, UI_MPRESS_OUTSIDE, UI_MPRESS_CANCEL,
-                      UI_MPRESS_RESTART, UI_MPRESS_CLOSE };
+                      UI_MPRESS_RESTART, UI_MPRESS_CLOSE, UI_MPRESS_SHUTDOWN };
 
 /* How a menu opened or closed, or the dialog closed. */
 enum ui_menus_why { UI_WHY_MOUSE, UI_WHY_KEY, UI_WHY_ESC, UI_WHY_OUTSIDE, UI_WHY_WINDOWS, UI_WHY_M_BUTTON,
@@ -89,10 +92,11 @@ enum ui_menus_ev_kind {
     UI_MEV_MENU_CLOSE,          /* menu, why */
     UI_MEV_M_STATE,             /* state */
     UI_MEV_DLG_OPEN,            /* r, ring */
-    UI_MEV_DLG_FOCUS,           /* row: the button focused */
-    UI_MEV_DLG_STATE,           /* row: the part (a button, or 2 the close button), state */
+    UI_MEV_DLG_FOCUS,           /* row: the button focused (enum ui_dialog_button) */
+    UI_MEV_DLG_STATE,           /* row: the part (a button, or 3 the close button), state */
     UI_MEV_DLG_CLOSE,           /* why */
-    UI_MEV_RESTART
+    UI_MEV_RESTART,
+    UI_MEV_SHUTDOWN             /* 1.5 stage 6 */
 };
 
 struct ui_menus_event {
@@ -120,6 +124,7 @@ struct ui_menus {
     enum ui_m_state m_state;
     enum ui_menu_action done;   /* About or Console opened, not yet taken */
     bool restart;               /* Restart pressed in the dialog */
+    bool shutdown;              /* 1.5 stage 6: Shut down pressed in the dialog */
     struct ui_menus_event ev[UI_MENUS_EVENTS];
     uint32_t n_ev;
     uint32_t lost_ev;

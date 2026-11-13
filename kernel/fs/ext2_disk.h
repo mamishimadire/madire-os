@@ -84,6 +84,7 @@
 #define EXT2_DISK_BLKSLOW    0x10u      /* 1.5 stage 4, test=blkslow=<ms>: the automatic save on (not logged) */
 #define EXT2_DISK_RMEM       0x20u      /* 1.5 stage 5, test=diskrmem: the read core's pages fail (Live mode) */
 #define EXT2_DISK_WMEM       0x40u      /* 1.5 stage 5, test=diskwmem: the write tables' pages fail (read-only) */
+#define EXT2_DISK_SAVEFAIL   0x80u      /* 1.5 stage 6, test=disksavefail: the mount's writes fail (save 0, D9) */
 void ext2_disk_options(uint32_t flags);
 
 /* Stage 11, test=diskcut[=N] (docs/plans/1.4.md, section D (b)): every disk
@@ -128,6 +129,16 @@ enum ext2_disk_save ext2_disk_sync(uint64_t *blocks);
  * file with no name left forgotten, a full save, the clean state, a full
  * save, within 10 s; one log line ("done" or "FAILED ...: restarting anyway"). */
 enum ext2_disk_save ext2_disk_restart_save(void);
+/* 1.5 stage 6 (docs/plans/1.5.md, C3): before power-off (thread 0, no lock
+ * held). Live mode: EXT2_DISK_NONE, nothing taken. Disk mode: the automatic
+ * save stopped, then the disk lock taken and KEPT (the caller owns it on
+ * return and never gives it back: the S5 write or the fallback halt
+ * follows); read-only: one line ("nothing saved (/home is read-only:
+ * <why>)"); read-write: no more changes, every open file with no name left
+ * forgotten, a full save, the clean state, a full save, by the lock's owner,
+ * within 10 s of `clicked` (timer ticks); one line ("done in <n> ms ..." or
+ * "not finished (...): powering off anyway (D9)"). */
+enum ext2_disk_save ext2_disk_poweroff_save(uint64_t clicked);
 
 /* After a VFS call answered -FS_EAGAIN (the VFS lock given back): true if
  * the caller should try the call again, after one save (*tries counts

@@ -108,7 +108,8 @@ state, an open menu and the dialog, and at the end the kernel's menu lines
 More steps:
     to:m          the M button's centre;
     to:row@LABEL  the centre of the open menu's row LABEL;
-    to:btn@Cancel, to:btn@Restart, to:dlgclose  the dialog's buttons' and
+    to:btn@Cancel, to:btn@Restart, to:btn@Shut down (1.5 stage 6: the
+                  power dialog), to:dlgclose  the dialog's buttons' and
                   close button's centres;
     click         press, then release (the left button, no move);
     rpress, rrelease  the right button, no move;
@@ -265,7 +266,9 @@ class Windows:
             if where == "dlgclose":
                 c = self.wm.close_rect(mn.dlg["r"])
             else:
-                c = desktop_ref.dialog_button(mn.dlg["r"], self.s, 0 if where == "btn@Cancel" else 1)
+                # 1.5 stage 6: the power dialog's three buttons, by label.
+                labels = [lab.decode() for lab in desktop_ref.DIALOG_LABELS]
+                c = desktop_ref.dialog_button(mn.dlg["r"], self.s, labels.index(where[4:]))
             return c[0] + c[2] // 2, c[1] + c[3] // 2
         if "@" in where:                # 1.3 stage 4b: a named window's own visible point
             part, name = where.split("@")

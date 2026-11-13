@@ -1,5 +1,6 @@
 /*
- * The Restart dialog (1.3 stage 5); see ui_dialog.h.
+ * The power dialog (1.3 stage 5's Restart dialog; 1.5 stage 6); see
+ * ui_dialog.h.
  */
 #include "kernel/display/ui_dialog.h"
 #include "kernel/display/tokens.h"
@@ -38,12 +39,16 @@ void ui_dialog_init(struct ui_dialog *d, uint32_t s, const struct ui_fonts *f, i
     d->ring = ring;
     d->btn[UI_DLG_CANCEL] = UI_BUTTON_NORMAL;
     d->btn[UI_DLG_RESTART] = UI_BUTTON_NORMAL;
+    d->btn[UI_DLG_SHUTDOWN] = UI_BUTTON_NORMAL;
 }
 
-/* A button's rectangle in a dialog at r. */
+const char *const ui_dialog_labels[UI_DLG_BUTTONS] = { "Cancel", "Restart", "Shut down" };
+
+/* A button's rectangle in a dialog at r: 96 dp wide from 32, 136 or 240 dp. */
 static struct rect dlg_button_at(struct rect r, uint32_t s, enum ui_dialog_button b)
 {
-    int32_t x0 = ui_px(b == UI_DLG_CANCEL ? 136 : 240, s), x1 = ui_px(b == UI_DLG_CANCEL ? 232 : 336, s);
+    int32_t a = b == UI_DLG_CANCEL ? 32 : b == UI_DLG_RESTART ? 136 : 240;
+    int32_t x0 = ui_px(a, s), x1 = ui_px(a + 96, s);
     int32_t y0 = ui_px(116, s), y1 = ui_px(148, s);
     return (struct rect){ r.x + x0, r.y + y0, x1 - x0, y1 - y0 };
 }
@@ -63,6 +68,8 @@ enum ui_dialog_part ui_dialog_hit(const struct ui_dialog *d, int32_t x, int32_t 
         return UI_DLG_PART_CANCEL;
     if (ui_rect_contains(ui_dialog_button_rect(d, UI_DLG_RESTART), x, y))
         return UI_DLG_PART_RESTART;
+    if (ui_rect_contains(ui_dialog_button_rect(d, UI_DLG_SHUTDOWN), x, y))
+        return UI_DLG_PART_SHUTDOWN;
     return UI_DLG_BODY;
 }
 
@@ -81,10 +88,9 @@ void ui_dialog_paint(const struct ui_canvas *c, struct rect r, void *ctx)
     ui_text(c, d->fonts.regular, r.x + ui_px(24, s), r.y + ui_px(56, s), UI_DIALOG_LINE1, UI_TEXT);
     ui_text(c, d->fonts.regular, r.x + ui_px(24, s), r.y + ui_px(76, s), ui_dialog_line2, UI_TEXT);
     for (int b = 0; b < UI_DLG_BUTTONS; b++) {
-        struct ui_button btn = { dlg_button_at(r, s, (enum ui_dialog_button)b), b ? "Restart" : "Cancel",
-                                 UI_ICON_NONE, 0 };
-        ui_button_draw(c, &btn, b ? &ui_style_restart : &ui_style_cancel, d->btn[b], d->ring && (int)d->focus == b, s,
-                       &d->fonts);
+        struct ui_button btn = { dlg_button_at(r, s, (enum ui_dialog_button)b), ui_dialog_labels[b], UI_ICON_NONE, 0 };
+        ui_button_draw(c, &btn, b == UI_DLG_SHUTDOWN ? &ui_style_restart : &ui_style_cancel, d->btn[b],
+                       d->ring && (int)d->focus == b, s, &d->fonts);
     }
 }
 

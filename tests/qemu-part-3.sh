@@ -1011,7 +1011,8 @@ section "[1.4] Disk mode: the About window and the Restart dialog against tests/
 # row "Disk (home is saved)" (logged, and the screen pixel for pixel as
 # tests/desktop_ref.py --diskmode rw draws it); closed; the M menu's
 # Restart opens the dialog "Files in /home are saved first." (pixel for
-# pixel); Restart: the save before Restart marks the volume clean, then the
+# pixel; 1.5 stage 6: the row Power... opens the power dialog, and its
+# Restart button is pressed); Restart: the save before Restart marks the volume clean, then the
 # reset (QEMU -no-reboot exits); e2fsck -fn reports nothing. (4-10) A
 # -kernel boot with a marked disk and no test= option (the home folders
 # made at the mount): the console's Disk-mode lines and the start folder
@@ -1033,10 +1034,10 @@ desktop_iso "disk" "test=desktop desktopabout desktoplog mouselog" ""
 DT_OUT=""; DT_EXITED=no
 if [ -n "$DT_ISO" ] && [ "$D12_OK" -eq 1 ]; then
     DT_DISK=$D12_W/desktop-disk.img desktop_boot_end "$D12_LOG" "$DT_ISO" 1024x768 wshot rel:-1000,-1000 \
-        to:close press release wshot to:m click "to:row@Restart" click wshot "to:btn@Restart" press release \
+        to:close press release wshot to:m click "to:row@Power..." click wshot "to:btn@Restart" press release \
         "wait:Restart: keyboard controller reset (0xfe to port 0x64)" --about --diskmode rw
 else : > "$D12_LOG"; fi
-grep -E "^(Storage|Desktop: Restart|ext2: save before restart|Restart: )|^desktop: (about Mode|dialog Restart opened)" "$D12_LOG" |
+grep -E "^(Storage|Desktop: Restart|ext2: save before restart|Restart: )|^desktop: (about Mode|dialog Power opened)" "$D12_LOG" |
     sed 's/^/      /'
 d12_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$DT_OUT"; }
 if grep -qxF "desktop: about Mode: Disk (home is saved)" "$D12_LOG" &&
@@ -1045,10 +1046,10 @@ if grep -qxF "desktop: about Mode: Disk (home is saved)" "$D12_LOG" &&
 else
     fail "[1.4] Disk-mode desktop: the About window's Mode row or its screen ($(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '); see ${D12_LOG##*/})"
 fi
-if grep -qE "^desktop: dialog Restart opened at " "$D12_LOG" && d12_ws 2 && d12_ws 3; then
-    pass "[1.4] Disk-mode desktop: the About window closed (the plain desktop) and the Restart dialog with 'Files in /home are saved first.', both screens pixel for pixel as tests/desktop_ref.py draws them"
+if grep -qE "^desktop: dialog Power opened at " "$D12_LOG" && d12_ws 2 && d12_ws 3; then
+    pass "[1.4] Disk-mode desktop: the About window closed (the plain desktop) and the power dialog with 'Files in /home are saved first.', both screens pixel for pixel as tests/desktop_ref.py draws them"
 else
-    fail "[1.4] Disk-mode desktop: the Restart dialog or the desktop before it differs ($(grep -E '^(WSCREEN [23]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
+    fail "[1.4] Disk-mode desktop: the power dialog or the desktop before it differs ($(grep -E '^(WSCREEN [23]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' '))"
 fi
 disk_image extract "$D12_W/desktop-disk.img" "$D12_W/desktop-part.img" > /dev/null 2>&1
 D12_STATE=$(disk_debugfs "$D12_W/desktop-part.img" stats | sed -nE 's/^Filesystem state:[[:space:]]*(.*)$/\1/p')

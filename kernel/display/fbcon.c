@@ -239,6 +239,18 @@ static bool fbc_unwindow(void)
     return true;
 }
 
+void fbcon_full_screen(void)
+{
+    if (!active || direct)
+        return;
+    if (windowed) {
+        windowed = false;
+        lay = fbc_full;
+    }
+    held = false;
+    fbcon_redraw();
+}
+
 /* While held, the grid changes only in vga_shadow; a panic releases the
  * screen (the crash screen), drawn whole. True if the caller is done. */
 static bool still_held(void)

@@ -401,6 +401,8 @@ $(BUILD)/unit/test_blk_core_save: kernel/storage/blk_core_save.c
 # 1.4 stage 10: the read-write VFS adapter's suite includes the adapter, its
 # writer, the write core and the save order.
 $(BUILD)/unit/test_ext2_vfs_rw: $(EXT2_SRCS) $(EXT2_WRITE_SRCS) kernel/fs/ext2_vfs.c kernel/fs/ext2_vfs_rw.c
+# 1.5 stage 6: the ACPI tables' suite includes their pure core.
+$(BUILD)/unit/test_acpi_core: kernel/power/acpi_core.c kernel/power/acpi_core.h
 
 toolkit: $(TOOLKIT_OBJS)
 

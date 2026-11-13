@@ -738,7 +738,43 @@ desktop_console_case() {
     fi
 }
 
-# ---- 1.3 stage 5: the menus, the Restart dialog and the Windows key ----
+# ---- 1.5 stage 6: a boot that powers itself off ----
+
+# power_boot <log> <seconds> <keys> <marker> <qemu args...>: QEMU with two
+# QMP monitors: tests/qmp_keys.py types <keys> on one once "System ready."
+# is in the log (no --done: the guest may power off before any end text);
+# tests/qmp_power.py watches the other for QEMU's SHUTDOWN event and times
+# it from the first log line equal to <marker>. QEMU runs until it exits by
+# itself or <seconds> pass. Sets POWER_RC (QEMU's status through timeout: 0
+# when it exited by itself, 124 at the time limit), POWER_OUT (qmp_power.py's
+# POWER line), POWER_EVENT (e.g. SHUTDOWN:guest-shutdown, or none) and
+# POWER_MS (the marker to the event in ms, or none); prints the injector's
+# output, the POWER line and BOOT_SECONDS.
+power_boot() {
+    local log=$1 secs=$2 keys=$3 marker=$4 ksock=$OUT/qmp-pkeys.sock esock=$OUT/qmp-pevents.sock t0 qpid wpid out
+    shift 4
+    rm -f "$log" "$ksock" "$esock" "${log%.log}.power.txt"
+    t0=$(date +%s%N)
+    timeout "$secs" qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$ksock",server=on,wait=off -qmp unix:"$esock",server=on,wait=off "$@" >/dev/null 2>&1 &
+    qpid=$!
+    python3 "$QMPPOWER" "$esock" "$log" "$marker" --timeout "$secs" > "${log%.log}.power.txt" 2>&1 &
+    wpid=$!
+    out=$(python3 "$QMPKEYS" "$ksock" "$log" "System ready." --text "$keys" --gap 0.05 2>&1)
+    echo "$out" | sed 's/^/      /'
+    case "$out" in *ERROR*) fail "[1.5] key injection into ${log##*/}" ;; esac
+    wait "$qpid"
+    POWER_RC=$?
+    wait "$wpid"
+    POWER_OUT=$(cat "${log%.log}.power.txt" 2>/dev/null)
+    POWER_EVENT=$(sed -nE 's/^POWER .* event=([^ ]+) .*/\1/p' <<< "$POWER_OUT")
+    POWER_MS=$(sed -nE 's/^POWER .* after_ms=([^ ]+) .*/\1/p' <<< "$POWER_OUT")
+    echo "      ${POWER_OUT:-no POWER line}; QEMU status $POWER_RC"
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
+}
+
+# ---- 1.3 stage 5: the menus, the Restart dialog (1.5: the power dialog) and the Windows key ----
 
 # desktop_boot_end <log> <iso> <WxH> <qmp_desktop.py steps...>: as
 # desktop_boot, for a boot that ends by itself (the Restart dialog's
@@ -788,6 +824,9 @@ desktop_boot_end() {
 # the Console window), the M menu closed by a click outside (the click does
 # nothing else), Restart then Cancel (the Console window still takes keys),
 # Restart then Restart (the reset path; QEMU -no-reboot exits by itself).
+# 1.5 stage 6: the M menu's row Restart is Power... and the dialog the power
+# dialog (Cancel, Restart, Shut down; its desktoplog lines "desktop: dialog
+# Power ..."); the steps and checks above use them, Restart's path unchanged.
 # Boot 2, the decision 20 key session (the same options; no mouse packet):
 # the Windows key (meta_l) opens the M menu with About selected and the
 # focus ring; Down, Down, Up; Esc; meta_l twice (open, close); with the
@@ -818,9 +857,9 @@ desktop_menu_case() {
             to:desktop rpress rrelease "to:row@Open Console" click "type:echo open-console-ok{ret}" \
             "wait:open-console-ok" wshot \
             to:m click to:desktop press release wshot \
-            to:m click "to:row@Restart" click wshot "to:btn@Cancel" wshot click wshot \
+            to:m click "to:row@Power..." click wshot "to:btn@Cancel" wshot click wshot \
             "type:echo still-running{ret}" "wait:still-running" \
-            to:m click "to:row@Restart" click "to:btn@Restart" press wshot release \
+            to:m click "to:row@Power..." click "to:btn@Restart" press wshot release \
             "wait:Restart: keyboard controller reset (0xfe to port 0x64)" --shadow "$shp"
     else : > "$log"; fi
     grep -E "^Desktop|^desktop: (menu|dialog|M button|open|focus|raise|close)|^Restart:" "$log" | head -n 60 | sed 's/^/      /'
@@ -862,21 +901,21 @@ desktop_menu_case() {
     else
         fail "[1.3] $label: the click outside the menu: $(grep -E '^(WSCREEN 11|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi
-    if grep -qE "^desktop: dialog Restart opened at \([0-9]+, [0-9]+\) $(( (360 * s + 2) / 4 ))x$(( (172 * s + 2) / 4 )), Cancel focused$" "$log" &&
-       grep -qxF "desktop: dialog Restart: Cancel hover" "$log" && grep -qxF "desktop: dialog Restart closed (Cancel)" "$log" &&
+    if grep -qE "^desktop: dialog Power opened at \([0-9]+, [0-9]+\) $(( (360 * s + 2) / 4 ))x$(( (172 * s + 2) / 4 )), Cancel focused$" "$log" &&
+       grep -qxF "desktop: dialog Power: Cancel hover" "$log" && grep -qxF "desktop: dialog Power closed (Cancel)" "$log" &&
        grep -qxF "madire> echo still-running" "$log" && grep -qxF "still-running" "$log" && ws 12 && ws 13 && ws 14; then
-        pass "[1.3] $label: Restart opens the dialog (360x172 dp, Cancel focused, no ring by the mouse); Cancel on hover, then clicked: the dialog closes and the system keeps running (echo still-running); three screens pixel for pixel"
+        pass "[1.3] $label: Power... opens the power dialog (360x172 dp, Cancel focused, no ring by the mouse); Cancel on hover, then clicked: the dialog closes and the system keeps running (echo still-running); three screens pixel for pixel"
     else
-        fail "[1.3] $label: Restart then Cancel: $(grep -E '^(WSCREEN 1[234]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+        fail "[1.3] $label: Power... then Cancel: $(grep -E '^(WSCREEN 1[234]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi
-    if ws 15 && grep -qxF "desktop: dialog Restart: Restart pressed" "$log" && grep -qxF "desktop: dialog Restart: Restart chosen" "$log" &&
-       grep -qxF "Desktop: Restart chosen in the Restart dialog: restarting" "$log" &&
+    if ws 15 && grep -qxF "desktop: dialog Power: Restart pressed" "$log" && grep -qxF "desktop: dialog Power: Restart chosen" "$log" &&
+       grep -qxF "Desktop: Restart chosen in the power dialog: restarting" "$log" &&
        grep -qxF "Restart: keyboard controller reset (0xfe to port 0x64)" "$log" &&
        ! grep -qE "did not reset the machine|forcing a triple fault" "$log" && [ "$DT_EXITED" = yes ] &&
        [ "$(grep -c '^boot32: start$' "$log")" -eq 1 ]; then
-        pass "[1.3] $label: Restart then Restart (pressed: the screen pixel for pixel): the reset path's lines logged (keyboard controller reset, no fallback), QEMU -no-reboot exited by itself; booted once"
+        pass "[1.3] $label: Power... then Restart (pressed: the screen pixel for pixel): the reset path's lines logged (keyboard controller reset, no fallback), QEMU -no-reboot exited by itself; booted once"
     else
-        fail "[1.3] $label: Restart then Restart: QEMU exited by itself: $DT_EXITED; $(grep -E '^(WSCREEN 15|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see $log)"
+        fail "[1.3] $label: Power... then Restart: QEMU exited by itself: $DT_EXITED; $(grep -E '^(WSCREEN 15|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see $log)"
     fi
     if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
        grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
@@ -908,12 +947,12 @@ desktop_menu_case() {
         fail "[1.3] $label: the Windows key and the M menu: $(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi
     ok=0
-    if grep -qxF "desktop: menu M: Restart selected (the keyboard)" "$log" &&
+    if grep -qxF "desktop: menu M: Power... selected (the keyboard)" "$log" &&
        [ "$(grep -cxF "desktop: menu M: Console selected (the keyboard)" "$log")" -ge 2 ] &&
        grep -qxF "desktop: menu M closed (Esc)" "$log" && grep -qxF "desktop: menu M closed (the Windows key)" "$log" &&
        ws 2 && ws 3 && ws 4; then ok=1; fi
     if [ "$ok" = 1 ]; then
-        pass "[1.3] $label: Down, Down selects Restart and Up Console again (the ring moves); Esc closes the menu; meta_l opens it and meta_l closes it; three screens pixel for pixel"
+        pass "[1.3] $label: Down, Down selects Power... and Up Console again (the ring moves); Esc closes the menu; meta_l opens it and meta_l closes it; three screens pixel for pixel"
     else
         fail "[1.3] $label: Down, Up, Esc and the Windows key toggling: $(grep -E '^(WSCREEN [234]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi
@@ -930,12 +969,12 @@ desktop_menu_case() {
     else
         fail "[1.3] $label: Enter in the M menu: $(grep -E '^(WSCREEN [67]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi
-    if grep -qE "^desktop: dialog Restart opened at \([0-9]+, [0-9]+\) [0-9]+x[0-9]+, Cancel focused \(the focus ring on\)$" "$log" &&
-       ! sed -n '/^desktop: dialog Restart opened/,/^desktop: dialog Restart closed/p' "$log" | grep -qE "^desktop: menu " &&
-       grep -qxF "desktop: dialog Restart: Restart focused" "$log" && grep -qxF "desktop: dialog Restart closed (Esc)" "$log" &&
+    if grep -qE "^desktop: dialog Power opened at \([0-9]+, [0-9]+\) [0-9]+x[0-9]+, Cancel focused \(the focus ring on\)$" "$log" &&
+       ! sed -n '/^desktop: dialog Power opened/,/^desktop: dialog Power closed/p' "$log" | grep -qE "^desktop: menu " &&
+       grep -qxF "desktop: dialog Power: Restart focused" "$log" && grep -qxF "desktop: dialog Power closed (Esc)" "$log" &&
        grep -qxF "madire> echo after-dialog-ok" "$log" && grep -qxF "after-dialog-ok" "$log" &&
        ws 8 && ws 9 && ws 10 && ws 11; then
-        pass "[1.3] $label: Up and Enter on Restart open the dialog with the ring on Cancel; with the dialog open meta_l changes nothing; Tab focuses Restart; Esc cancels and the console goes on (echo after-dialog-ok); four screens pixel for pixel"
+        pass "[1.3] $label: Up and Enter on Power... open the power dialog with the ring on Cancel; with the dialog open meta_l changes nothing; Tab focuses Restart; Esc cancels and the console goes on (echo after-dialog-ok); four screens pixel for pixel"
     else
         fail "[1.3] $label: the dialog by the keyboard: $(grep -E '^(WSCREEN (8|9|10|11)|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi

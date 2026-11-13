@@ -29,6 +29,7 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/panic.h"
+#include "kernel/power/power.h"
 #include "kernel/proc/diagwait.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/thread.h"
@@ -402,7 +403,8 @@ static const char *const desk_menu_names[2] = { "M", "desktop" };
 static const char *const desk_whys[] = { "the mouse", "the Windows key", "Esc", "a click outside", "the Windows key",
                                          "the M button", "a row chosen", "Cancel", "the close button" };
 static const char *const desk_m_states[4] = { "normal", "hover", "pressed", "open" };
-static const char *const desk_dlg_parts[3] = { "Cancel", "Restart", "the close button" };
+/* 1.5 stage 6: the power dialog's parts in the events' order (ui_menus.h). */
+static const char *const desk_dlg_parts[4] = { "Cancel", "Restart", "Shut down", "the close button" };
 
 static void desk_log_menus(void)
 {
@@ -431,21 +433,24 @@ static void desk_log_menus(void)
             kserialf("desktop: M button: %s\n", desk_m_states[e->state & 3]);
             break;
         case UI_MEV_DLG_OPEN:
-            kserialf("desktop: dialog Restart opened at (%d, %d) %dx%d, Cancel focused%s\n", e->r.x, e->r.y, e->r.w,
+            kserialf("desktop: dialog Power opened at (%d, %d) %dx%d, Cancel focused%s\n", e->r.x, e->r.y, e->r.w,
                      e->r.h, e->ring ? " (the focus ring on)" : "");
             break;
         case UI_MEV_DLG_FOCUS:
-            kserialf("desktop: dialog Restart: %s focused\n", desk_dlg_parts[e->row == 1]);
+            kserialf("desktop: dialog Power: %s focused\n", desk_dlg_parts[e->row < 0 || e->row > 2 ? 0 : e->row]);
             break;
         case UI_MEV_DLG_STATE:
-            kserialf("desktop: dialog Restart: %s %s\n", desk_dlg_parts[e->row < 0 || e->row > 2 ? 2 : e->row],
+            kserialf("desktop: dialog Power: %s %s\n", desk_dlg_parts[e->row < 0 || e->row > 3 ? 3 : e->row],
                      close_states[e->state < 0 || e->state > 2 ? 0 : e->state]);
             break;
         case UI_MEV_DLG_CLOSE:
-            kserialf("desktop: dialog Restart closed (%s)\n", desk_whys[e->why]);
+            kserialf("desktop: dialog Power closed (%s)\n", desk_whys[e->why]);
             break;
         case UI_MEV_RESTART:
-            kserialf("desktop: dialog Restart: Restart chosen\n");
+            kserialf("desktop: dialog Power: Restart chosen\n");
+            break;
+        case UI_MEV_SHUTDOWN:
+            kserialf("desktop: dialog Power: Shut down chosen\n");
             break;
         }
     }
@@ -709,7 +714,10 @@ static void open_about(void)
 /* 1.3 stage 5: after the menus had a packet or a key: the About values when
  * a row opened the About window, a line when one opened the Console window
  * (returned: the caller starts the console), and the restart when the
- * dialog's Restart was pressed (kernel/arch/x86/reset.c, as "reboot"). */
+ * dialog's Restart was pressed (kernel/arch/x86/reset.c, as "reboot").
+ * 1.5 stage 6: the power dialog's Shut down: the save before power-off in
+ * Disk mode, then the power-off (power.h; as "poweroff -y"; it does not
+ * return). Restart's path is 1.4's. */
 static enum ui_menu_action desk_menu_done(void)
 {
     enum ui_menu_action a = ui_menus_take_done(&desk_menus);
@@ -717,8 +725,14 @@ static enum ui_menu_action desk_menu_done(void)
         desk_about_values();
     else if (a == UI_MENU_CONSOLE)
         klogf("Desktop: a menu opened the Console window\n");
+    if (desk_menus.shutdown) {
+        uint64_t clicked = timer_ticks();
+        klogf("Desktop: Shut down chosen in the power dialog: shutting down\n");
+        (void)power_save(clicked);
+        power_off();                        /* does not return */
+    }
     if (desk_menus.restart) {
-        klogf("Desktop: Restart chosen in the Restart dialog: restarting\n");
+        klogf("Desktop: Restart chosen in the power dialog: restarting\n");
         /* 1.4 stage 10: in Disk mode /home is saved first (at most 10 s;
          * a failure is logged and the restart goes on, D9). */
         if (ext2_disk_rw())

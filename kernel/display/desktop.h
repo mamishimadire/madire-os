@@ -80,11 +80,16 @@
  * opens the About window logs its values ("desktop: about ..."); one that
  * opens the Console window logs "Desktop: a menu opened the Console
  * window", and the console starts if it is not running. Restart in the
- * dialog logs "Desktop: Restart chosen in the Restart dialog: restarting"
+ * dialog logs "Desktop: Restart chosen in the power dialog: restarting"
  * and takes the existing reset path (kernel/arch/x86/reset.c, as the
  * shell's reboot). With desktoplog, also a line for each change: "desktop:
  * menu <M|desktop> opened|closed|...", "desktop: M button: <state>",
- * "desktop: dialog Restart ...". desktopabout stays a test option.
+ * "desktop: dialog Power ...". desktopabout stays a test option.
+ * 1.5 stage 6 (docs/plans/1.5.md, C3): the M menu's Restart row is
+ * Power..., which opens the power dialog (Cancel, Restart, Shut down); Shut
+ * down logs "Desktop: Shut down chosen in the power dialog: shutting down"
+ * and takes power.h's path (the save in Disk mode, the ACPI power-off, or
+ * the fallback screen).
  *
  * 1.3 stage 8, the switch (docs/plans/1.3.md, decision 6; the stage 8
  * decisions D1 and D2): the desktop also shows on the default path, a boot

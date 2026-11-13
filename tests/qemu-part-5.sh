@@ -821,3 +821,138 @@ else
     fail "[1.5] test=diskrmem: slot 508 maps $tm_m pages, not registers $tm_n + DMA $tm_d + cache $tm_c (a read-core page kept, or a line missing)"
 fi
 echo "      [1.5] the ext2 tables at the mount: $(( $(date +%s) - TM_T0 )) s (report only)"
+
+# ---- 1.5 stage 6: the power dialog on the desktop ----
+
+section "[1.5] The power dialog on the desktop: Power... in the M menu, Shut down by the mouse and by the keyboard (stage 6)"
+# docs/plans/1.5.md, C3 (decision 4) and C6b; the dialog's scenes in five
+# modes are part static's (tests/desktop_ref.py; H2 item 7). Two boots of a
+# test ISO at 1024x768x32 (test=desktop desktoplog mouselog), each followed
+# by tests/qmp_desktop.py's model (desktop_ref.Menus). (1-3) The mouse: the
+# M menu's Power... opens the power dialog (360x172 dp, Cancel focused, no
+# ring); Shut down on hover, then pressed (each screen pixel for pixel),
+# then released: "Shut down chosen", the power-off in Live mode (one ACPI:
+# line) and QEMU's own exit (the guest powered itself off: no reset line,
+# booted once); every window and menu line as the model predicts. (4-5)
+# The keyboard: meta_l, Up and Enter open the dialog (the ring on Cancel);
+# Tab and Tab focus Restart, then Shut down (the screen pixel for pixel);
+# Enter: the same power-off. QEMU's guest-shutdown event itself is timed by
+# part static's poweroff -y boots (the desktop's harness has one QMP
+# monitor, for its own input).
+PD_T0=$(date +%s)
+PD_ACPI='^ACPI: RSDP at 0x[0-9a-f]+ \(revision [0-9]+\), (RSDT|XSDT) at 0x[0-9a-f]+ \([0-9]+ entries\), FADT at 0x[0-9a-f]+ \([0-9]+ bytes\), DSDT at 0x[0-9a-f]+ \([0-9]+ bytes\); _S5 SLP_TYPa [0-7], SLP_TYPb [0-7]; PM1a_CNT 0x[0-9a-f]+, PM1b_CNT (0x[0-9a-f]+|none); SCI_EN (set|set after ACPI_ENABLE 0x[0-9a-f]+ to SMI_CMD 0x[0-9a-f]+)$'
+pd_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$DT_OUT"; }
+# pd_off <log>: "Shut down chosen", the desktop's line, the Power: line and
+# one ACPI: line, in that order; QEMU exited by itself; no reset, fallback
+# screen, PANIC or FAILED line; booted once.
+pd_off() {
+    RE="$PD_ACPI" awk '
+        $0 == "desktop: dialog Power: Shut down chosen" && !c { c = NR }
+        $0 == "Desktop: Shut down chosen in the power dialog: shutting down" && c && !d { d = NR }
+        $0 == "Power: shutting down (Live mode)" && d && !p { p = NR }
+        $0 ~ ENVIRON["RE"] { a++; if (p && !an) an = NR }
+        END { exit !(c && d && p && an && a == 1) }' "$1" &&
+        [ "$DT_EXITED" = yes ] && [ "$(grep -c '^boot32: start$' "$1")" -eq 1 ] &&
+        ! grep -qE "^Restart: |safe to turn off|could not power off|PANIC|FAILED" "$1"
+}
+pd_model() {
+    grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+        grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT"
+}
+# (1-3) The mouse.
+PD_ML=$OUT/serial-power-dialog-mouse.log
+desktop_iso "power-mouse" "test=desktop desktoplog mouselog" ""
+DT_OUT=""; DT_EXITED=no
+if [ -n "$DT_ISO" ]; then
+    desktop_boot_end "$PD_ML" "$DT_ISO" 1024x768 ready rel:-1000,-1000 to:m click "to:row@Power..." click wshot \
+        "to:btn@Shut down" wshot press wshot release "wait:Power: shutting down (Live mode)"
+else : > "$PD_ML"; fi
+grep -E "^(Desktop: |Power: |ACPI: |Restart: )|^desktop: (menu M: Power|dialog Power)" "$PD_ML" | sed 's/^/      mouse: /'
+if grep -qxF "desktop: menu M: Power... chosen" "$PD_ML" &&
+   grep -qE "^desktop: dialog Power opened at \([0-9]+, [0-9]+\) 360x172, Cancel focused$" "$PD_ML" &&
+   grep -qxF "desktop: dialog Power: Shut down hover" "$PD_ML" && grep -qxF "desktop: dialog Power: Shut down pressed" "$PD_ML" &&
+   pd_ws 1 && pd_ws 2 && pd_ws 3; then
+    pass "[1.5] power dialog by the mouse: the M menu's Power... opens the power dialog (360x172 dp, Cancel focused, no ring); Shut down on hover, then pressed; the three screens equal tests/desktop_ref.py's rendering pixel for pixel"
+else
+    fail "[1.5] power dialog by the mouse: Power..., the dialog or Shut down's states: $(grep -E '^(WSCREEN [1-3]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see ${PD_ML##*/})"
+fi
+if pd_off "$PD_ML"; then
+    pass "[1.5] power dialog by the mouse: Shut down released on itself: 'Shut down chosen', 'Desktop: Shut down chosen in the power dialog: shutting down', 'Power: shutting down (Live mode)', one ACPI: line, and QEMU exited by itself (no reset, no fallback screen; booted once)"
+else
+    fail "[1.5] power dialog by the mouse: Shut down did not power off (QEMU exited by itself: $DT_EXITED; see ${PD_ML##*/})"
+fi
+if pd_model && grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT"; then
+    pass "[1.5] power dialog by the mouse: every window, menu, M button and dialog line as the model predicts, in order; every packet exact"
+else
+    fail "[1.5] power dialog by the mouse: the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+# (4-5) The keyboard.
+PD_KL=$OUT/serial-power-dialog-keys.log
+desktop_iso "power-keys" "test=desktop desktoplog mouselog" ""
+DT_OUT=""; DT_EXITED=no
+if [ -n "$DT_ISO" ]; then
+    desktop_boot_end "$PD_KL" "$DT_ISO" 1024x768 ready windowed "type:{meta_l}{up}{ret}" wshot "type:{tab}{tab}" wshot \
+        "type:{ret}" "wait:Power: shutting down (Live mode)"
+else : > "$PD_KL"; fi
+grep -E "^(Desktop: |Power: |ACPI: |Restart: )|^desktop: (menu M: Power|dialog Power)" "$PD_KL" | sed 's/^/      keys: /'
+if grep -qE "^desktop: dialog Power opened at \([0-9]+, [0-9]+\) 360x172, Cancel focused \(the focus ring on\)$" "$PD_KL" &&
+   awk '$0 == "desktop: dialog Power: Restart focused" && !r { r = NR }
+        $0 == "desktop: dialog Power: Shut down focused" && r && !s { s = NR }
+        END { exit !(r && s) }' "$PD_KL" && pd_ws 1 && pd_ws 2; then
+    pass "[1.5] power dialog by the keyboard: meta_l, Up and Enter open it with the ring on Cancel; Tab focuses Restart, then Shut down; both screens pixel for pixel"
+else
+    fail "[1.5] power dialog by the keyboard: the dialog or Tab's focus: $(grep -E '^(WSCREEN [12]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see ${PD_KL##*/})"
+fi
+if pd_off "$PD_KL" && pd_model; then
+    pass "[1.5] power dialog by the keyboard: Enter on Shut down powers off as the mouse's click does (the same lines, QEMU exited by itself); every line as the model predicts"
+else
+    fail "[1.5] power dialog by the keyboard: Enter on Shut down: QEMU exited by itself: $DT_EXITED; $(grep -E '^(EVENTS|MENUS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see ${PD_KL##*/})"
+fi
+echo "      [1.5] the power dialog: $(( $(date +%s) - PD_T0 )) s (report only)"
+
+# ---- 1.5 stage 6: the D9 fix ----
+
+section "[1.5] The D9 fix: save 0 fails at the mount (test=disksavefail), the store's dirty chunks dropped, later reads from the disk without a fault (stage 6)"
+# docs/testing.md (the note found in S5, present since 1.4): when save 0 or
+# the recount failed at the mount (D9), the store of changes was unmapped
+# while its entry count stayed above 0, so the next read of /home searched
+# entries in unmapped pages and faulted. kernel/fs/ext2_disk.c's
+# ext2_d_unstore now empties the store first (no entry, no save in
+# progress) and logs how many chunks it dropped. test=disksavefail makes
+# every disk write of the mount fail (the AHCI driver's injected error, as
+# test=blkdebug's): save 0 fails, so the volume mounts read-only with a
+# dirty superblock chunk left. (1) The dropped line (at least 1 chunk), the
+# mount: line read-only (a save failed), 'Disk mode, read-only', System
+# ready, no PANIC or page fault. (2) At the console /home/note.txt reads
+# back twice (each read searched the store before the fix) and touch
+# /home/new.txt is refused (read-only). (The injected error is seen on the
+# status register only, so a write may still reach the image: the image is
+# not checked here.)
+D9_T0=$(date +%s)
+D9_W=$OUT/d9fix
+rm -rf "${D9_W:?}" && mkdir -p "$D9_W/tree"
+D9_OK=1
+printf 'kept on the disk\n' > "$D9_W/tree/note.txt"
+disk_mkfs "$D9_W/fs.img" 16384 1024 256 2048 "$D9_W/tree" > "$D9_W/mkfs.txt" 2>&1 &&
+    disk_image mbr "$D9_W/fs.img" "$D9_W/disk.img" > /dev/null 2>&1 || D9_OK=0
+D9_L=$OUT/serial-disksavefail.log
+if [ "$D9_OK" -eq 1 ]; then
+    boot_text "$D9_L" 120 "System ready." "x{wait:1}cat /home/note.txt{ret}{wait:1}cat /home/note.txt{ret}touch /home/new.txt{ret}echo end-of-d9fix{ret}" \
+        0.05 $'\nend-of-d9fix\n' -m 128M -kernel "$KERNEL" -append "test=disksavefail" \
+        -drive file="$D9_W/disk.img",if=none,id=d9-disk,format=raw -device ich9-ahci,id=d9-ahci,addr=0x5 \
+        -device ide-hd,drive=d9-disk,bus=d9-ahci.0
+else : > "$D9_L"; fi
+grep -E '^(ext2|mount|Storage): |^ahci: port 0: WRITE' "$D9_L" | sed 's/^/      disksavefail: /'
+if [ "$D9_OK" -eq 1 ] &&
+   [ "$(grep -cE '^ext2: [1-9][0-9]* unsaved chunks dropped with the store of changes \(a save failed\): reads show the disk as it is; mounted read-only \(D9\)$' "$D9_L")" -eq 1 ] &&
+   grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-only \(a save failed\); " "$D9_L" &&
+   [ "$(grep '^Storage: ' "$D9_L" | grep -cF "; ext2 'madire-test' mounted read-only on /home (Disk mode, read-only)")" -eq 1 ] &&
+   grep -qxF "System ready. Press any key to open the console." "$D9_L" && ! grep -qE 'PANIC|Page fault' "$D9_L"; then
+    pass "[1.5] test=disksavefail: save 0 failed at the mount (D9): 'ext2: <n> unsaved chunks dropped with the store of changes (a save failed): reads show the disk as it is; mounted read-only (D9)' once, the mount: line read-only (a save failed), 'Disk mode, read-only'; System ready; no PANIC or page fault"
+else
+    fail "[1.5] test=disksavefail: the dropped line, the read-only mount or a healthy boot missing (see ${D9_L##*/})"
+fi
+expect_in_order "$D9_L" "[1.5] test=disksavefail: after the mount /home/note.txt reads back twice from the disk (no fault: the store is empty) and touch /home/new.txt is refused (read-only)" \
+    "^madire> cat /home/note.txt$" "^kept on the disk$" "^madire> cat /home/note.txt$" "^kept on the disk$" \
+    "^madire> touch /home/new.txt$" "^touch: '/home/new\.txt': the filesystem is read-only\.$" "^madire> echo end-of-d9fix$"
+echo "      [1.5] the D9 fix: $(( $(date +%s) - D9_T0 )) s (report only)"

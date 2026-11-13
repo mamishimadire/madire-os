@@ -4,16 +4,17 @@
  * while a menu or the dialog has the pointer); a click on it opens the M
  * menu with no row selected, another closes it; the pointer selects rows
  * (and clears its own selection, not the keyboard's); a click on a row
- * chooses it (About and Console open and focus their windows; Restart
- * opens the dialog); a click or a right click outside closes a menu and
+ * chooses it (About and Console open and focus their windows; Power...,
+ * 1.3's Restart, opens the dialog); a click or a right click outside closes a menu and
  * does nothing else; the desktop menu on a right click on the desktop only
  * (not on a window or the taskbar), placed at the hot spot; Up, Down,
  * Enter and Esc in a menu, and every key kept while one is open; the
  * Windows key: it opens the M menu with About selected and the ring, closes
  * it, replaces the desktop menu, is never passed on (also with a window
  * focused), does nothing while the dialog is open, and lets go of a drag;
- * the dialog: Cancel focused, Tab, Enter on each button, Esc, its buttons'
- * and close button's states and clicks, and every click kept; the release
+ * the dialog: Cancel focused, Tab (Cancel, Restart, Shut down; 1.5 stage
+ * 6), Enter on each button, Esc, its buttons' and close button's states and
+ * clicks, and every click kept; the release
  * of an Esc or Enter that closed a menu goes on to the window manager and
  * does nothing (no window opened or closed; the console's line, a
  * kernel/console/lineedit.c line given that release as the kernel hands it
@@ -58,10 +59,11 @@ static bool same_rect(struct rect a, int32_t x, int32_t y, int32_t w, int32_t h)
 
 /* A 1024 x 768 screen at 100 %: the taskbar from 728, the M button's cell
  * (0, 728) 40 x 40; the M menu at (8, 538) 288 x 182, its rows' centres
- * About (152, 617), Console (152, 653), Restart (152, 698); the About
+ * About (152, 617), Console (152, 653), Power... (152, 698); the About
  * window opens at (336, 175) 352 x 377, the Console window at (191, 147)
- * 642 x 433; the dialog at (332, 278) 360 x 172: Cancel's centre (516,
- * 410), Restart's (620, 410), its close button's (676, 294). */
+ * 642 x 433; the dialog at (332, 278) 360 x 172 (1.5 stage 6: the power
+ * dialog): Cancel's centre (412, 410), Restart's (516, 410), Shut down's
+ * (620, 410), its close button's (676, 294). */
 static struct ui_damage dmg;
 static struct ui_wm wm;
 static struct ui_window about, console;
@@ -387,9 +389,12 @@ static void test_dialog_keys(void)
     CHECK(mn.dlg.focus == UI_DLG_RESTART && mn.dlg.ring);
     CHECK_EQ(mevents(UI_MEV_DLG_FOCUS), 1);
     key(UI_MKEY_TAB);
+    CHECK_EQ(mn.dlg.focus, UI_DLG_SHUTDOWN);
+    key(UI_MKEY_TAB);
     CHECK_EQ(mn.dlg.focus, UI_DLG_CANCEL);
+    CHECK_EQ(mevents(UI_MEV_DLG_FOCUS), 3);
     key(UI_MKEY_ENTER);                             /* Enter on Cancel */
-    CHECK(!mn.dlg_open && !mn.restart);
+    CHECK(!mn.dlg_open && !mn.restart && !mn.shutdown);
     CHECK_EQ(last_why(UI_MEV_DLG_CLOSE), UI_WHY_CANCEL);
     clear();
     key(UI_MKEY_WINDOWS);
@@ -404,8 +409,21 @@ static void test_dialog_keys(void)
     key(UI_MKEY_TAB);
     clear();
     key(UI_MKEY_ENTER);                             /* Enter on Restart */
-    CHECK(mn.restart && mn.dlg_open);
+    CHECK(mn.restart && mn.dlg_open && !mn.shutdown);
     CHECK_EQ(mevents(UI_MEV_RESTART), 1);
+    clear();
+    /* 1.5 stage 6: Enter on Shut down (Tab twice from Cancel). */
+    setup();
+    key(UI_MKEY_WINDOWS);
+    key(UI_MKEY_UP);
+    key(UI_MKEY_ENTER);
+    key(UI_MKEY_TAB);
+    key(UI_MKEY_TAB);
+    clear();
+    key(UI_MKEY_ENTER);
+    CHECK(mn.shutdown && !mn.restart && mn.dlg_open);
+    CHECK_EQ(mevents(UI_MEV_SHUTDOWN), 1);
+    CHECK_EQ(mevents(UI_MEV_RESTART), 0);
     clear();
 }
 
@@ -418,22 +436,35 @@ static void test_dialog_pointer(void)
     CHECK_EQ(mn.m_state, UI_M_NORMAL);
     move(20, 748);
     CHECK_EQ(mn.m_state, UI_M_NORMAL);              /* no hover while the dialog is open */
-    move(516, 410);
+    move(412, 410);
     CHECK_EQ(mn.dlg.btn[UI_DLG_CANCEL], UI_BUTTON_HOVER);
-    tpress(516, 410);
+    tpress(412, 410);
     CHECK_EQ(mn.dlg.btn[UI_DLG_CANCEL], UI_BUTTON_PRESSED);
     move(400, 300);
     CHECK_EQ(mn.dlg.btn[UI_DLG_CANCEL], UI_BUTTON_NORMAL);
     clear();
     trelease(400, 300);
     CHECK(mn.dlg_open && !mn.restart);
-    move(620, 410);
+    move(516, 410);
     CHECK(mn.dlg.btn[UI_DLG_RESTART] == UI_BUTTON_HOVER && mn.dlg.btn[UI_DLG_CANCEL] == UI_BUTTON_NORMAL);
-    tpress(620, 410);
+    tpress(516, 410);
     CHECK_EQ(mn.dlg.btn[UI_DLG_RESTART], UI_BUTTON_PRESSED);
-    trelease(620, 410);
-    CHECK(mn.restart && mn.dlg_open);
+    trelease(516, 410);
+    CHECK(mn.restart && mn.dlg_open && !mn.shutdown);
     mn.restart = false;
+    clear();
+    /* 1.5 stage 6: Shut down's states and click; a press on it released on
+     * Restart chooses neither. */
+    move(620, 410);
+    CHECK(mn.dlg.btn[UI_DLG_SHUTDOWN] == UI_BUTTON_HOVER && mn.dlg.btn[UI_DLG_RESTART] == UI_BUTTON_NORMAL);
+    tpress(620, 410);
+    CHECK_EQ(mn.dlg.btn[UI_DLG_SHUTDOWN], UI_BUTTON_PRESSED);
+    trelease(516, 410);
+    CHECK(!mn.shutdown && !mn.restart && mn.dlg_open);
+    click(620, 410);
+    CHECK(mn.shutdown && !mn.restart && mn.dlg_open);
+    CHECK_EQ(mevents(UI_MEV_SHUTDOWN), 1);
+    mn.shutdown = false;
     clear();
     move(676, 294);
     CHECK_EQ(mn.dlg.w.close, UI_BUTTON_HOVER);
@@ -450,7 +481,7 @@ static void test_dialog_pointer(void)
     click(20, 748);
     click(152, 698);
     clear();
-    click(516, 410);
+    click(412, 410);
     CHECK(!mn.dlg_open && !mn.restart);
     CHECK_EQ(last_why(UI_MEV_DLG_CLOSE), UI_WHY_CANCEL);
     clear();

@@ -590,6 +590,21 @@ static enum shell_result cmd_reboot(int argc, char **argv, const struct shell_co
     return SHELL_REBOOT;
 }
 
+/* 1.5 stage 6: "poweroff" asks (SHELL_POWEROFF; the console powers off
+ * only on "yes", the reboot rule); "poweroff -y" does not ask
+ * (SHELL_POWEROFF_NOW). The console does the rest (power.h). */
+static enum shell_result cmd_poweroff(int argc, char **argv, const struct shell_context *c,
+                                      const struct shell_output *o)
+{
+    (void)c;
+    if (argc == 2 && !str_eq(argv[1], "-y"))
+        return usage_error(o, "poweroff [-y]");
+    if (argc == 2)
+        return SHELL_POWEROFF_NOW;
+    say(o, SHELL_POWEROFF_QUESTION, SHELL_TEXT);
+    return SHELL_POWEROFF;
+}
+
 bool shell_reboot_confirmed(const char *answer)
 {
     while (*answer == ' ' || *answer == '\t')
@@ -1927,6 +1942,10 @@ static const struct command storage_commands[] = {
 
 #define STORAGE_COUNT (sizeof(storage_commands) / sizeof(storage_commands[0]))
 
+/* 1.5 stage 6: offered only when the context has power (see shell.h). */
+static const struct command poweroff_command =
+    { "poweroff", "poweroff [-y]", "Power off the computer (asks first)",   1, cmd_poweroff, SECTION_SYSTEM };
+
 /* 1.2 stage 10b: offered only when the context has a display (see shell.h). */
 static const struct command display_command =
     { "display", "display",      "Show the screen's mode and scale",        0, cmd_display, SECTION_SYSTEM };
@@ -2052,7 +2071,7 @@ static const struct command *kill_of(const struct shell_context *c)
 
 /* Every command the context offers, in "help" order. Returns the count. */
 #define OFFERED_MAX (COMMAND_COUNT + 1 + EXTRA_COUNT + 2 + STATE_COUNT + SESSION_COUNT + FILES_COUNT + \
-                     STORAGE_COUNT + 1 + 2)
+                     STORAGE_COUNT + 1 + 1 + 2)     /* 1.5 stage 6: + 1, poweroff */
 
 static uint32_t offered(const struct shell_context *c, const struct command **list)
 {
@@ -2080,7 +2099,9 @@ static uint32_t offered(const struct shell_context *c, const struct command **li
     if (c->files && c->storage)
         for (uint32_t i = 0; i < STORAGE_COUNT; i++)
             list[n++] = &storage_commands[i];
-    if (c->display)                         /* 1.2 stage 10b: "help" puts it after "reboot" */
+    if (c->power)                           /* 1.5 stage 6: "help" puts it after "reboot" */
+        list[n++] = &poweroff_command;
+    if (c->display)                         /* 1.2 stage 10b: "help" puts it after "reboot" (1.5: "poweroff") */
         list[n++] = &display_command;
     if (c->disk && c->disk->info) {         /* 1.4 stage 12 (G2): files, after "du" */
         list[n++] = &sync_command;
@@ -2104,6 +2125,8 @@ static bool builtin_name(const char *name, const struct shell_context *c)
             if (str_eq(name, storage_commands[i].name))
                 return true;
     if (c->display && str_eq(name, display_command.name))   /* 1.2 stage 10b, likewise */
+        return true;
+    if (c->power && str_eq(name, poweroff_command.name))    /* 1.5 stage 6, likewise */
         return true;
     if (c->disk && str_eq(name, sync_command.name))         /* 1.4 stage 10, likewise */
         return true;
@@ -2160,6 +2183,8 @@ static const struct command *find_command(const char *name, const struct shell_c
                 return &storage_commands[i];
     if (c->display && str_eq(name, display_command.name))
         return &display_command;
+    if (c->power && str_eq(name, poweroff_command.name))     /* 1.5 stage 6 */
+        return &poweroff_command;
     if (c->disk && str_eq(name, sync_command.name))     /* 1.4 stage 10; in offered() with info (stage 12) */
         return &sync_command;
     if (c->disk && c->disk->info && str_eq(name, disk_command.name))    /* 1.4 stage 12 */

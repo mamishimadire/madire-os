@@ -350,5 +350,20 @@
 # not changed (A3): part 1's [0.4] unexpected IRQ (4), [0.12] uptime
 # heartbeat (2) and [1.1] console keys (11) sections to part 5, every count
 # unchanged.
-1.5 21
-unit-suites 108
+# Stage 6: 19 more (C3, Shut down): in part static 12: poweroff -y in Live
+# mode (2: the lines; the guest-shutdown event within 5 s and QEMU's own
+# exit), in Disk mode (3: the lines with the save; the event within 10 s;
+# the volume clean, e2fsck -fn quiet, the file saved), with -machine
+# acpi=off (2: the fallback screen on serial; in the cell grid, QEMU still
+# running), and the power dialog's new scene dialog_pressed_shutdown in five
+# modes (5); in part 5 7: the power dialog on the desktop by the mouse (3)
+# and by the keyboard (2), the D9 fix with test=disksavefail (2); 2 unit
+# suites (acpi_core, shell_power15). Changed, not added (the owner's
+# approval, before the commit; H2 items 6-8): the help lists' checks (43
+# commands, poweroff in the system section), the menus' checks in parts 2
+# and 3 and part 3's Disk-mode desktop (Power..., the power dialog's lines),
+# part static's menu and Disk-mode dialog scenes (the power dialog's
+# pixels) and its contrast check (12 scenes); the unit suites ui_dialog,
+# ui_menu and ui_menus (the power dialog's layout, the row Power...).
+1.5 40
+unit-suites 110

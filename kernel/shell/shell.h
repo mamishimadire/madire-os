@@ -425,6 +425,13 @@ struct shell_context {
      * output exactly as before ("sync" is an unknown command). 1.4 stage
      * 12: with disk->info, see struct shell_disk. */
     const struct shell_disk *disk;
+    /* 1.5 stage 6, optional: when set, "poweroff" exists (SYSTEM: "Power
+     * off the computer (asks first)"; usage "poweroff [-y]"; "help" lists
+     * it after "reboot", in the section "system"). It prints "Power off
+     * now? Type 'yes' to confirm:" and answers SHELL_POWEROFF, or with -y
+     * answers SHELL_POWEROFF_NOW; the console does the rest. false leaves
+     * every output exactly as before ("poweroff" is an unknown command). */
+    bool power;
 };
 
 enum shell_text {
@@ -468,6 +475,11 @@ enum shell_result {
     SHELL_COPY,         /* 1.0 stage 9: "cp" opened both files (copy_open); the
                          * console copies a chunk at a time (Ctrl+C cancels);
                          * no prompt until then */
+    SHELL_POWEROFF,     /* 1.5 stage 6: "poweroff": the question was printed; the
+                         * console powers off only if the next line is "yes"
+                         * (shell_reboot_confirmed's rule) */
+    SHELL_POWEROFF_NOW, /* 1.5 stage 6: "poweroff -y": the console powers off
+                         * without asking */
 };
 
 /* 0.11: what the console prints after the kill question. */
@@ -504,8 +516,13 @@ void shell_end_line(char *out, int32_t pid, const char *name, enum shell_end end
 #define SHELL_REBOOT_STARTING   "Restarting..."
 #define SHELL_REBOOT_CANCELLED  "Restart cancelled."
 
+/* 1.5 stage 6: the poweroff confirmation (docs/plans/1.5.md, C6b; the
+ * console prints these, and "Saving files... done." in Disk mode). */
+#define SHELL_POWEROFF_QUESTION  "Power off now? Type 'yes' to confirm:"
+#define SHELL_POWEROFF_CANCELLED "Power off cancelled."
+
 /* 0.9.1: true if `answer` confirms the reboot: exactly "yes", ignoring
- * spaces and tabs around it. */
+ * spaces and tabs around it. 1.5 stage 6: the same rule for poweroff. */
 bool shell_reboot_confirmed(const char *answer);
 
 /* Runs one command line. The line is modified (split in place). */

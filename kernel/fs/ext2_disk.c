@@ -15,6 +15,7 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
+#include "kernel/panic.h"
 #include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/klock.h"
@@ -261,9 +262,28 @@ static bool ext2_d_store(uint32_t pages)
 }
 
 /* The store and the run's pages given back (a mount that ended refused or
- * read-only never puts a change). */
+ * read-only never puts a change).
+ * 1.5 stage 6, the D9 fix (docs/testing.md; present since 1.4): when save 0
+ * or the recount failed at the mount (D9), chunks can still be dirty here
+ * (sv.n > 0: save 0's superblock, the recount's descriptors). Before the
+ * pages go, the store forgets them: no entry, no save in progress. So a
+ * later read (blk_sv_read finds no dirty chunk) reads the disk's bytes, the
+ * volume as it really is: the chunks a failed save wrote before it failed
+ * are there, the rest never reached the disk; the volume is read-only from
+ * then on (nothing will ever be saved), and the in-memory figures it keeps
+ * (the recounted free counts, the superblock's state) are only shown, never
+ * written. Before this fix a read searched entries in unmapped pages (since
+ * 1.5 stage 5 a null pointer; in 1.4 the bytes of an unmapped chunk) and
+ * faulted. The number dropped is logged after the mount (ext2_d_dropped). */
+static uint32_t ext2_d_dropped;
+
 static void ext2_d_unstore(void)
 {
+    ext2_d_dropped = ext2_d_sv.n;
+    ext2_d_sv.n = 0;
+    ext2_d_sv.saving = false;
+    ext2_d_sv.cur_i = 0;
+    ext2_d_sv.cur_wrote = false;
     for (uint32_t i = 0; ext2_d_store_n && i < ext2_d_store_n; i++) {
         uint64_t got = 0;
         if (paging_unmap(VM_SV_BASE + (uint64_t)i * VM_PAGE_SIZE, &got) == VMM_OK)
@@ -412,7 +432,16 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
      * A mount that ends refused leaves Live mode: the lock off again. */
     disklock_start();
     disklock_acquire();
+    /* 1.5 stage 6, test=disksavefail: every disk write of the mount fails
+     * (the AHCI driver's injected error, as test=blkdebug's), so save 0
+     * fails (D9) and the volume mounts read-only with dirty chunks left in
+     * the store: the D9 fix's path (ext2_d_unstore). */
+    bool savefail = (ext2_d_flags & EXT2_DISK_SAVEFAIL) != 0 && ro_mine == 0;
+    if (savefail)
+        ahci_debug_arm(false, true);
     err = ext2_write_mount(&ext2_d_w, &ext2_d_sv, ext2_d_bytes, &ext2_d_wops, ro_mine == 0);
+    if (savefail)
+        ahci_debug_arm(false, false);
     klock_acquire(vfs_lock());
     uint64_t c0 = fd_tsc(), t0 = timer_ticks();
     /* Stage 10: any thread that asks for the lock during the hold takes a
@@ -490,6 +519,9 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     bool rw = ext2_d_w.rw;
     if (wt_short)                       /* 1.5 stage 5 (C2) */
         klogf("ext2: too little memory for the write tables: mounted read-only\n");
+    if (ext2_d_dropped)                 /* 1.5 stage 6: the D9 fix (ext2_d_unstore) */
+        klogf("ext2: %u unsaved chunks dropped with the store of changes (%s): reads show the disk as it is; "
+              "mounted read-only (D9)\n", ext2_d_dropped, ext2_d_w.ro_why ? ext2_d_w.ro_why : "read-only");
     if (fs->compat_unknown)
         klogf("ext2: unknown COMPAT flags 0x%x: mounted read-only (reading allowed; writing needs every COMPAT "
               "flag known)\n", fs->compat_unknown);
@@ -587,12 +619,29 @@ enum ext2_d_piece_end {
  * a save is in progress (blk_sv_put refuses), and the holder keeps
  * preemption on, so the desktop, the clock and programs that make no file
  * call run while the disk works. The hold figures (hold_cycles,
- * hold_ticks; the log lines still say "VFS lock hold") are this hold's. */
+ * hold_ticks; the log lines still say "VFS lock hold") are this hold's.
+ * 1.5 stage 6: the piece itself is ext2_d_piece_held(), for a caller that
+ * already owns the disk lock (the save before power-off keeps it from the
+ * first piece to the S5 write: taking it again would break L3). */
+static enum ext2_d_piece_end ext2_d_piece_held(bool start);
+
 static enum ext2_d_piece_end ext2_d_piece(bool start)
+{
+    disklock_acquire();
+    enum ext2_d_piece_end res = ext2_d_piece_held(start);
+    disklock_release();
+    return res;
+}
+
+/* One piece as ext2_d_piece's, by the disk lock's owner: the lock is
+ * neither taken nor given back here. Called without it, it panics (as L5
+ * would at the first disk command, but before any change). */
+static enum ext2_d_piece_end ext2_d_piece_held(bool start)
 {
     struct ext2_wfs *w = &ext2_d_w;
     enum ext2_d_piece_end res;
-    disklock_acquire();
+    if (!disklock_held())
+        panicf("ext2: a save piece without the disk lock (ext2_d_piece_held, thread %d)", (int)thread_current());
     uint64_t c0 = fd_tsc(), t0 = timer_ticks();
     if (!w->rw) {
         res = w->failed ? EXT2_D_FAIL : EXT2_D_RO;
@@ -610,17 +659,18 @@ static enum ext2_d_piece_end ext2_d_piece(bool start)
         if (t > ext2_d_figs.hold_ticks)
             ext2_d_figs.hold_ticks = t;
     }
-    disklock_release();
     return res;
 }
 
 /* A full save: saves until nothing is dirty or pending (at most
- * EXT2_D_SAVES), or until `deadline` (timer ticks; 0: none). */
-static enum ext2_disk_save ext2_d_full_save(uint64_t deadline, uint32_t *saves)
+ * EXT2_D_SAVES), or until `deadline` (timer ticks; 0: none). 1.5 stage 6:
+ * with `held`, by the disk lock's owner (ext2_d_piece_held; it keeps the
+ * lock between pieces, so it does not yield between them either). */
+static enum ext2_disk_save ext2_d_full_save_as(uint64_t deadline, uint32_t *saves, bool held)
 {
     *saves = 0;
     for (;;) {
-        enum ext2_d_piece_end p = ext2_d_piece(true);
+        enum ext2_d_piece_end p = held ? ext2_d_piece_held(true) : ext2_d_piece(true);
         if (p == EXT2_D_FAIL)
             return EXT2_DISK_FAILED;
         if (p == EXT2_D_RO)
@@ -631,8 +681,14 @@ static enum ext2_disk_save ext2_d_full_save(uint64_t deadline, uint32_t *saves)
             return EXT2_DISK_SAVED;
         if (deadline && timer_ticks() >= deadline)
             return EXT2_DISK_TIMEOUT;
-        thread_yield();
+        if (!held)
+            thread_yield();
     }
+}
+
+static enum ext2_disk_save ext2_d_full_save(uint64_t deadline, uint32_t *saves)
+{
+    return ext2_d_full_save_as(deadline, saves, false);
 }
 
 /* One save: the one in progress finished, or one run if something is
@@ -727,15 +783,67 @@ enum ext2_disk_save ext2_disk_restart_save(void)
     return s;
 }
 
+/* 1.5 stage 6 (docs/plans/1.5.md, C3, "Shut down during a save"): the save
+ * before power-off. The automatic save is stopped first (no new one
+ * starts; one between its pieces waits for the disk lock, for ever), then
+ * the disk lock is taken (after the current save piece, yielding) and KEPT:
+ * this function returns with the caller owning it, and the caller never
+ * gives it back (the S5 write, or the fallback screen's halt with
+ * interrupts off, follows), so nothing is changed or written after the last
+ * save. Inside the hold: the volume closed to changes and the orphans
+ * forgotten (under the VFS lock, taken after the disk lock, L1), the final
+ * full save (it finishes a save in progress first), the mark-clean (VFS
+ * lock), and the full save that writes the clean superblock, each FLUSH
+ * included; the pieces as the lock's owner (ext2_d_piece_held, never
+ * taking it again, L3). At most 10 s from `clicked` (timer ticks; D9: a
+ * failure or the limit is logged and the power-off goes on). */
+static bool ext2_d_auto_stopped;
+
+enum ext2_disk_save ext2_disk_poweroff_save(uint64_t clicked)
+{
+    if (!ext2_d_on)
+        return EXT2_DISK_NONE;          /* Live mode: no disk lock (L6) */
+    ext2_d_auto_stopped = true;
+    disklock_acquire();                 /* kept: never given back */
+    if (!ext2_d_w.rw) {
+        klogf("ext2: save before power-off: nothing saved (/home is read-only: %s)\n",
+              ext2_d_w.ro_why ? ext2_d_w.ro_why : "read-only");
+        return ext2_d_w.failed ? EXT2_DISK_FAILED : EXT2_DISK_READONLY;
+    }
+    uint64_t deadline = clicked + EXT2_D_RESTART, w0 = ext2_d_figs.writes;
+    klock_acquire(vfs_lock());
+    ext2_d_vfs.closed = true;           /* no more changes */
+    uint32_t orphans = ext2_vfs_forget_orphans(&ext2_d_vfs);
+    klock_release(vfs_lock());
+    uint32_t s1 = 0, s2 = 0;
+    enum ext2_disk_save s = ext2_d_full_save_as(deadline, &s1, true);
+    if (s == EXT2_DISK_SAVED) {
+        klock_acquire(vfs_lock());
+        int r = ext2_write_mark_clean(&ext2_d_w);
+        klock_release(vfs_lock());
+        s = r ? EXT2_DISK_FAILED : ext2_d_full_save_as(deadline, &s2, true);
+    }
+    uint64_t now = timer_ticks(), ms = (now > clicked ? now - clicked : 0) * 1000u / TIMER_HZ;
+    if (s == EXT2_DISK_SAVED)
+        klogf("ext2: save before power-off: done in %llu ms (%u saves, %llu writes; %u open files with no name "
+              "left forgotten first); the volume marked clean\n", (ull)ms, s1 + s2,
+              (ull)(ext2_d_figs.writes - w0), orphans);
+    else
+        klogf("ext2: save before power-off: not finished (%s after %llu ms): powering off anyway (D9)\n",
+              s == EXT2_DISK_TIMEOUT ? "not finished within 10 s" : "a disk write failed", (ull)ms);
+    return s;
+}
+
 /* The automatic save (C5, D8): every 5 s, a full save if something is
  * dirty or pending; not on test= boots but test=autosave (stage 11), which
- * logs each automatic save that wrote. */
+ * logs each automatic save that wrote. 1.5 stage 6: none after the
+ * power-off began (ext2_disk_poweroff_save). */
 static int32_t ext2_d_autosave(void *arg)
 {
     (void)arg;
     for (;;) {
         thread_sleep(EXT2_D_AUTOSAVE);
-        if (!ext2_d_w.rw)
+        if (!ext2_d_w.rw || ext2_d_auto_stopped)
             continue;
         uint32_t saves = 0;
         uint64_t w0 = ext2_d_figs.writes, f0 = ext2_d_figs.flushes;

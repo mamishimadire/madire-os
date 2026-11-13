@@ -26,6 +26,7 @@
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/pmm.h"
 #include "kernel/panic.h"
+#include "kernel/power/power.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
@@ -96,6 +97,7 @@ static uint8_t cat_chunk[4096];         /* 1.0 stage 9: also cp's chunk (never b
  * command's output goes to (held, its write mark held); du's walk (the
  * folder it started at and the one it is in, both held). */
 static bool storage_asked;
+static bool poweroff_asked;             /* 1.5 stage 6: the next line answers "poweroff" */
 static bool copying;
 static struct vnode *cp_src, *cp_dst;
 static uint64_t cp_off, cp_size, cp_chunks, cp_start;
@@ -1087,6 +1089,8 @@ static void build_context(struct shell_context *c)
     c->display = &disp;
     /* 1.4 stage 10: "sync" (not in the help lists until stage 12). */
     c->disk = fs_up() ? &disk_ops : 0;
+    /* 1.5 stage 6: "poweroff" (power.h). */
+    c->power = true;
 }
 
 /* 0.12 stage 2: Ctrl held with c (as for a foreground program). */
@@ -1277,6 +1281,33 @@ static void answer_reboot(const char *answer)
     shell_sink(0, SHELL_REBOOT_CANCELLED "\n", SHELL_TEXT);
 }
 
+/* 1.5 stage 6: "poweroff" answered "yes", or "poweroff -y" (docs/plans/1.5.md,
+ * C3): the save before power-off in Disk mode (its line, as reboot's), then
+ * the power-off (power.h; it does not return: the machine powers off, or
+ * the fallback screen shows). `clicked`: the timer tick of the answer, from
+ * which the save's 10 s count. */
+static void __attribute__((noreturn)) do_poweroff(uint64_t clicked, const char *how)
+{
+    klogf("console: power-off confirmed (%s)\n", how);
+    bool rw = ext2_disk_rw();
+    enum ext2_disk_save s = power_save(clicked);
+    if (rw)
+        shell_sink(0, s == EXT2_DISK_SAVED ? "Saving files... done.\n"
+                                           : "Saving files... failed (see the log); powering off anyway.\n",
+                   SHELL_TEXT);
+    render_all();
+    place_cursor();
+    power_off();                            /* does not return */
+}
+
+/* 1.5 stage 6: the answer to "poweroff". Only exactly "yes" powers off. */
+static void answer_poweroff(const char *answer)
+{
+    if (shell_reboot_confirmed(answer))
+        do_poweroff(timer_ticks(), "yes");
+    shell_sink(0, SHELL_POWEROFF_CANCELLED "\n", SHELL_TEXT);
+}
+
 static bool end_process(int32_t pid, const char *how);
 
 /* 0.11: the answer to "kill". Only exactly "yes" ends the process; the
@@ -1353,6 +1384,9 @@ static void run_line(char *line, uint32_t scrolls_before)
             r = shell_answer(line, &ctx, &sink);
             if (r == SHELL_COPY)
                 copy_begin();
+        } else if (poweroff_asked) {        /* 1.5 stage 6 */
+            poweroff_asked = false;
+            answer_poweroff(line);
         } else {
             answer_reboot(line);
         }
@@ -1362,8 +1396,11 @@ static void run_line(char *line, uint32_t scrolls_before)
         build_context(&ctx);
         uint64_t started = timer_ticks();
         r = shell_execute(line, &ctx, &sink);
-        confirming = r == SHELL_REBOOT || r == SHELL_KILL || r == SHELL_ASK;
+        confirming = r == SHELL_REBOOT || r == SHELL_KILL || r == SHELL_ASK || r == SHELL_POWEROFF;
         storage_asked = r == SHELL_ASK;
+        poweroff_asked = r == SHELL_POWEROFF;   /* 1.5 stage 6 */
+        if (r == SHELL_POWEROFF_NOW)            /* 1.5 stage 6: "poweroff -y" */
+            do_poweroff(timer_ticks(), "-y");
         if (session.timed) {                /* 0.12 stage 2: "time <command>" */
             timing = true;
             timing_start = started;

@@ -31,6 +31,7 @@ LOGO_PIXELS=293      # from: python3 scripts/logo-preview.py
 MEMCHECK=$(dirname "$0")/memory_check.py
 QMPKEYS=$(dirname "$0")/qmp_keys.py
 QMPSCREEN=$(dirname "$0")/qmp_screen.py   # 0.9.2: reads the VGA text screen through QMP
+QMPPOWER=$(dirname "$0")/qmp_power.py     # 1.5 stage 6: QEMU's SHUTDOWN event (power_boot)
 
 # 0.11: stall watch, a harness diagnostic that decides no check. Every QEMU
 # boot below runs through tests/qemu-watch.sh ("qemu-system-x86_64" first

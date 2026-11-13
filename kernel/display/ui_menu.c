@@ -25,8 +25,8 @@ struct menu_def {
 };
 
 static const struct menu_def menu_defs[2] = {
-    { 288, 182, true, 3, 2, { 61, 97, 142 }, { 56, 137 }, { "About", "Console", "Restart" },
-      { UI_ICON_ABOUT, UI_ICON_CONSOLE, UI_ICON_RESTART }, { UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_RESTART } },
+    { 288, 182, true, 3, 2, { 61, 97, 142 }, { 56, 137 }, { "About", "Console", "Power..." },
+      { UI_ICON_ABOUT, UI_ICON_CONSOLE, UI_ICON_RESTART }, { UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_POWER } },
     { 224, 80, false, 2, 0, { 4, 40, 0 }, { 0, 0 }, { "Open Console", "About Madire OS", 0 },
       { UI_ICON_CONSOLE, UI_ICON_ABOUT, UI_ICON_NONE }, { UI_MENU_CONSOLE, UI_MENU_ABOUT, UI_MENU_NONE } },
 };

@@ -77,6 +77,13 @@ void fbcon_unhold(void);
  * the console is not active on the back buffer, is held, or a panic runs. */
 bool fbcon_window(struct surface *surf, int32_t w, int32_t h, void (*damage)(struct rect r));
 
+/* 1.5 stage 6: the power-off's fallback screen (kernel/power/power.c), as
+ * a panic's crash screen: the console leaves its window and any hold (the
+ * splash's or the desktop's) and draws the whole grid on the screen from
+ * then on (the desktop never composes again: the machine halts). Nothing if
+ * the console is not active or draws directly (fbcon_crash_early). */
+void fbcon_full_screen(void);
+
 /* Called by vga_text.c (only while active): cell i (row x 80 + col) of the
  * shadow changed; the whole shadow changed; colour slot `slot` changed;
  * the cursor was shown, hidden or moved. */

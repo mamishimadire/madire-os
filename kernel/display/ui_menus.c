@@ -1,5 +1,6 @@
 /*
- * The desktop's menus and the Restart dialog (1.3 stage 5); see ui_menus.h.
+ * The desktop's menus and the power dialog (1.3 stage 5; 1.5 stage 6); see
+ * ui_menus.h.
  */
 #include "kernel/display/ui_menus.h"
 
@@ -25,6 +26,7 @@ void ui_menus_init(struct ui_menus *m, struct ui_wm *wm, struct ui_window *about
     m->m_state = UI_M_NORMAL;
     m->done = UI_MENU_NONE;
     m->restart = false;
+    m->shutdown = false;
     m->n_ev = 0;
     m->lost_ev = 0;
 }
@@ -144,6 +146,23 @@ static void menus_restart(struct ui_menus *m)
     menus_event(m, UI_MEV_RESTART);
 }
 
+static void menus_shutdown(struct ui_menus *m)
+{
+    m->shutdown = true;
+    menus_event(m, UI_MEV_SHUTDOWN);
+}
+
+/* The focused button pressed by Enter (1.5 stage 6: three buttons). */
+static void menus_dlg_enter(struct ui_menus *m)
+{
+    if (m->dlg.focus == UI_DLG_CANCEL)
+        menus_dlg_close(m, UI_WHY_CANCEL);
+    else if (m->dlg.focus == UI_DLG_RESTART)
+        menus_restart(m);
+    else
+        menus_shutdown(m);
+}
+
 static void menus_choose(struct ui_menus *m, int row, bool by_key)
 {
     enum ui_menu_action a = ui_menu_action(m->menu.kind, row);
@@ -154,7 +173,7 @@ static void menus_choose(struct ui_menus *m, int row, bool by_key)
     if (a == UI_MENU_ABOUT || a == UI_MENU_CONSOLE) {
         if (ui_wm_open(m->wm, a == UI_MENU_ABOUT ? m->about : m->console))
             m->done = a;
-    } else if (a == UI_MENU_RESTART) {
+    } else if (a == UI_MENU_POWER) {
         menus_dlg_open(m, by_key);
     }
 }
@@ -171,14 +190,19 @@ static enum ui_button_state menus_part_state(const struct ui_menus *m, enum ui_m
     return over && !m->left ? UI_BUTTON_HOVER : UI_BUTTON_NORMAL;
 }
 
+/* 1.5 stage 6: the dialog's parts in their order for the events: the three
+ * buttons (enum ui_dialog_button), then the close button (row 3). */
+static const enum ui_menus_press menus_dlg_press[4] = { UI_MPRESS_CANCEL, UI_MPRESS_RESTART, UI_MPRESS_SHUTDOWN,
+                                                        UI_MPRESS_CLOSE };
+static const enum ui_dialog_part menus_dlg_part[4] = { UI_DLG_PART_CANCEL, UI_DLG_PART_RESTART, UI_DLG_PART_SHUTDOWN,
+                                                       UI_DLG_PART_CLOSE };
+
 static void menus_dlg_states(struct ui_menus *m)
 {
     enum ui_dialog_part at = ui_dialog_hit(&m->dlg, m->x, m->y);
-    for (int i = 0; i < 3; i++) {
-        enum ui_menus_press p = i == 0 ? UI_MPRESS_CANCEL : i == 1 ? UI_MPRESS_RESTART : UI_MPRESS_CLOSE;
-        enum ui_dialog_part part = i == 0 ? UI_DLG_PART_CANCEL : i == 1 ? UI_DLG_PART_RESTART : UI_DLG_PART_CLOSE;
-        enum ui_button_state st = menus_part_state(m, p, part, at);
-        enum ui_button_state *now = i < 2 ? &m->dlg.btn[i] : &m->dlg.w.close;
+    for (int i = 0; i < 4; i++) {
+        enum ui_button_state st = menus_part_state(m, menus_dlg_press[i], menus_dlg_part[i], at);
+        enum ui_button_state *now = i < UI_DLG_BUTTONS ? &m->dlg.btn[i] : &m->dlg.w.close;
         if (st == *now)
             continue;
         *now = st;
@@ -233,8 +257,10 @@ static void menus_dlg_pointer(struct ui_menus *m, bool down, bool up)
     enum ui_dialog_part at = ui_dialog_hit(&m->dlg, m->x, m->y);
     if (down && !m->left) {
         m->left = true;
-        m->press = at == UI_DLG_PART_CANCEL ? UI_MPRESS_CANCEL : at == UI_DLG_PART_RESTART ? UI_MPRESS_RESTART
-                 : at == UI_DLG_PART_CLOSE ? UI_MPRESS_CLOSE : UI_MPRESS_OUTSIDE;
+        m->press = UI_MPRESS_OUTSIDE;
+        for (int i = 0; i < 4; i++)
+            if (at == menus_dlg_part[i])
+                m->press = menus_dlg_press[i];
     }
     if (up && m->left) {
         enum ui_menus_press p = m->press;
@@ -250,6 +276,8 @@ static void menus_dlg_pointer(struct ui_menus *m, bool down, bool up)
         }
         if (p == UI_MPRESS_RESTART && at == UI_DLG_PART_RESTART)
             menus_restart(m);
+        if (p == UI_MPRESS_SHUTDOWN && at == UI_DLG_PART_SHUTDOWN)
+            menus_shutdown(m);
     }
     menus_dlg_states(m);
 }
@@ -307,12 +335,9 @@ enum ui_menus_route ui_menus_key(struct ui_menus *m, enum ui_menus_key k, bool p
     enum ui_menus_route route = UI_MENUS_TAKEN;
     if (m->dlg_open) {
         if (pressed && k == UI_MKEY_ENTER) {
-            if (m->dlg.focus == UI_DLG_CANCEL)
-                menus_dlg_close(m, UI_WHY_CANCEL);
-            else
-                menus_restart(m);
+            menus_dlg_enter(m);
         } else if (pressed && k == UI_MKEY_TAB) {
-            m->dlg.focus = m->dlg.focus == UI_DLG_CANCEL ? UI_DLG_RESTART : UI_DLG_CANCEL;
+            m->dlg.focus = (enum ui_dialog_button)((m->dlg.focus + 1) % UI_DLG_BUTTONS);
             m->dlg.ring = true;
             menus_damage(m, m->dlg.w.r);
             struct ui_menus_event *e = menus_event(m, UI_MEV_DLG_FOCUS);

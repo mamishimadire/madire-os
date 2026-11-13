@@ -63,13 +63,17 @@
  * mbutton_pressed (the button alone); menu_mouse (the M menu as the mouse
  * opens it, no row selected, the M button open), menu_key (About selected
  * with the focus ring, as the Windows key opens it), menu_hover (Restart
- * selected by the pointer); menu_desktop (the desktop menu for a hot spot
- * 10 dp left of the screen's right edge and above the taskbar, so moved
- * left and up, its second row selected); the dialog: dialog (Cancel
- * focused, no ring, its close button on hover), dialog_key (the ring on
- * Cancel, Restart on hover), dialog_tab (Restart focused with the ring,
- * Cancel on hover), dialog_pressed_cancel (Cancel pressed, the ring on
- * Restart), dialog_pressed_restart (Restart pressed, the ring on Cancel).
+ * selected by the pointer; 1.5 stage 6: the row Power...); menu_desktop
+ * (the desktop menu for a hot spot 10 dp left of the screen's right edge
+ * and above the taskbar, so moved left and up, its second row selected);
+ * the dialog (1.5 stage 6: the power dialog, Cancel, Restart, Shut down):
+ * dialog (Cancel focused, no ring, its close button on hover), dialog_key
+ * (the ring on Cancel, Shut down on hover; Restart until 1.5),
+ * dialog_tab (Restart focused with the ring, Cancel on hover),
+ * dialog_pressed_cancel (Cancel pressed, the ring on Restart),
+ * dialog_pressed_restart (Restart pressed, the ring on Cancel),
+ * dialog_pressed_shutdown (1.5 stage 6: Shut down pressed, the ring on
+ * Cancel).
  * menu_tiles and dialog_tiles are menu_key and dialog_tab painted in tiles
  * of 97 x 61 pixels from (-7, -13) (as the compositor paints them, clipped
  * to each damaged rectangle); they record no colour pair (a mark's colour
@@ -617,7 +621,7 @@ static int scene_menus(struct surface *s, const struct fbcon_layout *cl, const c
             d->w.close = UI_BUTTON_HOVER;
         } else if (strcmp(name, "dialog_key") == 0) {
             d->ring = true;
-            d->btn[UI_DLG_RESTART] = UI_BUTTON_HOVER;
+            d->btn[UI_DLG_SHUTDOWN] = UI_BUTTON_HOVER;  /* 1.5 stage 6: the accent button (was Restart) */
         } else if (strcmp(name, "dialog_tab") == 0 || strcmp(name, "dialog_tiles") == 0) {
             d->focus = UI_DLG_RESTART;
             d->ring = true;
@@ -629,6 +633,9 @@ static int scene_menus(struct surface *s, const struct fbcon_layout *cl, const c
         } else if (strcmp(name, "dialog_pressed_restart") == 0) {
             d->ring = true;
             d->btn[UI_DLG_RESTART] = UI_BUTTON_PRESSED;
+        } else if (strcmp(name, "dialog_pressed_shutdown") == 0) {     /* 1.5 stage 6 */
+            d->ring = true;
+            d->btn[UI_DLG_SHUTDOWN] = UI_BUTTON_PRESSED;
         } else {
             return 2;
         }

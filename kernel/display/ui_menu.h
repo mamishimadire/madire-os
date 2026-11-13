@@ -19,7 +19,8 @@
  *     fx(250 s, 2576) for OS (the About window's weights at 10/16),
  *     tracking 6 units, pen = (r.x + ui_px(52)) x 256 (12 dp after the M),
  *     its cap top at (r.y + ui_px(4) + (hh - ui_px(10)) / 2) x 256. Its
- *     dividers at 56 and 137 dp; its rows About, Console and Restart from
+ *     dividers at 56 and 137 dp; its rows About, Console and Power...
+ *     (1.5 stage 6: Restart until then; it opens the power dialog) from
  *     61, 97 and 142 dp;
  *   - the desktop menu (the right-click menu): 224 x 80 dp, no header, no
  *     divider; its rows "Open Console" and "About Madire OS" from 4 and
@@ -61,7 +62,7 @@
 #define UI_MENU_ROWS_MAX 3
 
 enum ui_menu_kind { UI_MENU_M, UI_MENU_DESKTOP };
-enum ui_menu_action { UI_MENU_NONE, UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_RESTART };
+enum ui_menu_action { UI_MENU_NONE, UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_POWER };
 
 /* The M button's states (the Design Guide, section 10; desktop_core.h draws them). */
 enum ui_m_state { UI_M_NORMAL, UI_M_HOVER, UI_M_PRESSED, UI_M_OPEN };

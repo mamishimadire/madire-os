@@ -60,11 +60,11 @@ static void test_sizes_and_rows(void)
     CHECK(w == 448 && h == 160);
     CHECK_EQ(ui_menu_rows(UI_MENU_M), 3);
     CHECK_EQ(ui_menu_rows(UI_MENU_DESKTOP), 2);
-    CHECK(strcmp(ui_menu_label(UI_MENU_M, 0), "About") == 0 && strcmp(ui_menu_label(UI_MENU_M, 2), "Restart") == 0);
+    CHECK(strcmp(ui_menu_label(UI_MENU_M, 0), "About") == 0 && strcmp(ui_menu_label(UI_MENU_M, 2), "Power...") == 0);
     CHECK(strcmp(ui_menu_label(UI_MENU_DESKTOP, 0), "Open Console") == 0);
     CHECK(strcmp(ui_menu_label(UI_MENU_DESKTOP, 1), "About Madire OS") == 0);
     CHECK_EQ(ui_menu_action(UI_MENU_M, 1), UI_MENU_CONSOLE);
-    CHECK_EQ(ui_menu_action(UI_MENU_M, 2), UI_MENU_RESTART);
+    CHECK_EQ(ui_menu_action(UI_MENU_M, 2), UI_MENU_POWER);
     CHECK_EQ(ui_menu_action(UI_MENU_DESKTOP, 0), UI_MENU_CONSOLE);
     CHECK_EQ(ui_menu_action(UI_MENU_DESKTOP, 1), UI_MENU_ABOUT);
     CHECK_EQ(ui_menu_action(UI_MENU_DESKTOP, 2), UI_MENU_NONE);

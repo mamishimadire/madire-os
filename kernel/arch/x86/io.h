@@ -35,4 +35,18 @@ static inline uint32_t inl(uint16_t port)
     return ret;
 }
 
+/* 1.5 stage 6 (owner approved): 16-bit port access, for the ACPI PM1a and
+ * PM1b control registers (16 bits wide; kernel/power/acpi.c). */
+static inline void outw(uint16_t port, uint16_t val)
+{
+    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port)
+{
+    uint16_t ret;
+    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 #endif

@@ -738,7 +738,10 @@ section "[1.3] The menus, the M button and the Restart dialog against tests/desk
 # desktop menu moved left and up to stay on the screen and above the
 # taskbar, its second row selected; the Restart dialog with its close button
 # on hover, the ring on Cancel with Restart on hover, the ring on Restart
-# with Cancel on hover, Cancel pressed, Restart pressed. menu_tiles and
+# with Cancel on hover, Cancel pressed, Restart pressed (1.5 stage 6: the
+# power dialog, Cancel, Restart and Shut down; the ring on Cancel with Shut
+# down on hover, and a twelfth scene, Shut down pressed; the M menu's row
+# Power...). menu_tiles and
 # dialog_tiles are the key-opened M menu and the Tab-focused dialog painted
 # in tiles (as the compositor paints them, clipped to each damaged
 # rectangle) and must equal the same references. desktop_ref.py draws them
@@ -751,7 +754,8 @@ section "[1.3] The menus, the M button and the Restart dialog against tests/desk
 PAIRS5=$OUT/desktop-pairs-menus.txt
 rm -f "$PAIRS5"
 desktop5_static() {   # desktop5_static <W> <H> <bytes per pixel> <scene> [reference scene]
-    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    # 1.5 stage 6: the check's tag is D5_TAG's, [1.3] when it is not set.
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n tag=${D5_TAG:-1.3}
     rm -f "$a" "$b"
     DESKTOP_PAIRS=$PAIRS5 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
     t0=$(date +%s)
@@ -765,9 +769,9 @@ EOF
 )
     echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
     if [ "$n" = same ]; then
-        pass "[1.3] the menu scene $4 at $1x$2x$(($3 * 8)) (ui_menu.c, ui_dialog.c, desktop_core.c) equals tests/desktop_ref.py's rendering pixel for pixel"
+        pass "[$tag] the menu scene $4 at $1x$2x$(($3 * 8)) (ui_menu.c, ui_dialog.c, desktop_core.c) equals tests/desktop_ref.py's rendering pixel for pixel"
     else
-        fail "[1.3] the menu scene $4 at $1x$2x$(($3 * 8)): $n"
+        fail "[$tag] the menu scene $4 at $1x$2x$(($3 * 8)): $n"
     fi
 }
 for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
@@ -776,6 +780,9 @@ for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; d
         # shellcheck disable=SC2086
         desktop5_static $mode $scene
     done
+    # 1.5 stage 6: the power dialog's Shut down pressed, a scene of its own ([1.5]).
+    # shellcheck disable=SC2086
+    D5_TAG=1.5 desktop5_static $mode dialog_pressed_shutdown
     # shellcheck disable=SC2086
     desktop5_static $mode menu_tiles menu_key
     # shellcheck disable=SC2086
@@ -784,7 +791,7 @@ done
 CONTRAST5=$(python3 "$DREF" --contrast "$PAIRS5" 2>&1)
 printf '%s\n' "$CONTRAST5" | sed 's/^/      /'
 if [ "$(printf '%s\n' "$CONTRAST5" | tail -n 1)" = "CONTRAST result: PASS" ] &&
-   printf '%s\n' "$CONTRAST5" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 11 scenes \(dialog dialog_key dialog_pressed_cancel dialog_pressed_restart dialog_tab mbutton_hover mbutton_pressed menu_desktop menu_hover menu_key menu_mouse\)$' &&
+   printf '%s\n' "$CONTRAST5" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 12 scenes \(dialog dialog_key dialog_pressed_cancel dialog_pressed_restart dialog_pressed_shutdown dialog_tab mbutton_hover mbutton_pressed menu_desktop menu_hover menu_key menu_mouse\)$' &&
    [ "$(printf '%s\n' "$CONTRAST5" | grep -c '^CONTRAST carried pass ')" -eq 4 ]; then
     pass "[1.3] contrast: every colour pair the menus, the M button and the dialog draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; each fill marked fail alone is carried by its passing accent bar in the same scene, or by the pointer"
 else
@@ -3161,3 +3168,139 @@ for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; d
         desktop12_static $mode $scene
     done
 done
+
+# ---- 1.5 stage 6: Shut down ----
+
+section "[1.5] Shut down: poweroff -y in Live mode and in Disk mode (QEMU's guest-shutdown event), the fallback screen with -machine acpi=off (stage 6)"
+# docs/plans/1.5.md, C3, C6b, D, G (S6), risks 47-49 and 64. Each boot types
+# "poweroff -y" at the console (tests/qmp_keys.py on one QMP monitor);
+# tests/qmp_power.py watches QEMU's events on another (power_boot,
+# qemu-lib.sh): QEMU's PIIX4 power management sends SHUTDOWN with "reason":
+# "guest-shutdown" when the guest writes SLP_TYP and SLP_EN (ACPI S5), then
+# QEMU exits. (1-2) Live mode (-kernel, no disk): the console's line,
+# "Power: shutting down (Live mode)", one ACPI: line (the tables, _S5's two
+# values, PM1a_CNT, SCI_EN), no save and no fallback screen; the event
+# within 5 s of the Power: line, QEMU's own exit. (3-5) Disk mode (a marked
+# read-write test disk, no test= option: the home folders made, the
+# automatic save on): a file written, then poweroff -y: the save before
+# power-off ("done ...; the volume marked clean"), "Saving files... done.",
+# the ACPI: line, the event within 10 s (the save's limit, D9); the image
+# afterwards: e2fsck -fn reports nothing, the volume clean, the file there.
+# (6-7) -machine acpi=off (QEMU builds no ACPI tables): "ACPI: no ACPI tables
+# found (...)", the fallback screen's two lines on serial and in the cell
+# grid (VGA text, read through QMP, rows 1 and 3), and QEMU still running
+# 2 s later (halted with interrupts off; stopped within the stall watch's
+# 6 s).
+PW_T0=$(date +%s)
+PW_W=$OUT/poweroff
+rm -rf "${PW_W:?}" && mkdir -p "$PW_W/tree"
+PW_OK=1
+PW_ACPI='^ACPI: RSDP at 0x[0-9a-f]+ \(revision [0-9]+\), (RSDT|XSDT) at 0x[0-9a-f]+ \([0-9]+ entries\), FADT at 0x[0-9a-f]+ \([0-9]+ bytes\), DSDT at 0x[0-9a-f]+ \([0-9]+ bytes\); _S5 SLP_TYPa [0-7], SLP_TYPb [0-7]; PM1a_CNT 0x[0-9a-f]+, PM1b_CNT (0x[0-9a-f]+|none); SCI_EN (set|set after ACPI_ENABLE 0x[0-9a-f]+ to SMI_CMD 0x[0-9a-f]+)$'
+PW_SAFE="It is now safe to turn off the computer."
+pw_lines() { grep -E '^(console: power-off|Power: |ACPI: |ext2: save before power-off|Saving files)|safe to turn off|could not power off' "$1" | sed "s/^/      $2: /"; }
+
+# (1-2) Live mode.
+PW_LL=$OUT/serial-poweroff-live.log
+power_boot "$PW_LL" 90 "x{wait:1}poweroff -y{ret}" "Power: shutting down (Live mode)" -m 128M -kernel "$KERNEL"
+pw_lines "$PW_LL" live
+if RE="$PW_ACPI" awk '
+        $0 == "console: power-off confirmed (-y)" && !c { c = NR }
+        $0 == "Power: shutting down (Live mode)" && c && !p { p = NR }
+        $0 ~ ENVIRON["RE"] { a++; if (p && !an) an = NR }
+        END { exit !(c && p && an && c < p && p < an && a == 1) }' "$PW_LL" &&
+   ! grep -qE '^ext2: save before power-off|^Saving files|safe to turn off|could not power off' "$PW_LL"; then
+    pass "[1.5] poweroff -y in Live mode: 'console: power-off confirmed (-y)', then 'Power: shutting down (Live mode)', then one ACPI: line (RSDP, RSDT or XSDT, FADT, DSDT, _S5's SLP_TYPa and SLP_TYPb, PM1a_CNT, SCI_EN); no save and no fallback screen"
+else
+    fail "[1.5] poweroff -y in Live mode: the console's, Power: and ACPI: lines not in order and once, or a save or the fallback screen (see ${PW_LL##*/})"
+fi
+if [ "$POWER_EVENT" = SHUTDOWN:guest-shutdown ] && [[ "$POWER_MS" =~ ^[0-9]+$ ]] && [ "$POWER_MS" -le 5000 ] &&
+   [ "$POWER_RC" -eq 0 ] && [ "$(grep -c '^boot32: start$' "$PW_LL")" -eq 1 ] && ! grep -qE 'PANIC|FAILED|^Restart: ' "$PW_LL"; then
+    pass "[1.5] poweroff -y in Live mode: QEMU sent SHUTDOWN (reason guest-shutdown) $POWER_MS ms after 'Power: shutting down (Live mode)' (limit 5 s) and exited by itself; booted once; no PANIC, FAILED or Restart: line"
+else
+    fail "[1.5] poweroff -y in Live mode: no guest-shutdown event within 5 s, or QEMU did not exit by itself (${POWER_OUT:-no POWER line}; status $POWER_RC)"
+fi
+
+# (3-5) Disk mode.
+printf 'kept on the disk\n' > "$PW_W/tree/note.txt"
+disk_mkfs "$PW_W/fs.img" 16384 1024 256 2048 "$PW_W/tree" > "$PW_W/mkfs.txt" 2>&1 &&
+    disk_image mbr "$PW_W/fs.img" "$PW_W/disk.img" > /dev/null 2>&1 || PW_OK=0
+PW_DL=$OUT/serial-poweroff-disk.log
+if [ "$PW_OK" -eq 1 ]; then
+    power_boot "$PW_DL" 120 "x{wait:1}echo power-file > /home/user/power.txt{ret}{wait:1}poweroff -y{ret}" \
+        "Power: shutting down (Disk mode)" -m 128M -kernel "$KERNEL" \
+        -drive file="$PW_W/disk.img",if=none,id=pw-disk,format=raw -device ich9-ahci,id=pw-ahci,addr=0x5 \
+        -device ide-hd,drive=pw-disk,bus=pw-ahci.0
+else : > "$PW_DL"; POWER_EVENT=none; POWER_MS=none; POWER_RC=1; fi
+pw_lines "$PW_DL" disk
+if [ "$PW_OK" -eq 1 ] && RE="$PW_ACPI" awk '
+        $0 == "console: power-off confirmed (-y)" && !c { c = NR }
+        $0 == "Power: shutting down (Disk mode)" && c && !p { p = NR }
+        /^ext2: save before power-off: done in [0-9]+ ms \([0-9]+ saves, [0-9]+ writes; 0 open files with no name left forgotten first\); the volume marked clean$/ { s++; if (p && !sn) sn = NR }
+        $0 == "Saving files... done." && sn && !d { d = NR }
+        $0 ~ ENVIRON["RE"] { a++; if (d && !an) an = NR }
+        END { exit !(c && p && sn && d && an && c < p && p < sn && sn < d && d < an && s == 1 && a == 1) }' "$PW_DL" &&
+   ! grep -qE 'safe to turn off|could not power off|powering off anyway' "$PW_DL"; then
+    pass "[1.5] poweroff -y in Disk mode: the console's line, 'Power: shutting down (Disk mode)', the save before power-off ('done in <n> ms ...; the volume marked clean'), 'Saving files... done.', then one ACPI: line; no fallback screen"
+else
+    fail "[1.5] poweroff -y in Disk mode: the lines not in order and once, the save not done, or the fallback screen (see ${PW_DL##*/})"
+fi
+if [ "$POWER_EVENT" = SHUTDOWN:guest-shutdown ] && [[ "$POWER_MS" =~ ^[0-9]+$ ]] && [ "$POWER_MS" -le 10000 ] &&
+   [ "$POWER_RC" -eq 0 ] && [ "$(grep -c '^boot32: start$' "$PW_DL")" -eq 1 ] && ! grep -qE 'PANIC|FAILED|^Restart: ' "$PW_DL"; then
+    pass "[1.5] poweroff -y in Disk mode: QEMU sent SHUTDOWN (reason guest-shutdown) $POWER_MS ms after 'Power: shutting down (Disk mode)' (the save included; limit 10 s) and exited by itself; booted once; no PANIC, FAILED or Restart: line"
+else
+    fail "[1.5] poweroff -y in Disk mode: no guest-shutdown event within 10 s, or QEMU did not exit by itself (${POWER_OUT:-no POWER line}; status $POWER_RC)"
+fi
+disk_image extract "$PW_W/disk.img" "$PW_W/part.img" > /dev/null 2>&1
+PW_STATE=$(disk_debugfs "$PW_W/part.img" stats | sed -nE 's/^Filesystem state:[[:space:]]*(.*)$/\1/p')
+PW_FSCK=$(disk_fsck "$PW_W/part.img"); PW_FRC=$?
+PW_FX=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$PW_FSCK")
+PW_FILE=$(disk_debugfs "$PW_W/part.img" "cat /user/power.txt" | sha256sum | cut -d' ' -f1)
+echo "      disk after the power-off: state ${PW_STATE:-?}; e2fsck -fn exit $PW_FRC${PW_FX:+: $PW_FX}"
+if [ "$PW_OK" -eq 1 ] && [ "$PW_STATE" = clean ] && [ "$PW_FRC" -eq 0 ] && [ -z "$PW_FX" ] &&
+   [ "$PW_FILE" = "$(printf 'power-file\n' | sha256sum | cut -d' ' -f1)" ]; then
+    pass "[1.5] poweroff -y in Disk mode: after the power-off the volume is marked clean, e2fsck -fn reports nothing, and /user/power.txt (written just before) is on the disk"
+else
+    fail "[1.5] poweroff -y in Disk mode: the volume not clean (${PW_STATE:-?}), e2fsck -fn exit $PW_FRC${PW_FX:+ ($PW_FX)}, or /user/power.txt not saved"
+fi
+
+# (6-7) -machine acpi=off: the fallback screen.
+PW_AL=$OUT/serial-poweroff-acpioff.log
+PW_SOCK=$OUT/qmp-poweroff.sock
+rm -f "$PW_AL" "$PW_SOCK"
+timeout 90 qemu-system-x86_64 -display none -no-reboot -serial file:"$PW_AL" \
+    -qmp unix:"$PW_SOCK",server=on,wait=off -machine acpi=off -m 128M -kernel "$KERNEL" >/dev/null 2>&1 &
+PW_QPID=$!
+python3 "$QMPKEYS" "$PW_SOCK" "$PW_AL" "System ready." --text "x{wait:1}poweroff -y{ret}" --gap 0.05 2>&1 |
+    sed 's/^/      /'
+PW_WHY='(no ACPI tables found|an ACPI table failed its checks|no _S5 sleep state|ACPI mode could not be enabled|the computer did not power off)'
+python3 "$QMPSCREEN" "$PW_SOCK" "$OUT/screen-poweroff-acpioff.bin" --log "$PW_AL" \
+    --wait '^Madire OS could not power off by itself' 1 --row 1 "^It is now safe to turn off the computer\.$" \
+    --row 3 "^Madire OS could not power off by itself \\($PW_WHY\\)\\.$" > "$OUT/screen-poweroff-acpioff.txt" 2>&1
+PW_SCREEN_RC=$?
+sleep 2
+if kill -0 "$PW_QPID" 2>/dev/null; then PW_ALIVE=yes; else PW_ALIVE=no; fi
+kill "$PW_QPID" 2>/dev/null
+wait "$PW_QPID" 2>/dev/null
+[ -f "$PW_AL" ] || : > "$PW_AL"
+pw_lines "$PW_AL" acpi=off
+grep -E '^(row 0[0-4]|CHECK)' "$OUT/screen-poweroff-acpioff.txt" | sed 's/^/      acpi=off screen: /'
+echo "      acpi=off: QEMU still running 2 s after the fallback screen: $PW_ALIVE"
+PW_REASON=$(sed -nE "s/^Madire OS could not power off by itself \\($PW_WHY\\)\\.$/\\1/p" "$PW_AL" | head -n 1)
+PW_ROW3=$(sed -nE 's/^row 03\|(.*)\|$/\1/p' "$OUT/screen-poweroff-acpioff.txt")
+echo "      acpi=off: the reason '${PW_REASON:-none}' (expected with QEMU's -machine acpi=off: no ACPI tables found)"
+if SAFE="$PW_SAFE" WHY="$PW_REASON" awk '
+        $0 == "Power: shutting down (Live mode)" && !p { p = NR }
+        /^ACPI: / { a++; if (p && !an) an = NR }
+        $0 == ENVIRON["SAFE"] && an && !s { s = NR }
+        $0 == "Madire OS could not power off by itself (" ENVIRON["WHY"] ")." && s && !r { r = NR }
+        END { exit !(p && an && s && r && a == 1) }' "$PW_AL" && [ -n "$PW_REASON" ] && ! grep -qE 'PANIC|FAILED' "$PW_AL"; then
+    pass "[1.5] -machine acpi=off: 'Power: shutting down (Live mode)', one ACPI: line, then the fallback screen's two lines on serial: '$PW_SAFE' and 'Madire OS could not power off by itself ($PW_REASON).' (one of C6b's reasons); no PANIC or FAILED line"
+else
+    fail "[1.5] -machine acpi=off: the ACPI: line or the fallback screen's lines missing or out of order on serial (see ${PW_AL##*/})"
+fi
+if [ "$PW_SCREEN_RC" -eq 0 ] && [ "$PW_ROW3" = "Madire OS could not power off by itself ($PW_REASON)." ] && [ "$PW_ALIVE" = yes ]; then
+    pass "[1.5] -machine acpi=off: the fallback screen's two lines in the cell grid (rows 1 and 3, read through QMP; the reason as on serial), and QEMU still running 2 s later (halted, not powered off)"
+else
+    fail "[1.5] -machine acpi=off: the fallback screen not in the cell grid (screen-poweroff-acpioff.txt) or QEMU not running (still running: $PW_ALIVE)"
+fi
+echo "      [1.5] Shut down: $(( $(date +%s) - PW_T0 )) s (report only)"
