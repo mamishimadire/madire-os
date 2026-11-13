@@ -30,7 +30,7 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 ## 4. Protected files
 
 - Each milestone plan lists the protected files it must change, with a justification for each; never change a protected file without that justification and approval.
-- Check every stage with the protected-file check: `git diff --name-only <baseline> -- <listed paths>`, where the baseline is the latest milestone tag (for 1.4 it is `v1.3`, the commit `1df03b3`; for 1.3 it was `v1.2`, the commit `d9bf065`; for 1.2 it was `v1.1`, the commit `407275b`; for 0.12 it was `3a347a2`, the `v0.11` commit).
+- Check every stage with the protected-file check: `git diff --name-only <baseline> -- <listed paths>`, where the baseline is the latest milestone tag (for 1.5 it is `v1.4`, the commit `28ef17d`; for 1.4 it was `v1.3`, the commit `1df03b3`; for 1.3 it was `v1.2`, the commit `d9bf065`; for 1.2 it was `v1.1`, the commit `407275b`; for 0.12 it was `3a347a2`, the `v0.11` commit).
 - Protected in 0.9 (unchanged unless noted): `kernel/memory/memory.c` (changed in 0.9 by an approved, mechanical preemption guard), `kernel/memory/heap.c`, `kernel/memory/reserve.c`, `kernel/memory/pmm.c`, `kernel/memory/mmap.c` and `kernel/memory/mmap.h`, `kernel/memory/memtest.c`, `kernel/timer.c` (changed in 0.11 by the approved lock-free `timer_ticks()` read), `kernel/arch/x86/irq.c`, `kernel/arch/x86/pic.c`, `kernel/devtest.c`, `kernel/bootscreen.c` and `kernel/bootscreen.h`, all of `drivers/`, `kernel/input/`, `kernel/console/textbuf.c`, `kernel/console/lineedit.c`, `kernel/shell/parser.c`, `kernel/shell/cpuinfo.c`, `kernel/logo.c`, `kernel/arch/x86/cmos.c`, `kernel/arch/x86/io.h`, `kernel/multiboot.h`, `tests/unit/test_shell.c`, `tests/unit/test_mmap.c`, `tests/unit/test_reserve.c`, `tests/memory_check.py`, `tests/qmp_keys.py`. Also protected since 0.12: `AGENTS.md` itself and `docs/plans/` (all approved milestone plans). Also protected since 1.2: `.github/workflows/regression.yml` (section 5: changing it needs the owner's approval).
 
 ## 5. Tests
@@ -93,12 +93,12 @@ These rules apply to every coding agent (Codex, Claude Code and others) and ever
 ## 12. Build and test commands
 
 ```powershell
-.\scripts\actions-regress.ps1 -Dispatch     # Windows: the official regression on GitHub Actions (sharded)
-.\scripts\actions-regress.ps1 -Collect <run id>   # download a finished run into build\regression\<run id>\
-.\scripts\remote-regress.ps1        # Windows: the fallback, the full regression in the Codespace (starts and stops it)
-.\scripts\remote-regress.ps1 -Target Kali   # the same on the local Kali VM (starts and stops it)
-.\scripts\build.ps1                 # Windows: build and test in the Codespace, fetch the ISO
-.\scripts\vbox-acceptance.ps1       # Windows: VirtualBox acceptance test
+powershell -ExecutionPolicy Bypass -File scripts\actions-regress.ps1 -Dispatch     # Windows: the official regression on GitHub Actions (sharded)
+powershell -ExecutionPolicy Bypass -File scripts\actions-regress.ps1 -Collect <run id>   # download a finished run into build\regression\<run id>\
+powershell -ExecutionPolicy Bypass -File scripts\remote-regress.ps1        # Windows: the fallback, the full regression in the Codespace (starts and stops it)
+powershell -ExecutionPolicy Bypass -File scripts\remote-regress.ps1 -Target Kali   # the same on the local Kali VM (starts and stops it)
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1                 # Windows: build and test in the Codespace, fetch the ISO
+powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1       # Windows: VirtualBox acceptance test
 ```
 
 ```sh
