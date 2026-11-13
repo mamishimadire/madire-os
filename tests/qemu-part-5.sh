@@ -7,7 +7,11 @@
 # desktop group's plan and references (1.3 stage 8) and the hidden boot
 # menu's checks (1.1; moved to part static in 1.3 stage 8a); from part 4
 # the console's file commands and the Live label (1.0 stage 8). New since:
-# the per-disk I/O lock's boots (1.5 stage 4, the last section). Each
+# the per-disk I/O lock's boots (1.5 stage 4); in 1.5 stage 5, moved
+# unchanged from part 1 for its headroom (A3), the unexpected IRQ (0.4),
+# the uptime heartbeat (0.12 stage 4) and the console keys (1.1 stage 8),
+# before the 1.5 sections, and
+# the ext2 tables' boots (1.5 stage 5, the last section). Each
 # section boots or builds what it reads itself (no file or variable from
 # another part).
 
@@ -476,6 +480,88 @@ fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[1.0] file session: no panic, dropped key, screen-rule violation or self-check"
 
+# ---- 0.4: the unexpected IRQ (moved unchanged from part 1 in 1.5 stage 5, A3) ----
+
+section "[0.4] Unexpected IRQ"
+LOG=$OUT/serial-irqunexpected.log
+boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=irqunexpected"
+expect "$LOG" "Unexpected IRQ test: PASS \(IRQ 2 counted and acknowledged, total 1\)" \
+                                                      "[0.4] unexpected IRQ counted and acknowledged"
+expect "$LOG" "Unexpected IRQ 2 \(total 1\)"          "[0.4] unexpected IRQ reported from normal context"
+expect "$LOG" "System ready\."                        "[0.4] unexpected IRQ: system ready afterwards"
+reject "$LOG" "PANIC"                                 "[0.4] unexpected IRQ: no panic"
+
+# ---- 0.12 stage 4: the uptime heartbeat (moved unchanged from part 1 in 1.5 stage 5, A3) ----
+
+section "[0.12] The uptime heartbeat: serial log only, never in dmesg (stage 4, option B)"
+# The console idles for 15 s (at least 10 s of guest time, so two or more
+# heartbeats even on a slow host), then "dmesg 5". The command runs on
+# thread 0, which also writes the heartbeat, so no heartbeat can come
+# between the command's line and its 5 output lines.
+LOG=$OUT/serial-dmesgidle.log
+boot_text "$LOG" 90 "System ready." "x{wait:1}echo before-idle{ret}{wait:15}dmesg 5{ret}echo end-of-dmesgidle-test{ret}" \
+    0.05 $'\nend-of-dmesgidle-test\n' -kernel "$KERNEL"
+DM=$(awk '/^madire> dmesg 5$/ && !n { n = 1; next } n >= 1 && n <= 5 { print; n++ }' "$LOG")
+sed 's/^/      dmesg 5: /' <<< "$DM"
+if [ "$(grep -c '' <<< "$DM")" -eq 5 ] && ! grep -q '^uptime: ' <<< "$DM" &&
+   [ "$(sed -n 4p <<< "$DM")" = "madire> echo before-idle" ] && [ "$(sed -n 5p <<< "$DM")" = "madire> dmesg 5" ]; then
+    pass "[0.12] dmesg 5 after 15 s idle: no uptime line; the last two are the command before the pause and dmesg 5"
+else
+    fail "[0.12] dmesg 5 after 15 s idle: an uptime line in dmesg, or not the last 5 kernel-log lines"
+fi
+HB=$(awk '/^madire> echo before-idle$/ && !d { n = 1; next } /^madire> dmesg 5$/ && n { n = 0; d = 1 }
+          n && /^uptime: [0-9]+ s$/' "$LOG" | grep -c '')
+if [ "$HB" -ge 2 ]; then
+    pass "[0.12] the heartbeat is still in the serial log during the idle period ($HB lines)"
+else
+    fail "[0.12] the heartbeat is missing from the serial log during the idle period ($HB lines, at least 2 expected)"
+fi
+
+# ---- 1.1 stage 8: the console keys (moved unchanged from part 1 in 1.5 stage 5, A3) ----
+
+# 1.1 stage 8: Ctrl+C, Esc and Tab at the prompt, in a normal boot (no
+# keylog): C1-C10 and L6. The cleared lines' text must never reach the
+# serial log (C3: the history and dmesg output is on it too).
+section "[1.1] Console keys: Ctrl+C, Esc and Tab (no keylog)"
+LOG=$OUT/serial-conskeys11.log
+S="x{wait:1}"
+S+="echo secretmarker11{ctrl+c}"                      # C1 Ctrl+C with text
+S+="{ctrl+c}"                                         # C1 Ctrl+C on an empty line
+S+="echo escmarker11{esc}"                            # C2 Esc
+S+="echo after-clear{ret}"
+S+="history{ret}"                                     # C3 (the markers must not be listed)
+S+="reboot{ret}{wait:1}ye{ctrl+c}{wait:1}"            # C4 Ctrl+C at the question
+S+="his{tab}{ret}"                                    # C5 unique: "history "
+S+="un{tab}{tab}{ctrl+c}"                             # C6 ambiguous: the list
+S+="echo a{tab}b{ret}"                                # C7 a later word: nothing
+S+="zz{tab}{bs}{bs}echo nomatch-ok{ret}"              # C7 no match: nothing
+S+="echo {caps}q{caps}r{ret}"                         # C8, L6 Caps Lock without keylog
+S+="dmesg 9999{ret}"                                  # C3 dmesg's text on the serial log
+S+="echo end-of-conskeys-test{ret}"
+boot_text "$LOG" 120 "System ready." "$S" 0.05 $'\nend-of-conskeys-test\n' -m 32M -kernel "$KERNEL"
+expect_in_order "$LOG" "[1.1] Ctrl+C at the prompt clears the line, with text and on an empty line (logged only as a fixed line)" \
+    '^console: Ctrl\+C: line cleared$' '^console: Ctrl\+C: line cleared$' '^madire> echo after-clear$'
+expect_next "$LOG" "[1.1] Esc clears the line: the next line runs exactly as echo after-clear" \
+    '^madire> echo after-clear$' '^after-clear$'
+reject "$LOG" 'secretmarker11|escmarker11' \
+    "[1.1] cleared lines reach neither the serial log, the history nor dmesg (secretmarker11, escmarker11)"
+expect_in_order "$LOG" "[1.1] Ctrl+C at a yes/no question answers no: Restart cancelled., no restart" \
+    '^madire> reboot$' '^console: Ctrl\+C: answered no$' '^Restart cancelled\.$' '^madire> history $'
+expect "$LOG" '^madire> history $' \
+    "[1.1] Tab completes a unique command name and adds a space (his: history)"
+expect_in_order "$LOG" "[1.1] Tab on an ambiguous name: the second Tab lists the matches (un: unalias  uname  unset)" \
+    '^unalias  uname  unset$' '^console: Ctrl\+C: line cleared$'
+expect_in_order "$LOG" "[1.1] Tab in a later word, or with no match, types nothing (echo ab, echo nomatch-ok)" \
+    '^madire> echo ab$' '^ab$' '^madire> echo nomatch-ok$' '^nomatch-ok$'
+expect_next "$LOG" "[1.1] Caps Lock in a normal boot types exactly (echo Qr)" \
+    '^madire> echo Qr$' '^Qr$'
+reject "$LOG" '^Keyboard lights: Num Lock on, Caps Lock on|^key: ' \
+    "[1.1] keyboard lights: Caps Lock changes not logged without keylog (no light or key lines)"
+expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
+    '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
+reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
+    "[1.1] console keys boot: no panic, nothing dropped, no light failure"
+
 # ---- 1.5 stage 4: the per-disk I/O lock ----
 
 section "[1.5] The per-disk I/O lock: test=blkslow, test=diskcontend and the self-check boots (stage 4)"
@@ -616,3 +702,122 @@ for dl_sc in "selfcheckdisklock|disk lock taken while the VFS lock is held \(L1\
     fi
 done
 echo "      [1.5] the per-disk I/O lock: $(( $(date +%s) - DL_T0 )) s (report only)"
+
+# ---- 1.5 stage 5: the ext2 tables at the mount ----
+
+section "[1.5] The ext2 tables at the mount: the .bss drop, test=diskwmem and test=diskrmem (stage 5)"
+# docs/plans/1.5.md, C2 (decision 2), C6b's two mount lines, risk 46. The
+# ext2 read core's buffers and the write core's tables are no longer in
+# .bss: the mount maps them in slot 508 (the read core's 7 pages first,
+# then the write tables' 28, each page zeroed when mapped); a refused mount
+# gives both back, a read-only mount the write tables. (1) size: madire.elf's
+# .bss at least 130,000 bytes below 974,848 (v1.4, 28ef17d, and 1.5 stage
+# 4, e79cb40). Each boot has its own marked read-write test disk (16 MiB,
+# 1 KiB blocks, one file /note.txt; tests/disk-lib.sh and
+# tests/disk_image.py, as part static's [1.4] disk sections make them).
+# (2-5) test=diskwmem: the write tables' last page fails on purpose (every
+# page taken before it given back): mounted read-only with C6b's line, the
+# store of changes not made; at the console the file reads back and a
+# write is refused; nothing is written (the image's SHA-256 unchanged);
+# slot 508 then maps the registers', DMA and cache pages and the read
+# core's 7 pages (struct ext2_bufs: 1024 + 6 x 4096 bytes), nothing more.
+# (6-7) test=diskrmem: the read core's last page fails on purpose: not
+# mounted, Live mode, with C6b's line, before any mount line; the image
+# unchanged; slot 508 maps the registers', DMA and cache pages only.
+TM_T0=$(date +%s)
+TM_W=$OUT/ext2mem
+rm -rf "${TM_W:?}" && mkdir -p "$TM_W/tree"
+TM_READY="System ready. Press any key to open the console."
+TM_OK=1
+TM_BSS0=974848
+TM_CORE=7
+printf 'kept on the disk\n' > "$TM_W/tree/note.txt"
+# tm_disk <name>: a marked test disk holding /note.txt at $TM_W/<name>-disk.img.
+tm_disk() {
+    disk_mkfs "$TM_W/$1-fs.img" 16384 1024 256 2048 "$TM_W/tree" > "$TM_W/$1-mkfs.txt" 2>&1 &&
+        disk_image mbr "$TM_W/$1-fs.img" "$TM_W/$1-disk.img" > /dev/null 2>&1
+}
+# tm_drive <name>: QEMU's options for that disk on ich9-ahci.
+tm_drive() {
+    printf '%s\n' -drive "file=$TM_W/$1-disk.img,if=none,id=tm$1-disk,format=raw" \
+        -device "ich9-ahci,id=tm$1-ahci,addr=0x5" -device "ide-hd,drive=tm$1-disk,bus=tm$1-ahci.0"
+}
+# tm_slot <log>: "<registers' pages> <pages mapped> <DMA pages> <cache
+# pages>" from the AHCI driver's two slot 508 lines (x when missing).
+tm_slot() {
+    local n m d c
+    n=$(sed -nE 's/^ahci: slot 508: registers 0x[0-9a-f]{8} at 0x[0-9a-f]{16} \(([0-9]+) pages, uncached: .*/\1/p' "$1" | head -n 1)
+    read -r m d c <<< "$(sed -nE 's/^ahci: slot 508 now: [0-9]+ page tables, ([0-9]+) pages mapped \(walked\); [0-9]+ page tables added, ([0-9]+) DMA pages, ([0-9]+) cache pages$/\1 \2 \3/p' "$1" | head -n 1)"
+    echo "${n:-x} ${m:-x} ${d:-x} ${c:-x}"
+}
+
+# (1) The .bss drop.
+TM_BSS=$(size "$OUT/madire.elf" 2>/dev/null | awk 'NR == 2 { print $3 }')
+echo "      madire.elf .bss: ${TM_BSS:-?} bytes (v1.4 and stage 4: $TM_BSS0)"
+if [ -n "$TM_BSS" ] && [ "$((TM_BSS0 - TM_BSS))" -ge 130000 ]; then
+    pass "[1.5] madire.elf's .bss fell by at least 130,000 bytes: $TM_BSS bytes, $((TM_BSS0 - TM_BSS)) fewer than v1.4's $TM_BSS0 (the ext2 tables are mapped at the mount instead)"
+else
+    fail "[1.5] madire.elf's .bss did not fall by at least 130,000 bytes (${TM_BSS:-no size}; v1.4: $TM_BSS0)"
+fi
+
+# (2-5) test=diskwmem.
+tm_disk wmem || TM_OK=0
+TM_WSHA0=$(sha256sum < "$TM_W/wmem-disk.img" | cut -d' ' -f1)
+mapfile -t TM_DRV < <(tm_drive wmem)
+TM_WL=$OUT/serial-diskwmem.log
+boot_text "$TM_WL" 120 "System ready." "x{wait:1}cat /home/note.txt{ret}{wait:1}touch /home/new.txt{ret}echo end-of-diskwmem{ret}" \
+    0.05 $'\nend-of-diskwmem\n' -m 128M -kernel "$KERNEL" -append "test=diskwmem" "${TM_DRV[@]}"
+TM_WSHA1=$(sha256sum < "$TM_W/wmem-disk.img" | cut -d' ' -f1)
+grep -E '^(ext2|mount|Storage): |^ahci: slot 508' "$TM_WL" | sed 's/^/      diskwmem: /'
+if [ "$TM_OK" -eq 1 ] && [ "$(grep -cxF 'ext2: too little memory for the write tables: mounted read-only' "$TM_WL")" -eq 1 ] &&
+   grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-only \(too little memory for the write tables\); " "$TM_WL" &&
+   [ "$(grep '^Storage: ' "$TM_WL" | grep -cF "; ext2 'madire-test' mounted read-only on /home (Disk mode, read-only)")" -eq 1 ] &&
+   ! grep -qE '^mount: changes are kept in memory|^ext2: too little memory for the read core' "$TM_WL" &&
+   grep -qxF "$TM_READY" "$TM_WL" && ! grep -qE 'PANIC|FAILED' "$TM_WL"; then
+    pass "[1.5] test=diskwmem: the write tables' pages missing (the last one failed on purpose): 'ext2: too little memory for the write tables: mounted read-only' once, the mount: line read-only (too little memory for the write tables), no store of changes, 'Disk mode, read-only'; System ready; no PANIC or FAILED line"
+else
+    fail "[1.5] test=diskwmem: not mounted read-only with the write tables' line, a store of changes made, or the boot not healthy (see serial-diskwmem.log)"
+fi
+expect_in_order "$TM_WL" "[1.5] test=diskwmem: at the console /home/note.txt reads back through the read core's pages and touch /home/new.txt is refused (the filesystem is read-only)" \
+    "^madire> cat /home/note.txt$" "^kept on the disk$" "^madire> touch /home/new.txt$" \
+    "^touch: '/home/new\.txt': the filesystem is read-only\.$" "^madire> echo end-of-diskwmem$"
+echo "      diskwmem: SHA-256 before ${TM_WSHA0:-?}, after ${TM_WSHA1:-?}"
+if [ -n "$TM_WSHA0" ] && [ "$TM_WSHA0" = "$TM_WSHA1" ]; then
+    pass "[1.5] test=diskwmem: nothing written: the disk image's SHA-256 is the same before and after the boot ($TM_WSHA0)"
+else
+    fail "[1.5] test=diskwmem: the disk image's SHA-256 changed (${TM_WSHA0:-?} -> ${TM_WSHA1:-?})"
+fi
+read -r tm_n tm_m tm_d tm_c <<< "$(tm_slot "$TM_WL")"
+echo "      diskwmem: slot 508: $tm_m pages mapped; registers $tm_n, DMA $tm_d, cache $tm_c, the read core $TM_CORE"
+if [[ "$tm_n$tm_m$tm_d$tm_c" =~ ^[0-9]+$ ]] && [ "$tm_m" -eq "$((tm_n + tm_d + tm_c + TM_CORE))" ]; then
+    pass "[1.5] test=diskwmem: slot 508 maps the registers' ($tm_n), DMA ($tm_d) and cache ($tm_c) pages and the read core's $TM_CORE, $tm_m in all: every write-table page taken was given back"
+else
+    fail "[1.5] test=diskwmem: slot 508 maps $tm_m pages, not registers $tm_n + DMA $tm_d + cache $tm_c + the read core's $TM_CORE (a write-table page kept, or a line missing)"
+fi
+
+# (6-7) test=diskrmem.
+tm_disk rmem || TM_OK=0
+TM_RSHA0=$(sha256sum < "$TM_W/rmem-disk.img" | cut -d' ' -f1)
+mapfile -t TM_DRV < <(tm_drive rmem)
+TM_RL=$OUT/serial-diskrmem.log
+boot_until "$TM_RL" 120 "$TM_READY" -m 128M -kernel "$KERNEL" -append "test=diskrmem" "${TM_DRV[@]}"
+TM_RSHA1=$(sha256sum < "$TM_W/rmem-disk.img" | cut -d' ' -f1)
+grep -E '^(ext2|mount|Storage): |^ahci: slot 508' "$TM_RL" | sed 's/^/      diskrmem: /'
+echo "      diskrmem: SHA-256 before ${TM_RSHA0:-?}, after ${TM_RSHA1:-?}"
+if [ "$TM_OK" -eq 1 ] && [ "$(grep -c '^ext2: ' "$TM_RL")" -eq 1 ] &&
+   grep -qxF 'ext2: too little memory for the read core: not mounted (Live mode)' "$TM_RL" &&
+   [ "$(grep '^Storage: ' "$TM_RL" | grep -cF ", writes would be ALLOWED on partition 1; not mounted: too little memory (Live mode)")" -eq 1 ] &&
+   ! grep -qE '^(mount|blk: the mount): ' "$TM_RL" && [ -n "$TM_RSHA0" ] && [ "$TM_RSHA0" = "$TM_RSHA1" ] &&
+   grep -qxF "$TM_READY" "$TM_RL" && ! grep -qE 'PANIC|FAILED' "$TM_RL"; then
+    pass "[1.5] test=diskrmem: the read core's pages missing (the last one failed on purpose): 'ext2: too little memory for the read core: not mounted (Live mode)' the only ext2: line, no mount line, the Storage: line 'not mounted: too little memory (Live mode)'; the image unchanged; System ready; no PANIC or FAILED line"
+else
+    fail "[1.5] test=diskrmem: not Live mode with the read core's line, a mount line, the image changed, or the boot not healthy (see serial-diskrmem.log)"
+fi
+read -r tm_n tm_m tm_d tm_c <<< "$(tm_slot "$TM_RL")"
+echo "      diskrmem: slot 508: $tm_m pages mapped; registers $tm_n, DMA $tm_d, cache $tm_c"
+if [[ "$tm_n$tm_m$tm_d$tm_c" =~ ^[0-9]+$ ]] && [ "$tm_m" -eq "$((tm_n + tm_d + tm_c))" ]; then
+    pass "[1.5] test=diskrmem: slot 508 maps the registers' ($tm_n), DMA ($tm_d) and cache ($tm_c) pages only, $tm_m in all: every read-core page taken was given back"
+else
+    fail "[1.5] test=diskrmem: slot 508 maps $tm_m pages, not registers $tm_n + DMA $tm_d + cache $tm_c (a read-core page kept, or a line missing)"
+fi
+echo "      [1.5] the ext2 tables at the mount: $(( $(date +%s) - TM_T0 )) s (report only)"

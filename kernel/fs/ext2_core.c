@@ -100,12 +100,28 @@ int ext2_group(struct ext2_fs *fs, uint32_t g, struct ext2_gd *out)
     return ext2_group_read(fs, g, out);
 }
 
+void ext2_init(struct ext2_fs *fs, struct ext2_bufs *b)
+{
+    fs->bufs = b;
+    fs->sb = b ? b->sb : 0;
+    fs->gdt = b ? b->gdt : 0;
+    fs->itb = b ? b->itb : 0;
+    fs->dirb = b ? b->dirb : 0;
+    for (uint32_t d = 0; d < 3; d++)
+        fs->ind[d] = b ? b->ind[d] : 0;
+}
+
 int ext2_mount(struct ext2_fs *fs, const struct ext2_ops *ops, uint64_t part_bytes)
 {
+    struct ext2_bufs *b = fs->bufs;     /* 1.5 stage 5: kept across the reset */
     ext2_zero(fs, sizeof *fs);
+    ext2_init(fs, b);
     fs->ops.read = ops->read;
     fs->ops.ctx = ops->ctx;
     fs->part_bytes = part_bytes;
+    if (!b)
+        return ext2_err(fs, EXT2_ESUPER, "no buffers given (ext2_init)");
+    ext2_zero(b, sizeof *b);            /* as when they were inside struct ext2_fs */
     if (part_bytes < (uint64_t)EXT2_SB_OFFSET + EXT2_SB_SIZE)
         return ext2_err(fs, EXT2_ESUPER, "superblock: the partition is smaller than 2 KiB");
     if (fs->ops.read(fs->ops.ctx, EXT2_SB_OFFSET, EXT2_SB_SIZE, fs->sb) != 0)

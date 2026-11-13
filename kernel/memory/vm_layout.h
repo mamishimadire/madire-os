@@ -33,7 +33,10 @@
  *             block cache's pages from VM_BLK_CACHE_BASE (frames of free
  *             RAM, write-back), and (1.4 stage 10, a read-write mount only)
  *             the store of unsaved changes from VM_SV_BASE and one write
- *             command's pages at VM_SV_RUN_BASE; each area in its own 1 GiB (its own page
+ *             command's pages at VM_SV_RUN_BASE; 1.5 stage 5, while a
+ *             volume is mounted: the ext2 read core's buffers at
+ *             VM_EXT2_CORE_BASE and (read-write) the write core's tables
+ *             at VM_EXT2_WT_BASE; each area in its own 1 GiB (its own page
  *             directory), mapped after the freeze (slot 508's PDPT exists
  *             from paging_init(), so no PML4 entry is added)
  *   slot 509  VM_HEAP_BASE: kernel heap, grows up to VM_HEAP_MAX
@@ -76,6 +79,16 @@
 #define VM_SV_PAGES           512u                   /* 2 MiB at most */
 #define VM_SV_RUN_BASE        0xFFFFFE0080600000ull  /* VM_SV_BASE + 2 MiB */
 #define VM_SV_RUN_PAGES       4u                     /* 16 KiB: BLK_SV_RUN_MAX chunks */
+/* 1.5 stage 5 (docs/plans/1.5.md, C2), only while a disk's volume is
+ * mounted (kernel/fs/ext2_disk.c): the read core's buffers (struct
+ * ext2_bufs), mapped first, then the write core's tables (struct
+ * ext2_wbufs and the store's entries), only for a read-write mount; frames
+ * of free RAM, write-back, zeroed when mapped. Both in the page table of
+ * VM_SV_RUN_BASE's 2 MiB, each area with unmapped pages after it. */
+#define VM_EXT2_CORE_BASE     0xFFFFFE0080640000ull  /* VM_SV_RUN_BASE + 256 KiB */
+#define VM_EXT2_CORE_PAGES    8u                     /* 32 KiB at most (7 used) */
+#define VM_EXT2_WT_BASE       0xFFFFFE0080680000ull  /* VM_SV_RUN_BASE + 512 KiB */
+#define VM_EXT2_WT_PAGES      32u                    /* 128 KiB at most (28 used) */
 
 #define VM_HEAP_BASE          0xFFFFFE8000000000ull
 #define VM_HEAP_INITIAL       (64u * 1024)

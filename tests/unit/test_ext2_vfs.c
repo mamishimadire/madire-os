@@ -223,6 +223,7 @@ static const struct ext2_ops t_ops = { t_read, 0 };
 
 static struct ramfs rfs;
 static struct ext2_fs efs;
+static struct ext2_bufs efs_bufs;       /* 1.5 stage 5: the read core's buffers (ext2_init) */
 static struct ext2_vfs ev;
 static struct vfs v;
 static struct vnode *R, *H;             /* "/" and the RAM /home under the mount */
@@ -250,6 +251,7 @@ static void setup(uint32_t max_nodes)
     R = v.root;
     CHECK_EQ(vfs_create(&v, R, "/home", VNODE_DIR, 0755, &H), 0);
     CHECK_EQ(vfs_create(&v, R, "/tmp", VNODE_DIR, 01777, NULL), 0);
+    ext2_init(&efs, &efs_bufs);
     CHECK_EQ(ext2_mount(&efs, &t_ops, IMG_BYTES), EXT2_OK);
     CHECK_EQ(ext2_vfs_init(&ev, &efs, &e_mem, max_nodes), 0);
     CHECK_EQ(mount_add(&v.mounts, &ext2_vfs_ops, &ev, &ev.root->vn, H), 1);

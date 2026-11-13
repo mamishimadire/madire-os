@@ -1769,10 +1769,30 @@ int ext2_write_recount(struct ext2_wfs *w)
     return ext2_w_sb_put(w);
 }
 
+void ext2_write_init(struct ext2_wfs *w, struct ext2_bufs *rb, struct ext2_wbufs *wb)
+{
+    ext2_init(&w->fs, rb);
+    w->wbufs = wb;
+    w->pend = wb ? wb->pend : 0;
+    w->fresh = wb ? wb->fresh : 0;
+    w->bm = wb ? wb->bm : 0;
+    w->gb = wb ? wb->gb : 0;
+    w->ib = wb ? wb->ib : 0;
+    w->db = wb ? wb->db : 0;
+    w->xb = wb ? wb->xb : 0;
+    for (uint32_t d = 0; d < 4; d++)
+        w->mb[d] = wb ? wb->mb[d] : 0;
+}
+
 int ext2_write_mount(struct ext2_wfs *w, struct blk_sv *sv, uint64_t part_bytes, const struct ext2_w_ops *ops,
                      bool want_rw)
 {
+    struct ext2_bufs *rb = w->fs.bufs;  /* 1.5 stage 5: kept across the reset */
+    struct ext2_wbufs *wb = w->wbufs;
     ext2_w_zero(w, sizeof *w);
+    ext2_write_init(w, rb, wb);
+    if (wb)
+        ext2_w_zero(wb, sizeof *wb);    /* as when they were inside struct ext2_wfs */
     w->sv = sv;
     if (ops)
         w->wops = *ops;
@@ -1789,6 +1809,8 @@ int ext2_write_mount(struct ext2_wfs *w, struct blk_sv *sv, uint64_t part_bytes,
     w->gen = ext2_w_now(w);
     if (!want_rw)
         w->ro_why = "mounted read-only";
+    else if (!wb)
+        w->ro_why = "no write tables";      /* 1.5 stage 5 */
     else if (fs->readonly)
         w->ro_why = "an unknown RO_COMPAT flag";
     else if (fs->compat_unknown)

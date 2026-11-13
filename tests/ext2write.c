@@ -194,6 +194,8 @@ static uint32_t ew_ulen;                /* the mask's length */
 static uint32_t ew_unit_i;              /* the cut interval's units seen so far */
 static uint32_t ew_interval = 1;        /* the flush interval now */
 static struct ext2_wfs ew_w;
+static struct ext2_bufs ew_rbufs;       /* 1.5 stage 5: the cores' buffers and tables (ext2_write_init) */
+static struct ext2_wbufs ew_wbufs;
 static struct blk_sv ew_sv;
 static struct blk_sv_ent ew_ents[EW_SV_CAP];
 static uint8_t ew_data[(size_t)EW_SV_CAP * BLK_SV_CHUNK];
@@ -1177,6 +1179,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, 0, _IOFBF, 1 << 16);
     blk_sv_init(&ew_sv, &ew_disk, ew_ents, ew_data, EW_SV_CAP, ew_run, ew_bytes);
     int want_rw = strcmp(seq, "readonly") != 0;
+    ext2_write_init(&ew_w, &ew_rbufs, &ew_wbufs);
     int r = ext2_write_mount(&ew_w, &ew_sv, ew_bytes, &ew_wops, true);
     if (r) {
         printf("MOUNT failed %s (%s)\n", ext2_write_err_str(r), ew_w.fs.why ? ew_w.fs.why : "?");

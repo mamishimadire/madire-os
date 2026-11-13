@@ -909,8 +909,45 @@ static void test_misc(void)
     CHECK_EQ(g32(1024 + 56) & 0xFFFF, 0xEF53);
 }
 
+/* 1.5 stage 5 (docs/plans/1.5.md, C2): the buffers are the caller's
+ * (ext2_init). ext2_mount keeps them across its reset and zeroes them (as
+ * it zeroed them inside struct ext2_fs before), even when it then refuses;
+ * every pointer points into them; without buffers the mount is refused
+ * before any read. */
+static struct ext2_bufs fs_bufs;
+
+static void test_bufs(void)
+{
+    std_image(1024, 128, 1);
+    memset(&fs_bufs, 0xA5, sizeof(fs_bufs));
+    CHECK_EQ(ext2_mount(&fs, &t_ops, 2047), EXT2_ESUPER);    /* refused before the superblock's read */
+    CHECK(fs.bufs == &fs_bufs);
+    uint32_t nonzero = 0;
+    for (uint32_t i = 0; i < sizeof(fs_bufs); i++)
+        nonzero += ((const uint8_t *)&fs_bufs)[i] != 0;
+    CHECK_EQ(nonzero, 0);
+    CHECK_EQ(t_mount(), EXT2_OK);
+    CHECK(fs.bufs == &fs_bufs && fs.sb == fs_bufs.sb && fs.gdt == fs_bufs.gdt && fs.itb == fs_bufs.itb &&
+          fs.dirb == fs_bufs.dirb);
+    for (uint32_t d = 0; d < 3; d++)
+        CHECK(fs.ind[d] == fs_bufs.ind[d]);
+    CHECK_EQ(fs_bufs.sb[56] | fs_bufs.sb[57] << 8, 0xEF53);  /* the superblock read into the caller's buffer */
+    CHECK(fs.gdt_valid && fs.gdt_block == 2);               /* the descriptors' block too (1 KiB blocks) */
+    /* No buffers: refused, nothing read, the pointers all 0. */
+    ext2_init(&fs, 0);
+    reads = 0;
+    CHECK_EQ(ext2_mount(&fs, &t_ops, img_len), EXT2_ESUPER);
+    CHECK_EQ(reads, 0);
+    CHECK(fs.why && strcmp(fs.why, "no buffers given (ext2_init)") == 0);
+    CHECK(!fs.bufs && !fs.sb && !fs.gdt && !fs.itb && !fs.dirb && !fs.ind[0] && !fs.ind[1] && !fs.ind[2]);
+    ext2_init(&fs, &fs_bufs);
+    CHECK_EQ(t_mount(), EXT2_OK);
+    CHECK_EQ(bad_reads, 0);
+}
+
 int main(void)
 {
+    ext2_init(&fs, &fs_bufs);       /* 1.5 stage 5: once; every ext2_mount keeps it */
     RUN(test_shapes);
     RUN(test_indirect);
     RUN(test_links);
@@ -922,5 +959,6 @@ int main(void)
     RUN(test_dir_index);
     RUN(test_cache);
     RUN(test_misc);
+    RUN(test_bufs);
     return unit_report("ext2_core");
 }

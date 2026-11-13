@@ -130,6 +130,22 @@ struct ext2_w_ops {
     void *ctx;
 };
 
+/* 1.5 stage 5 (docs/plans/1.5.md, C2): the write core's tables and scratch
+ * blocks, given by the caller with ext2_write_init (the kernel's in pages
+ * mapped at the mount, kernel/fs/ext2_disk.c; the host tests' static), no
+ * longer inside struct ext2_wfs. ext2_write_mount zeroes them, as it zeroed
+ * them inside the structure before. Without them a volume mounts read-only. */
+struct ext2_wbufs {
+    struct ext2_w_pend pend[EXT2_W_PEND_MAX];
+    uint32_t fresh[EXT2_W_FRESH_MAX];
+    uint8_t bm[EXT2_BLOCK_MAX];     /* bitmaps */
+    uint8_t gb[EXT2_BLOCK_MAX];     /* the group descriptor table */
+    uint8_t ib[EXT2_BLOCK_MAX];     /* the inode table */
+    uint8_t db[EXT2_BLOCK_MAX];     /* folders */
+    uint8_t xb[EXT2_BLOCK_MAX];     /* file data, attribute blocks */
+    uint8_t mb[4][EXT2_BLOCK_MAX];  /* the block map's levels */
+};
+
 struct ext2_wfs {
     struct ext2_fs fs;          /* the read core, reading through `sv` */
     struct blk_sv *sv;
@@ -147,24 +163,30 @@ struct ext2_wfs {
     bool kept;                  /* set when a removed name of keep_ino was not queued */
     uint16_t state_read;        /* stage 10: the superblock's state as the mount read it */
     bool clean_read;            /* and whether it was clean */
-    struct ext2_w_pend pend[EXT2_W_PEND_MAX];
-    uint32_t fresh[EXT2_W_FRESH_MAX];
+    /* 1.5 stage 5: the tables and scratch blocks are pointers into the
+     * caller's struct ext2_wbufs (ext2_write_init; 0 without it), kept by
+     * ext2_write_mount */
+    struct ext2_wbufs *wbufs;
+    struct ext2_w_pend *pend;
+    uint32_t *fresh;
     uint32_t pool[EXT2_W_POOL_MAX];
     /* figures (report only) */
     uint32_t blocks_alloc, inodes_alloc, blocks_cleared, inodes_cleared, copies, eagain;
     uint32_t leaks;             /* pending frees dropped (table full): left marked in use */
-    /* scratch blocks */
-    uint8_t bm[EXT2_BLOCK_MAX];     /* bitmaps */
-    uint8_t gb[EXT2_BLOCK_MAX];     /* the group descriptor table */
-    uint8_t ib[EXT2_BLOCK_MAX];     /* the inode table */
-    uint8_t db[EXT2_BLOCK_MAX];     /* folders */
-    uint8_t xb[EXT2_BLOCK_MAX];     /* file data, attribute blocks */
-    uint8_t mb[4][EXT2_BLOCK_MAX];  /* the block map's levels */
+    /* scratch blocks (struct ext2_wbufs) */
+    uint8_t *bm, *gb, *ib, *db, *xb;
+    uint8_t *mb[4];
 };
+
+/* 1.5 stage 5 (C2): gives `w` the read core's buffers `rb` and the write
+ * core's tables `wb` (0: none; the volume then mounts read-only) before its
+ * first ext2_write_mount; ext2_write_mount keeps them. */
+void ext2_write_init(struct ext2_wfs *w, struct ext2_bufs *rb, struct ext2_wbufs *wb);
 
 /* Mounts the volume in a partition of `part_bytes` bytes through `sv`.
  * `want_rw`: read-write unless the policy says read-only (w->rw, w->ro_why);
- * a read-write mount recounts if not clean (D12) and runs save 0. EXT2_OK or
+ * 1.5 stage 5: read-only also without write tables (ext2_write_init). A
+ * read-write mount recounts if not clean (D12) and runs save 0. EXT2_OK or
  * the read core's error (not mounted). */
 int ext2_write_mount(struct ext2_wfs *w, struct blk_sv *sv, uint64_t part_bytes, const struct ext2_w_ops *ops,
                      bool want_rw);

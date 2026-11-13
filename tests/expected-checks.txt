@@ -341,5 +341,14 @@
 # suite (disklock). Changed, not added (the owner's approval, before the
 # commit): part static's [1.4] boot-time read-write mount check (H2 item 3:
 # no write or FLUSH while the VFS lock is held, the boot mount included).
-1.5 14
+# Stage 5: 7 more in part 5, the ext2 tables at the mount (C2): madire.elf's
+# .bss at least 130,000 bytes below v1.4's (1); test=diskwmem (4: read-only
+# with its line; the file read, a write refused; the image unchanged; slot
+# 508 keeps the read core's pages only); test=diskrmem (2: Live mode with
+# its line, the image unchanged; slot 508 keeps none of its pages); new
+# cases in the unit suites ext2_core and ext2_write (no new suite). Moved,
+# not changed (A3): part 1's [0.4] unexpected IRQ (4), [0.12] uptime
+# heartbeat (2) and [1.1] console keys (11) sections to part 5, every count
+# unchanged.
+1.5 21
 unit-suites 108

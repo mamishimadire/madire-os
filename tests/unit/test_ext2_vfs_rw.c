@@ -143,6 +143,8 @@ static struct blk_sv_ent ents[CAP];
 static uint8_t sdata[CAP * BLK_SV_CHUNK];
 static uint8_t srun[BLK_SV_RUN_MAX * BLK_SV_CHUNK];
 static struct ext2_wfs w;
+static struct ext2_bufs w_rbufs;        /* 1.5 stage 5: the cores' buffers and tables (ext2_write_init) */
+static struct ext2_wbufs w_wbufs;
 static struct ext2_vfs_writer wr;
 
 static uint32_t t_secs(void *ctx)
@@ -201,6 +203,7 @@ static void setup(uint32_t max_nodes, uint32_t cap)
     mkimg();
     full_calls = 0;
     blk_sv_init(&sv, &d_ops, ents, sdata, cap, srun, IMG);
+    ext2_write_init(&w, &w_rbufs, &w_wbufs);
     CHECK_EQ(ext2_write_mount(&w, &sv, IMG, &wops, true), EXT2_OK);
     CHECK(w.rw);
     CHECK_EQ(ramfs_init(&rfs, &r_mem, 64), 0);
@@ -255,6 +258,7 @@ static bool write_all(struct vnode *n, uint64_t off, const uint8_t *buf, uint32_
 /* The raw image, read by a fresh read core: the inode of path's last
  * component under the root (one level, or two through `dir`). */
 static struct ext2_fs rf;
+static struct ext2_bufs rf_bufs;        /* 1.5 stage 5 */
 static const struct ext2_ops raw_ops = { d_read, 0 };
 
 static uint32_t raw_lookup(const char *dir, const char *name)
@@ -262,6 +266,7 @@ static uint32_t raw_lookup(const char *dir, const char *name)
     struct ext2_inode d;
     uint32_t ino = EXT2_ROOT_INO;
     memset(&d, 0, sizeof d);
+    ext2_init(&rf, &rf_bufs);
     if (ext2_mount(&rf, &raw_ops, IMG) != EXT2_OK || ext2_inode_get(&rf, ino, &d) != EXT2_OK)
         return 0;
     if (dir && (ext2_lookup(&rf, &d, dir, (uint32_t)strlen(dir), &ino) || ext2_inode_get(&rf, ino, &d)))
@@ -275,6 +280,7 @@ static struct ext2_inode raw_inode(uint32_t ino)
 {
     struct ext2_inode in;
     memset(&in, 0, sizeof in);
+    ext2_init(&rf, &rf_bufs);
     if (ext2_mount(&rf, &raw_ops, IMG) == EXT2_OK)
         ext2_inode_get(&rf, ino, &in);
     return in;

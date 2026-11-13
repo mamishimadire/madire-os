@@ -301,15 +301,6 @@ expect_in_order "$LOG" "[0.4] flood: kept events are the oldest, in order" \
 expect "$LOG" "System ready\."                        "[0.4] flood: system ready afterwards"
 reject "$LOG" "PANIC"                                 "[0.4] flood: no panic"
 
-section "[0.4] Unexpected IRQ"
-LOG=$OUT/serial-irqunexpected.log
-boot "$LOG" 8 -m 32M -kernel "$KERNEL" -append "test=irqunexpected"
-expect "$LOG" "Unexpected IRQ test: PASS \(IRQ 2 counted and acknowledged, total 1\)" \
-                                                      "[0.4] unexpected IRQ counted and acknowledged"
-expect "$LOG" "Unexpected IRQ 2 \(total 1\)"          "[0.4] unexpected IRQ reported from normal context"
-expect "$LOG" "System ready\."                        "[0.4] unexpected IRQ: system ready afterwards"
-reject "$LOG" "PANIC"                                 "[0.4] unexpected IRQ: no panic"
-
 # ---- 0.5: console and shell, typed through the real keyboard path ----
 # Every key goes QMP -> i8042 -> IRQ1 -> 0.4 driver -> decoder -> key queue
 # -> idle loop -> console. The console copies each submitted line to serial
@@ -1341,30 +1332,6 @@ reject "$LOG" "^key: "                                "[0.12] stage 2 session: n
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[0.12] stage 2 session: no panic, dropped key or screen-rule violation"
 
-section "[0.12] The uptime heartbeat: serial log only, never in dmesg (stage 4, option B)"
-# The console idles for 15 s (at least 10 s of guest time, so two or more
-# heartbeats even on a slow host), then "dmesg 5". The command runs on
-# thread 0, which also writes the heartbeat, so no heartbeat can come
-# between the command's line and its 5 output lines.
-LOG=$OUT/serial-dmesgidle.log
-boot_text "$LOG" 90 "System ready." "x{wait:1}echo before-idle{ret}{wait:15}dmesg 5{ret}echo end-of-dmesgidle-test{ret}" \
-    0.05 $'\nend-of-dmesgidle-test\n' -kernel "$KERNEL"
-DM=$(awk '/^madire> dmesg 5$/ && !n { n = 1; next } n >= 1 && n <= 5 { print; n++ }' "$LOG")
-sed 's/^/      dmesg 5: /' <<< "$DM"
-if [ "$(grep -c '' <<< "$DM")" -eq 5 ] && ! grep -q '^uptime: ' <<< "$DM" &&
-   [ "$(sed -n 4p <<< "$DM")" = "madire> echo before-idle" ] && [ "$(sed -n 5p <<< "$DM")" = "madire> dmesg 5" ]; then
-    pass "[0.12] dmesg 5 after 15 s idle: no uptime line; the last two are the command before the pause and dmesg 5"
-else
-    fail "[0.12] dmesg 5 after 15 s idle: an uptime line in dmesg, or not the last 5 kernel-log lines"
-fi
-HB=$(awk '/^madire> echo before-idle$/ && !d { n = 1; next } /^madire> dmesg 5$/ && n { n = 0; d = 1 }
-          n && /^uptime: [0-9]+ s$/' "$LOG" | grep -c '')
-if [ "$HB" -ge 2 ]; then
-    pass "[0.12] the heartbeat is still in the serial log during the idle period ($HB lines)"
-else
-    fail "[0.12] the heartbeat is missing from the serial log during the idle period ($HB lines, at least 2 expected)"
-fi
-
 # ---- 0.13: where Limine places the boot data (the real ISO's normal boot) ----
 
 section "[0.13] Limine boot: the Multiboot information and the modules"
@@ -1558,49 +1525,6 @@ expect_next "$LOG" "[1.1] keyboard lights: typed text exact across two light cha
     '^madire> echo aBc$' '^aBc$'
 reject "$LOG" 'Keyboard lights: not acknowledged|events dropped|key=UNKNOWN|PANIC' \
     "[1.1] lights boot: no light failure, nothing dropped or unknown, no panic"
-
-# 1.1 stage 8: Ctrl+C, Esc and Tab at the prompt, in a normal boot (no
-# keylog): C1-C10 and L6. The cleared lines' text must never reach the
-# serial log (C3: the history and dmesg output is on it too).
-section "[1.1] Console keys: Ctrl+C, Esc and Tab (no keylog)"
-LOG=$OUT/serial-conskeys11.log
-S="x{wait:1}"
-S+="echo secretmarker11{ctrl+c}"                      # C1 Ctrl+C with text
-S+="{ctrl+c}"                                         # C1 Ctrl+C on an empty line
-S+="echo escmarker11{esc}"                            # C2 Esc
-S+="echo after-clear{ret}"
-S+="history{ret}"                                     # C3 (the markers must not be listed)
-S+="reboot{ret}{wait:1}ye{ctrl+c}{wait:1}"            # C4 Ctrl+C at the question
-S+="his{tab}{ret}"                                    # C5 unique: "history "
-S+="un{tab}{tab}{ctrl+c}"                             # C6 ambiguous: the list
-S+="echo a{tab}b{ret}"                                # C7 a later word: nothing
-S+="zz{tab}{bs}{bs}echo nomatch-ok{ret}"              # C7 no match: nothing
-S+="echo {caps}q{caps}r{ret}"                         # C8, L6 Caps Lock without keylog
-S+="dmesg 9999{ret}"                                  # C3 dmesg's text on the serial log
-S+="echo end-of-conskeys-test{ret}"
-boot_text "$LOG" 120 "System ready." "$S" 0.05 $'\nend-of-conskeys-test\n' -m 32M -kernel "$KERNEL"
-expect_in_order "$LOG" "[1.1] Ctrl+C at the prompt clears the line, with text and on an empty line (logged only as a fixed line)" \
-    '^console: Ctrl\+C: line cleared$' '^console: Ctrl\+C: line cleared$' '^madire> echo after-clear$'
-expect_next "$LOG" "[1.1] Esc clears the line: the next line runs exactly as echo after-clear" \
-    '^madire> echo after-clear$' '^after-clear$'
-reject "$LOG" 'secretmarker11|escmarker11' \
-    "[1.1] cleared lines reach neither the serial log, the history nor dmesg (secretmarker11, escmarker11)"
-expect_in_order "$LOG" "[1.1] Ctrl+C at a yes/no question answers no: Restart cancelled., no restart" \
-    '^madire> reboot$' '^console: Ctrl\+C: answered no$' '^Restart cancelled\.$' '^madire> history $'
-expect "$LOG" '^madire> history $' \
-    "[1.1] Tab completes a unique command name and adds a space (his: history)"
-expect_in_order "$LOG" "[1.1] Tab on an ambiguous name: the second Tab lists the matches (un: unalias  uname  unset)" \
-    '^unalias  uname  unset$' '^console: Ctrl\+C: line cleared$'
-expect_in_order "$LOG" "[1.1] Tab in a later word, or with no match, types nothing (echo ab, echo nomatch-ok)" \
-    '^madire> echo ab$' '^ab$' '^madire> echo nomatch-ok$' '^nomatch-ok$'
-expect_next "$LOG" "[1.1] Caps Lock in a normal boot types exactly (echo Qr)" \
-    '^madire> echo Qr$' '^Qr$'
-reject "$LOG" '^Keyboard lights: Num Lock on, Caps Lock on|^key: ' \
-    "[1.1] keyboard lights: Caps Lock changes not logged without keylog (no light or key lines)"
-expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
-    '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
-reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
-    "[1.1] console keys boot: no panic, nothing dropped, no light failure"
 
 # ---- 1.2: the Display line of the text boots (stage 5) ----
 

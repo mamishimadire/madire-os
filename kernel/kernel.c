@@ -1195,7 +1195,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
                       (cmdline_has("test=diskro") ? EXT2_DISK_RO : 0u) |
                       (cmdline_has("test=blkdebug") ? EXT2_DISK_BLKDEBUG : 0u) |
                       (cmdline_has("test=autosave") ? EXT2_DISK_AUTOSAVE : 0u) |
-                      (cmdline_has("test=blkslow") ? EXT2_DISK_BLKSLOW : 0u));
+                      (cmdline_has("test=blkslow") ? EXT2_DISK_BLKSLOW : 0u) |
+                      (cmdline_has("test=diskrmem") ? EXT2_DISK_RMEM : 0u) |     /* 1.5 stage 5 */
+                      (cmdline_has("test=diskwmem") ? EXT2_DISK_WMEM : 0u));
     /* 1.5 stage 4 (C1): test=blkslow=<ms>, a slow disk from the first write
      * on (the mount's save 0 included). */
     uint32_t slow_ms = 0;

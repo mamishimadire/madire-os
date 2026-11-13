@@ -192,6 +192,7 @@ static int dump_read(void *ctx, uint64_t off, uint32_t len, uint8_t *buf)
 /* ---- the walk ---- */
 
 static struct ext2_fs dump_fs;
+static struct ext2_bufs dump_bufs;      /* 1.5 stage 5: the read core's buffers (ext2_init) */
 static uint8_t *dump_visited;
 static unsigned long dump_entries, dump_errors;
 static uint64_t dump_limit;
@@ -343,6 +344,7 @@ int main(int argc, char **argv)
     }
     dump_size = (uint64_t)st.st_size;
     struct ext2_ops ops = { dump_read, 0 };
+    ext2_init(&dump_fs, &dump_bufs);
     int r = ext2_mount(&dump_fs, &ops, dump_size);
     printf("EXT2 mount: %s%s%s%s\n", ext2_err_str(r), r ? " (" : "", r && dump_fs.why ? dump_fs.why : "",
            r ? ")" : "");

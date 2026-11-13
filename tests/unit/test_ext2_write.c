@@ -85,6 +85,8 @@ static struct blk_sv_ent sv_ents[SV_CAP];
 static uint8_t sv_data[SV_CAP * BLK_SV_CHUNK];
 static uint8_t sv_run[BLK_SV_RUN_MAX * BLK_SV_CHUNK];
 static struct ext2_wfs w;
+static struct ext2_bufs w_rbufs;        /* 1.5 stage 5: the cores' buffers and tables (ext2_write_init) */
+static struct ext2_wbufs w_wbufs;
 static uint32_t touches;
 
 static uint32_t t_now(void *ctx)
@@ -295,6 +297,7 @@ struct chk {
 };
 
 static struct ext2_fs cf;
+static struct ext2_bufs cf_bufs;        /* 1.5 stage 5 (ext2_init in main) */
 static const struct ext2_ops raw_ops = { d_read, 0 };
 static uint8_t claimed[IMG_MAX / 1024 / 8 + 1];
 static uint8_t iused[8192];
@@ -539,9 +542,11 @@ static uint32_t lookup(uint32_t dir, const char *name)
 
 static struct ext2_inode inode_raw(uint32_t ino)
 {
+    static struct ext2_bufs f_bufs;     /* 1.5 stage 5 */
     struct ext2_fs f;
     struct ext2_inode in;
     memset(&in, 0, sizeof in);
+    ext2_init(&f, &f_bufs);
     if (ext2_mount(&f, &raw_ops, img_len) == 0)
         ext2_inode_get(&f, ino, &in);
     return in;
@@ -1324,9 +1329,57 @@ static void test_truncate_same_size(void)
     CHECK(clean());
 }
 
+/* 1.5 stage 5 (docs/plans/1.5.md, C2): the tables are the caller's
+ * (ext2_write_init). ext2_write_mount keeps them across its reset and
+ * zeroes them (as it zeroed them inside struct ext2_wfs before); without
+ * write tables the volume mounts read-only and nothing is written; without
+ * the read core's buffers it is not mounted. */
+static void test_tables(void)
+{
+    mkimg(1024, 256, 1, 1, 1024, 64, 0);
+    memset(&w_wbufs, 0x5A, sizeof(w_wbufs));
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    CHECK(w.rw);
+    CHECK(w.wbufs == &w_wbufs && w.fs.bufs == &w_rbufs && w.pend == w_wbufs.pend && w.fresh == w_wbufs.fresh &&
+          w.bm == w_wbufs.bm && w.gb == w_wbufs.gb && w.ib == w_wbufs.ib && w.db == w_wbufs.db && w.xb == w_wbufs.xb);
+    for (uint32_t d = 0; d < 4; d++)
+        CHECK(w.mb[d] == w_wbufs.mb[d]);
+    uint32_t nonzero = 0;
+    for (uint32_t i = 0; i < sizeof(w_wbufs.pend) + sizeof(w_wbufs.fresh); i++)
+        nonzero += ((const uint8_t *)&w_wbufs)[i] != 0;      /* pend[] and fresh[]: the structure's start */
+    for (uint32_t d = 0; d < 4; d++)
+        for (uint32_t i = 0; i < EXT2_BLOCK_MAX; i++)
+            nonzero += w_wbufs.mb[d][i] != 0;
+    CHECK_EQ(nonzero, 0);
+    CHECK(nw > 0);                                  /* save 0 wrote */
+    /* No write tables: read-only, nothing written, every operation EROFS. */
+    mkimg(1024, 256, 1, 1, 1024, 64, 0);
+    ext2_write_init(&w, &w_rbufs, 0);
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    CHECK(!w.rw && !w.failed);
+    CHECK(w.ro_why && strcmp(w.ro_why, "no write tables") == 0);
+    CHECK(!w.wbufs && !w.pend && !w.fresh && !w.bm && !w.gb && !w.ib && !w.db && !w.xb && !w.mb[0] && !w.mb[3]);
+    uint32_t f = 0;
+    CHECK_EQ(ext2_write_create(&w, 2, "no", 2, 0644, &f), EXT2_EROFS);
+    CHECK_EQ(ext2_write_sync(&w), EXT2_OK);
+    bool done = false;
+    CHECK_EQ(ext2_write_save_step(&w, 8, &done), EXT2_OK);
+    CHECK(done);
+    CHECK_EQ(nw, 0);                                /* nothing written */
+    /* No read core's buffers: not mounted. */
+    ext2_write_init(&w, 0, &w_wbufs);
+    CHECK_EQ(mount_rw(), EXT2_ESUPER);
+    CHECK_EQ(nw, 0);
+    ext2_write_init(&w, &w_rbufs, &w_wbufs);
+    CHECK_EQ(mount_rw(), EXT2_OK);
+    CHECK(w.rw);
+}
+
 int main(void)
 {
     printf("ext2_write (the write core over the save order)\n");
+    ext2_write_init(&w, &w_rbufs, &w_wbufs);   /* 1.5 stage 5: once; every ext2_write_mount keeps them */
+    ext2_init(&cf, &cf_bufs);
     RUN(test_mount_states);
     RUN(test_create_write);
     RUN(test_classes);
@@ -1348,5 +1401,6 @@ int main(void)
     RUN(test_pending_merge);
     RUN(test_save_steps);
     RUN(test_truncate_same_size);
+    RUN(test_tables);
     return unit_report("ext2_write");
 }

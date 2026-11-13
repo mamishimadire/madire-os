@@ -17,11 +17,20 @@
  * MiB or 1/16 of the free pages: VM_SV_BASE in slot 508); a save writes at
  * most 8 disk commands per hold of the VFS lock and runs in pieces.
  *
+ * 1.5 stage 5 (docs/plans/1.5.md, C2): the read core's buffers and the
+ * write core's tables are not in .bss: the mount maps them in slot 508
+ * (VM_EXT2_CORE_BASE first, then VM_EXT2_WT_BASE; frames of free RAM, each
+ * zeroed when mapped); a refused mount gives both back, a read-only mount
+ * the write tables. Live mode costs nothing.
+ *
  * D16 since stage 10:
  *   not ext2, a superblock that fails its checks, an unknown INCOMPAT flag
  *       -> not mounted (Live mode): one ext2: line with the reason;
+ *   1.5 stage 5: too little memory for the read core's pages
+ *       -> not mounted (Live mode): one ext2: line, before any disk read;
  *   an unknown RO_COMPAT flag, an unknown COMPAT flag (the owner's rule),
- *   the error bit, test=diskro, or too little memory for the store
+ *   the error bit, test=diskro, too little memory for the store, or (1.5
+ *   stage 5) for the write tables' pages
  *       -> mounted read-only ("Disk mode, read-only"), one ext2: line each;
  *   not cleanly unmounted (no error bit) -> recounted from the bitmaps,
  *       mounted read-write with the D12 warning line;
@@ -50,6 +59,8 @@
  * between the guard's lines and the Storage: line:
  *   ext2: port P partition I: revision R, B-byte blocks, ...; state ...
  *   ext2: port P partition I: not mounted: <reason>
+ *   ext2: too little memory for the read core: not mounted (Live mode) /
+ *         for the write tables: mounted read-only (1.5 stage 5)
  *   ext2: unknown COMPAT flags 0x...: ... / unknown RO_COMPAT ... /
  *         the error bit ... / warning: not cleanly unmounted ...
  *   mount: ext2 '<label>' on /home (filesystem N), read-write | read-only
@@ -71,6 +82,8 @@
 #define EXT2_DISK_BLKDEBUG   0x4u       /* test=blkdebug: injected disk errors */
 #define EXT2_DISK_AUTOSAVE   0x8u       /* test=autosave: the automatic save on, each save logged (stage 11) */
 #define EXT2_DISK_BLKSLOW    0x10u      /* 1.5 stage 4, test=blkslow=<ms>: the automatic save on (not logged) */
+#define EXT2_DISK_RMEM       0x20u      /* 1.5 stage 5, test=diskrmem: the read core's pages fail (Live mode) */
+#define EXT2_DISK_WMEM       0x40u      /* 1.5 stage 5, test=diskwmem: the write tables' pages fail (read-only) */
 void ext2_disk_options(uint32_t flags);
 
 /* Stage 11, test=diskcut[=N] (docs/plans/1.4.md, section D (b)): every disk

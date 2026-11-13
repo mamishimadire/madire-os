@@ -163,6 +163,19 @@ struct ext2_dir_iter {
     uint64_t off;
 };
 
+/* 1.5 stage 5 (docs/plans/1.5.md, C2): the read core's buffers, given by
+ * the caller with ext2_init (the kernel's in pages mapped at the mount,
+ * kernel/fs/ext2_disk.c; the host tests' static), no longer inside struct
+ * ext2_fs. Each holds one block, keyed by its number in struct ext2_fs;
+ * ext2_mount zeroes them, as it zeroed them inside the structure before. */
+struct ext2_bufs {
+    uint8_t sb[EXT2_SB_SIZE];
+    uint8_t gdt[EXT2_BLOCK_MAX];
+    uint8_t itb[EXT2_BLOCK_MAX];
+    uint8_t dirb[EXT2_BLOCK_MAX];
+    uint8_t ind[3][EXT2_BLOCK_MAX];
+};
+
 struct ext2_fs {
     struct ext2_ops ops;
     uint64_t part_bytes;
@@ -188,22 +201,27 @@ struct ext2_fs {
     /* the group descriptors' sums (report only) and the bad group */
     uint64_t gd_free_blocks, gd_free_inodes, gd_used_dirs;
     uint32_t bad_group;
-    /* buffers (each holds one block, keyed by its number) */
+    /* buffers (each holds one block, keyed by its number); 1.5 stage 5:
+     * pointers into the caller's struct ext2_bufs (ext2_init), kept by
+     * ext2_mount */
     bool gdt_valid, itb_valid, dirb_valid;
     uint32_t gdt_block, itb_block, dirb_block;
     bool ind_valid[3];
     uint32_t ind_block[3];
-    uint8_t sb[EXT2_SB_SIZE];
-    uint8_t gdt[EXT2_BLOCK_MAX];
-    uint8_t itb[EXT2_BLOCK_MAX];
-    uint8_t dirb[EXT2_BLOCK_MAX];
-    uint8_t ind[3][EXT2_BLOCK_MAX];
+    struct ext2_bufs *bufs;
+    uint8_t *sb, *gdt, *itb, *dirb;
+    uint8_t *ind[3];
 };
+
+/* 1.5 stage 5 (C2): gives `fs` its buffers `b` (0: none, and ext2_mount
+ * refuses) before its first ext2_mount; ext2_mount keeps them. */
+void ext2_init(struct ext2_fs *fs, struct ext2_bufs *b);
 
 /* Reads and checks the superblock and every group descriptor of the
  * filesystem in a partition of `part_bytes` bytes, then the root inode
- * (it must be a folder). `fs` is set from scratch. EXT2_OK (fs->readonly
- * tells the policy) or an error (fs->why). */
+ * (it must be a folder). `fs` is set from scratch, its buffers (ext2_init)
+ * kept and zeroed. EXT2_OK (fs->readonly tells the policy) or an error
+ * (fs->why; EXT2_ESUPER without buffers). */
 int ext2_mount(struct ext2_fs *fs, const struct ext2_ops *ops, uint64_t part_bytes);
 
 /* Group descriptor `g` (0-based), checked at mount. */

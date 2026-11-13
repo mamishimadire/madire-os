@@ -35,11 +35,24 @@ typedef unsigned long long ull;
 #define EXT2_D_AUTOSAVE (5u * TIMER_HZ)
 #define EXT2_D_RESTART  (10u * TIMER_HZ)
 
-static struct ext2_wfs ext2_d_w;        /* the write core, with the read core and its buffers */
+/* 1.5 stage 5 (docs/plans/1.5.md, C2): the write tables' area at
+ * VM_EXT2_WT_BASE: the write core's tables, then the store's entries (one
+ * per 1 KiB chunk the store may have). The read core's buffers (struct
+ * ext2_bufs) are VM_EXT2_CORE_BASE's. Neither is in .bss any more. */
+struct ext2_d_wtab {
+    struct ext2_wbufs wb;
+    struct blk_sv_ent ents[VM_SV_PAGES * 4u];
+};
+#define EXT2_D_CORE_PAGES ((uint32_t)((sizeof(struct ext2_bufs) + VM_PAGE_SIZE - 1u) / VM_PAGE_SIZE))
+#define EXT2_D_WT_PAGES   ((uint32_t)((sizeof(struct ext2_d_wtab) + VM_PAGE_SIZE - 1u) / VM_PAGE_SIZE))
+_Static_assert(EXT2_D_CORE_PAGES <= VM_EXT2_CORE_PAGES, "the read core's buffers fit VM_EXT2_CORE_BASE's area");
+_Static_assert(EXT2_D_WT_PAGES <= VM_EXT2_WT_PAGES, "the write tables fit VM_EXT2_WT_BASE's area");
+
+static struct ext2_wfs ext2_d_w;        /* the write core, with the read core (buffers: C2's pages) */
 static struct ext2_vfs ext2_d_vfs;
 static struct ext2_vfs_writer ext2_d_wr;
 static struct blk_sv ext2_d_sv;
-static struct blk_sv_ent ext2_d_ents[VM_SV_PAGES * 4u];
+static uint32_t ext2_d_core_n, ext2_d_wt_n; /* 1.5 stage 5: each area's pages mapped (0: none) */
 static uint32_t ext2_d_run_phys[VM_SV_RUN_PAGES];
 static uint32_t ext2_d_store_n;         /* the store's pages mapped (0: no read-write mount) */
 static uint64_t ext2_d_first;           /* the partition's first sector */
@@ -273,6 +286,62 @@ uint32_t ext2_disk_store_pages(void)
     return ext2_d_store_n ? ext2_d_store_n + VM_SV_RUN_PAGES : 0;
 }
 
+/* 1.5 stage 5 (C2): the first `pages` pages of an area from `base`
+ * unmapped and their frames given back. */
+static void ext2_d_unarea(uint64_t base, uint32_t pages)
+{
+    while (pages) {
+        uint64_t got = 0;
+        pages--;
+        if (paging_unmap(base + (uint64_t)pages * VM_PAGE_SIZE, &got) == VMM_OK)
+            memory_free_page((uint32_t)got);
+    }
+}
+
+/* 1.5 stage 5 (C2): `pages` frames of free RAM mapped write-back from
+ * `base`, each ZEROED through its new mapping before anything uses it (the
+ * .bss these tables replace was zero-filled): true, or false with every
+ * page given back (nothing kept, nothing left mapped). `fail_last`
+ * (test=diskrmem, test=diskwmem): the last page's allocation fails on
+ * purpose, after the others were mapped, so the give-back runs. */
+static bool ext2_d_area(uint64_t base, uint32_t pages, bool fail_last)
+{
+    uint32_t i = 0;
+    for (; i < pages; i++) {
+        uint32_t frame = (fail_last && i + 1u == pages) ? 0u : memory_alloc_page();
+        if (!frame)
+            break;
+        if (paging_map(base + (uint64_t)i * VM_PAGE_SIZE, frame, PTE_WRITE | paging_nx_flag()) != VMM_OK) {
+            memory_free_page(frame);
+            break;
+        }
+        uint64_t *p = (uint64_t *)(uintptr_t)(base + (uint64_t)i * VM_PAGE_SIZE);
+        for (uint32_t k = 0; k < VM_PAGE_SIZE / 8u; k++)
+            p[k] = 0;
+    }
+    if (i == pages)
+        return true;
+    ext2_d_unarea(base, i);
+    return false;
+}
+
+/* 1.5 stage 5 (C2): the write tables given back (a mount that ended
+ * refused or read-only never writes), and with `core` the read core's
+ * buffers too (a refused mount). The cores' pointers are cleared first, so
+ * no pointer into an unmapped page is left (a later use faults at a low
+ * address instead of touching a reused frame). */
+static void ext2_d_untables(bool core)
+{
+    ext2_write_init(&ext2_d_w, core ? 0 : ext2_d_w.fs.bufs, 0);
+    ext2_d_sv.ents = 0;
+    ext2_d_unarea(VM_EXT2_WT_BASE, ext2_d_wt_n);
+    ext2_d_wt_n = 0;
+    if (core) {
+        ext2_d_unarea(VM_EXT2_CORE_BASE, ext2_d_core_n);
+        ext2_d_core_n = 0;
+    }
+}
+
 /* ---- the mount ---- */
 
 /* What the mount found, logged after the lock is given back. */
@@ -308,11 +377,30 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     uint32_t pages = blk_cache_pages(pmm_free_pages());
     if (pages > VM_SV_PAGES)
         pages = VM_SV_PAGES;
-    if (ext2_d_flags & EXT2_DISK_RO)
+    /* 1.5 stage 5 (C2): the read core's buffers first, in pages mapped now
+     * (no longer .bss): without them the disk is not mounted (Live mode;
+     * every page already taken given back). Then, unless test=diskro, the
+     * write tables: without them the volume mounts read-only. */
+    if (!ext2_d_area(VM_EXT2_CORE_BASE, EXT2_D_CORE_PAGES, (ext2_d_flags & EXT2_DISK_RMEM) != 0)) {
+        klogf("ext2: too little memory for the read core: not mounted (Live mode)\n");
+        ksnprintf(tail, tail_size, "; not mounted: too little memory");
+        return false;
+    }
+    ext2_d_core_n = EXT2_D_CORE_PAGES;
+    bool wt_short = false;
+    struct ext2_d_wtab *wt = (struct ext2_d_wtab *)(uintptr_t)VM_EXT2_WT_BASE;
+    if (ext2_d_flags & EXT2_DISK_RO) {
         ro_mine = "test=diskro";
-    else if (pages < EXT2_D_MIN_PAGES || !ext2_d_store(pages))
-        ro_mine = "too little memory to keep changes";
-    blk_sv_init(&ext2_d_sv, &ext2_d_sv_ops, ext2_d_ents, ro_mine ? 0 : (uint8_t *)(uintptr_t)VM_SV_BASE,
+    } else if (!ext2_d_area(VM_EXT2_WT_BASE, EXT2_D_WT_PAGES, (ext2_d_flags & EXT2_DISK_WMEM) != 0)) {
+        ro_mine = "too little memory for the write tables";
+        wt_short = true;
+    } else {
+        ext2_d_wt_n = EXT2_D_WT_PAGES;
+        if (pages < EXT2_D_MIN_PAGES || !ext2_d_store(pages))
+            ro_mine = "too little memory to keep changes";
+    }
+    ext2_write_init(&ext2_d_w, (struct ext2_bufs *)(uintptr_t)VM_EXT2_CORE_BASE, ro_mine ? 0 : &wt->wb);
+    blk_sv_init(&ext2_d_sv, &ext2_d_sv_ops, ro_mine ? 0 : wt->ents, ro_mine ? 0 : (uint8_t *)(uintptr_t)VM_SV_BASE,
                 ro_mine ? 0u : ext2_d_store_n * 4u, ro_mine ? 0 : (uint8_t *)(uintptr_t)VM_SV_RUN_BASE,
                 ext2_d_bytes);
 
@@ -359,8 +447,10 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     uint64_t hold_cycles = fd_tsc() - c0, hold_ticks = timer_ticks() - t0;
     uint32_t asked = vl->next - asked0;
     uint64_t steps = vl->yields - steps0;
-    if (end != EXT2_D_MOUNTED || !ext2_d_w.rw)
+    if (end != EXT2_D_MOUNTED || !ext2_d_w.rw) {
         ext2_d_unstore();               /* no change will ever be put */
+        ext2_d_untables(end != EXT2_D_MOUNTED);     /* 1.5 stage 5: and no write; refused: no read */
+    }
     klock_release(vfs_lock());
     disklock_release();
     if (end != EXT2_D_MOUNTED)
@@ -398,6 +488,8 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     /* The D11, D12 and C7 lines: each reason the volume is read-only, and
      * the recount of a volume not cleanly unmounted. */
     bool rw = ext2_d_w.rw;
+    if (wt_short)                       /* 1.5 stage 5 (C2) */
+        klogf("ext2: too little memory for the write tables: mounted read-only\n");
     if (fs->compat_unknown)
         klogf("ext2: unknown COMPAT flags 0x%x: mounted read-only (reading allowed; writing needs every COMPAT "
               "flag known)\n", fs->compat_unknown);
