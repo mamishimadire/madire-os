@@ -123,7 +123,7 @@ static void test_help_topic(void)
     CHECK_EQ(run("poweroff --help"), SHELL_OK);
     CHECK(strcmp(out, "poweroff: Power off the computer (asks first)\nUsage: poweroff [-y]\n") == 0);
     reset(false);
-    CHECK_EQ(run("help poweroff"), SHELL_OK);
+    CHECK_EQ(run("help poweroff"), SHELL_UNKNOWN);   /* as "help nosuch" since 0.9.1 */
     CHECK(strncmp(out, "No help for 'poweroff': unknown command.\n", 41) == 0);
 }
 
