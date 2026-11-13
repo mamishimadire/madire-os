@@ -49,8 +49,22 @@
  *   removed; a sync every 50 and one at the end; the free block and inode
  *   counts must come back to their start. "diskchurn: DONE" or "FAILED".
  *
+ * 1.5 stage 4 (docs/plans/1.5.md, C1):
+ *
+ * test=diskcontend (disktest_contend)
+ *   On a read-write volume: the program bigio (writer 1) appends 8 writes
+ *   of 32 KiB to /home/contend.bin through an O_APPEND open file the kernel
+ *   gives it as fd 3, while a kernel thread saves (a sync) whenever
+ *   something is dirty; both must finish (the program's exit status 0, no
+ *   save failed, at least one save ended while the program ran); then a
+ *   last sync, and the file must hold exactly the program's 256 KiB; no
+ *   write or FLUSH command sent under the VFS lock since boot. The test
+ *   checks the image afterwards (e2fsck -fn, debugfs). "diskcontend: DONE"
+ *   or "diskcontend: FAILED".
+ *
  * All run on thread 0 at boot (diskwrite's work on its own thread), and
- * take the VFS lock for each call, as the system calls do.
+ * take the VFS lock for each call, as the system calls do (in Disk mode
+ * the disk lock first, since 1.5 stage 4).
  */
 
 void disktest_write(void);
@@ -58,5 +72,6 @@ void disktest_nodes(void);
 void disktest_cut(void);
 void disktest_check(void);
 void disktest_churn(void);
+void disktest_contend(void);
 
 #endif

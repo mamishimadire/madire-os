@@ -2887,13 +2887,15 @@ else
     fail "[1.4] persistence: after the second boot e2fsck -fn reported something or the tree changed (see $E10_W/tree-b.txt)"
 fi
 
-# The owner's rule (stage 10, option 2): no VFS lock hold during disk I/O
-# may exceed 2 ticks after System ready; the boot-time read-write mount
-# (thread 0, before System ready, no other thread contending) is exempt,
-# its hold measured and reported. On the four read-write mount boots
+# The owner's rule (stage 10, option 2) had exempted the boot-time
+# read-write mount from the 2-tick rule. 1.5 stage 4 (docs/plans/1.5.md,
+# C1, H2 item 3, a CHANGED CHECK): the exemption is gone; no write or FLUSH
+# command is sent while the VFS lock is held, the boot mount included (save
+# 0 runs under the disk lock only). On the four read-write mount boots
 # (diskwrite, the write session's boot A, stage 8's not-clean volume,
-# persistence): the mount's hold line once and before 'System ready.', and
-# no other thread asked for the VFS lock or waited during the mount.
+# persistence): the mount's "blk:" line says 0 such commands since boot,
+# and, as before, the mount's hold line once and before 'System ready.',
+# and no other thread asked for the VFS lock or waited during the mount.
 E10_MH=""
 E10_MBAD=""
 for e10_ml in "$E10_DWLOG" "$E8_L-dirty.log" "$E10_LA" "$E10_LB"; do
@@ -2903,16 +2905,16 @@ for e10_ml in "$E10_DWLOG" "$E8_L-dirty.log" "$E10_LA" "$E10_LB"; do
             head -n 1)
     E10_MH="$E10_MH ${e10_ml##*/} ${e10_t:-no hold line};"
     if [ "$e10_order" != ok ] || [ "$(grep -c '^mount: the mount held the VFS lock ' "$e10_ml" 2>/dev/null)" != 1 ] ||
-       [ "$(grep -cxF 'blk: disk I/O under the VFS lock at the mount: 0 other threads asked for the lock, 0 wait steps (report only)' \
+       [ "$(grep -cxF 'blk: the mount: save 0 under the disk lock only; 0 write or FLUSH commands sent while the VFS lock was held (since boot); 0 other threads asked for the VFS lock during its hold, 0 wait steps (report only)' \
             "$e10_ml" 2>/dev/null)" != 1 ]; then
         E10_MBAD="$E10_MBAD ${e10_ml##*/}"
     fi
 done
 echo "      [1.4] the read-write mounts' holds of the VFS lock (report only):$E10_MH"
 if [ -z "$E10_MBAD" ]; then
-    pass "[1.4] boot-time read-write mount (exempt from the 2-tick rule): on the four read-write mount boots (diskwrite, the write session's boot A, the not-clean volume, persistence) the mount's hold of the VFS lock is logged once, before 'System ready.', and no other thread asked for the lock or waited during it (0 tickets, 0 wait steps)"
+    pass "[1.4] boot-time read-write mount (no exemption since 1.5 stage 4): on the four read-write mount boots (diskwrite, the write session's boot A, the not-clean volume, persistence) no write or FLUSH command was sent while the VFS lock was held, the boot mount included (save 0 under the disk lock only; 0 since boot at the mount's line); the mount's hold of the VFS lock is logged once, before 'System ready.', and no other thread asked for the lock or waited during it (0 tickets, 0 wait steps)"
 else
-    fail "[1.4] boot-time read-write mount: the hold line missing, repeated or after 'System ready.', or another thread asked for or waited on the VFS lock during the mount:$E10_MBAD"
+    fail "[1.4] boot-time read-write mount: a write or FLUSH sent under the VFS lock, the mount's lines missing, repeated or after 'System ready.', or another thread asked for or waited on the VFS lock during the mount:$E10_MBAD"
 fi
 
 # (16-18) test=blkdebug.

@@ -190,13 +190,20 @@ void fd_thread_lock(int32_t tid, uint64_t *waited, uint64_t *longest);
  * it. A take that waited is a hand-off: its gap is the ticks from the
  * release that served its ticket (with the FIFO lock, the last release)
  * to the take, the time the next owner took to be scheduled. Counted
- * only while every user of the lock goes through these two. */
+ * only while every user of the lock goes through these two. 1.5 stage 4
+ * (C1): in Disk mode fd_vfs_acquire takes the disk lock first
+ * (kernel/proc/disklock.h) and fd_vfs_release gives it back after the
+ * VFS lock; the return value is still the VFS lock's wait steps. */
 uint32_t fd_vfs_acquire(void);
 void fd_vfs_release(void);
 
 /* 1.0 stage 7b, test code only: a reserved turn of the VFS lock
  * (klock_test_reserve, counted as fd_vfs_acquire counts a take) and its
- * take (klock_test_take); fd_vfs_release ends it. */
+ * take (klock_test_take); fd_vfs_release ends it. 1.5 stage 4: Live-mode
+ * tests only (test=bigio, test=filecontend): it takes no disk lock (the
+ * programs it waits for would queue on the disk lock instead), and in Disk
+ * mode it panics ("fd_vfs_test_reserve: thread N '<name>' in Disk mode: a
+ * reserved VFS turn is a Live-mode test only (C1)."). */
 uint32_t fd_vfs_test_reserve(void);
 void fd_vfs_test_take(void);
 

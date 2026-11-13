@@ -371,7 +371,7 @@ static void fk_unpage(void *ctx, volatile uint8_t *virt, uint32_t phys)
     }
 }
 
-static const struct ahci_ops fk_ops = { fk_read, fk_write, fk_ticks, fk_page, fk_unpage, 0, 100 };
+static const struct ahci_ops fk_ops = { fk_read, fk_write, fk_ticks, fk_page, fk_unpage, 0, 100, 0 };
 static struct ahci_hba hba;
 
 /* A page for a read's data (as the block cache's pages). */

@@ -35,7 +35,8 @@ bool blk_attached(void);
 uint32_t blk_pages_made(void);
 
 /* Sectors [lba, lba + count) into dst: 0 or -BLK_EIO (blk_core.h). One
- * caller at a time. */
+ * caller at a time: 1.5 stage 4 (C1, L5), in Disk mode the disk lock's
+ * owner (else a panic, disklock_check_io). */
 int blk_read(uint64_t lba, uint32_t count, uint8_t *dst);
 
 /* test=diskread (thread 0, at boot). */
@@ -44,11 +45,31 @@ void blk_diskread(void);
 /* 1.4 stage 10: one WRITE DMA EXT of `sectors` sectors at `lba` from the
  * frames phys[0..pages-1] (ahci_disk_write: refused unless the guard allows),
  * then the cached pages it reached are dropped (blk_cache_forget); and
- * FLUSH CACHE EXT. 0 or -BLK_EIO. One caller at a time (the VFS lock's
- * holder). */
+ * FLUSH CACHE EXT. 0 or -BLK_EIO. One caller at a time: since 1.5 stage 4
+ * (C1, L5) the disk lock's owner in Disk mode (a save piece holds only the
+ * disk lock). Each call made while the caller holds the VFS lock is
+ * counted (blk_vfs_commands; C1: it must stay 0, the boot mount included). */
 int blk_write(uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages);
 int blk_flush(void);
 /* The attached disk's AHCI port. */
 uint32_t blk_port_number(void);
+
+/* 1.5 stage 4: write and FLUSH commands asked for while the caller held
+ * the VFS lock, since boot. */
+uint64_t blk_vfs_commands(void);
+
+/*
+ * 1.5 stage 4, test=blkslow=<ms> (C1; a slow disk): after each write or
+ * FLUSH command has finished, the caller waits <ms> more by yielding, if
+ * it may (the disk lock's owner with preemption on: disklock_may_yield);
+ * one "blk: test=blkslow:" line per such wait names the command and the
+ * thread, and counts what ran meanwhile: thread 0's idle loop
+ * (blk_slow_idle, called once per pass) and a ticker thread (started by
+ * blk_slow_start, one count per tick it wakes), with blk_vfs_commands.
+ * blk_slow is set before the disk is attached (kernel.c).
+ */
+void blk_slow(uint32_t ms);
+void blk_slow_start(void);
+void blk_slow_idle(void);
 
 #endif

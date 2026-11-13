@@ -38,6 +38,7 @@
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/fdtest.h"
 #include "kernel/proc/klock.h"
@@ -482,6 +483,12 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=selfcheckyieldlock")) {  /* 1.0 stage 7b */
         diag_message("Self-check test: a yield under the VFS lock (must panic)");
         fdtest_selfcheck_yieldlock();
+    } else if (cmdline_has("test=selfcheckdisklock")) {   /* 1.5 stage 4 */
+        diag_message("Self-check test: the disk lock under the VFS lock (must panic)");
+        disklock_selfcheck_order();
+    } else if (cmdline_has("test=selfcheckdiskrelock")) { /* 1.5 stage 4 */
+        diag_message("Self-check test: the disk lock taken twice (must panic)");
+        disklock_selfcheck_relock();
     } else if (cmdline_has("test=selfcheckcr3")) {
         /* 0.12 stage 2b: each self-check test must panic, naming the state.
          * cmdline_has matches substrings: ring3cr3 before ring3. */
@@ -655,6 +662,12 @@ static void run_diagnostics(void)
     } else if (cmdline_has("test=diskchurn")) {   /* 1.4 stage 11 */
         diag_message("Disk churn test: 1000 create, write and delete cycles...");
         disktest_churn();
+    } else if (cmdline_has("test=diskcontend")) { /* 1.5 stage 4 */
+        diag_message("Disk contention test: a program writes under /home while saves run...");
+        disktest_contend();
+    } else if (cmdline_has("test=blkslow")) {     /* 1.5 stage 4 */
+        diag_message("Slow disk test: every write and FLUSH waits longer, yielding...");
+        blk_slow_start();
     } else if (cmdline_has("test=filecontend")) { /* 1.0 stage 5 */
         diag_message("File contention test: the busy mark and the VFS lock under load...");
         diag_message(fsiotest_contend() ? "File contention test: done"
@@ -889,6 +902,8 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
             if (seconds && seconds % 5 == 0)    /* 0.12: serial only, not in dmesg */
                 kserialf("uptime: %u s\n", seconds);
         }
+
+        blk_slow_idle();                    /* 1.5 stage 4: test=blkslow counts the passes */
 
         /* 0.9: free exited detached threads, then let another thread run
          * or wait for the next interrupt (hlt, as before 0.9). */
@@ -1179,7 +1194,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     ext2_disk_options((cmdline_has("test=") ? EXT2_DISK_TEST_BOOT : 0u) |
                       (cmdline_has("test=diskro") ? EXT2_DISK_RO : 0u) |
                       (cmdline_has("test=blkdebug") ? EXT2_DISK_BLKDEBUG : 0u) |
-                      (cmdline_has("test=autosave") ? EXT2_DISK_AUTOSAVE : 0u));
+                      (cmdline_has("test=autosave") ? EXT2_DISK_AUTOSAVE : 0u) |
+                      (cmdline_has("test=blkslow") ? EXT2_DISK_BLKSLOW : 0u));
+    /* 1.5 stage 4 (C1): test=blkslow=<ms>, a slow disk from the first write
+     * on (the mount's save 0 included). */
+    uint32_t slow_ms = 0;
+    if (cmdline_has("test=blkslow") && cmdline_u32("test=blkslow=", &slow_ms))
+        blk_slow(slow_ms);
     if (cmdline_has("test=diskcut")) {
         uint32_t cut_after = 0;
         bool cut = cmdline_u32("test=diskcut=", &cut_after);

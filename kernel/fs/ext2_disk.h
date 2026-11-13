@@ -37,6 +37,15 @@
  * piece. A failed save makes the volume read-only (D9; the write core
  * writes its error state once if it still can).
  *
+ * 1.5 stage 4 (docs/plans/1.5.md, C1): the per-disk I/O lock
+ * (kernel/proc/disklock.h). The mount switches it on (Disk mode) and does
+ * its reads and save 0 under it alone, then takes the VFS lock for the
+ * adapter and the mount table; a refused mount switches it off (Live
+ * mode). A save piece holds ONLY the disk lock (no VFS lock), with
+ * preemption on; the save functions are called holding neither lock. The
+ * mount's "blk:" line gives the write and FLUSH commands sent while the
+ * VFS lock was held since boot (blk_vfs_commands: 0).
+ *
  * Its lines, logged after the work (never while the lock is held), all
  * between the guard's lines and the Storage: line:
  *   ext2: port P partition I: revision R, B-byte blocks, ...; state ...
@@ -46,6 +55,7 @@
  *   mount: ext2 '<label>' on /home (filesystem N), read-write | read-only
  *          (<why>); ...
  *   mount: the mount held the VFS lock ...
+ *   blk: the mount: save 0 under the disk lock only; N write or FLUSH ...
  *   mount: file-size limits from each filesystem's ops table: ...
  *   mount: changes are kept in memory ... (read-write only)
  */
@@ -60,6 +70,7 @@
 #define EXT2_DISK_RO         0x2u       /* test=diskro: mounted read-only */
 #define EXT2_DISK_BLKDEBUG   0x4u       /* test=blkdebug: injected disk errors */
 #define EXT2_DISK_AUTOSAVE   0x8u       /* test=autosave: the automatic save on, each save logged (stage 11) */
+#define EXT2_DISK_BLKSLOW    0x10u      /* 1.5 stage 4, test=blkslow=<ms>: the automatic save on (not logged) */
 void ext2_disk_options(uint32_t flags);
 
 /* Stage 11, test=diskcut[=N] (docs/plans/1.4.md, section D (b)): every disk

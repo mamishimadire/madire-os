@@ -160,6 +160,11 @@ struct ahci_ops {
     void (*unpage)(void *ctx, volatile uint8_t *virt, uint32_t phys);
     void *ctx;
     uint32_t hz;
+    /* 1.5 stage 4 (C1): called between two status reads of a wait (none:
+     * 0). The kernel's yields there only when its caller holds the disk
+     * lock with preemption on (disklock_may_yield); inside a VFS hold it
+     * does nothing, so the wait keeps polling. */
+    void (*relax)(void *ctx);
 };
 
 /* How a wait or a command ended. */

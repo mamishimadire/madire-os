@@ -9,7 +9,10 @@
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/memory.h"
 #include "kernel/proc/diagwait.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
+#include "kernel/proc/fdtable_core.h"
+#include "kernel/proc/process.h"
 #include "kernel/proc/thread.h"
 #include "kernel/storage/ahci.h"
 #include "kernel/storage/blk.h"
@@ -592,4 +595,136 @@ void disktest_churn(void)
         klogf("diskchurn: FAILED (the free counts did not come back to their start)\n");
     else
         klogf("diskchurn: DONE (%u cycles; the free blocks and inodes back to their start)\n", done);
+}
+
+/* ---- 1.5 stage 4: test=diskcontend ---- */
+
+#define DT_CT_WRITE     32768u                  /* bigio's writer: 8 writes of 32 KiB */
+#define DT_CT_WRITES    8u
+#define DT_CT_FILE      (DT_CT_WRITE * DT_CT_WRITES)
+
+struct dt_contend {
+    volatile bool stop;                 /* the saver ends */
+    volatile bool running;              /* the program has not ended yet */
+    uint32_t saves, during, failed;     /* syncs; those that ended while the program ran; failed ones */
+};
+
+static struct dt_contend dt_ct;
+
+/* The saver: a sync whenever something is dirty or pending (each logs its
+ * "ext2: sync:" line), else a yield. Holds neither lock between syncs;
+ * ext2_write_busy reads two counters only (a stale answer costs one more
+ * sync or one more yield). */
+static int32_t dt_ct_saver(void *arg)
+{
+    struct dt_contend *c = arg;
+    const struct ext2_wfs *w = ext2_disk_wfs();
+    while (!c->stop) {
+        if (!w || !ext2_write_busy(w)) {
+            thread_yield();
+            continue;
+        }
+        uint64_t blocks = 0;
+        enum ext2_disk_save s = ext2_disk_sync(&blocks);
+        c->saves++;
+        c->during += c->running ? 1u : 0u;
+        c->failed += s != EXT2_DISK_SAVED;
+    }
+    return 0;
+}
+
+/* The file's 8 blocks of 32 KiB: block c holds writer 1's write c, each
+ * 8-byte word (1 << 56) | (c << 48) | its index in the write. */
+static bool dt_ct_check(struct vnode *n, uint32_t *blocks)
+{
+    *blocks = 0;
+    for (uint32_t c = 0; c < DT_CT_WRITES; c++) {
+        for (uint32_t off = 0; off < DT_CT_WRITE; off += DT_CHUNK) {
+            fd_vfs_acquire();
+            int64_t got = vfs_read(vfs_root(), n, (uint64_t)c * DT_CT_WRITE + off, dt_buf, DT_CHUNK);
+            fd_vfs_release();
+            if (got != (int64_t)DT_CHUNK)
+                return false;
+            for (uint32_t i = 0; i < DT_CHUNK / 8u; i++) {
+                uint64_t word = 0;
+                for (uint32_t b = 0; b < 8u; b++)
+                    word |= (uint64_t)dt_buf[i * 8u + b] << (8u * b);
+                if (word != ((1ull << 56) | ((uint64_t)c << 48) | (off / 8u + i)))
+                    return false;
+            }
+        }
+        (*blocks)++;
+    }
+    return true;
+}
+
+void disktest_contend(void)
+{
+    if (!ext2_disk_rw()) {
+        klogf("diskcontend: FAILED (no read-write volume on /home)\n");
+        return;
+    }
+    const char *path = "/home/contend.bin";
+    struct dt_contend *c = &dt_ct;
+    struct vnode *n = 0;
+    uint32_t file = 0xFFFFFFFFu;
+    struct ext2_disk_figs f0, f1;
+    ext2_disk_figures(&f0);
+    if (dt_make(path, VNODE_FILE, &n) != 0) {
+        klogf("diskcontend: FAILED (the file could not be made)\n");
+        return;
+    }
+    fd_vfs_acquire();
+    int ro = fd_kernel_open(n, OF_WRITE | OF_APPEND, &file);
+    fd_vfs_release();
+    if (ro < 0) {
+        dt_drop(n);
+        klogf("diskcontend: FAILED (the file could not be opened)\n");
+        return;
+    }
+    c->stop = false;
+    c->running = true;
+    c->saves = c->during = c->failed = 0;
+    int32_t saver = thread_create("dt-saver", dt_ct_saver, c, false);
+    struct fd_grant g = { 3, file };
+    int32_t pid = saver < 0 ? -1 : process_start_fds("bigio", 9, &g, 1);
+    struct proc_result res = { PROC_END_FAULT, -1 };
+    enum proc_status st = pid > 0 ? process_wait(pid, &res) : PROC_ERR_NO_SUCH;
+    c->running = false;
+    c->stop = true;
+    if (saver >= 0)
+        thread_join(saver);
+    fd_kernel_close(file);
+    uint64_t blocks = 0;
+    bool last = ext2_disk_sync(&blocks) == EXT2_DISK_SAVED;
+    bool exited = st == PROC_OK && res.end == PROC_END_EXIT && res.code == 0;
+    uint32_t good = 0;
+    fd_vfs_acquire();
+    uint64_t size = n->size;
+    fd_vfs_release();
+    bool words = size == DT_CT_FILE && dt_ct_check(n, &good);
+    dt_drop(n);
+    ext2_disk_figures(&f1);
+    struct disklock_figs d;
+    disklock_figures(&d);
+    uint64_t vfs_cmds = blk_vfs_commands();
+    klogf("diskcontend: a program (bigio, writer 1) appended %u writes of 32 KiB to %s through an O_APPEND open file "
+          "while a kernel thread saved whenever something was dirty: %u saves (%u ended while the program ran), %u "
+          "failed; the program %s (exit status %d); %llu saves an operation needed (report only)\n", DT_CT_WRITES,
+          path, c->saves, c->during, c->failed, exited ? "finished" : "did NOT finish normally", (int)res.code,
+          (ull)(f1.retries - f0.retries));
+    klogf("diskcontend: the file holds %llu bytes, %u blocks of 32 KiB each one write's words in order; the last sync: "
+          "%s; write or FLUSH commands sent while the VFS lock was held, since boot: %llu; the disk lock: %llu takes, "
+          "%llu waited, the longest hold %llu ticks, the longest wait %llu ticks (thread 0: %llu) (report only)\n",
+          (ull)size, good, last ? "saved" : "NOT saved", (ull)vfs_cmds, (ull)d.takes, (ull)d.contended,
+          (ull)d.hold_longest, (ull)d.wait_longest, (ull)d.wait_longest0);
+    const char *fail = saver < 0 ? "no saver thread" : pid <= 0 ? "the program did not start"
+                     : !exited ? "the program did not finish normally" : c->failed ? "a save failed"
+                     : !c->during ? "no save ended while the program ran" : !words ? "the file is not exact"
+                     : !last ? "the last sync failed" : vfs_cmds ? "a write or FLUSH was sent under the VFS lock" : 0;
+    if (fail)
+        klogf("diskcontend: FAILED (%s)\n", fail);
+    else
+        klogf("diskcontend: DONE (the program and the saves both finished; the file exact; nothing sent under the VFS "
+              "lock)\n");
 }

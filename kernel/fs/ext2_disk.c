@@ -15,6 +15,7 @@
 #include "kernel/memory/pmm.h"
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/klock.h"
 #include "kernel/proc/thread.h"
@@ -28,7 +29,7 @@ typedef unsigned long long ull;
 
 #define EXT2_D_SECTOR   512u
 #define EXT2_D_BUF      8192u           /* bytes per blk_read at most: 16 sectors */
-#define EXT2_D_PIECE    8u              /* disk commands per hold of the VFS lock (C5) */
+#define EXT2_D_PIECE    8u              /* disk commands per piece (C5): since 1.5 S4 a hold of the disk lock */
 #define EXT2_D_SAVES    8u              /* saves in one full save at most */
 #define EXT2_D_MIN_PAGES 128u           /* the store's pages at least (512 chunks) */
 #define EXT2_D_AUTOSAVE (5u * TIMER_HZ)
@@ -315,16 +316,22 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
                 ro_mine ? 0u : ext2_d_store_n * 4u, ro_mine ? 0 : (uint8_t *)(uintptr_t)VM_SV_RUN_BASE,
                 ext2_d_bytes);
 
+    /* 1.5 stage 4 (C1): Disk mode from here (thread 0; no other thread
+     * makes a file call yet): the disk lock first. The mount's reads and
+     * save 0 (inside ext2_write_mount; nothing else can reach the volume
+     * yet) run under the disk lock only; then the VFS lock for the
+     * adapter's root and the mount table (L1: disk lock, then VFS lock).
+     * A mount that ends refused leaves Live mode: the lock off again. */
+    disklock_start();
+    disklock_acquire();
+    err = ext2_write_mount(&ext2_d_w, &ext2_d_sv, ext2_d_bytes, &ext2_d_wops, ro_mine == 0);
     klock_acquire(vfs_lock());
     uint64_t c0 = fd_tsc(), t0 = timer_ticks();
-    /* Stage 10 (the owner's rule: the boot-time mount's hold is exempt from
-     * the 2-tick rule only while no other thread contends): any thread
-     * that asks for the lock during the hold takes a ticket (next) and
-     * counts its wait steps (yields). */
+    /* Stage 10: any thread that asks for the lock during the hold takes a
+     * ticket (next) and counts its wait steps (yields) (report only). */
     const struct klock *vl = vfs_lock();
     uint32_t asked0 = vl->next;
     uint64_t steps0 = vl->yields;
-    err = ext2_write_mount(&ext2_d_w, &ext2_d_sv, ext2_d_bytes, &ext2_d_wops, ro_mine == 0);
     if (err != EXT2_OK) {
         end = EXT2_D_REFUSED;
     } else if (ext2_vfs_init(&ext2_d_vfs, &ext2_d_w.fs, &ext2_d_mem, EXT2_VFS_NODES) != 0) {
@@ -355,6 +362,9 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     if (end != EXT2_D_MOUNTED || !ext2_d_w.rw)
         ext2_d_unstore();               /* no change will ever be put */
     klock_release(vfs_lock());
+    disklock_release();
+    if (end != EXT2_D_MOUNTED)
+        disklock_stop();                /* Live mode: the disk is never used again */
 
     const struct ext2_fs *fs = &ext2_d_w.fs;
     if (end == EXT2_D_REFUSED) {
@@ -421,19 +431,22 @@ bool ext2_disk_mount(uint32_t port, uint32_t partition, uint64_t first, uint64_t
     /* "blk:": the lines between PCI: and Storage: are the driver's and the
      * storage layers' (ahci, blk, part, guard, ext2, mount), and the mount:
      * and ext2: lines are counted exactly by earlier checks. */
-    klogf("blk: disk I/O under the VFS lock at the mount: %u other threads asked for the lock, %llu wait steps "
-          "(report only)\n", asked, (ull)steps);
+    klogf("blk: the mount: save 0 under the disk lock only; %llu write or FLUSH commands sent while the VFS lock was "
+          "held (since boot); %u other threads asked for the VFS lock during its hold, %llu wait steps (report "
+          "only)\n", (ull)blk_vfs_commands(), asked, (ull)steps);
     klogf("mount: file-size limits from each filesystem's ops table: / %llu bytes, /home %llu bytes\n",
           (ull)ram_max, (ull)disk_max);
     if (rw) {
         bool tested = (ext2_d_flags & EXT2_DISK_AUTOSAVE) != 0;
-        bool autosave = !(ext2_d_flags & EXT2_DISK_TEST_BOOT) || tested;
+        bool slow = (ext2_d_flags & EXT2_DISK_BLKSLOW) != 0;    /* 1.5 stage 4 */
+        bool autosave = !(ext2_d_flags & EXT2_DISK_TEST_BOOT) || tested || slow;
         if (autosave)
             ext2_d_saver = thread_create("autosave", ext2_d_autosave, 0, true);
         klogf("mount: changes are kept in memory (%u KiB, %u chunks of 1 KiB) until a save writes them, at most "
               "%u disk commands per hold of the VFS lock; automatic save every 5 s: %s\n", ext2_d_store_n * 4u,
               ext2_d_store_n * 4u, EXT2_D_PIECE,
-              autosave ? (ext2_d_saver < 0 ? "off (no thread)" : tested ? "on (test=autosave)" : "on")
+              autosave ? (ext2_d_saver < 0 ? "off (no thread)" : tested ? "on (test=autosave)"
+                          : slow ? "on (test=blkslow)" : "on")
                        : "off (a test= boot)");
         if (ext2_d_flags & EXT2_DISK_BLKDEBUG) {
             ahci_debug_arm(false, true);
@@ -465,7 +478,7 @@ bool ext2_disk_again(void)
     return ext2_d_on && ext2_vfs_again(&ext2_d_vfs);
 }
 
-/* ---- saves in pieces (the caller does not hold the VFS lock) ---- */
+/* ---- saves in pieces (the caller holds neither the VFS lock nor the disk lock) ---- */
 
 enum ext2_d_piece_end {
     EXT2_D_IDLE,                        /* no save in progress, none started */
@@ -475,14 +488,19 @@ enum ext2_d_piece_end {
     EXT2_D_RO,                          /* the volume is read-only */
 };
 
-/* One piece under the VFS lock: the save in progress continued, or one
- * started if `start` and something is dirty or pending; at most
- * EXT2_D_PIECE disk commands. */
+/* One piece: the save in progress continued, or one started if `start`
+ * and something is dirty or pending; at most EXT2_D_PIECE disk commands.
+ * 1.5 stage 4 (C1): under the disk lock ONLY (no VFS lock): in Disk mode
+ * no file call runs without the disk lock, the save store is frozen while
+ * a save is in progress (blk_sv_put refuses), and the holder keeps
+ * preemption on, so the desktop, the clock and programs that make no file
+ * call run while the disk works. The hold figures (hold_cycles,
+ * hold_ticks; the log lines still say "VFS lock hold") are this hold's. */
 static enum ext2_d_piece_end ext2_d_piece(bool start)
 {
     struct ext2_wfs *w = &ext2_d_w;
     enum ext2_d_piece_end res;
-    fd_vfs_acquire();
+    disklock_acquire();
     uint64_t c0 = fd_tsc(), t0 = timer_ticks();
     if (!w->rw) {
         res = w->failed ? EXT2_D_FAIL : EXT2_D_RO;
@@ -500,7 +518,7 @@ static enum ext2_d_piece_end ext2_d_piece(bool start)
         if (t > ext2_d_figs.hold_ticks)
             ext2_d_figs.hold_ticks = t;
     }
-    fd_vfs_release();
+    disklock_release();
     return res;
 }
 

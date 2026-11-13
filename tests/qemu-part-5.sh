@@ -1,13 +1,15 @@
 # Madire OS QEMU tests, part 5 (1.5 stage 2, plan section E, decision 16):
 # a sixth shard for the shards' balance and 1.5's desktop and Files
 # sessions. Sourced by tests/qemu-tests.sh (a full run, or --shard 5).
-# Apart from this header, every line was moved unchanged: from part static
-# the self-test of boot_until's stop with a fake QEMU (1.3 stage 7a), the
-# handover's rule on the references with the VirtualBox desktop group's
-# plan and references (1.3 stage 8) and the hidden boot menu's checks
-# (1.1; moved to part static in 1.3 stage 8a); from part 4 the console's
-# file commands and the Live label (1.0 stage 8). Each section boots or
-# builds what it reads itself (no file or variable from another part).
+# In stage 2, apart from this header, every line was moved unchanged: from
+# part static the self-test of boot_until's stop with a fake QEMU (1.3
+# stage 7a), the handover's rule on the references with the VirtualBox
+# desktop group's plan and references (1.3 stage 8) and the hidden boot
+# menu's checks (1.1; moved to part static in 1.3 stage 8a); from part 4
+# the console's file commands and the Live label (1.0 stage 8). New since:
+# the per-disk I/O lock's boots (1.5 stage 4, the last section). Each
+# section boots or builds what it reads itself (no file or variable from
+# another part).
 
 # ---- 1.3 stage 7a: boot_until's stop ----
 
@@ -473,3 +475,144 @@ else
 fi
 reject "$LOG" "PANIC|events dropped|Screen output from thread|Unexpected IRQ" \
                                                       "[1.0] file session: no panic, dropped key, screen-rule violation or self-check"
+
+# ---- 1.5 stage 4: the per-disk I/O lock ----
+
+section "[1.5] The per-disk I/O lock: test=blkslow, test=diskcontend and the self-check boots (stage 4)"
+# docs/plans/1.5.md, C1 (rules L1-L6), risks 44, 45, 60. Each boot has its
+# own marked read-write test disk (16 MiB, 1 KiB blocks; tests/disk-lib.sh
+# and tests/disk_image.py, as part static's [1.4] disk sections make them).
+# (1-3) test=blkslow=500: after each write and FLUSH command the thread
+# waits 500 ms more, yielding, when it holds the disk lock with preemption
+# on (a slow disk); the automatic save is on in this boot. At the console a
+# file is written under /home; the automatic save sends its writes and its
+# FLUSH while thread 0 sits in its idle loop; then sync. Each slow wait
+# logs what ran meanwhile (thread 0's idle loop, a ticker thread) and the
+# write and FLUSH commands sent while the VFS lock was held since boot,
+# which must stay 0 from the boot mount's save 0 to the last command
+# after System ready. The image: e2fsck -fn reports nothing, the file
+# exact (debugfs). (4-6) test=diskcontend: the program bigio (writer 1)
+# appends 8 writes of 32 KiB to /home/contend.bin while a kernel thread
+# saves whenever something is dirty; both finish, the file is exact in the
+# kernel and on the image (debugfs, its SHA-256 computed here), e2fsck -fn
+# reports nothing. (7-10) test=selfcheckdisklock (the disk lock taken
+# while the VFS lock is held: L1) and test=selfcheckdiskrelock (taken
+# again by its owner: L3), in Disk mode: each panics with its rule's text
+# and halts. The disk lock's figures are report only.
+DL_T0=$(date +%s)
+DL_W=$OUT/disklock
+rm -rf "${DL_W:?}" && mkdir -p "$DL_W"
+DL_READY="System ready. Press any key to open the console."
+DL_BOOT_OK=1
+# dl_disk <name>: a marked read-write test disk at $DL_W/<name>-disk.img.
+dl_disk() {
+    disk_mkfs "$DL_W/$1-fs.img" 16384 1024 256 2048 "" > "$DL_W/$1-mkfs.txt" 2>&1 &&
+        disk_image mbr "$DL_W/$1-fs.img" "$DL_W/$1-disk.img" > /dev/null 2>&1
+}
+# dl_drive <name>: QEMU's options for that disk on ich9-ahci.
+dl_drive() {
+    printf '%s\n' -drive "file=$DL_W/$1-disk.img,if=none,id=dl$1-disk,format=raw" \
+        -device "ich9-ahci,id=dl$1-ahci,addr=0x5" -device "ide-hd,drive=dl$1-disk,bus=dl$1-ahci.0"
+}
+# dl_fsck <name>: e2fsck -fn on the disk's partition; true when it exits 0
+# and prints only its frame lines (nothing to report).
+dl_fsck() {
+    local part=$DL_W/$1-part.img out rc extra
+    disk_image extract "$DL_W/$1-disk.img" "$part" > /dev/null 2>&1 || { echo "      e2fsck ($1): no partition"; return 1; }
+    out=$(disk_fsck "$part"); rc=$?
+    extra=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$out")
+    sed "s/^/      e2fsck ($1, exit $rc): /" <<< "$out"
+    [ "$rc" -eq 0 ] && [ -z "$extra" ]
+}
+# dl_health <log>: System ready, no PANIC or FAILED line (case-sensitive).
+dl_health() { [ -s "$1" ] && grep -q '^System ready\.' "$1" && ! grep -qE 'PANIC|FAILED' "$1"; }
+DL_MOUNT0="^blk: the mount: save 0 under the disk lock only; 0 write or FLUSH commands sent while the VFS lock was held \(since boot\); "
+
+# (1-3) test=blkslow=500.
+dl_disk blkslow || DL_BOOT_OK=0
+mapfile -t DL_DRV < <(dl_drive blkslow)
+DL_SL=$OUT/serial-blkslow.log
+DL_SLTEXT=blkslow-line
+boot_text "$DL_SL" 180 "System ready." "x{wait:1}echo $DL_SLTEXT > /home/slow.txt{ret}{wait:20}sync{ret}" 0.05 \
+    $'\next2: sync: ' -m 128M -kernel "$KERNEL" -append "test=blkslow=500" "${DL_DRV[@]}"
+grep -E '^(blkslow|blk: test=blkslow|blk: the mount|mount: changes|ext2: sync)' "$DL_SL" | sed 's/^/      blkslow: /'
+DL_FL=$(sed -nE "s/^blk: test=blkslow: thread [0-9]+ 'autosave': FLUSH CACHE EXT done, then 500 ms more, yielding: thread 0's idle loop ran ([0-9]+) times, the ticker thread ([0-9]+) times; write or FLUSH commands sent while the VFS lock was held, since boot: ([0-9]+)$/\1 \2 \3/p" "$DL_SL" | head -n 1)
+read -r dl_idle dl_tick dl_vfs <<< "${DL_FL:-0 0 x}"
+echo "      [1.5] blkslow: during the automatic save's first 500 ms FLUSH wait: thread 0's idle loop $dl_idle passes, the ticker $dl_tick wake-ups (report: the counts)"
+if [ "$DL_BOOT_OK" -eq 1 ] && [ -n "$DL_FL" ] && [ "$dl_idle" -ge 25 ] && [ "$dl_tick" -ge 25 ] &&
+   grep -qE '^blkslow: armed: after every write and FLUSH command the thread waits 500 ms more, yielding, when it holds the disk lock with preemption on; the ticker thread started \(thread [0-9]+\); ' "$DL_SL" &&
+   grep -qE '^mount: changes are kept in memory .*; automatic save every 5 s: on \(test=blkslow\)$' "$DL_SL"; then
+    pass "[1.5] test=blkslow=500: the automatic save's FLUSH CACHE EXT was followed by a 500 ms wait, yielding, holding the disk lock; meanwhile thread 0's idle loop ran ($dl_idle passes) and the ticker thread ran ($dl_tick wake-ups, at least 25 of the wait's 50 ticks)"
+else
+    fail "[1.5] test=blkslow=500: no slow FLUSH by the automatic save, or thread 0's idle loop or the ticker did not run during it (idle ${dl_idle:-?}, ticker ${dl_tick:-?}; see serial-blkslow.log)"
+fi
+DL_SLN=$(grep -cE '^blk: test=blkslow: thread [0-9]+ ' "$DL_SL")
+DL_SLBAD=$(grep -E '^blk: test=blkslow: thread [0-9]+ ' "$DL_SL" | grep -cvE '; write or FLUSH commands sent while the VFS lock was held, since boot: 0$')
+DL_SLAFTER=$(awk '/^System ready\./ { r = 1 } r && /^blk: test=blkslow: thread [0-9]+ / { n++ } END { print n + 0 }' "$DL_SL")
+DL_SLBEFORE=$(awk '/^System ready\./ { exit } /^blk: test=blkslow: thread [0-9]+ .kernel.: / { n++ } END { print n + 0 }' "$DL_SL")
+if [ "$DL_SLN" -ge 2 ] && [ "$DL_SLBAD" -eq 0 ] && [ "$DL_SLAFTER" -ge 1 ] && [ "$DL_SLBEFORE" -ge 1 ] &&
+   [ "$(grep -cE "$DL_MOUNT0" "$DL_SL")" -eq 1 ]; then
+    pass "[1.5] test=blkslow=500: no write or FLUSH command was sent while the VFS lock was held, the boot mount included: 0 on the mount's line and on all $DL_SLN slow commands' lines ($DL_SLBEFORE by the mount's save 0 before System ready, $DL_SLAFTER after it)"
+else
+    fail "[1.5] test=blkslow=500: a write or FLUSH was sent under the VFS lock, or the slow commands' lines are missing ($DL_SLN lines, $DL_SLBAD not 0, $DL_SLBEFORE by the mount, $DL_SLAFTER after System ready; see serial-blkslow.log)"
+fi
+DL_SLGOT=$(disk_image extract "$DL_W/blkslow-disk.img" "$DL_W/blkslow-part.img" > /dev/null 2>&1 &&
+           disk_debugfs "$DL_W/blkslow-part.img" "cat /slow.txt" | sha256sum | cut -d' ' -f1)
+DL_SLWANT=$(printf '%s\n' "$DL_SLTEXT" | sha256sum | cut -d' ' -f1)
+if dl_fsck blkslow && [ "$DL_SLGOT" = "$DL_SLWANT" ] && dl_health "$DL_SL" && grep -qE '^ext2: sync: saved; ' "$DL_SL"; then
+    pass "[1.5] test=blkslow=500: after the boot e2fsck -fn reports nothing, /slow.txt on the image is exact ('$DL_SLTEXT' and a newline), sync said saved; no PANIC or FAILED line"
+else
+    fail "[1.5] test=blkslow=500: e2fsck -fn reported something, /slow.txt differs (${DL_SLGOT:-none}), sync did not save, or the boot was not healthy (see serial-blkslow.log)"
+fi
+
+# (4-6) test=diskcontend.
+dl_disk contend || DL_BOOT_OK=0
+mapfile -t DL_DRV < <(dl_drive contend)
+DL_CT=$OUT/serial-diskcontend.log
+boot_until "$DL_CT" 240 "$DL_READY" -m 128M -kernel "$KERNEL" -append "test=diskcontend" "${DL_DRV[@]}"
+grep -E '^(diskcontend|blk: the mount): ' "$DL_CT" | sed 's/^/      diskcontend: /'
+echo "      [1.5] diskcontend: $(grep -c '^ext2: sync: ' "$DL_CT") sync lines (report only)"
+if [ "$DL_BOOT_OK" -eq 1 ] &&
+   grep -qE "^diskcontend: a program \(bigio, writer 1\) appended 8 writes of 32 KiB to /home/contend\.bin through an O_APPEND open file while a kernel thread saved whenever something was dirty: [1-9][0-9]* saves \([1-9][0-9]* ended while the program ran\), 0 failed; the program finished \(exit status 0\); " "$DL_CT" &&
+   grep -qE "^diskcontend: the file holds 262144 bytes, 8 blocks of 32 KiB each one write's words in order; the last sync: saved; write or FLUSH commands sent while the VFS lock was held, since boot: 0; " "$DL_CT" &&
+   grep -qxF "diskcontend: DONE (the program and the saves both finished; the file exact; nothing sent under the VFS lock)" "$DL_CT"; then
+    pass "[1.5] test=diskcontend: a program appended 8 writes of 32 KiB to /home/contend.bin while a kernel thread saved (saves ended while it ran, none failed); both finished (exit status 0); the file holds exactly the program's 262144 bytes; nothing sent under the VFS lock"
+else
+    fail "[1.5] test=diskcontend: not DONE, the program or the saves did not finish, a save failed, or the file is not exact (see serial-diskcontend.log)"
+fi
+DL_CTGOT=$(disk_image extract "$DL_W/contend-disk.img" "$DL_W/contend-part.img" > /dev/null 2>&1 &&
+           disk_debugfs "$DL_W/contend-part.img" "cat /contend.bin" | sha256sum | cut -d' ' -f1)
+DL_CTWANT=$(python3 -I -B -c 'import hashlib, struct; print(hashlib.sha256(b"".join(struct.pack("<Q", (1 << 56) | (c << 48) | k) for c in range(8) for k in range(4096))).hexdigest())')
+echo "      diskcontend: /contend.bin on the image: SHA-256 ${DL_CTGOT:-none} (expected $DL_CTWANT)"
+if dl_fsck contend && [ "$DL_CTGOT" = "$DL_CTWANT" ]; then
+    pass "[1.5] test=diskcontend: after the boot e2fsck -fn reports nothing and debugfs reads /contend.bin with the program's SHA-256"
+else
+    fail "[1.5] test=diskcontend: e2fsck -fn reported something, or /contend.bin on the image differs from the program's bytes (see $DL_W)"
+fi
+if dl_health "$DL_CT" && [ "$(grep -cE "$DL_MOUNT0" "$DL_CT")" -eq 1 ] &&
+   grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; " "$DL_CT"; then
+    pass "[1.5] test=diskcontend: mounted read-write with save 0 under the disk lock only (0 write or FLUSH commands under the VFS lock at the mount); System ready; no PANIC or FAILED line"
+else
+    fail "[1.5] test=diskcontend: not mounted read-write, the mount's line not 0, or the boot was not healthy (see serial-diskcontend.log)"
+fi
+
+# (7-10) The self-check boots (Disk mode).
+for dl_sc in "selfcheckdisklock|disk lock taken while the VFS lock is held \(L1\)|the disk lock taken while the VFS lock is held (L1)" \
+             "selfcheckdiskrelock|disk lock taken again by its owner \(L3\)|the disk lock taken again by its owner (L3)"; do
+    IFS='|' read -r dl_name dl_re dl_what <<< "$dl_sc"
+    dl_disk "$dl_name" || DL_BOOT_OK=0
+    mapfile -t DL_DRV < <(dl_drive "$dl_name")
+    LOG=$OUT/serial-$dl_name.log
+    boot_until "$LOG" 30 " System halted. Power off the machine." -m 128M -kernel "$KERNEL" -append "test=$dl_name" \
+        "${DL_DRV[@]}"
+    expect_lines "$LOG" "[1.5] self-check: $dl_what panics with its rule's text, naming the function and the thread (test=$dl_name)" \
+        "$dl_re\$" "^ disklock_acquire: thread 0 'kernel'\.\$"
+    if [ "$DL_BOOT_OK" -eq 1 ] && grep -q "System halted\. Power off the machine\." "$LOG" &&
+       [ "$(grep -c '^boot32: start$' "$LOG")" = 1 ] && ! grep -qE "\(WRONG\)|System ready" "$LOG" &&
+       grep -qE "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; " "$LOG"; then
+        pass "[1.5] self-check (test=$dl_name): in Disk mode (mounted read-write), the panic screen shown and the kernel halted; booted once, no (WRONG) and no System ready"
+    else
+        fail "[1.5] self-check (test=$dl_name): not mounted read-write, no halt, a reset, a returned take or System ready in $LOG"
+    fi
+done
+echo "      [1.5] the per-disk I/O lock: $(( $(date +%s) - DL_T0 )) s (report only)"

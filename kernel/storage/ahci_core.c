@@ -45,6 +45,13 @@ static uint64_t ahci_now(const struct ahci_hba *h)
     return h->ops->ticks(h->ops->ctx);
 }
 
+/* 1.5 stage 4: between two status reads of a wait (ahci_ops.relax). */
+static void ahci_relax(const struct ahci_hba *h)
+{
+    if (h->ops->relax)
+        h->ops->relax(h->ops->ctx);
+}
+
 /* The clock ticks a limit of `ms` takes, at least one. */
 static uint64_t ahci_limit_ticks(const struct ahci_hba *h, uint32_t ms)
 {
@@ -69,6 +76,7 @@ static enum ahci_end ahci_wait(struct ahci_hba *h, uint32_t off, uint32_t mask, 
             return AHCI_END_TIME;
         if (n >= cap)
             return AHCI_END_CAP;
+        ahci_relax(h);
     }
 }
 
@@ -286,6 +294,7 @@ static enum ahci_end ahci_command(struct ahci_hba *h, uint32_t p, enum ahci_op o
             h->ends_cap++;
             break;
         }
+        ahci_relax(h);
     }
     uint64_t took = ahci_now(h) - t0;
     if (polls > h->polls_longest)

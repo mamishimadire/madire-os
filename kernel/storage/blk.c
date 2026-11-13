@@ -1,6 +1,7 @@
 /* The block cache in the kernel and test=diskread (1.4 stage 4): see
  * blk.h. Stage 10: writes and flushes pass through to the driver. */
 #include "kernel/storage/blk.h"
+#include "kernel/fs/vfs.h"
 #include "kernel/kprintf.h"
 #include "kernel/memory/kmalloc.h"
 #include "kernel/memory/memory.h"
@@ -9,7 +10,9 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/proc/diagwait.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
+#include "kernel/proc/klock.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/thread.h"
 #include "kernel/storage/ahci.h"
@@ -24,6 +27,12 @@ static uint32_t blk_frames[VM_BLK_CACHE_PAGES];     /* each slot's frame, 0 unti
 static uint32_t blk_port;
 static bool blk_on;
 static uint8_t blk_sector[BLK_SECTOR];
+/* 1.5 stage 4 (C1): write and FLUSH commands asked for under the VFS
+ * lock; test=blkslow's delay and what ran during it. */
+static uint64_t blk_vfs_cmds;
+static uint32_t blk_slow_ms;
+static volatile uint64_t blk_idle_passes;   /* thread 0's idle loop (blk_slow_idle) */
+static volatile uint64_t blk_ticker_runs;   /* the ticker thread's wake-ups */
 
 /* Slot `slot`'s page: a frame of free RAM at VM_BLK_CACHE_BASE + slot pages. */
 static bool blk_ready(void *ctx, uint32_t slot)
@@ -74,15 +83,43 @@ int blk_read(uint64_t lba, uint32_t count, uint8_t *dst)
 {
     if (!blk_on)
         return -BLK_EIO;
+    disklock_check_io("blk_read");          /* 1.5 stage 4: L5, the read cache */
     return blk_cache_read(&blk_cache, lba, count, dst);
+}
+
+/* 1.5 stage 4: a write or FLUSH asked for (counted if under the VFS lock). */
+static void blk_command(const char *where)
+{
+    disklock_check_io(where);               /* L5 */
+    if (klock_held(vfs_lock()))
+        blk_vfs_cmds++;
+}
+
+/* 1.5 stage 4, test=blkslow: the command `what` has finished; wait
+ * blk_slow_ms more by yielding, if the caller may (disklock_may_yield). */
+static void blk_slow_after(const char *what)
+{
+    if (!blk_slow_ms || !disklock_may_yield())
+        return;
+    int32_t me = thread_current();
+    uint64_t idle0 = blk_idle_passes, ticker0 = blk_ticker_runs;
+    uint64_t end = timer_ticks() + (uint64_t)blk_slow_ms * TIMER_HZ / 1000u;
+    while (timer_ticks() < end)
+        thread_yield();
+    klogf("blk: test=blkslow: thread %d '%s': %s done, then %u ms more, yielding: thread 0's idle loop ran %llu "
+          "times, the ticker thread %llu times; write or FLUSH commands sent while the VFS lock was held, since "
+          "boot: %llu\n", (int)me, thread_name(me), what, blk_slow_ms, (ull)(blk_idle_passes - idle0),
+          (ull)(blk_ticker_runs - ticker0), (ull)blk_vfs_cmds);
 }
 
 int blk_write(uint64_t lba, uint32_t sectors, const uint32_t *phys, uint32_t pages)
 {
     if (!blk_on)
         return -BLK_EIO;
+    blk_command("blk_write");
     int r = ahci_disk_write(blk_port, lba, sectors, phys, pages) ? -BLK_EIO : 0;
     blk_cache_forget(&blk_cache, lba, sectors);
+    blk_slow_after("WRITE DMA EXT");
     return r;
 }
 
@@ -90,7 +127,50 @@ int blk_flush(void)
 {
     if (!blk_on)
         return -BLK_EIO;
-    return ahci_disk_flush(blk_port) ? -BLK_EIO : 0;
+    blk_command("blk_flush");
+    int r = ahci_disk_flush(blk_port) ? -BLK_EIO : 0;
+    blk_slow_after("FLUSH CACHE EXT");
+    return r;
+}
+
+uint64_t blk_vfs_commands(void)
+{
+    return blk_vfs_cmds;
+}
+
+void blk_slow(uint32_t ms)
+{
+    blk_slow_ms = ms;
+}
+
+void blk_slow_idle(void)
+{
+    blk_idle_passes = blk_idle_passes + 1;
+}
+
+/* test=blkslow's ticker: one count per tick it wakes, for ever. */
+static int32_t blk_ticker(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        thread_sleep(1);
+        blk_ticker_runs = blk_ticker_runs + 1;
+    }
+    return 0;
+}
+
+void blk_slow_start(void)
+{
+    if (!blk_slow_ms || !blk_on || !disklock_on()) {
+        klogf("blkslow: FAILED (%s)\n", !blk_slow_ms ? "no delay given (test=blkslow=<ms>)"
+                                        : "no disk mounted (Live mode)");
+        return;
+    }
+    int32_t tid = thread_create("ticker", blk_ticker, 0, true);
+    klogf("blkslow: armed: after every write and FLUSH command the thread waits %u ms more, yielding, when it holds "
+          "the disk lock with preemption on; the ticker thread %s (thread %d); write or FLUSH commands sent while the "
+          "VFS lock was held, since boot: %llu\n", blk_slow_ms, tid < 0 ? "NOT started" : "started", (int)tid,
+          (ull)blk_vfs_cmds);
 }
 
 uint32_t blk_port_number(void)

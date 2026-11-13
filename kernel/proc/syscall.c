@@ -7,6 +7,7 @@
 #include "kernel/fs/fsys.h"
 #include "kernel/fs/fsys_core.h"
 #include "kernel/memory/usercopy.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/process.h"
@@ -250,6 +251,7 @@ void syscall_dispatch(struct interrupt_frame *frame)
         break;
     }
     fd_busy_check("syscall return");   /* 1.0 stage 4: no busy mark back to ring 3 */
+    disklock_check_none("syscall return", "syscall_dispatch");     /* 1.5 stage 4: nor the disk lock */
     __asm__ volatile ("cli");
     counts.by_id[id]++;
     if (r == -MADIRE_ENOSYS)

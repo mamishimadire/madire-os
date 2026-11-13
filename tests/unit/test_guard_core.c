@@ -242,7 +242,7 @@ static void fake_unpage(void *ctx, volatile uint8_t *virt, uint32_t phys)
     (void)phys;
 }
 
-static const struct ahci_ops fake_ops = { fake_read, fake_write, fake_ticks, fake_page, fake_unpage, 0, 100 };
+static const struct ahci_ops fake_ops = { fake_read, fake_write, fake_ticks, fake_page, fake_unpage, 0, 100, 0 };
 static struct ahci_hba h;
 
 static void test_decide_once(void)

@@ -7,6 +7,8 @@
 #include "kernel/memory/paging.h"
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
+#include "kernel/proc/disklock.h"
+#include "kernel/proc/thread.h"
 #include "kernel/storage/ahci_core.h"
 #include "kernel/storage/blk.h"
 #include "kernel/storage/guard.h"
@@ -91,8 +93,22 @@ static void ahci_unpage(void *ctx, volatile uint8_t *virt, uint32_t phys)
     ahci_dma_pages--;
 }
 
+/* 1.5 stage 4 (C1, L2): between two status reads, a yield only when the
+ * caller holds the disk lock with preemption on and interrupts on
+ * (disklock_may_yield); inside a VFS hold (preemption off: a cache-miss
+ * read) or with the disk lock off (the boot's probe), it keeps polling.
+ * A yield with preemption off cannot happen here: the rule is checked
+ * first, and thread_yield itself panics with preemption off or while the
+ * VFS lock is held (thread.c, unchanged). */
+static void ahci_relax(void *ctx)
+{
+    (void)ctx;
+    if (disklock_may_yield())
+        thread_yield();
+}
+
 static const struct ahci_ops ahci_kernel_ops = {
-    ahci_reg_read, ahci_reg_write, ahci_clock, ahci_page, ahci_unpage, 0, TIMER_HZ,
+    ahci_reg_read, ahci_reg_write, ahci_clock, ahci_page, ahci_unpage, 0, TIMER_HZ, ahci_relax,
 };
 
 /* Maps `pages` pages of registers from physical page `phys` at
@@ -169,6 +185,7 @@ int ahci_disk_read(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_t
 {
     if (port >= AHCI_PORTS)
         return -AHCI_EIO;
+    disklock_check_io("ahci_disk_read");    /* 1.5 stage 4: L5, the AHCI port */
     uint32_t errors = ahci_hba.port[port].errors;
     if (ahci_dbg_read_once) {
         ahci_dbg_read_once = false;
@@ -185,6 +202,7 @@ int ahci_disk_write(uint32_t port, uint64_t lba, uint32_t sectors, const uint32_
 {
     if (port >= AHCI_PORTS)
         return -AHCI_EIO;
+    disklock_check_io("ahci_disk_write");   /* 1.5 stage 4: L5 */
     uint32_t errors = ahci_hba.port[port].errors;
     if (ahci_dbg_writes)
         ahci_dbg_port = port;
@@ -199,6 +217,7 @@ int ahci_disk_flush(uint32_t port)
 {
     if (port >= AHCI_PORTS)
         return -AHCI_EIO;
+    disklock_check_io("ahci_disk_flush");   /* 1.5 stage 4: L5 */
     uint32_t errors = ahci_hba.port[port].errors;
     int r = ahci_flush(&ahci_hba, port);
     if (ahci_hba.port[port].errors != errors)

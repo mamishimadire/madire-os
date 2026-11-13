@@ -332,5 +332,14 @@
 # 3's program-module boot (1). Changed, not added (the owner's approval,
 # before the commit): tests/serial_twin.py's timing kind and
 # scripts/compare-serial.py's kept lines take the boot-phase lines.
-1.5 4
-unit-suites 107
+# Stage 4: 10 more in part 5, the per-disk I/O lock (C1): test=blkslow=500
+# (3: thread 0's idle loop and the ticker ran during the automatic save's
+# slow FLUSH; no write or FLUSH under the VFS lock from the boot mount on;
+# the image), test=diskcontend (3: the program and the saves both finished,
+# the file exact; the image; the mount and the boot's health), the two
+# self-check boots (4: L1 and L3, each its panic and the halt); 1 unit
+# suite (disklock). Changed, not added (the owner's approval, before the
+# commit): part static's [1.4] boot-time read-write mount check (H2 item 3:
+# no write or FLUSH while the VFS lock is held, the boot mount included).
+1.5 14
+unit-suites 108

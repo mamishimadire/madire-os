@@ -9,6 +9,7 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/uspace.h"
 #include "kernel/panic.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/klock.h"
 #include "kernel/proc/preempt.h"
 #include "kernel/proc/sched_core.h"
@@ -447,6 +448,7 @@ int32_t thread_join(int32_t tid)
 void thread_exit(int32_t code)
 {
     klock_check_none("thread_exit");
+    disklock_check_none("thread exit", "thread_exit");         /* 1.5 stage 4 */
     require_preemption("thread_exit");
     int32_t me = sched.current;
     /* The final high-water mark, measured on the stack it is still using. */

@@ -9,6 +9,7 @@
 #include "kernel/memory/usercopy.h"
 #include "kernel/panic.h"
 #include "kernel/proc/diagwait.h"
+#include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/klock.h"
 #include "kernel/proc/preempt.h"
@@ -26,6 +27,19 @@ static uint64_t lock_waited[SCHED_MAX_THREADS];
 static uint64_t lock_wait_longest[SCHED_MAX_THREADS];
 static uint64_t last_release;           /* the tick of the last release through fd_vfs_release */
 static struct fd_handoff handoff;
+/* 1.5 stage 4 (C1): the threads whose VFS hold took the disk lock first
+ * (Disk mode); fd_vfs_release gives it back after the VFS lock. */
+static bool fd_took_disk[SCHED_MAX_THREADS];
+
+/* 1.5 stage 4 (C1, L1): in Disk mode the disk lock comes before the VFS
+ * lock; Live mode never takes it (L6). */
+static void fd_disk_first(int32_t me)
+{
+    if (disklock_on()) {
+        disklock_acquire();
+        fd_took_disk[me] = true;
+    }
+}
 
 /* ---- the VFS lock with its figures (1.0 stage 5) ---- */
 
@@ -56,6 +70,7 @@ uint32_t fd_vfs_acquire(void)
 {
     int32_t me = thread_current();
     uint64_t asked = timer_ticks();
+    fd_disk_first(me);
     uint32_t steps = klock_acquire(vfs_lock());
     note_take(me, asked, steps);
     return steps;
@@ -64,6 +79,9 @@ uint32_t fd_vfs_acquire(void)
 uint32_t fd_vfs_test_reserve(void)
 {
     int32_t me = thread_current();
+    if (disklock_on())                  /* 1.5 stage 4: Live-mode tests only (fd.h) */
+        panicf("fd_vfs_test_reserve: thread %d '%s' in Disk mode:\n a reserved VFS turn is "
+               "a Live-mode test only (C1).", (int)me, thread_name(me));
     uint64_t asked = timer_ticks();
     uint32_t steps = klock_test_reserve(vfs_lock());
     note_take(me, asked, steps);
@@ -120,10 +138,15 @@ void fd_work_line(const char *tag)
 
 void fd_vfs_release(void)
 {
+    int32_t me = thread_current();
     preempt_disable();
     last_release = timer_ticks();
     preempt_enable();
     klock_release(vfs_lock());
+    if (fd_took_disk[me]) {             /* 1.5 stage 4 (C1): then the disk lock */
+        fd_took_disk[me] = false;
+        disklock_release();
+    }
 }
 
 /* ---- the VFS side: nodes are dropped, and data moved, under its lock ---- */
