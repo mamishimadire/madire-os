@@ -150,7 +150,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c kernel/fs/mount_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core repro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core repro isorepro padkernel clean
 
 all: $(KERNEL)
 
@@ -264,7 +264,13 @@ $(BUILD)/wallpaper.png: scripts/make-wallpaper.py kernel/kernel.h kernel/logo.c
 # whose partition starts at sector 63 or later: --protective-msdos-label with
 # -partition_offset 16 gives one starting at sector 64. SOURCE_DATE_EPOCH
 # (fixed, 2026-10-12 00:00 UTC) was the 0.13 attempt (D5) at a reproducible
-# ISO; the ISO still differs between builds (a watch item, docs/PROGRESS.md).
+# ISO; the ISO still differed between builds (a watch item, docs/PROGRESS.md):
+# SOURCE_DATE_EPOCH makes xorriso take each file's dates from its
+# modification time (its manual page: -volume_date "all_file_dates"
+# "set_to_mtime"), and the staged files carried the build time. 1.5 stage 1
+# (plan C9): every staged file and folder gets the modification time
+# ISO_EPOCH before xorriso runs; make isorepro builds the ISO a second time
+# for part static's comparison.
 # 1.0 (stage 0a): Madire's own LICENSE, NOTICE and THIRD_PARTY_NOTICES go to
 # the ISO root (Apache 2.0, section 4); Limine's stay in /boot/limine/.
 # 1.1: the boot menu's wallpaper goes to /boot/limine/wallpaper.png.
@@ -287,6 +293,7 @@ $(ISO): $(KERNEL) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(ISO_PROGS:%=$(BU
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/LICENSE \
 	    $(LIMINE_DIR)/3RDPARTY.md $(BUILD)/isodir/boot/limine/
 	for p in $(ISO_PROGS); do cp $(BUILD)/user/$$p.elf $(BUILD)/isodir/boot/prog/$$p.elf || exit 1; done
+	find $(BUILD)/isodir -exec touch -h -d @$(ISO_EPOCH) {} +
 	SOURCE_DATE_EPOCH=$(ISO_EPOCH) xorriso -as mkisofs -R -r -J -b boot/limine/limine-bios-cd.bin \
 	    -no-emul-boot -boot-load-size 4 -boot-info-table --protective-msdos-label -partition_offset 16 \
 	    -o $@ $(BUILD)/isodir 2>/dev/null
@@ -425,6 +432,20 @@ repro: $(KERNEL)
 	echo "identical" > $(REPRO)/result || echo "different" > $(REPRO)/result
 	@echo "Reproducible build: $$(cat $(REPRO)/result)"
 
+# 1.5 stage 1 (plan C9): the ISO built a second time from the same files, at
+# least 2 s after the first, into build/isorepro (the staging folder
+# build/isodir is made again); part static compares the two ISOs. The second
+# build's output goes to build/isorepro/build.log; a failed second build
+# leaves no ISO there (the log's last 20 lines are printed), and the check
+# fails.
+ISOREPRO := $(BUILD)/isorepro
+isorepro: $(ISO)
+	rm -rf $(ISOREPRO) && mkdir -p $(ISOREPRO)
+	sleep 2
+	$(MAKE) -s ISO=$(ISOREPRO)/madire-os.iso $(ISOREPRO)/madire-os.iso > $(ISOREPRO)/build.log 2>&1 || rm -f $(ISOREPRO)/madire-os.iso
+	@test -f $(ISOREPRO)/madire-os.iso || { echo "ISO built again: FAILED; the last 20 lines of $(ISOREPRO)/build.log:"; tail -n 20 $(ISOREPRO)/build.log; }
+	@echo "ISO built again: $$(sha256sum < $(ISO) | cut -d' ' -f1) and $$(sha256sum < $(ISOREPRO)/madire-os.iso 2>/dev/null | cut -d' ' -f1)"
+
 # 1.0 stage 1 (D1): the padded test kernel (2 MiB of .bss more since stage 5:
 # the kernel itself is past 2 MiB, so the pad takes it past 4 MiB) in build/pad,
 # for the [1.0] checks in tests/qemu-part-4.sh. A failed build is reported
@@ -438,7 +459,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro padkernel
+test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro isorepro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -448,7 +469,7 @@ test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)
 # kernel (1.0) is built only for part 4, which boots it. 1.4 stage 11: the
 # stress part's power cuts need the host tool ext2write (their model).
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro splashdump desktopdump toolkit ext2core) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro isorepro splashdump desktopdump toolkit ext2core) \
             $(if $(filter 4,$(SHARD)),padkernel) $(if $(filter stress,$(SHARD)),$(EXT2WRITE))
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 

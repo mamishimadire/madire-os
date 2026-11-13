@@ -66,6 +66,7 @@ passes_11=0          # checks added in 1.1, tagged "[1.1]"
 passes_12=0          # checks added in 1.2, tagged "[1.2]"
 passes_13=0          # checks added in 1.3, tagged "[1.3]"
 passes_14=0          # checks added in 1.4, tagged "[1.4]"
+passes_15=0          # checks added in 1.5, tagged "[1.5]"
 passes_stress=0      # 0.12 stage 2b: the stress part's checks, "[stress]" (on request only)
 
 # 0.10: the version is read once, from kernel/kernel.h, and every check that
@@ -104,6 +105,7 @@ pass() {
     "[1.2]"*) passes_12=$((passes_12 + 1)) ;;
     "[1.3]"*) passes_13=$((passes_13 + 1)) ;;
     "[1.4]"*) passes_14=$((passes_14 + 1)) ;;
+    "[1.5]"*) passes_15=$((passes_15 + 1)) ;;
     "[stress]"*) passes_stress=$((passes_stress + 1)) ;;
     esac
 }
@@ -302,7 +304,7 @@ sed 's/^/      /' "$QEMU_WATCH_DIR/stalls.txt"
 
 # 0.12: the counts of this run in one line (tests/check-counts.sh sums the
 # lines of a sharded run). A shard run ends here.
-COUNTS="SHARD_COUNTS part=$SHARD failures=$failures passes=$passes 0.3=$((passes - passes_stress - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12 - passes_13 - passes_14)) 0.4=$passes_new 0.5=$passes_05 0.6=$passes_06 0.7=$passes_07 0.8=$passes_08 0.9=$passes_09 0.9.1=$passes_091 0.9.2=$passes_092 0.10=$passes_010 0.11=$passes_011 0.12=$passes_012 0.13=$passes_013 1.0=$passes_10 1.1=$passes_11 1.2=$passes_12 1.3=$passes_13 1.4=$passes_14"
+COUNTS="SHARD_COUNTS part=$SHARD failures=$failures passes=$passes 0.3=$((passes - passes_stress - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12 - passes_13 - passes_14 - passes_15)) 0.4=$passes_new 0.5=$passes_05 0.6=$passes_06 0.7=$passes_07 0.8=$passes_08 0.9=$passes_09 0.9.1=$passes_091 0.9.2=$passes_092 0.10=$passes_010 0.11=$passes_011 0.12=$passes_012 0.13=$passes_013 1.0=$passes_10 1.1=$passes_11 1.2=$passes_12 1.3=$passes_13 1.4=$passes_14 1.5=$passes_15"
 echo "$COUNTS"
 # 0.12 stage 2b: a part run on request reports its own checks.
 if [ "$passes_stress" -gt 0 ]; then echo "STRESS_COUNTS passes=$passes_stress failures=$failures"; fi
@@ -315,7 +317,7 @@ fi
 
 echo
 if [ "$failures" -eq 0 ]; then
-    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12 - passes_13 - passes_14)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 from 0.11 + $passes_012 from 0.12 + $passes_013 from 0.13 + $passes_10 from 1.0 + $passes_11 from 1.1 + $passes_12 from 1.2 + $passes_13 from 1.3 + $passes_14 new in 1.4)"
+    echo "ALL TESTS PASSED ($passes checks: $((passes - passes_new - passes_05 - passes_06 - passes_07 - passes_08 - passes_09 - passes_091 - passes_092 - passes_010 - passes_011 - passes_012 - passes_013 - passes_10 - passes_11 - passes_12 - passes_13 - passes_14 - passes_15)) 0.3 regression + $passes_new from 0.4 + $passes_05 from 0.5 + $passes_06 from 0.6 + $passes_07 from 0.7 + $passes_08 from 0.8 + $passes_09 from 0.9 + $passes_091 from 0.9.1 + $passes_092 from 0.9.2 + $passes_010 from 0.10 + $passes_011 from 0.11 + $passes_012 from 0.12 + $passes_013 from 0.13 + $passes_10 from 1.0 + $passes_11 from 1.1 + $passes_12 from 1.2 + $passes_13 from 1.3 + $passes_14 from 1.4 + $passes_15 new in 1.5)"
 else
     echo "$failures TEST(S) FAILED"
     exit 1

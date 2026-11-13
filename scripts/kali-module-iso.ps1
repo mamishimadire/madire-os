@@ -1,5 +1,5 @@
-# The module ISO for the VirtualBox acceptance (1.3 stage 9; docs/testing.md,
-# Test I and "Stage 9's owner-run steps"): packaged on the Kali VM around
+# The module ISO for the VirtualBox acceptance (docs/testing.md, Test I and
+# "Stage 9's owner-run steps"): packaged on the Kali VM around
 # the kernel of the ISO under test by scripts/kali-module-iso.sh, as part 1
 # makes its own (the module entry with "textmode: yes"). Nothing is built:
 # the kernel is the ISO's own /boot/madire.kernel, checked against
@@ -126,7 +126,7 @@ function Write-Lf([string]$path, [string[]]$lines) {
 }
 Write-Lf (Join-Path $OutDir "host-memory.txt") ($memSamples | ForEach-Object { "$_" })
 Write-Lf (Join-Path $OutDir "kali-vminfo-before.txt") $kaliBefore
-Note "module ISO step (1.3 stage 9; an owner-run step, AGENTS.md section 6)"
+Note "module ISO step (an owner-run step, AGENTS.md section 6)"
 Note ("started {0}; {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"), $memLine)
 Note "Kali: $KaliVM, memory $kaliMem MB; $TestVM and $ViewVM powered off"
 Note "ISO under test: $isoHash  $Iso (expected: OK)"
@@ -203,7 +203,11 @@ try {
         $diff = @(Compare-Object $kaliBefore $after)
         $other = @($diff | Where-Object { $_.InputObject -notmatch '^VMStateChangeTime=' })
         foreach ($d in $diff) { Note ("showvminfo {0}: {1}" -f $(if ($d.SideIndicator -eq "<=") { "before" } else { "after " }), $d.InputObject) }
-        Note ("showvminfo of Kali before and after: {0} lines differ, {1} other than VMStateChangeTime" -f $diff.Count, $other.Count)
+        # 1.5 stage 1: a changed setting appears once in each file; count it
+        # once (by the name before its "="); the verdict is unchanged.
+        $nDiff = @($diff | ForEach-Object { ($_.InputObject -split '=', 2)[0] } | Sort-Object -Unique).Count
+        $nOther = @($other | ForEach-Object { ($_.InputObject -split '=', 2)[0] } | Sort-Object -Unique).Count
+        Note ("showvminfo of Kali before and after: {0} settings differ (each counted once), {1} other than VMStateChangeTime" -f $nDiff, $nOther)
         if ($other.Count) { $result = "FAIL" }
     } catch { Note "showvminfo of Kali after: error: $($_.Exception.Message)"; $result = "FAIL" }
     Note "RESULT=$result"

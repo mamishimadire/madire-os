@@ -321,4 +321,9 @@
 # i_blocks), the Disk-mode console's sync line (either answer), -boot d
 # with DT_DISK.
 1.4 172
+# 1.5 stage 1: 1 check in part static: the ISO built a second time from the
+# same files (make isorepro) is byte-identical to build/madire-os.iso. Changed,
+# not added (the owner's approval, before the commit): tests/combine-shards.sh
+# requires ISO_IDENTICAL_IN_ALL_JOBS=yes (a combine check, not counted here).
+1.5 1
 unit-suites 107

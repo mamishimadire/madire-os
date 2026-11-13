@@ -137,6 +137,18 @@ done
 if [ -z "$RBAD" ]; then pass "[1.0] ISO: /LICENSE, /NOTICE and /THIRD_PARTY_NOTICES present and byte-identical to the repository's"
 else fail "[1.0] ISO: missing or different from the repository's:$RBAD"; fi
 
+section "[1.5] The ISO built again from the same files (make isorepro)"
+# 1.5 stage 1 (plan C9): every staged file and folder gets the modification
+# time SOURCE_DATE_EPOCH before xorriso runs, so a second build of the same
+# files, at least 2 s later (make isorepro), must be byte-identical (before
+# 1.5 two builds differed in 364 ISO 9660 recording times: the build time).
+I1=$(sha256sum < "$ISO" | cut -d' ' -f1)
+I2=$(sha256sum < "$OUT/isorepro/madire-os.iso" 2>/dev/null | cut -d' ' -f1)
+echo "      first build:  $I1"
+echo "      second build: ${I2:-missing}"
+if [ -n "$I2" ] && [ "$I1" = "$I2" ]; then pass "[1.5] ISO byte-identical when built again from the same files ($I1)"
+else fail "[1.5] ISO built again from the same files differs or is missing ($I1 vs ${I2:-missing})"; fi
+
 section "[1.0] docs: every .md file valid UTF-8"
 # 1.0 stage 10: two Windows-1252 bytes reached docs/commands.md in stage 8
 # (5cd7daf); every Markdown file under docs/ must decode as UTF-8 (the

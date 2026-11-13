@@ -71,8 +71,8 @@ param(
     [string]$KaliVM = "kali-linux-2026.2-virtualbox-amd64",  # must not be running (0.11)
     [string]$ViewVM = "MadireOS-View",  # 1.3 stage 8: must not be running (AGENTS.md section 6)
     [int]$MinFreeMB = 5500,             # 1.3 stage 8: the owner's threshold for this step (three samples)
-    [string]$RestoreIso = "",           # the resting medium; default: build\v1.3-release\madire-os.iso (1.4 stage 1)
-    [string]$RestoreSha256 = "e13054513342d65a133fbab36de1e92d82b6846d2f4b0120f85829adde430e74",
+    [string]$RestoreIso = "",           # the resting medium; default: build\v1.4-release\madire-os.iso (1.5 stage 1)
+    [string]$RestoreSha256 = "628ec122a47b316b1d3766ab75f0a24722a0fa80b357fa3eca988bf5bd0cfd0b",
     [string]$EmptyVdi = "",             # 1.4 stage 13: the pristine "empty" copy; default %USERPROFILE%\madire-vm-disks\MadireOS-Test-empty.vdi
     [string]$EmptySha256 = "",          # 1.4 stage 13: needed when the storage group runs
     [string]$MarkedVdi = "",            # 1.4 stage 13: the pristine "marked" copy; default %USERPROFILE%\madire-vm-disks\MadireOS-Test-marked.vdi
@@ -85,7 +85,7 @@ $build = Join-Path $root "build"
 if (-not $Iso) { $Iso = Join-Path $build "madire-os.iso" }
 if (-not $ModuleIso) { $ModuleIso = Join-Path $build "madire-os-module.iso" }
 if (-not $OutDir) { $OutDir = Join-Path $build ("vbox-acceptance-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
-if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.3-release\madire-os.iso" }
+if (-not $RestoreIso) { $RestoreIso = Join-Path $build "v1.4-release\madire-os.iso" }
 if (-not $EmptyVdi) { $EmptyVdi = Join-Path $env:USERPROFILE "madire-vm-disks\MadireOS-Test-empty.vdi" }
 if (-not $MarkedVdi) { $MarkedVdi = Join-Path $env:USERPROFILE "madire-vm-disks\MadireOS-Test-marked.vdi" }
 
@@ -188,6 +188,9 @@ foreach ($c in $ctls) {
 if ($info["graphicscontroller"] -ne "vboxsvga") { $problems += "graphics controller is '$($info['graphicscontroller'])' (expected vboxsvga)" }
 if ($info["vram"] -ne "128") { $problems += "video memory is $($info['vram']) MB (expected 128)" }
 if ($info["hidpointing"] -ne "usbtablet") { $problems += "pointing device is '$($info['hidpointing'])' (expected usbtablet)" }
+# 1.5 stage 1 (decision 18): ACPI on (Shut down powers off through ACPI S5,
+# plan C3). Read only, like every check here.
+if ($info["acpi"] -ne "on") { $problems += "ACPI is '$($info['acpi'])' (expected on)" }
 if ($info["VMState"] -notin @("poweroff", "aborted")) {
     $problems += "the VM is '$($info['VMState'])'; power it off first (nothing is discarded here)"
 }
@@ -250,11 +253,26 @@ $results = New-Object System.Collections.Generic.List[string]
 function Note([string]$s) { Write-Host $s; $script:results.Add($s) }
 $memSamples -join "`r`n" | Set-Content -Path (Join-Path $OutDir "$Prefix-host-memory.txt") -Encoding ascii
 Note ("started {0}; {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"), $memLine)
+# 1.5 stage 1: the commit the scripts came from, and whether the working
+# tree had local changes (git status --porcelain; build\ is git-ignored).
+# Report only. The function keeps its own error preference.
+function Get-RepoState {
+    $ErrorActionPreference = "Continue"
+    try {
+        $head = @(& git -C $root rev-parse HEAD 2>$null)
+        if ($LASTEXITCODE -ne 0 -or -not $head.Count) { return "repository (report only): HEAD not recorded (git rev-parse failed)" }
+        $changed = @(& git -C $root status --porcelain 2>$null)
+        if ($LASTEXITCODE -ne 0) { return "repository (report only): HEAD $($head[0]); local changes not recorded (git status failed)" }
+        if ($changed.Count) { return ("repository (report only): HEAD {0}; local changes: {1} paths (git status --porcelain)" -f $head[0], $changed.Count) }
+        return "repository (report only): HEAD $($head[0]); local changes: none"
+    } catch { return "repository (report only): HEAD not recorded (git not available)" }
+}
+Note (Get-RepoState)
 $vmBefore = @(VBox showvminfo $VM --machinereadable)
 $vmBefore | Set-Content -Path (Join-Path $OutDir "$Prefix-vminfo-before.txt") -Encoding ascii
 Note "resting medium (checked before the run): $restoreHash  $RestoreIso"
 
-Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else; display VBoxSVGA, 128 MB VRAM; pointing device USB tablet)"
+Note "VM check: $VM matches the documented settings (Other_64, BIOS, 4096 MB, PAE off, boot DVD, COM1 0x3F8 IRQ 4 to build\vbox-serial.log; storage: SATA port 0 MadireOS-Test.vdi, port 1 optical, nothing else; display VBoxSVGA, 128 MB VRAM; pointing device USB tablet; ACPI on)"
 foreach ($f in $isos) {
     Note ("ISO: {0}  {1} ({2})" -f $isoHashes[$f], $f, $(if ($isoWanted[$f]) { "the expected SHA-256: checked" } else { "no expected SHA-256 given" }))
 }
@@ -633,8 +651,12 @@ function Finish-Run {
         $diff = @(Compare-Object $script:vmBefore $after)
         $other = @($diff | Where-Object { $_.InputObject -notmatch '^"?(SATA-1-0|SATA-ImageUUID-1-0|VMStateChangeTime)"?=' })
         foreach ($d in $diff) { Note ("vm (report only): showvminfo {0}: {1}" -f $(if ($d.SideIndicator -eq "<=") { "before" } else { "after " }), $d.InputObject) }
-        Note ("{0,-16} {1,-8} /showvminfo before and after: {2} lines differ, {3} other than the medium and VMStateChangeTime/" -f "vm",
-              $(if ($other.Count -eq 0) { "OK" } else { "MISSING" }), $diff.Count, $other.Count)
+        # 1.5 stage 1: a changed setting appears once in each file; count it
+        # once (by the name before its "="); the verdict is unchanged.
+        $nDiff = @($diff | ForEach-Object { ($_.InputObject -split '=', 2)[0] } | Sort-Object -Unique).Count
+        $nOther = @($other | ForEach-Object { ($_.InputObject -split '=', 2)[0] } | Sort-Object -Unique).Count
+        Note ("{0,-16} {1,-8} /showvminfo before and after: {2} settings differ (each counted once), {3} other than the medium and VMStateChangeTime/" -f "vm",
+              $(if ($other.Count -eq 0) { "OK" } else { "MISSING" }), $nDiff, $nOther)
     } catch { Note ("{0,-16} {1,-8} /showvminfo after the run: {2}/" -f "vm", "MISSING", $_) }
 }
 
@@ -1990,7 +2012,8 @@ if (Want "storageprobe") {
 # as soon as that save's line is logged, before the third boot's kernel
 # could mount the disk. The serial log keeps both boots. The used disk is
 # copied into the result folder (checked on Kali: scripts\kali-disk.ps1
-# -Step check -Expect session) and "empty" put back. The screens follow
+# -Step check -Vdi ... -Expect session -SerialLog ... -Image ..., as the
+# row says) and "empty" put back. The screens follow
 # scripts/vbox-storage.py plan (tests/screen_ref.py's model, the desktop
 # group's) and are compared with its Disk-mode references, the clock
 # masked. Report only: every storage line, the boot mounts' VFS lock holds
@@ -2162,7 +2185,7 @@ if (Want "storage") {
     $hu = (Get-FileHash -LiteralPath $used -Algorithm SHA256).Hash.ToLower()
     $hu2 = (Get-FileHash -LiteralPath $disk -Algorithm SHA256).Hash.ToLower()
     $null = Get-DiskMedium "storage-mediuminfo-used"
-    Note ("{0,-16} {1,-8} /the used disk copied into the result folder ({2}): SHA-256 {3}, equal to the attached file's; for the Kali check (scripts\kali-disk.ps1 -Step check -Expect session)/" -f
+    Note ("{0,-16} {1,-8} /the used disk copied into the result folder ({2}): SHA-256 {3}, equal to the attached file's; for the Kali check (scripts\kali-disk.ps1 -Step check -Vdi <this file> -VdiSha256 <its SHA-256> -Expect session -SerialLog <this group's serial log> -SerialLogSha256 <its SHA-256> -Image <the step 1 image> -ImageSha256 <its SHA-256>)/" -f
           "storage", $(if ($hu -eq $hu2 -and $hu -ne $hm) { "OK" } else { "MISSING" }), (Split-Path $used -Leaf), $hu)
     Restore-RestingDisk
 

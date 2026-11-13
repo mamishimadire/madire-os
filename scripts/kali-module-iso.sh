@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 1.3 stage 9: the module ISO for the VirtualBox acceptance's module group
+# The module ISO for the VirtualBox acceptance's module group
 # (docs/testing.md, Test I), packaged on Kali around the kernel of the ISO
 # under test, as part 1 makes its own: the test module, its limine.conf (the
 # module entry with "textmode: yes") and limine_iso are taken unchanged from

@@ -51,8 +51,12 @@ main() {
         sums=$(grep -h " build/$f\$" "$dir"/shard-*/hashes.txt 2>/dev/null | awk '{ print $1 }' | awk '!seen[$0]++')
         n=$(grep -h " build/$f\$" "$dir"/shard-*/hashes.txt 2>/dev/null | wc -l)
         if [ "$f" = madire-os.iso ]; then
-            if [ "$(wc -l <<< "$sums")" -eq 1 ]; then echo "ISO_IDENTICAL_IN_ALL_JOBS=yes ($n builds, $sums)"
-            else echo "ISO_IDENTICAL_IN_ALL_JOBS=no ($(wc -l <<< "$sums") different in $n builds; reported, not required)"; fi
+            # 1.5 stage 1 (plan C9): required (before 1.5: reported only).
+            if [ "$n" -eq "$(wc -w <<< "$shards")" ] && [ "$(wc -l <<< "$sums")" -eq 1 ]; then echo "ISO_IDENTICAL_IN_ALL_JOBS=yes ($n builds, $sums)"
+            else
+                echo "ISO_IDENTICAL_IN_ALL_JOBS=no ($(wc -l <<< "$sums") different in $n builds; required since 1.5)"
+                bad "madire-os.iso differs between jobs or is missing ($n hashes: $(tr '\n' ' ' <<< "$sums"))"
+            fi
             continue
         fi
         if [ "$n" -eq "$(wc -w <<< "$shards")" ] && [ "$(wc -l <<< "$sums")" -eq 1 ]; then echo "SAME_${f//[.-]/_}=$sums ($n builds)"
@@ -152,8 +156,8 @@ main() {
     echo "$counts"
     echo "$counts" | bash "$here/check-counts.sh" "$here/expected-checks.txt" || bad "the counts differ from tests/expected-checks.txt"
     summed=$(echo "$counts" | awk '{ for (i = 3; i <= NF; i++) { split($i, kv, "="); s[kv[1]] += kv[2] } }
-        END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", s["passes"], s["failures"], s["0.3"], s["0.4"], s["0.5"], s["0.6"], s["0.7"], s["0.8"], s["0.9"], s["0.9.1"], s["0.9.2"], s["0.10"], s["0.11"], s["0.12"], s["0.13"], s["1.0"], s["1.1"], s["1.2"], s["1.3"], s["1.4"] }')
-    read -r passes failures c03 c04 c05 c06 c07 c08 c09 c091 c092 c010 c011 c012 c013 c10 c11 c12 c13 c14 <<< "$summed"
+        END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", s["passes"], s["failures"], s["0.3"], s["0.4"], s["0.5"], s["0.6"], s["0.7"], s["0.8"], s["0.9"], s["0.9.1"], s["0.9.2"], s["0.10"], s["0.11"], s["0.12"], s["0.13"], s["1.0"], s["1.1"], s["1.2"], s["1.3"], s["1.4"], s["1.5"] }')
+    read -r passes failures c03 c04 c05 c06 c07 c08 c09 c091 c092 c010 c011 c012 c013 c10 c11 c12 c13 c14 c15 <<< "$summed"
 
     echo "== Helper replay (evidence only; decides no check)"
     calls=0; declare -A diffs errs
@@ -171,7 +175,7 @@ main() {
 
     echo
     if [ "$ok" -eq 1 ]; then
-        echo "ALL TESTS PASSED ($passes checks: $c03 0.3 regression + $c04 from 0.4 + $c05 from 0.5 + $c06 from 0.6 + $c07 from 0.7 + $c08 from 0.8 + $c09 from 0.9 + $c091 from 0.9.1 + $c092 from 0.9.2 + $c010 from 0.10 + $c011 from 0.11 + $c012 from 0.12 + $c013 from 0.13 + $c10 from 1.0 + $c11 from 1.1 + $c12 from 1.2 + $c13 from 1.3 + $c14 new in 1.4)"
+        echo "ALL TESTS PASSED ($passes checks: $c03 0.3 regression + $c04 from 0.4 + $c05 from 0.5 + $c06 from 0.6 + $c07 from 0.7 + $c08 from 0.8 + $c09 from 0.9 + $c091 from 0.9.1 + $c092 from 0.9.2 + $c010 from 0.10 + $c011 from 0.11 + $c012 from 0.12 + $c013 from 0.13 + $c10 from 1.0 + $c11 from 1.1 + $c12 from 1.2 + $c13 from 1.3 + $c14 from 1.4 + $c15 new in 1.5)"
         echo "COMBINED_RESULT=PASS"
     else
         echo "$failures TEST(S) FAILED; COMBINED_RESULT=FAIL"
