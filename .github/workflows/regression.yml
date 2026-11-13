@@ -1,11 +1,13 @@
 # Madire OS full regression on GitHub-hosted runners (manual trigger only).
 #
-# mode=sharded (default): five jobs in parallel, one per part of the QEMU
+# mode=sharded (default): six jobs in parallel, one per part of the QEMU
 # tests (make test-shard SHARD=<part>; "static" also runs make unit, make
 # repro and the symbol, SSE/x87 and kernel margin checks), then the job
 # "combine" (tests/combine-shards.sh): same commit, files and kernel in
 # every job, every part run once, the part "final" over every job's serial
 # logs, the counts against tests/expected-checks.txt, the helper replay.
+# Since 1.5 stage 2 part 5's job ends successfully with "no part 5 in this
+# commit (skipped)" when the commit under test has no tests/qemu-part-5.sh.
 # mode=full: `make unit test iso` in one job, as before; since 0.12 stage 4
 # its artifact also holds build/madire-os.iso, for the VirtualBox acceptance.
 # parts=all (default): the regression as above. parts=stress (0.12 stage
@@ -158,7 +160,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [static, "1", "2", "3", "4"]
+        part: [static, "1", "2", "3", "4", "5"]
     steps:
       - name: Refuse anything but a full commit SHA
         env:
@@ -171,7 +173,31 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
+      # 1.5 stage 2: part 5 runs only on a commit that has it; on any other
+      # commit its job builds nothing and leaves skipped.txt for the
+      # combining job. Every other part always runs.
+      - name: Does the commit under test have this part?
+        id: part
+        env:
+          PART: ${{ matrix.part }}
+        run: |
+          if [ "$PART" = 5 ] && [ ! -f tests/qemu-part-5.sh ]; then
+            echo "no part 5 in this commit (skipped)" | tee skipped.txt
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the skip marker for the combining job (kept 1 day)
+        if: steps.part.outputs.run == 'no'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shard-${{ matrix.part }}
+          retention-days: 1
+          path: skipped.txt
+
       - name: Record the commit and the SHA-256 manifest of the files under test
+        if: steps.part.outputs.run == 'yes'
         run: |
           git rev-parse HEAD | tee commit.txt
           find ./Makefile ./boot ./drivers ./iso ./kernel ./linker ./scripts ./tests ./user \
@@ -179,9 +205,11 @@ jobs:
           echo "files: $(wc -l < manifest.sha256)"
 
       - name: Install the toolchain (as the devcontainer does)
+        if: steps.part.outputs.run == 'yes'
         run: bash scripts/install-deps.sh
 
       - name: Tool versions
+        if: steps.part.outputs.run == 'yes'
         run: |
           { gcc --version | head -n 1; ld --version | head -n 1; nasm -v;
             { grub-mkrescue --version || echo "grub-mkrescue: not installed"; } | head -n 1;
@@ -190,6 +218,7 @@ jobs:
             python3 --version; nproc; free -m | sed -n 2p; } | tee tools.txt
 
       - name: make test-shard SHARD=${{ matrix.part }} (TCG)
+        if: steps.part.outputs.run == 'yes'
         env:
           PART: ${{ matrix.part }}
         run: |
@@ -204,7 +233,7 @@ jobs:
           tail -n 3 regression.log
 
       - name: Checks (source unchanged, build hashes; part static also symbols, SSE, kernel margin)
-        if: always()
+        if: always() && steps.part.outputs.run == 'yes'
         env:
           PART: ${{ matrix.part }}
         run: |
@@ -227,7 +256,7 @@ jobs:
           sha256sum build/madire.elf build/madire.kernel build/madire-os.iso | tee hashes.txt
 
       - name: Upload this job's results for the combining job (kept 1 day)
-        if: always()
+        if: always() && steps.part.outputs.run == 'yes'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shard-${{ matrix.part }}
@@ -251,7 +280,7 @@ jobs:
             build/helper-logs/
 
       - name: Fail the job if its part failed
-        if: always()
+        if: always() && steps.part.outputs.run == 'yes'
         run: test "$(cat make-exit.txt 2>/dev/null)" = 0
 
   combine:
