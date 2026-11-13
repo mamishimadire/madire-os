@@ -177,21 +177,45 @@ void bootscreen_memory(const struct memory_stats *st)
 }
 
 /* Right-column live value: label, then value right-aligned like the
- * memory figures. Screen only. */
+ * memory figures. Screen only.
+ *
+ * 1.5 stage 3 (docs/plans/1.5.md, C9): the whole row, from RIGHT_COL to
+ * the end, is built first, and only the cells that differ from what the
+ * screen shows (vga_text_shadow()) are written: usually one or two digits
+ * of the uptime, instead of blanking 36 cells and writing them again. The
+ * cells are the same as before: the label in light grey, the padded value
+ * in white, the rest blank in light grey. A capture taken while a cell is
+ * being written can still see that cell's shadow before its pixels (the
+ * [1.2] Esc race of 1.4 stage 15b); this narrows the window, it does not
+ * close it, so the tests' retake (1.4) stays. */
+#define LIVE_CELLS (VGA_WIDTH - RIGHT_COL)
+
+static uint16_t live_cell(char ch, enum vga_color fg)
+{
+    return (uint16_t)((uint8_t)ch | (uint16_t)(fg | VGA_BLACK << 4) << 8);
+}
+
 static void live_row(size_t row, const char *label, const char *value)
 {
-    char v[24];
+    uint16_t cells[LIVE_CELLS];
     size_t len = str_len(value), pad = len < RIGHT_VALUE_WIDTH ? RIGHT_VALUE_WIDTH - len : 0;
-    size_t i = 0;
-    for (; i < pad; i++)
-        v[i] = ' ';
-    for (size_t j = 0; value[j] && i < sizeof(v) - 1; j++)
-        v[i++] = value[j];
-    v[i] = '\0';
+    size_t c;
 
-    clear_cells(row, RIGHT_COL, VGA_WIDTH);
-    screen_write(row, RIGHT_COL, label, VGA_LIGHT_GREY);
-    screen_write(row, RIGHT_COL + RIGHT_LABEL_WIDTH, v, VGA_WHITE);
+    for (c = 0; c < LIVE_CELLS; c++)
+        cells[c] = live_cell(' ', VGA_LIGHT_GREY);
+    for (c = 0; label[c] && c < LIVE_CELLS; c++)
+        cells[c] = live_cell(label[c], VGA_LIGHT_GREY);
+    c = RIGHT_LABEL_WIDTH;
+    for (size_t j = 0; j < pad && c < LIVE_CELLS; j++)
+        cells[c++] = live_cell(' ', VGA_WHITE);
+    for (size_t j = 0; value[j] && c < LIVE_CELLS; j++)
+        cells[c++] = live_cell(value[j], VGA_WHITE);
+
+    const uint16_t *shown = &vga_text_shadow()->cells[row * VGA_WIDTH + RIGHT_COL];
+    for (c = 0; c < LIVE_CELLS; c++)
+        if (shown[c] != cells[c])
+            vga_put_cell(row, RIGHT_COL + c, (uint8_t)cells[c], (uint8_t)(cells[c] >> 8 & 0x0F),
+                         (uint8_t)(cells[c] >> 12));
 }
 
 void bootscreen_uptime(uint32_t seconds)

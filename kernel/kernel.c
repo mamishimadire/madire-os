@@ -896,6 +896,42 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
     }
 }
 
+/*
+ * 1.5 stage 3 (docs/plans/1.5.md, C10): the boot phases, report only. At
+ * each fixed point the raw TSC count and the timer's ticks (0 until the
+ * timer runs, in start_devices) are taken; every line is logged at once,
+ * "boot-phase: <name> tsc=<n> ticks=<n>", after the diagnostics and right
+ * before the Descriptors: line, so before System ready on every boot that
+ * reaches it. Logged together, not at each point: checks pin the lines
+ * next to some points (the PCI: line right after "Filesystem self-test:
+ * PASS", "Key events:" right after the Storage: line, System ready right
+ * after the Descriptors: line), and the block stays outside every
+ * expect_lines window (risk 62).
+ */
+enum boot_phase {
+    PHASE_KERNEL_ENTRY, PHASE_MEMORY_READY, PHASE_INTERRUPTS_ON, PHASE_FILESYSTEM_READY,
+    PHASE_STORAGE_DONE, PHASE_BOOT_DONE, PHASE_COUNT
+};
+static const char *const phase_names[PHASE_COUNT] = {
+    "kernel entry", "memory ready", "interrupts on", "filesystem ready", "storage done", "boot done",
+};
+static uint64_t phase_tsc[PHASE_COUNT], phase_ticks[PHASE_COUNT];
+
+static void boot_phase(enum boot_phase p)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    phase_tsc[p] = (uint64_t)hi << 32 | lo;
+    phase_ticks[p] = timer_ticks();
+}
+
+static void boot_phase_log(void)
+{
+    for (int p = 0; p < PHASE_COUNT; p++)
+        klogf("boot-phase: %s tsc=%llu ticks=%llu\n", phase_names[p],
+              (unsigned long long)phase_tsc[p], (unsigned long long)phase_ticks[p]);
+}
+
 void kernel_main(uint32_t magic, uint32_t mb_info)
 {
     /* First, before anything else uses the stack (interrupts are off). */
@@ -903,6 +939,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     paint_lo = (uint8_t *)stack_bottom;
     paint_len = (size_t)(paint_rsp - STACK_PAINT_MARGIN - (uint64_t)(uintptr_t)stack_bottom);
     stack_paint(paint_lo, paint_len);
+    boot_phase(PHASE_KERNEL_ENTRY);         /* 1.5 stage 3 */
 
     serial_init();
     bool display_ok = vga_init();
@@ -1052,6 +1089,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
                            "Paging enabled:", "paging", paging_on ? BOOT_OK : BOOT_FAILED, paging_note,
                            "Kernel heap:", "heap", heap_ok ? BOOT_OK : BOOT_FAILED, heap_note);
     splash_step(!paging_on || !heap_ok);
+    boot_phase(PHASE_MEMORY_READY);         /* 1.5 stage 3: allocator, paging, heap */
 
     /* 0.9: kernel_main becomes thread 0 ("kernel"). Other threads get their
      * stacks from slot 507, so they exist only with paging on. */
@@ -1061,6 +1099,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     check_boot_modules(mbi);
 
     bool keyboard_ok = start_devices();
+    boot_phase(PHASE_INTERRUPTS_ON);        /* 1.5 stage 3: IRQ0 and IRQ1 unmasked, the timer counting */
     /* 1.2 stage 7: the mouse only on framebuffer boots and for test=mouse
      * (decision 10), after the keyboard and its IRQ mask line; a missing
      * or failing aux port is one log line, and the boot goes on. The
@@ -1124,6 +1163,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     } else {
         klogf("Filesystem: NOT AVAILABLE (the kernel heap is off)\n");
     }
+    boot_phase(PHASE_FILESYSTEM_READY);     /* 1.5 stage 3 */
     splash_tick();
 
     /* 1.4 stage 3: the PCI scan, read only, and its PCI: and Storage:
@@ -1152,7 +1192,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
      * none on a test= boot), after "Key events:" so the Storage: line stays
      * right before it. */
     ext2_disk_home();
+    boot_phase(PHASE_STORAGE_DONE);         /* 1.5 stage 3: the PCI scan, the disk's mount, the home folders */
     run_diagnostics();
+    boot_phase(PHASE_BOOT_DONE);            /* 1.5 stage 3: after the diagnostics */
+    boot_phase_log();
     /* 1.0 stage 4: every process so far (the boot self-test's, a
      * diagnostic's) has closed its descriptors. */
     klogf("Descriptors: %u per process, %u open files system-wide; %u open files now\n",

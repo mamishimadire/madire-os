@@ -7,7 +7,10 @@ per-boot logs (build/serial-*.log) as results/boot-logs.tar.gz. This script
 keeps the result lines of each pair (PASS/FAIL/OK/MISMATCH, crash-screen
 details, end lines), masks numbers and addresses, and lists the lines found
 in only one of them. Differences in timing figures disappear with the
-masking; what remains is for a person to judge.
+masking; what remains is for a person to judge. 1.5 stage 3: the boot-phase
+lines ("boot-phase: <name> tsc=<n> ticks=<n>") are kept too, so a phase
+missing on one side is listed; their numbers always differ between the two
+machines and disappear with the masking (expected differences).
 
     python scripts/compare-serial.py VBOX_DIR QEMU_DIR PREFIX [NAME,NAME,...]
 
@@ -31,7 +34,8 @@ QEMU_NAMES = {
 }
 
 KEEP = re.compile(r"PASS|FAIL|: OK\b|OK$|MISMATCH|NOT APPLICABLE|CPU exception|Error code|"
-                  r"Page fault:|Cause:|Details:|Address:|test:|self-test|killed|exited|\[pid ")
+                  r"Page fault:|Cause:|Details:|Address:|test:|self-test|killed|exited|\[pid |"
+                  r"^boot-phase: ")
 
 
 def qemu_name(name):

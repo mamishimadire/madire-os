@@ -325,5 +325,12 @@
 # same files (make isorepro) is byte-identical to build/madire-os.iso. Changed,
 # not added (the owner's approval, before the commit): tests/combine-shards.sh
 # requires ISO_IDENTICAL_IN_ALL_JOBS=yes (a combine check, not counted here).
-1.5 1
+# Stage 2: none (moves only). Stage 3: 3 more in part final, the boot-phase
+# lines (C10): in every boot that reached System ready, the six lines before
+# it, each once, in order (1); their figures, the TSC rising and the ticks
+# never falling, 0 before the timer runs (1); the six lines in dmesg, part
+# 3's program-module boot (1). Changed, not added (the owner's approval,
+# before the commit): tests/serial_twin.py's timing kind and
+# scripts/compare-serial.py's kept lines take the boot-phase lines.
+1.5 4
 unit-suites 107

@@ -36,7 +36,9 @@ differences, each named in the output:
              higher by exactly its page tables;
   timing     the lines that differ between any two boots: "Diagnostic
              waits: calibrated: ..." and "Filesystem: clock: ..." (the RTC's
-             time), equal once every number is masked.
+             time), and since 1.5 stage 3 "boot-phase: ..." (the TSC count
+             and the ticks at each boot phase), equal once every number is
+             masked.
 
 Every other line must be identical, in the same order.
 
@@ -57,7 +59,7 @@ FRAMES = re.compile(r"^Paging check: (PML4 frame|page table frame) \(free RAM\) 
 DISPLAY = re.compile(r"^Display: (framebuffer |VGA text )")
 FIGURES = re.compile(r"^(Paging|Kernel heap self-test: no page leak|Scheduler self-test: everything returned|"
                      r"User-mode self-test: |Filesystem: budget|Filesystem self-test: data)")
-TIMING = re.compile(r"^(Diagnostic waits: calibrated: |Filesystem: clock: )")
+TIMING = re.compile(r"^(Diagnostic waits: calibrated: |Filesystem: clock: |boot-phase: )")
 SLOT = re.compile(r"^Display: slot 506: .* back buffer at 0x[0-9a-f]+ \((\d+) pages of free RAM, pitch \d+\), (\d+) page tables$")
 FREE = re.compile(r"free pages (\d+)|of (\d+) free pages")
 TABLES = re.compile(r"(\d+) page tables|kernel page tables (\d+)|kernel page tables \d+ -> (\d+)|expected (\d+) tables")

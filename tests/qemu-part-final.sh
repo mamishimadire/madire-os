@@ -95,3 +95,63 @@ for f in "$OUT"/serial-*.log; do
 done
 if [ "$nb" -gt 0 ] && [ "$nm" -eq 0 ]; then pass "[1.3] no Desktop: line in any of the $nb boots without the framebuffer console"
 else fail "[1.3] a Desktop: line in $nm of $nb boots without the framebuffer console"; fi
+
+
+section "[1.5] The boot-phase lines (every boot)"
+# 1.5 stage 3 (docs/plans/1.5.md, C10 and H1): every boot that reached
+# System ready logged the six lines "boot-phase: <name> tsc=<n> ticks=<n>"
+# before it, each once, in the fixed order; the TSC count rises from phase
+# to phase and the ticks never fall (0 before the timer runs, at least 1
+# once it does). A log holding several boots (a restart) is split at each
+# "boot32: start" line (boot/boot.asm), and each boot that reached System
+# ready is judged up to its first System ready line (dmesg's copies of the
+# lines come after it). The lines' numbers are report only.
+PH_ORDER="kernel entry,memory ready,interrupts on,filesystem ready,storage done,boot done"
+nb=0; no=0; nf=0
+for f in "$OUT"/serial-*.log; do
+    while IFS='|' read -r ph_order ph_fig; do
+        nb=$((nb + 1))
+        [ "$ph_order" = ok ] || { no=$((no + 1)); echo "      $(basename "$f"): $ph_order"; }
+        [ "$ph_fig" = ok ] || { nf=$((nf + 1)); echo "      $(basename "$f"): figures: $ph_fig"; }
+    done < <(ORDER="$PH_ORDER" awk '
+        BEGIN { split(ENVIRON["ORDER"], want, ",") }
+        /^boot32: start$/ { n = 0; ready = 0; bad = ""; next }
+        ready { next }
+        /^boot-phase: / {
+            n++
+            if (n > 6) { bad = bad " line " n " is one too many"; next }
+            if ($0 !~ /^boot-phase: [a-z ]+ tsc=[0-9]+ ticks=[0-9]+$/) { bad = bad " line " n " malformed"; next }
+            name = $0; sub(/^boot-phase: /, "", name); sub(/ tsc=.*$/, "", name)
+            if (name != want[n]) bad = bad " line " n " is " name
+            t = $0; sub(/^.* tsc=/, "", t); sub(/ ticks=.*$/, "", t); tsc[n] = t + 0
+            k = $0; sub(/^.* ticks=/, "", k); tk[n] = k + 0
+            next
+        }
+        /^System ready\. / {
+            ready = 1
+            if (n != 6 || bad != "") { printf "%d lines before System ready:%s|-\n", n, bad; next }
+            fig = "ok"
+            if (tk[1] != 0 || tk[2] != 0) fig = "ticks not 0 before the timer runs"
+            else if (tk[3] < 1) fig = "ticks 0 at interrupts on"
+            for (i = 2; i <= 6; i++) {
+                if (tsc[i] <= tsc[i - 1]) fig = "tsc not rising at " want[i]
+                if (tk[i] < tk[i - 1]) fig = "ticks falling at " want[i]
+            }
+            print "ok|" fig
+        }' "$f")
+done
+grep -E "^boot-phase: " "$OUT/serial-boot.log" | head -n 6 | sed 's/^/      normal boot (report only): /'
+if [ "$nb" -gt 0 ] && [ "$no" -eq 0 ]; then
+    pass "[1.5] boot phases: in every one of the $nb boots that reached System ready, the six lines 'boot-phase: <name> tsc=<n> ticks=<n>' before System ready, each once, in the order kernel entry, memory ready, interrupts on, filesystem ready, storage done, boot done"
+else
+    fail "[1.5] boot phases: missing, repeated, malformed or out of order in $no of $nb boots that reached System ready"
+fi
+if [ "$nb" -gt 0 ] && [ "$no" -eq 0 ] && [ "$nf" -eq 0 ]; then
+    pass "[1.5] boot phases: in every one of the $nb boots the TSC count rises from phase to phase and the ticks never fall: 0 at kernel entry and memory ready (before the timer runs), at least 1 from interrupts on"
+else
+    fail "[1.5] boot phases: the figures are wrong in $nf of $nb boots (or the lines are, in $no)"
+fi
+expect_in_order "$OUT/serial-progmod.log" "[1.5] boot phases: the six lines are in dmesg, in order (dmesg 9999 in part 3's program-module boot)" \
+    "^madire> dmesg 9999$" "^boot-phase: kernel entry tsc=[0-9]+ ticks=[0-9]+$" "^boot-phase: memory ready tsc=" \
+    "^boot-phase: interrupts on tsc=" "^boot-phase: filesystem ready tsc=" "^boot-phase: storage done tsc=" \
+    "^boot-phase: boot done tsc=[0-9]+ ticks=[0-9]+$" "^madire> echo end-of-progmod-test$"
