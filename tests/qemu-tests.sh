@@ -13,8 +13,9 @@ export PYTHONDONTWRITEBYTECODE=1
 # shared helpers in tests/qemu-lib.sh). A full run (make test) sources every
 # part in this order; a shard run (make test-shard SHARD=<part>) sources one,
 # so the regression can run as parallel jobs. Which part a section is in
-# changes no check (see docs/testing.md).
-PARTS="static 1 2 3 4 final"
+# changes no check (see docs/testing.md). 1.5 stage 2: part 5, a sixth
+# shard (decision 16).
+PARTS="static 1 2 3 4 5 final"
 # 0.12 stage 2b: parts run only on request (--shard <part>), never in a full
 # or a normal sharded run, and not listed by --list-parts. Their checks are
 # tagged by part ([stress]) and kept out of the agreed per-tag counts.

@@ -29,6 +29,15 @@ bad() { echo "COMBINE_FAIL: $*"; ok=0; }
 summary=$dir/combine-summary.txt
 main() {
     echo "== Jobs"
+    # 1.5 stage 2: the workflow's part-5 job skips a commit that has no
+    # tests/qemu-part-5.sh (its artifact holds only skipped.txt, no build).
+    # A skip is accepted only when this commit has no such part file.
+    for f in "$dir"/shard-*/skipped.txt; do
+        [ -f "$f" ] || continue
+        p=${f#"$dir"/shard-}; p=${p%/skipped.txt}
+        if [ -f "$here/qemu-part-$p.sh" ]; then bad "shard-$p: skipped ($(cat "$f")), but this commit has tests/qemu-part-$p.sh"
+        else echo "shard-$p: $(cat "$f")"; fi
+    done
     for s in $shards; do
         [ -d "$dir/shard-$s" ] || { bad "no results from job shard-$s"; continue; }
         echo "shard-$s: commit $(cat "$dir/shard-$s/commit.txt" 2>/dev/null), make exit $(cat "$dir/shard-$s/make-exit.txt" 2>/dev/null)"
@@ -52,6 +61,9 @@ main() {
         n=$(grep -h " build/$f\$" "$dir"/shard-*/hashes.txt 2>/dev/null | wc -l)
         if [ "$f" = madire-os.iso ]; then
             # 1.5 stage 1 (plan C9): required (before 1.5: reported only).
+            # 1.5 stage 2: n counts the jobs that built an ISO (a skipped
+            # job builds nothing and has no hashes.txt); every part of this
+            # commit must have built one (6 with part 5).
             if [ "$n" -eq "$(wc -w <<< "$shards")" ] && [ "$(wc -l <<< "$sums")" -eq 1 ]; then echo "ISO_IDENTICAL_IN_ALL_JOBS=yes ($n builds, $sums)"
             else
                 echo "ISO_IDENTICAL_IN_ALL_JOBS=no ($(wc -l <<< "$sums") different in $n builds; required since 1.5)"

@@ -34,6 +34,9 @@
 # madire.elf) and its test=diskread boot. 1.4 stage 6: at the end, the ext2
 # read core's checks (tests/ext2dump.c against debugfs, the feature policy,
 # the sanitizers over corrupted images); no boot.
+# 1.5 stage 2: the boot_until self-test (1.3 stage 7a), the handover's
+# references (1.3 stage 8) and the hidden boot menu's section moved,
+# unchanged, to part 5 (tests/qemu-part-5.sh; the shards' balance).
 
 section "Multiboot header"
 # 0.13: scripts/check-multiboot.py (Madire's own, at least as strict as
@@ -802,42 +805,6 @@ for fx in row-no-bar:fixture_nobar bar-other-scene:fixture_row; do
     fi
 done
 
-# ---- 1.3 stage 7a: boot_until's stop ----
-
-section "[1.3] boot_until's stop: its four paths with a fake QEMU (stage 7a)"
-# The real boot_until (tests/qemu-lib.sh) through the real wrapper chain
-# (timeout -> qemu-system-x86_64 -> tests/qemu-watch.sh -> setsid), with
-# tests/boot-until-fake-qemu.sh as QEMU_REAL for these four boots only. Each
-# must report its path on its BOOT_UNTIL line, and afterwards no process may
-# name the self-test's folder on its command line (ps; the fake's own
-# "sleep 0.2" children name nothing and end within 0.2 s). The logs stay
-# outside serial-*.log (part final's every-boot checks keep their boots).
-BU_DIR=$OUT/boot-until-selftest
-rm -rf "$BU_DIR" && mkdir -p "$BU_DIR"
-printf '#!/bin/sh\nexec bash "%s" "$@"\n' "$(cd "$(dirname "$0")" && pwd)/boot-until-fake-qemu.sh" \
-    > "$BU_DIR/fake-qemu"
-chmod +x "$BU_DIR/fake-qemu"
-BU_REAL=$QEMU_REAL
-for bu in "term 20 line_seen=[0-9]+\.[0-9] stop=term:SIGTERM ends it" \
-          "ignore 20 line_seen=[0-9]+\.[0-9] stop=forced:it ignores SIGTERM, so SIGKILL ends it after 5 s" \
-          "limit 3 line_seen=none stop=limit:it never writes the line, so timeout ends it at its 3 s limit" \
-          "exited 20 line_seen=none stop=exited:it ends by itself without the line"; do
-    read -r bu_mode bu_secs bu_want <<< "${bu%%:*}"
-    export QEMU_REAL=$BU_DIR/fake-qemu BOOT_UNTIL_FAKE=$bu_mode
-    boot_until "$BU_DIR/$bu_mode.log" "$bu_secs" "System ready." -m 32M > "$BU_DIR/$bu_mode.out" 2>&1
-    export QEMU_REAL=$BU_REAL
-    unset BOOT_UNTIL_FAKE
-    sed 's/^/      /' "$BU_DIR/$bu_mode.out"
-    sleep 1                             # anything killed is reaped by now
-    bu_left=$(ps -eo pid=,args= | BU_DIR=$BU_DIR awk 'index($0, ENVIRON["BU_DIR"])')
-    [ -z "$bu_left" ] || printf '%s\n' "$bu_left" | sed 's/^/      left: /'
-    if grep -qxE "BOOT_UNTIL $bu_mode\.log $bu_want" "$BU_DIR/$bu_mode.out" && [ -z "$bu_left" ]; then
-        pass "[1.3] boot_until self-test, the fake QEMU's $bu_mode case (${bu#*:}): its BOOT_UNTIL line says ${bu_want##* }, and none of its processes is left"
-    else
-        fail "[1.3] boot_until self-test, the fake QEMU's $bu_mode case: its BOOT_UNTIL line does not say ${bu_want##* }, or one of its processes is left"
-    fi
-done
-
 # ---- 1.2: the size report (decides no check) ----
 
 section "Size report (1.2 stage 2; report only)"
@@ -863,173 +830,6 @@ if [ -n "$KEND" ]; then
 else
     echo "KERNEL_MARGIN_TRIGGER KERNEL_MARGIN_BYTES unknown (no __kernel_end in madire.elf), trigger 524288 (decision 13)"
 fi
-
-# ---- 1.3 stage 8: the switch ----
-
-section "[1.3] The splash-to-desktop handover and the VirtualBox desktop group's references (stage 8)"
-# The handover's rule on the references themselves, in the five modes of the
-# desktop's checks above: make-wallpaper.py's splash in its ready state
-# against desktop_ref.py's desktop (tests/desktop_ref.py's handover_check):
-# the M's box identical pixel for pixel, every other difference inside the
-# wordmark, the ready line or the taskbar (the QEMU handover sections of
-# parts 2 and 3 check the kernel's own two screens with the same rule).
-HO=$(python3 - "$(dirname "$0")" <<'EOF' 2>&1
-import sys
-sys.path.insert(0, sys.argv[1])
-sys.dont_write_bytecode = True
-import desktop_ref as D
-for w, h in ((800, 600), (1024, 768), (1280, 800), (1920, 1080), (2560, 1440)):
-    md, out, b, first = D.handover_check(w, h, D.MW.splash(w, h, "ready"), D.desktop(w, h, D.FIXED_CLOCK))
-    print("HANDOVER %dx%d m_box=%d,%d,%dx%d m_differ=%d outside=%d%s" % (
-        (w, h) + b["m"] + (md, out, "" if first is None else " first outside at %d,%d" % first)))
-EOF
-)
-sed 's/^/      /' <<< "$HO"
-if [ "$(grep -cE '^HANDOVER [0-9]+x[0-9]+ m_box=[0-9]+,[0-9]+,[0-9]+x[0-9]+ m_differ=0 outside=0$' <<< "$HO")" -eq 5 ]; then
-    pass "[1.3] the handover on the references in five modes: make-wallpaper.py's ready state and desktop_ref.py's desktop have the M's box identical pixel for pixel and differ only in the wordmark, the ready line and the taskbar"
-else
-    fail "[1.3] the handover on the references: $(grep -vE 'm_differ=0 outside=0$' <<< "$HO" | tr '\n' ' ')"
-fi
-# The VirtualBox desktop group's plan and references (tests/screen_ref.py;
-# the group runs in stage 9, on the owner's host): the plan replays its steps
-# through desktop_ref.py's model without an error, and after the run every
-# shot gets its reference; here with a fixed usable memory (4095 MB). The
-# graphics group's two references (the desktop at System ready, the Console
-# window after clear) are made too, and the first equals the plan's "ready".
-VB=$OUT/vbox-desktop-ref
-rm -rf "$VB" && mkdir -p "$VB"
-SR=$(dirname "$0")/screen_ref.py
-VBP=$(python3 "$SR" desktop-plan 1024 768 2>&1)
-VBR=$(python3 "$SR" desktop-render 1024 768 "$VB" 4095 2>&1)
-VBG=$( { python3 "$SR" desktop 1024 768 "$VB/desktop.rgb" && python3 "$SR" desktop-console 1024 768 "$VB/desktop-console.rgb"; } 2>&1)
-grep -vE '^MOUSE ' <<< "$VBP" | tr '\n' '|' | sed 's/^/      plan: /'; echo
-echo "      plan: $(grep -c '^MOUSE ' <<< "$VBP") mouse packets; $(grep -c '^REFERENCE ' <<< "$VBR") references rendered"
-VB_SHOTS=$(grep -c '^SHOT ' <<< "$VBP")
-VB_FILES=$(find "$VB" -name 'desktop-*.rgb' ! -name 'desktop-console.rgb' -size "$((1024 * 768 * 3))c" | wc -l)
-if [ "$VB_SHOTS" -gt 0 ] && [ "$VB_FILES" -eq "$VB_SHOTS" ] && ! grep -q "ERROR" <<< "$VBP$VBR$VBG" &&
-   grep -qxF "MASK 968 740 40 16 (the clock's cells)" <<< "$VBG" && cmp -s "$VB/desktop.rgb" "$VB/desktop-ready.rgb" &&
-   [ "$(stat -c%s "$VB/desktop-console.rgb")" -eq $((1024 * 768 * 3)) ]; then
-    pass "[1.3] the VirtualBox desktop group's plan replays through desktop_ref.py's model ($VB_SHOTS shots), each shot's reference is rendered, and the graphics group's references are made (the desktop at System ready equal to the plan's first)"
-else
-    fail "[1.3] the VirtualBox desktop group's plan or references: $VB_SHOTS shots, $VB_FILES references ($(grep -E 'ERROR' <<< "$VBP$VBR$VBG" | head -n 2 | tr '\n' ' '))"
-fi
-
-section "[1.1] The boot menu: hidden behind a key (the real ISO, driven over QMP)"
-# 1.1 stage 2 (docs/plans/1.1.md, D1 Q1-Q6): the real ISO's boot menu
-# (limine.conf: quiet, timeout 2, term_margin 240), driven by
-# tests/qmp_menu.py, never together with qmp_keys.py. QEMU starts paused,
-# so power-on is time 0. Each state's screen is compared pixel by pixel with
-# the ISO tree's wallpaper.png; the panel, header, hint and version boxes
-# come from scripts/make-wallpaper.py --layout-json (one source). The marker
-# rows: the up markers in y 288-303, the down markers in y 464-479 (plan,
-# section E). The logs are in $OUT/menu/, not serial-*.log, so part final
-# counts the same boots as before (as the padded test kernel's).
-MENU_T0=$(date +%s)
-QMPMENU=$(dirname "$0")/qmp_menu.py
-MENUDIR=$OUT/menu
-rm -rf "$MENUDIR" && mkdir -p "$MENUDIR"
-MENU_WP=$OUT/isodir/boot/limine/wallpaper.png
-MENU_LAYOUT=$MENUDIR/layout.json
-python3 "$(dirname "$0")/../scripts/make-wallpaper.py" "$MENUDIR/wallpaper-layout.png" --version "$VERSION" \
-    --layout-json "$MENU_LAYOUT" | sed 's/^/      /'
-echo "      layout: $(tr -d ' \n' < "$MENU_LAYOUT" 2>/dev/null)"
-# menu_boot <log> <seconds> <qmp_menu.py mode> <its arguments after the
-# socket and the log...>: boots the real ISO paused with a QMP socket, runs
-# qmp_menu.py, then stops QEMU. MENU_OUT holds qmp_menu.py's output (also
-# printed and kept in <log>.menu.txt).
-menu_boot() {
-    local log=$1 secs=$2 mode=$3 sock=$MENUDIR/qmp.sock t0 qpid
-    shift 3
-    rm -f "$log" "$sock"
-    t0=$(date +%s%N)
-    timeout "$secs" qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
-        -qmp unix:"$sock",server=on,wait=off -cdrom "$ISO" >/dev/null 2>&1 &
-    qpid=$!
-    MENU_OUT=$(python3 "$QMPMENU" "$mode" "$sock" "$log" "$@" 2>&1)
-    sed 's/^/      /' <<< "$MENU_OUT"
-    echo "$MENU_OUT" > "${log%.log}.menu.txt"
-    sleep 0.5
-    kill "$qpid" 2>/dev/null
-    wait "$qpid" 2>/dev/null
-    [ -f "$log" ] || : > "$log"
-    boot_seconds "$log" "$t0"
-}
-# menu_state <name>: qmp_menu.py's STATE line of that shot, if 1024x768.
-menu_state() { grep -E "^STATE $1 size=1024x768 " <<< "$MENU_OUT"; }
-
-# Q1-Q4: one boot. Home every 300 ms until the menu shows, 5 s held, then
-# the four states: collapsed; Down, Enter (Diagnostics open, the top of
-# the list); Down x27 (position 26, the end of the list); Up x28 (back at
-# the top).
-LOG=$MENUDIR/reveal.log
-menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:5 shot:collapsed down ret shot:open \
-    'down*27' shot:position-26 'up*28' shot:back-top --band up=288-303 --band down=464-479 --shots "$MENUDIR"
-if grep -qE '^REVEAL [0-9]+\.[0-9] s, [0-9]+ presses, 1024x768$' <<< "$MENU_OUT" &&
-   grep -qxF 'HOLD 5 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT"; then
-    pass "[1.1] boot menu: a key during the 2 s shows the menu (1024x768), and nothing boots for 5 s"
-else
-    fail "[1.1] boot menu: no 1024x768 menu within 30 s of keys, or the serial log not empty 5 s later (see ${LOG%.log}.menu.txt)"
-fi
-ok=1
-for s in collapsed open position-26 back-top; do
-    menu_state "$s" | grep -qE ' drawn=[1-9][0-9]* inside_panel=yes ' || ok=0
-done
-if [ "$ok" = 1 ]; then
-    pass "[1.1] boot menu: in every state Limine draws only inside the panel (collapsed, Diagnostics open, scrolled to position 26, back at the top)"
-else
-    fail "[1.1] boot menu: a state drew outside the panel, nothing, or was not 1024x768 (see ${LOG%.log}.menu.txt)"
-fi
-ok=1
-for s in collapsed open position-26 back-top; do
-    menu_state "$s" | grep -qE ' header=0 hint=0 version=0 ' || ok=0
-done
-if [ "$ok" = 1 ]; then
-    pass "[1.1] boot menu: no Limine name or help text (the header, hint and version areas are the wallpaper's own pixels)"
-else
-    fail "[1.1] boot menu: Limine drew in the header, hint or version area, or a state was not 1024x768 (see ${LOG%.log}.menu.txt)"
-fi
-if menu_state collapsed | grep -qE ' band_up=0 band_down=0$' &&
-   menu_state open | grep -qE ' band_down=[1-9][0-9]*$' &&
-   menu_state position-26 | grep -qE ' band_up=[1-9][0-9]* '; then
-    pass "[1.1] boot menu: scroll markers only when the list overflows (down markers at the top of the list, up markers at position 26)"
-else
-    fail "[1.1] boot menu: scroll markers wrong (collapsed: none in y 288-303 and 464-479; open: some in 464-479; position 26: some in 288-303; see ${LOG%.log}.menu.txt)"
-fi
-
-# Q5: a second boot, the keys of the VirtualBox automation: Down, Enter,
-# Down x27, Enter (1 s after the menu shows; Home only selects the first
-# entry, so a Home still queued changes nothing). "No PANIC" relies on
-# QEMU's default CPU lacking SMAP: position 26 then reports NOT APPLICABLE.
-# With a SMAP-capable -cpu the crash test would panic by design, and this
-# check would need changing.
-LOG=$MENUDIR/position-26.log
-menu_boot "$LOG" 150 menu "$MENU_WP" "$MENU_LAYOUT" hold:1 down ret 'down*27' ret 'until:SMAP test:'
-if grep -qE '^REVEAL ' <<< "$MENU_OUT" && grep -qxF 'HOLD 1 s: serial 0 bytes, screen 1024x768, header match' <<< "$MENU_OUT" &&
-   grep -q '^SMAP test: ' "$LOG" && ! grep -q "PANIC" "$LOG"; then
-    pass "[1.1] boot menu: Down, Enter, Down x27 boots Diagnostics position 26 to 'SMAP test:'"
-else
-    fail "[1.1] boot menu: Down, Enter, Down x27, Enter did not boot position 26 to 'SMAP test:' (or booted early, or a panic; see $LOG)"
-fi
-
-# Q6: no key: a screendump every 250 ms until System ready. 1.2 stage 10b
-# (docs/plans/1.2.md, D2): the real ISO now boots in graphics at 1024x768,
-# so the width no longer tells the menu apart. Each screendump is placed
-# by the serial log's size read just before it: before the first serial
-# byte (Limine's time) only 640x480, 720x400 or a blank screen in the
-# kernel's mode; after it, only the kernel's mode; no screendump at any
-# time with the menu's header box; one boot (boot32: start once).
-LOG=$MENUDIR/no-key.log
-menu_boot "$LOG" 150 nokey "System ready." --wallpaper "$MENU_WP" --layout "$MENU_LAYOUT"
-Q6MODE=$(sed -n 's/^MODE //p' <<< "$MENU_OUT")
-if grep -qE "^BEFORE( (640x480|720x400)(/blank)?:[0-9]+| ${Q6MODE:-none}/blank:[0-9]+)+$" <<< "$MENU_OUT" &&
-   grep -qE "^AFTER( ${Q6MODE:-none}(/blank)?:[0-9]+)+$" <<< "$MENU_OUT" &&
-   grep -qxF "HEADER matches=0" <<< "$MENU_OUT" && grep -qxF "BOOTS boot32=1" <<< "$MENU_OUT" &&
-   [ "${Q6MODE:-none}" != none ] && grep -qE "^UNTIL 'System ready\.': seen after " <<< "$MENU_OUT"; then
-    pass "[1.1] no key: the real ISO boots to System ready and Limine's menu is never shown (before the first serial byte only 640x480, 720x400 or a blank screen; no screen ever matches the menu wallpaper's header)"
-else
-    fail "[1.1] no key: no System ready, a non-blank or other-size screen before the first serial byte, or a screen matching the menu wallpaper's header (see ${LOG%.log}.menu.txt)"
-fi
-echo "      [1.1] boot menu checks: $(( $(date +%s) - MENU_T0 )) s (report only)"
 
 # ---- 1.4 stage 2: the test-image tools ----
 
