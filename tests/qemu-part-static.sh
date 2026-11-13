@@ -1035,8 +1035,10 @@ DISK_T0=$(date +%s)
 disk_probe
 DISK_W=$OUT/disk-tools
 rm -rf "$DISK_W" && mkdir -p "$DISK_W"
-# The sample files, with fixed modes (ctime cannot be set: both images are
-# made from this one folder).
+# The sample files, with fixed modes. Their change times cannot be set (the
+# kernel sets them to the current second at every touch below); both images
+# are made from this one folder, and a pair counts only when both passes saw
+# the same change times (1.4 stage 15b, the release-run race).
 DISK_WANT=$( { disk_image tree "$DISK_W/src"; echo "DIR /lost+found"; } | LC_ALL=C sort)
 find "$DISK_W/src" -type d -exec chmod 0755 {} +
 find "$DISK_W/src" -type f -exec chmod 0644 {} +
@@ -1049,21 +1051,32 @@ DISK_TOUCH=("$DISK_W/src")
 while read -r _ p _; do [ "$p" = /lost+found ] || DISK_TOUCH+=("$DISK_W/src$p"); done <<< "$DISK_WANT"
 echo "      times reset before each mke2fs: ${#DISK_TOUCH[@]} paths"
 # An 8 MiB image, 1 KiB blocks (big.bin reaches the double indirect block),
-# 128-byte inodes, 256 inodes; made twice.
-DISK_MK=""
-for x in a b; do
-    touch -h -a -m -d "@$DISK_TIME" "${DISK_TOUCH[@]}"
-    disk_mkfs "$DISK_W/$x.img" 8192 1024 128 256 "$DISK_W/src" > "$DISK_W/mkfs-$x.txt" 2>&1
-    DISK_MK="$DISK_MK $?"
-    sed "s/^/      mke2fs ($x): /" "$DISK_W/mkfs-$x.txt"
+# 128-byte inodes, 256 inodes; made twice. mke2fs -d copies each source
+# inode's change time, which touch sets to the current second: the change
+# times are read (stat %Z, metadata only) after each touch, and a pair whose
+# passes saw different ones (a second boundary between the two touches) is
+# made again, at most 3 attempts, each retry printed (1.4 stage 15b).
+for DISK_TRY in 1 2 3; do
+    DISK_MK=""
+    for x in a b; do
+        touch -h -a -m -d "@$DISK_TIME" "${DISK_TOUCH[@]}"
+        printf -v "DISK_CT_$x" '%s' "$(stat -c %Z "${DISK_TOUCH[@]}" | tr '\n' ' ')"
+        disk_mkfs "$DISK_W/$x.img" 8192 1024 128 256 "$DISK_W/src" > "$DISK_W/mkfs-$x.txt" 2>&1
+        DISK_MK="$DISK_MK $?"
+        sed "s/^/      mke2fs ($x): /" "$DISK_W/mkfs-$x.txt"
+    done
+    [ "$DISK_CT_a" = "$DISK_CT_b" ] && break
+    echo "      attempt $DISK_TRY: the two passes saw different change times (a second boundary between the touches)$([ "$DISK_TRY" -lt 3 ] && echo "; made again")"
 done
+echo "      DISK_MKFS_ATTEMPTS $DISK_TRY (report only)"
 DISK_SA=$(sha256sum < "$DISK_W/a.img" | cut -d' ' -f1)
 DISK_SB=$(sha256sum < "$DISK_W/b.img" | cut -d' ' -f1)
 echo "      mke2fs exit:$DISK_MK; a.img $DISK_SA; b.img $DISK_SB ($(stat -c%s "$DISK_W/a.img" 2>/dev/null) bytes)"
-echo "DISK_IMAGE_SHA256 ext2-1k-128 $DISK_SA (report only: identical within a run (a.img = b.img, checked below); it varies between runs, since mke2fs -d copies the source files' change times, which touch cannot set; the stage 9 configuration change did not alter it)"
-if [ "$DISK_MK" = " 0 0" ] && [ -s "$DISK_W/a.img" ] && [ "$DISK_SA" = "$DISK_SB" ]; then
+echo "DISK_IMAGE_SHA256 ext2-1k-128 $DISK_SA (report only: identical within a run when both passes saw the same change times (checked below); it varies between runs, since mke2fs -d copies the source files' change times, which the kernel sets at every touch and touch cannot set; the stage 9 configuration change did not alter it)"
+if [ "$DISK_MK" = " 0 0" ] && [ -s "$DISK_W/a.img" ] && [ "$DISK_CT_a" = "$DISK_CT_b" ] && [ "$DISK_SA" = "$DISK_SB" ]; then
     pass "[1.4] disk tools: mke2fs with tests/mke2fs.conf, the fixed UUID, hash seed and time makes the same ext2 image twice (SHA-256 identical)"
 else
+    [ "$DISK_CT_a" = "$DISK_CT_b" ] || echo "      the two passes saw different change times in all $DISK_TRY attempts: a: $DISK_CT_a b: $DISK_CT_b"
     cmp -l "$DISK_W/a.img" "$DISK_W/b.img" 2>&1 | head -n 8 | sed 's/^/      differs (offset, octal bytes): /'
     echo "      $(cmp -l "$DISK_W/a.img" "$DISK_W/b.img" 2>/dev/null | wc -l) bytes differ"
     fail "[1.4] disk tools: mke2fs did not make the same ext2 image twice (exit:$DISK_MK)"

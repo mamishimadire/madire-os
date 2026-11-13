@@ -2365,6 +2365,9 @@ section "[1.2] The splash closed by Esc; the next key opens the console (1024x76
 # (tests/qmp_splash.py, stopkey: its "ready_before" must be "no"). The
 # ready-state check of this section moved to part 2's handover section
 # (tests/qemu-lib.sh, desktop_handover_case), where that state is held.
+# 1.4 stage 15b: the boot screen is taken as "bootscreen" (here, in the
+# verbose and the test=splashfail sections): a screen caught while the idle
+# loop rewrites the Uptime row is taken again (tests/qmp_splash.py, Retakes).
 ESC_LINE="Splash: closed (Esc): the text boot screen shown"
 ESC_AT_LINE="Mouse: no pointer on the console (the test option 'pointer', or test=mouse, draws one)"
 fbcon_iso splashesc "still"
@@ -2372,7 +2375,7 @@ LOG=$OUT/serial-splash-esc.log
 SPL_OUT=""
 if [ -n "$FBC_ISO" ]; then
     SPL_UNTIL="console: started" splash_boot "$LOG" "$FBC_ISO" 1024x768 "stopkey:{esc}:$ESC_AT_LINE" \
-        "screen:console:$ESC_LINE" "type:{wait:1}x"
+        "screen:bootscreen:$ESC_LINE" "type:{wait:1}x"
 else : > "$LOG"; fi
 grep -E "^Splash|^System ready|^console: started|^Desktop" "$LOG" | sed 's/^/      /'
 grep -E "^STOPKEY " <<< "$SPL_OUT" | sed 's/^/      /'
@@ -2396,7 +2399,7 @@ section "[1.2] The boot option verbose: the text boot screen, no splash (1024x76
 fbcon_iso splashverbose "verbose"
 LOG=$OUT/serial-splash-verbose.log
 SPL_OUT=""
-if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:console:$FB_READY"; else : > "$LOG"; fi
+if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:bootscreen:$FB_READY"; else : > "$LOG"; fi
 if grep -qE "^SCREEN 1 size=1024x768 held=yes differ=0 \(" <<< "$SPL_OUT" &&
    grep -qE "^ROWS 1 top='.*' bottom='  System ready\. Press any key to open the console\.'$" <<< "$SPL_OUT"; then
     pass "[1.2] verbose at 1024x768x32: no splash: at System ready the screen equals the reference rendering of the console's cell grid (the boot screen) pixel for pixel"
@@ -2423,7 +2426,7 @@ FAIL_READY="System ready. Console self-test failed: console disabled."
 fbcon_iso splashfail "test=splashfail"
 LOG=$OUT/serial-splash-fail.log
 SPL_OUT=""
-if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:console:$FAIL_READY"; else : > "$LOG"; fi
+if [ -n "$FBC_ISO" ]; then splash_boot "$LOG" "$FBC_ISO" "" "screen:bootscreen:$FAIL_READY"; else : > "$LOG"; fi
 grep -E "^Splash|^Console & shell|^System ready" "$LOG" | sed 's/^/      /'
 CS_AT=$(grep -nE "^Console & shell: +FAILED" "$LOG" | head -n 1 | cut -d: -f1)
 CL_AT=$(grep -nxF "Splash: closed (a FAILED status line): the text boot screen shown" "$LOG" | head -n 1 | cut -d: -f1)
