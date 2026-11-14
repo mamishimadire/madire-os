@@ -199,9 +199,9 @@ VBOX_DESKTOP = [
     "to:desktop", "rpress", "rrelease", "shot:rightclick-menu", "key:esc",
     "to:body@Console", "click", "key:meta_l", "shot:winkey-console", "key:esc",
     "type:echo ok", "key:ret", "type:clear", "key:ret",
-    "to:m", "click", "to:row@Restart", "click", "shot:restart-dialog",
+    "to:m", "click", "to:row@Power...", "click", "shot:restart-dialog",
     "to:btn@Cancel", "click", "shot:restart-cancelled",
-    "to:m", "click", "to:row@Restart", "click", "to:btn@Restart", "click", "restart",
+    "to:m", "click", "to:row@Power...", "click", "to:btn@Restart", "click", "restart",
 ]
 SCANCODES = {"meta_l": "e0 5b e0 db", "esc": "01 81", "spc": "39 b9", "ret": "1c 9c"}
 
