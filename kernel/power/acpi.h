@@ -32,4 +32,10 @@
  * reason (never ACPI_OK). */
 enum acpi_why acpi_power_off(void);
 
+/* 1.5 stage 7, test=poweroffwait (a test option, power.h): PM1a_CNT and
+ * PM1b_CNT are not written, so a machine with good tables stays on and
+ * the 2 s wait runs ("ACPI: test=poweroffwait: ..." logged after the
+ * ACPI: line); everything before the write is as without it. */
+void acpi_test_stay_on(void);
+
 #endif

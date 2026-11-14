@@ -365,5 +365,18 @@
 # part static's menu and Disk-mode dialog scenes (the power dialog's
 # pixels) and its contrast check (12 scenes); the unit suites ui_dialog,
 # ui_menu and ui_menus (the power dialog's layout, the row Power...).
-1.5 40
+# Stage 7: 12 more (C8, the wheel; the S6 review's Shut down with a waiter):
+# in part static 7: test=mouse under QEMU -kernel (3: the ID 3 line between
+# the start line and the IRQ12 line; the wheel packets exact; 3 packets from
+# 12 bytes), Shut down in Disk mode with a thread waiting for the disk lock
+# (4: -machine acpi=off with test=blkslow=20, the lines and the waiter's
+# line, the fallback screen with no panic; the ACPI tables with the 2 s
+# wait, the same two); in part 5 5: the wheel in the Console window (the ID
+# line, the window and the first notch; the scroll positions; the grid; the
+# notch over the desktop ignored; every packet exact). New cases in the
+# unit suites mouse and scrollback (no new suite). Changed, not added (the
+# owner's approval, before the commit): mouse_done_ok's bytes per packet
+# (4 after the ID 3 line) and the texts of part 1's and the stress part's
+# mouse counts checks (44 and 4000 bytes).
+1.5 52
 unit-suites 110

@@ -956,3 +956,91 @@ expect_in_order "$D9_L" "[1.5] test=disksavefail: after the mount /home/note.txt
     "^madire> cat /home/note.txt$" "^kept on the disk$" "^madire> cat /home/note.txt$" "^kept on the disk$" \
     "^madire> touch /home/new.txt$" "^touch: '/home/new\.txt': the filesystem is read-only\.$" "^madire> echo end-of-d9fix$"
 echo "      [1.5] the D9 fix: $(( $(date +%s) - D9_T0 )) s (report only)"
+
+section "[1.5] The mouse wheel scrolls the Console window: 3 lines a notch, the desktop elsewhere ignores it (test=desktop, 1024x768x32; stage 7)"
+# docs/plans/1.5.md, C8 (decision 13). One boot of a test ISO (test=desktop
+# desktoplog mouselog); tests/qmp_wheel.py (wheel_boot, qemu-lib.sh) drives
+# QMP's wheel-up and wheel-down buttons (QEMU's PS/2 mouse: ID 3, 4-byte
+# packets; wheel-up -1). A key opens the Console window (not typed); "help"
+# twice fills the scrollback; the pointer appears at (513, 384) (the
+# screen's centre, moved by 1), inside the Console window's body as its
+# "desktop: open Console" line places it. Over the window: one notch up
+# scrolls back 3 lines (the view's top 3 lines above the live screen: line
+# Y-27 of Y), a second 3 more (Y-30), one notch down 3 forward (Y-27), one
+# more back at the bottom, then two notches in one packet 6 lines (Y-30);
+# each console line after its "desktop: wheel <n> over the Console window"
+# line; the cell grid (vga_shadow) while scrolled back shows the indicator
+# on row 24 and the logged top line on row 0, and at the bottom no
+# indicator. Then over the desktop at (13, 4) a notch is ignored ("desktop:
+# wheel -1 ignored (not over the Console window)"), and no console line
+# follows it. The same moves as the VirtualBox wheel probe (-Only wheel).
+WH_T0=$(date +%s)
+WH_L=$OUT/serial-wheel-console.log
+WB_OUT=""
+desktop_iso "wheel" "test=desktop desktoplog mouselog" ""
+WH_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+WH_SHP=$(printf '0x%x' $(( 0x${WH_SHV:-0} - 0xffffffff80000000 )))
+WH_SB='^console: scrolled back: line [0-9]+ of [0-9]+, top '
+if [ -n "$DT_ISO" ]; then
+    wheel_boot "$WH_L" 150 -cdrom "$DT_ISO" -- --screen 1024x768 --shadow "$WH_SHP" \
+        "waitre:1:^display: frame [0-9]+$" "type:x" "waitre:1:^console: started$" \
+        "type:help{ret}help{ret}echo wheel-fill{ret}" "wait:wheel-fill" move:1,0 \
+        wheel:-1 "waitre:1:$WH_SB" grid:1 wheel:-1 "waitre:2:$WH_SB" wheel:1 "waitre:3:$WH_SB" \
+        wheel:1 "waitre:1:^console: back at the bottom$" grid:2 wheel:-2 "waitre:4:$WH_SB" \
+        move:-125,-95 move:-125,-95 move:-125,-95 move:-125,-95 wheel:-1 \
+        "waitre:1:^desktop: wheel -1 ignored " move:1,0
+else : > "$WH_L"; fi
+grep -E "^Mouse: IntelliMouse|^Desktop: (shown|the wheel)|^desktop: (open Console|wheel)|^console: (scrolled|back)" "$WH_L" |
+    sed 's/^/      /'
+grep -E "^GRID " <<< "$WB_OUT" | sed 's/^/      /'
+read -r WH_X WH_Y WH_W WH_H <<< "$(sed -nE 's/^desktop: open Console at \((-?[0-9]+), (-?[0-9]+)\) ([0-9]+)x([0-9]+)$/\1 \2 \3 \4/p' "$WH_L" | head -n 1)"
+if grep -qxF "$MOUSE_WHEEL" "$WH_L" && grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$WH_L" &&
+   [ -n "${WH_H:-}" ] && [ "$WH_X" -lt 513 ] && [ "$((WH_X + WH_W - 1))" -gt 513 ] &&
+   [ "$((WH_Y + 32))" -lt 384 ] && [ "$((WH_Y + WH_H - 1))" -gt 384 ] &&
+   grep -qxF "Desktop: the wheel's first notch: -1 at (513, 384), over the Console window" "$WH_L" &&
+   [ "$(grep -c "^Desktop: the wheel's first notch: " "$WH_L")" -eq 1 ]; then
+    pass "[1.5] wheel: '$MOUSE_WHEEL' on the desktop boot; a key opened the Console window ($WH_X, $WH_Y) ${WH_W}x${WH_H}; the pointer at (513, 384) inside its body; 'Desktop: the wheel's first notch: -1 at (513, 384), over the Console window' logged once"
+else
+    fail "[1.5] wheel: no ID 3 line, the Console window not opened by the key, the pointer not inside its body, or the first-notch line missing or repeated (see ${WH_L##*/})"
+fi
+WH_Y1=$(sed -nE "s/^console: scrolled back: line [0-9]+ of ([0-9]+), top .*/\\1/p" "$WH_L" | head -n 1)
+WH_XS=$(sed -nE "s/^console: scrolled back: line ([0-9]+) of [0-9]+, top .*/\\1/p" "$WH_L" | tr '\n' ' ')
+echo "      the scrolled-back lines' first lines: ${WH_XS:-none}of ${WH_Y1:-?} (expected Y-27 Y-30 Y-27 Y-30)"
+if [ -n "${WH_Y1:-}" ] && [ "$WH_XS" = "$((WH_Y1 - 27)) $((WH_Y1 - 30)) $((WH_Y1 - 27)) $((WH_Y1 - 30)) " ] &&
+   [ "$(grep -cE "^console: scrolled back: line [0-9]+ of $WH_Y1, top " "$WH_L")" -eq 4 ] && awk '
+        /^desktop: wheel -1 over the Console window$/ { u++; if (u <= 2) { if (ex) bad = 1; ex = 1 } }
+        /^desktop: wheel \+1 over the Console window$/ { d++; if (ex) bad = 1; ex = 1 }
+        /^desktop: wheel -2 over the Console window$/ { t++; if (ex) bad = 1; ex = 1 }
+        /^console: (scrolled back: line |back at the bottom$)/ { c++; if (!ex) bad = 1; ex = 0; if ($0 ~ /^console: back/) { b++; if (c != 4) bad = 1 } }
+        END { exit !(u == 2 && d == 2 && t == 1 && c == 5 && b == 1 && !bad) }' "$WH_L"; then
+    pass "[1.5] wheel: over the Console window one notch up scrolls back 3 lines (line $((WH_Y1 - 27)) of $WH_Y1), a second 3 more ($((WH_Y1 - 30))), one down 3 forward ($((WH_Y1 - 27))), one more back at the bottom, two notches in one packet 6 lines ($((WH_Y1 - 30))); each console line after its 'desktop: wheel <n> over the Console window' line"
+else
+    fail "[1.5] wheel: the scrolled-back lines are not ${WH_Y1:-Y}-27, -30, -27, the bottom, -30, or not each after its desktop: wheel line (got: ${WH_XS:-none})"
+fi
+WH_TOP=$(sed -nE "s/^console: scrolled back: line [0-9]+ of [0-9]+, top '(.*)'$/\\1/p" "$WH_L" | head -n 1)
+WH_G1=$(grep -E "^GRID 1 " <<< "$WB_OUT")
+WH_G2=$(grep -E "^GRID 2 " <<< "$WB_OUT")
+WH_R0=$(sed -nE "s/^GRID 1 row0='(.*)' row24='.*'$/\\1/p" <<< "$WH_G1")
+if [ -n "${WH_Y1:-}" ] && [ -n "$WH_TOP" ] && [[ "$WH_R0" == "$WH_TOP"* ]] &&
+   grep -qxF "GRID 1 row0='$WH_R0' row24='-- scrolled back: line $((WH_Y1 - 27)) of $WH_Y1 (Shift+PgUp/PgDn; any key returns) --'" <<< "$WH_G1" &&
+   [ -n "$WH_G2" ] && ! grep -qE "row24='-- scrolled back: " <<< "$WH_G2"; then
+    pass "[1.5] wheel: the Console window shows the view: the grid's row 24 is the indicator '-- scrolled back: line $((WH_Y1 - 27)) of $WH_Y1 (Shift+PgUp/PgDn; any key returns) --' and row 0 the logged top line '$WH_TOP'; back at the bottom row 24 is not the indicator"
+else
+    fail "[1.5] wheel: the grid does not show the scrolled-back view (row 24, row 0 '$WH_TOP') or still shows the indicator at the bottom (${WH_G1:-no GRID 1}; ${WH_G2:-no GRID 2})"
+fi
+if grep -qxF "desktop: wheel -1 ignored (not over the Console window)" "$WH_L" &&
+   ! sed -n '/^desktop: wheel -1 ignored (not over the Console window)$/,$p' "$WH_L" | grep -qE "^console: (scrolled back|back at the bottom)"; then
+    pass "[1.5] wheel: over the desktop at (13, 4) a notch is ignored ('desktop: wheel -1 ignored (not over the Console window)'), and no console line follows it"
+else
+    fail "[1.5] wheel: the notch over the desktop was not ignored, or a console line followed it (see ${WH_L##*/})"
+fi
+if grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$WB_OUT" && grep -qxF "PACKETS sent=12 exact=12" <<< "$WB_OUT" &&
+   grep -qxF "mouse: packet 2: dx +0 dy +0 buttons --- wheel -1 at (513, 384)" "$WH_L" &&
+   grep -qxF "mouse: packet 6: dx +0 dy +0 buttons --- wheel -2 at (513, 384)" "$WH_L" &&
+   ! grep -qE "PANIC|FAILED|MISMATCH|events dropped|bytes dropped|qmp_wheel: ERROR" "$WH_L" &&
+   ! grep -qE "^(qmp_wheel: ERROR|WAIT )" <<< "$WB_OUT"; then
+    pass "[1.5] wheel: every packet exact (12: moves and the wheel's 'wheel -1', 'wheel +1', 'wheel -2' with their position); no panic, FAILED line, MISMATCH or dropped byte"
+else
+    fail "[1.5] wheel: a packet not exact, a wait not met, or a panic, FAILED line or dropped byte ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_wheel)' <<< "$WB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+echo "      [1.5] the mouse wheel (part 5): $(( $(date +%s) - WH_T0 )) s (report only)"

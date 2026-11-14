@@ -65,6 +65,16 @@ enum sb_move {
 enum sb_move sb_page_up(struct scrollback *s);
 enum sb_move sb_page_down(struct scrollback *s);
 
+/* 1.5 stage 7 (docs/plans/1.5.md, C8): the mouse wheel's moves, as the
+ * pages' but by n lines (the console: SB_WHEEL_LINES a notch). Up from the
+ * bottom shows the view whose top line is n lines above the live screen's
+ * first row (the indicator shows), stopping at line 1; down moves forward
+ * and returns to the bottom when the top passes the kept lines. n == 0:
+ * SB_UNCHANGED. */
+#define SB_WHEEL_LINES 3u
+enum sb_move sb_lines_up(struct scrollback *s, uint32_t n);
+enum sb_move sb_lines_down(struct scrollback *s, uint32_t n);
+
 /* Back to the live screen. True if the view was scrolled back. */
 bool sb_to_bottom(struct scrollback *s);
 

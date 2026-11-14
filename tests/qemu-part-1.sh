@@ -2018,7 +2018,7 @@ else
 fi
 if mouse_done_ok "$LOG" 11 &&
    grep -qxF "Mouse test: motion dx -17 dy -15; pressed L 1 M 1 R 1, released L 1 M 1 R 1" "$LOG"; then
-    pass "[1.2] -kernel test=mouse: IRQ12 delivered every byte (33 read, one interrupt each), no bad byte, overflow or drop; the motion and button totals as injected"
+    pass "[1.2] -kernel test=mouse: IRQ12 delivered every byte (44 read: 4-byte packets since the wheel's ID 3, 1.5 stage 7; one interrupt each), no bad byte, overflow or drop; the motion and button totals as injected"
 else
     fail "[1.2] -kernel test=mouse: the counts or the totals are not as injected (see $LOG)"
 fi

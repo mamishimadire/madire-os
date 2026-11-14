@@ -145,8 +145,26 @@ void desktop_poll(void);
 
 /* 1.3 stage 4a: each mouse packet, after its move: the pointer's (clamped)
  * hot spot, the left button pressed or released in it; 1.3 stage 5: the
- * right button pressed in it (the menus first, ui_menus.h). */
-void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down);
+ * right button pressed in it (the menus first, ui_menus.h); 1.5 stage 7:
+ * the middle button pressed in it (decoded and passed on; nothing uses it
+ * yet: S8's taskbar buttons close a window on it). */
+void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down, bool middle_down);
+
+/* 1.5 stage 7 (docs/plans/1.5.md, C8): a packet's wheel notches (negative
+ * up, away from the user) at the pointer's hot spot, after desktop_pointer.
+ * Over the Console window's body (the window at that point, from the top
+ * down), with no menu or dialog open, the notches are kept for the idle
+ * loop (desktop_take_wheel), which scrolls the console's scrollback 3
+ * lines a notch (console_wheel); anywhere else they are ignored. The first
+ * notch of the boot logs "Desktop: the wheel's first notch: <+-n> at (x,
+ * y), <over the Console window|not over the Console window|a menu or
+ * dialog is open>"; with
+ * desktoplog each packet logs "desktop: wheel <+-n> over the Console
+ * window" or "desktop: wheel <+-n> ignored (<why>)". */
+void desktop_wheel(int32_t x, int32_t y, int32_t notches);
+
+/* 1.5 stage 7: the notches kept since the last call (0: none), cleared. */
+int32_t desktop_take_wheel(void);
 
 /* 1.3 stage 5: true once after a menu row chosen with the pointer opened
  * the Console window (the idle loop then starts the console if it is not

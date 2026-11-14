@@ -9,13 +9,16 @@
  *     module's bounded waits (drivers/ps2/i8042.h), and its undo;
  *   - what the IRQ12 handler does with the status it read;
  *   - the bounded byte queue from IRQ12 to thread 0;
- *   - the packet decoder (3-byte packets of the standard PS/2 mouse).
+ *   - the packet decoder (3-byte packets of the standard PS/2 mouse;
+ *     1.5 stage 7: 4-byte packets of the IntelliMouse wheel mode).
  *
  * A packet: byte 0 holds the buttons (bit 0 left, 1 right, 2 middle), a
  * bit that is always 1 (bit 3), the sign of X and of Y (bits 4, 5) and
  * their overflow (bits 6, 7); bytes 1 and 2 the low 8 bits of X and Y, so
  * each motion is a 9-bit two's complement value, -256 to 255. Y counts
- * up; the decoder gives screen motion (Y counting down).
+ * up; the decoder gives screen motion (Y counting down). In wheel mode
+ * (device ID 3) byte 3 is the wheel's motion, a signed 8-bit value:
+ * negative away from the user ("up"), positive towards the user.
  */
 
 #include <stdbool.h>
@@ -37,9 +40,19 @@
 #define MOUSE_CFG_PORT2_CLOCK_OFF 0x20
 
 /* Mouse commands (through MOUSE_CTL_WRITE_AUX) and its acknowledgement. */
-#define MOUSE_DEV_ENABLE_REPORTING 0xF4
-#define MOUSE_DEV_SET_DEFAULTS     0xF6
-#define MOUSE_DEV_ACK              0xFA
+#define MOUSE_DEV_GET_ID            0xF2  /* 1.5 stage 7: ACK, then the device ID */
+#define MOUSE_DEV_SET_RATE          0xF3  /* 1.5 stage 7: ACK; the rate byte, ACK */
+#define MOUSE_DEV_ENABLE_REPORTING  0xF4
+#define MOUSE_DEV_DISABLE_REPORTING 0xF5  /* 1.5 stage 7 */
+#define MOUSE_DEV_SET_DEFAULTS      0xF6
+#define MOUSE_DEV_ACK               0xFA
+#define MOUSE_DEV_ERROR             0xFC  /* 1.5 stage 7: a command refused */
+#define MOUSE_DEV_RESEND            0xFE  /* 1.5 stage 7: a command not understood */
+
+/* 1.5 stage 7 (C8): device ID 3 after the rates 200, 100, 80: the
+ * IntelliMouse wheel mode; 100 samples a second is the defaults' rate. */
+#define MOUSE_ID_WHEEL     3u
+#define MOUSE_RATE_DEFAULT 100u
 
 /* Packet byte 0. */
 #define MOUSE_B0_LEFT     0x01
@@ -89,6 +102,36 @@ struct mouse_start {
  * here) and IRQ12. Leaves port 1 off and IRQ12 off in the configuration:
  * next mouse_enable_irq, or mouse_undo. False with r->step on a failure. */
 bool mouse_start(const struct i8042_bus *bus, struct mouse_start *r);
+
+/*
+ * 1.5 stage 7 (C8): the IntelliMouse wheel, right after mouse_start (IRQ1
+ * and IRQ12 still masked, port 1 off): reporting off (0xF5; motion bytes
+ * already on their way before its ACK are dropped and counted), the rates
+ * 200, 100 and 80 (each 0xF3 and its rate byte acknowledged), Get Device
+ * ID (ACK, then the ID), the rate back to 100 (as the defaults left it),
+ * reporting on again (0xF4). ID 3: 4-byte
+ * packets from now on (mouse_decoder_wheel); any other ID, or no ID: the
+ * 3-byte path exactly as before. A step that gets no reply or a wrong one
+ * ends the knock there (the rate is still set back if the knock began,
+ * and reporting is always turned on again). False only if reporting could
+ * not be turned on again: then r->step is MOUSE_START_REPORTING (the
+ * mouse gives up as for enable reporting in mouse_start).
+ */
+struct mouse_wheel {
+    bool wheel;                 /* ID 3: 4-byte packets */
+    bool have_id;               /* the ID was read */
+    uint8_t id;
+    bool failed;                /* a step before the ID failed: failed_byte, timed_out, reply */
+    bool rate_failed;           /* the rate could not be set back to 100 */
+    uint8_t failed_byte;        /* the command or rate byte that failed */
+    bool timed_out;             /* it got no reply (else: reply) */
+    uint8_t reply;
+    uint32_t stray;             /* motion bytes dropped before 0xF5's ACK */
+};
+
+#define MOUSE_STRAY_LIMIT 16u   /* aux bytes read while waiting for 0xF5's ACK */
+
+bool mouse_wheel_start(const struct i8042_bus *bus, struct mouse_start *r, struct mouse_wheel *w);
 
 /* After mouse_start: writes the configuration with IRQ12 on and port 2's
  * clock on (port 1 still off), reads it back; false if it did not stick. */
@@ -153,26 +196,33 @@ bool mouse_queue_pop(struct mouse_queue *q, uint8_t *out);
 struct mouse_event {
     int32_t dx;                 /* screen motion: right positive */
     int32_t dy;                 /* screen motion: down positive */
+    int32_t wheel;              /* 1.5 stage 7: notches, negative up (away from the user); 0 on 3-byte packets */
     uint8_t buttons;            /* held now (MOUSE_B0_LEFT | ...) */
     uint8_t pressed;            /* pressed since the last packet */
     uint8_t released;           /* released since the last packet */
-    bool overflow;              /* an overflow bit was set: the motion is dropped (0, 0) */
+    bool overflow;              /* an overflow bit was set: the motion is dropped (0, 0); the wheel is kept */
 };
 
 struct mouse_decoder {
-    uint8_t bytes[3];
+    uint8_t bytes[4];
     uint32_t have;              /* bytes of the current packet so far */
+    bool wheel;                 /* 1.5 stage 7: 4-byte packets (else 3) */
     uint8_t buttons;            /* held after the last packet */
     uint32_t packets;
     uint32_t bad_bytes;         /* bytes dropped while looking for a packet's first byte */
     uint32_t overflows;
 };
 
+/* 3-byte packets until mouse_decoder_wheel. */
 void mouse_decoder_init(struct mouse_decoder *d);
+
+/* 1.5 stage 7: 4-byte packets from now on (a packet begun is dropped). */
+void mouse_decoder_wheel(struct mouse_decoder *d);
 
 /* Takes one byte; true when it ends a packet (then *out is filled). A
  * first byte without bit 3 is dropped and counted, and the next byte is
- * taken as a first byte again (resynchronisation). */
+ * taken as a first byte again (resynchronisation; the same rule for
+ * 3-byte and 4-byte packets). */
 bool mouse_decode(struct mouse_decoder *d, uint8_t byte, struct mouse_event *out);
 
 #endif

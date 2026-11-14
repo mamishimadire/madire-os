@@ -35,6 +35,14 @@ bool console_active(void);
  * wait and is not typed. */
 void console_handle_key(const struct key_event *e);
 
+/* 1.5 stage 7 (docs/plans/1.5.md, C8): the mouse wheel over the Console
+ * window (desktop_take_wheel): `notches` up (negative, away from the user)
+ * or down move the scrollback SB_WHEEL_LINES lines a notch, with the same
+ * view, indicator and log lines as Shift+PgUp/PgDn's pages, and at the
+ * same times (not while a program, "sleep", "cat", "cp" or "presskey"
+ * has the keys). */
+void console_wheel(int32_t notches);
+
 /* 0.11: called from the idle loop (thread 0) on every pass: collects the
  * foreground program once it has ended (its end line, then the prompt)
  * and any background program that has ended (its end line in the serial

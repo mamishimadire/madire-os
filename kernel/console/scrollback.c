@@ -66,6 +66,35 @@ enum sb_move sb_page_down(struct scrollback *s)
     return SB_MOVED;
 }
 
+enum sb_move sb_lines_up(struct scrollback *s, uint32_t n)
+{
+    if (s->count == 0)
+        return SB_EMPTY;
+    if (n == 0)
+        return SB_UNCHANGED;
+    if (!s->scrolled) {
+        s->top = s->count >= n ? s->count - n : 0;
+        s->scrolled = true;
+        return SB_MOVED;
+    }
+    if (s->top == 0)
+        return SB_UNCHANGED;
+    s->top = s->top >= n ? s->top - n : 0;
+    return SB_MOVED;
+}
+
+enum sb_move sb_lines_down(struct scrollback *s, uint32_t n)
+{
+    if (!s->scrolled || n == 0)
+        return SB_UNCHANGED;
+    s->top = s->count - s->top > n ? s->top + n : s->count;
+    if (s->top >= s->count) {
+        s->top = 0;
+        s->scrolled = false;            /* reached the live screen */
+    }
+    return SB_MOVED;
+}
+
 bool sb_to_bottom(struct scrollback *s)
 {
     bool was = s->scrolled;

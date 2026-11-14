@@ -33,4 +33,20 @@
 enum ext2_disk_save power_save(uint64_t clicked);
 void power_off(void) __attribute__((noreturn));
 
+/*
+ * 1.5 stage 7, test=poweroffwait (a test option, not in the diagnostics'
+ * chain, so it combines with test=blkslow=<ms>; Disk mode): before System
+ * ready a kernel thread "pw-waiter" starts that makes a file call (a
+ * lookup of "/" through fd_vfs_acquire, which in Disk mode takes the disk
+ * lock first) every tick, for ever; and acpi_test_stay_on() (acpi.h). On
+ * Shut down, before the fallback screen, one line:
+ *   "Power test (test=poweroffwait): since Shut down began the waiter
+ *    (thread T) began B file calls and finished F; other threads' waits
+ *    for the disk lock: Y yields; the waiter waits for it now: yes|no
+ *    (thread state S)"
+ * Without a mounted disk: "Power test (test=poweroffwait): FAILED (no
+ * disk mounted)" and no thread.
+ */
+void power_test_start(void);
+
 #endif

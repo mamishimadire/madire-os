@@ -106,9 +106,28 @@ static bool give_up(struct mouse_start *r, const char *why)
     return false;
 }
 
+/* 1.5 stage 7 (C8): the wheel's line, after the start's: ID 3, another
+ * ID, or no ID (the step that failed); then what else the probe noted. */
+static void log_wheel(const struct mouse_wheel *w)
+{
+    if (w->wheel)
+        klogf("Mouse: IntelliMouse wheel (ID %u)\n", w->id);
+    else if (w->have_id)
+        klogf("Mouse: standard 3-byte packets (ID %u)\n", w->id);
+    else if (w->timed_out)
+        klogf("Mouse: standard 3-byte packets (ID not read: 0x%02x got no reply)\n", w->failed_byte);
+    else
+        klogf("Mouse: standard 3-byte packets (ID not read: 0x%02x got reply 0x%02x)\n", w->failed_byte, w->reply);
+    if (w->stray)
+        klogf("Mouse: %u motion bytes dropped before the wheel probe\n", w->stray);
+    if (w->rate_failed)
+        klogf("Mouse: the sample rate was not set back to %u after the wheel probe\n", MOUSE_RATE_DEFAULT);
+}
+
 bool mouse_init(void)
 {
     struct mouse_start r;
+    struct mouse_wheel w;
     char why[80];
     mouse_queue_init(&queue);
     mouse_decoder_init(&decoder);
@@ -117,6 +136,12 @@ bool mouse_init(void)
     pic_mask(IRQ_KEYBOARD);             /* the replies are read here, not by IRQ1 */
     if (!mouse_start(&hw, &r))
         return give_up(&r, step_str(&r, why, sizeof(why)));
+    /* 1.5 stage 7: the wheel, still polled (IRQ1 and IRQ12 masked); the
+     * decoder knows the packet size before IRQ12 brings a byte. */
+    if (!mouse_wheel_start(&hw, &r, &w))
+        return give_up(&r, step_str(&r, why, sizeof(why)));
+    if (w.wheel)
+        mouse_decoder_wheel(&decoder);
     enum irq_result reg = irq_register(IRQ_MOUSE, mouse_irq);
     if (reg != IRQ_OK)
         return give_up(&r, irq_result_str(reg));
@@ -125,6 +150,7 @@ bool mouse_init(void)
         return give_up(&r, step_str(&r, why, sizeof(why)));
     klogf("Mouse: PS/2 aux port enabled and tested, defaults set, reporting on; configuration 0x%02x -> 0x%02x "
           "(port 2 clock on, IRQ12 on)\n", r.config_before, r.config_after);
+    log_wheel(&w);
     if (r.dropped || r.skipped)
         klogf("Mouse: %u port 1 bytes dropped during the start\n", r.dropped + r.skipped);
 

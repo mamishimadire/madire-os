@@ -59,6 +59,13 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
 #       -Only power                                                 # the power probe
+#
+# 1.5 stage 7: the wheel group (Live mode, the resting "empty" disk): the
+# mouse wheel through IMouse.PutMouseEvent's dz over the Console window
+# (see the group below).
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\vbox-acceptance.ps1 -Iso <iso> -IsoSha256 <sha256> `
+#       -Only wheel                                                 # the wheel probe
 param(
     [string]$VM = "MadireOS-Test",
     [string]$VBoxManage = "",
@@ -68,7 +75,7 @@ param(
     [string]$ModuleIsoSha256 = "",      # 1.3 stage 9: checked before the run when given (module group only)
     [string]$OutDir = "",               # default: build\vbox-acceptance-<date>-<time> (1.3 stage 8: always a new folder)
     [string]$Prefix = "vbox",
-    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13, storageprobe (1.4 stage 4), power (1.5 stage 6), storage (1.4 stage 13)
+    [string[]]$Only = @(),              # menu, boot, graphics, desktop, procs, commands, reboot, scrollback, preempt, threadoverflow, pf, diag, diagmore, user, smx, memexhaust, module, shell, files, repeat, keywindow, risk13, storageprobe (1.4 stage 4), power (1.5 stage 6), wheel (1.5 stage 7), storage (1.4 stage 13)
     [string]$Python = "python",         # 1.2 stage 10b: makes the reference screens (standard library only)
     [int]$KeyDelayMs = 3500,            # keys no sooner than 3 s after power-on
     [int]$MenuHoldMs = 15000,           # 0.13: expected time to the boot menu (the wait for it allows 30 s more)
@@ -2047,6 +2054,74 @@ if (Want "power") {
     Absent "power" "It is now safe to turn off the computer"
     Absent "power" "PANIC"
     Absent "power" "FAILED"
+}
+
+# 1.5 stage 7: the wheel group, the owner-run wheel probe (docs/plans/1.5.md,
+# the S7 row, C8, G, H4 and risk 50; -Only wheel). Live mode on the resting
+# "empty" disk (nothing is copied or restored; the disk is not written in
+# Live mode). One normal boot (the default path: the desktop at System
+# ready): a key opens the Console window (not typed); "help" twice fills the
+# scrollback; one relative move (+1, 0) shows the pointer at (513, 384),
+# inside the Console window's body (tests/qemu-part-5.sh's wheel session
+# makes the same moves and proves that place); then IMouse.PutMouseEvent
+# with dz +1, +1, -1, -1, +1, +1, one second apart: whichever sign
+# VirtualBox sends as "up", the console scrolls back and later returns to
+# the bottom. Rows: the ID line; the first-notch line over the Console
+# window (dz reached the PS/2 mouse); at least two "console: scrolled back"
+# lines and a "console: back at the bottom" line after the second (the
+# scrollback moved both ways); no PANIC, FAILED or dropped byte. Report
+# only: the console's lines after each dz, which sign scrolled back, and a
+# "Mouse: standard 3-byte packets" line if VirtualBox's mouse gave another
+# ID. If dz never reaches the PS/2 mouse (risk 50: MadireOS-Test's USB
+# tablet), the rows say MISSING: the owner decides.
+if (Want "wheel") {
+    Start-Run
+    Wait-Serial "^Desktop: shown on " 60 | Out-Null
+    Start-Sleep -Seconds 2
+    Key 39 b9; Start-Sleep -Seconds 2       # a key opens the Console window (not typed)
+    TypeText "help"; Enter; Start-Sleep -Seconds 1
+    TypeText "help"; Enter; Start-Sleep -Seconds 2
+    $whSigns = @(1, 1, -1, -1, 1, 1)
+    $whCounts = @()
+    $client = New-Object -ComObject VirtualBox.VirtualBoxClient
+    $session = $client.Session
+    $client.VirtualBox.FindMachine($VM).LockMachine($session, 1)    # LockType_Shared: the console only, no setting
+    try {
+        $mouse = $session.Console.Mouse
+        $mouse.PutMouseEvent(1, 0, 0, 0, 0); Start-Sleep -Seconds 1     # the pointer at (513, 384)
+        Shot "wheel-before"
+        $i = 0
+        foreach ($dz in $whSigns) {
+            $i++
+            $mouse.PutMouseEvent(0, 0, $dz, 0, 0)
+            Start-Sleep -Seconds 1
+            $whCounts += @(Select-String -Path $serial -Pattern '^console: (scrolled back: line |back at the bottom$)' -CaseSensitive -ErrorAction SilentlyContinue).Count
+            Shot ("wheel-{0}" -f $i)
+        }
+    } finally { $session.UnlockMachine() }
+    Stop-Run "wheel" @("^Mouse: IntelliMouse wheel \(ID 3\)$",
+        "^Desktop: the wheel's first notch: [-+][0-9]+ at \(513, 384\), over the Console window$")
+    $whLog = Join-Path $OutDir "$Prefix-wheel.serial.log"
+    if (Test-Path $whLog) {
+        $whLines = @(Select-String -Path $whLog -Pattern '^console: (scrolled back: line |back at the bottom$)' -CaseSensitive | ForEach-Object { $_.Line })
+        $whScrolled = 0; $whBack = $false
+        foreach ($l in $whLines) {
+            if ($l -cmatch '^console: scrolled back: ') { $whScrolled++ }
+            elseif ($whScrolled -ge 2) { $whBack = $true }
+        }
+        Note ("{0,-16} {1,-8} /the wheel moved the scrollback both ways: {2} scrolled-back lines, a back-at-the-bottom line after the second: {3}/" -f
+              "wheel", $(if ($whScrolled -ge 2 -and $whBack) { "OK" } else { "MISSING" }), $whScrolled, $(if ($whBack) { "yes" } else { "no" }))
+        Note ("wheel (report only): console lines after each dz ({0}): {1}" -f ($whSigns -join ", "), ($whCounts -join ", "))
+        $up = if ($whCounts.Count -ge 1 -and $whCounts[0] -gt 0) { "+1" } elseif ($whCounts.Count -ge 3 -and $whCounts[2] -gt $whCounts[1]) { "-1" } else { "none" }
+        Note ("wheel (report only): the dz that scrolled back first: {0}" -f $up)
+        foreach ($l in $whLines) { Note "wheel (report only): $l" }
+        foreach ($l in @(Select-String -Path $whLog -Pattern '^(Mouse: |Desktop: the wheel)' -CaseSensitive | ForEach-Object { $_.Line })) {
+            Note "wheel (report only): $l"
+        }
+    }
+    Absent "wheel" "PANIC"
+    Absent "wheel" "FAILED"
+    Absent "wheel" "bytes dropped"
 }
 
 # 1.4 stage 13: the storage group (docs/plans/1.4.md, C13, G6; AGENTS.md

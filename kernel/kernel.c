@@ -38,6 +38,7 @@
 #include "kernel/fs/fsiotest.h"
 #include "kernel/fs/fstest.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/power/power.h"
 #include "kernel/proc/disklock.h"
 #include "kernel/proc/fd.h"
 #include "kernel/proc/fdtest.h"
@@ -872,6 +873,11 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
          * window: start the console, as a key that opens it does. */
         if (desktop_take_console() && !console_active())
             console_start(mem);
+        /* 1.5 stage 7 (C8): the wheel over the Console window scrolls the
+         * console's scrollback (3 lines a notch). */
+        int32_t notches = desktop_take_wheel();
+        if (notches)
+            console_wheel(notches);
         desktop_poll();                     /* 1.3 stage 3: the clock, then one composition */
 
         /* 1.1: the lights follow the lock keys; a change is logged only
@@ -1218,6 +1224,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     ext2_disk_home();
     boot_phase(PHASE_STORAGE_DONE);         /* 1.5 stage 3: the PCI scan, the disk's mount, the home folders */
     run_diagnostics();
+    /* 1.5 stage 7: test=poweroffwait (power.h), outside the diagnostics'
+     * chain, so test=blkslow=<ms> can come with it. */
+    if (cmdline_has("test=poweroffwait"))
+        power_test_start();
     boot_phase(PHASE_BOOT_DONE);            /* 1.5 stage 3: after the diagnostics */
     boot_phase_log();
     /* 1.0 stage 4: every process so far (the boot self-test's, a

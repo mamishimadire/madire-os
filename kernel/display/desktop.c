@@ -94,6 +94,11 @@ static struct ui_menus desk_menus;
 static uint16_t desk_menu_scratch[UI_ABOUT_SCRATCH];
 static bool desk_console_wanted;
 
+/* 1.5 stage 7 (C8): the wheel's notches over the Console window, kept for
+ * the idle loop (desktop_take_wheel); the boot's first notch logged once. */
+static int32_t desk_wheel_kept;
+static bool desk_wheel_seen;
+
 /* 1.3 stage 7b (report only, desktoplog): during a drag, the damage before
  * and after ui_damage_merge_overlaps (rectangles and pixels), and for each
  * key press passed to the console, the TSC cycles from its being taken out
@@ -875,14 +880,48 @@ void desktop_poll(void)
     compose();
 }
 
-void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down)
+void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down, bool middle_down)
 {
+    (void)middle_down;                  /* 1.5 stage 7: passed on; S8 (C4) uses it */
     if (!showing)
         return;
     ui_menus_pointer(&desk_menus, x, y, left_down, left_up, right_down);   /* 1.3 stage 5 */
     log_events();
     if (desk_menu_done() == UI_MENU_CONSOLE)
         desk_console_wanted = true;
+}
+
+void desktop_wheel(int32_t x, int32_t y, int32_t notches)
+{
+    if (!showing || notches == 0)
+        return;
+    struct ui_window *w = 0;
+    const char *why = 0;
+    if (desk_menus.menu_open || desk_menus.dlg_open)
+        why = "a menu or dialog is open";
+    else if (ui_wm_hit(&wm, x, y, &w) != UI_HIT_BODY || w != &console_win.w)
+        why = "not over the Console window";
+    char n[16];
+    ksnprintf(n, sizeof(n), "%c%u", notches < 0 ? '-' : '+', (uint32_t)(notches < 0 ? -notches : notches));
+    if (!desk_wheel_seen) {
+        desk_wheel_seen = true;
+        klogf("Desktop: the wheel's first notch: %s at (%d, %d), %s\n", n, x, y, why ? why : "over the Console window");
+    }
+    if (logging) {
+        if (why)
+            kserialf("desktop: wheel %s ignored (%s)\n", n, why);
+        else
+            kserialf("desktop: wheel %s over the Console window\n", n);
+    }
+    if (!why)
+        desk_wheel_kept += notches;
+}
+
+int32_t desktop_take_wheel(void)
+{
+    int32_t n = desk_wheel_kept;
+    desk_wheel_kept = 0;
+    return n;
 }
 
 bool desktop_take_console(void)

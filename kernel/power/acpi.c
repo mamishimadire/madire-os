@@ -18,6 +18,13 @@ typedef unsigned long long ull;
 #define ACPI_K_ENABLE_TICKS   (1u * TIMER_HZ)     /* C3 step 4: at most 1 s */
 #define ACPI_K_POWEROFF_TICKS (2u * TIMER_HZ)     /* C3 step 6: still running 2 s later */
 
+static bool acpi_k_stay_on;             /* 1.5 stage 7: test=poweroffwait */
+
+void acpi_test_stay_on(void)
+{
+    acpi_k_stay_on = true;
+}
+
 /* acpi_core.h's read: through the physical-access window, a page at a
  * time, below 4 GiB only (a table elsewhere cannot be read: its check
  * fails, never a fault). */
@@ -124,10 +131,15 @@ enum acpi_why acpi_power_off(void)
     } else {
         klogf("%sSCI_EN clear (no SMI_CMD or ACPI_ENABLE: not changed)\n", line);
     }
-    /* C3 step 5: the read-modify-write of PM1a_CNT, then PM1b_CNT. */
-    outw(in.pm1a_cnt, acpi_pm1_value(inw(in.pm1a_cnt), in.slp_typa));
-    if (in.pm1b_cnt)
-        outw(in.pm1b_cnt, acpi_pm1_value(inw(in.pm1b_cnt), in.slp_typb));
+    /* C3 step 5: the read-modify-write of PM1a_CNT, then PM1b_CNT (1.5
+     * stage 7: not under test=poweroffwait, so the wait below runs). */
+    if (acpi_k_stay_on) {
+        klogf("ACPI: test=poweroffwait: PM1a_CNT and PM1b_CNT not written (the computer stays on for the 2 s wait)\n");
+    } else {
+        outw(in.pm1a_cnt, acpi_pm1_value(inw(in.pm1a_cnt), in.slp_typa));
+        if (in.pm1b_cnt)
+            outw(in.pm1b_cnt, acpi_pm1_value(inw(in.pm1b_cnt), in.slp_typb));
+    }
     /* C3 step 6: still running 2 s later. */
     (void)diag_sleep(ACPI_K_POWEROFF_TICKS);
     return ACPI_NO_POWEROFF;

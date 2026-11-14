@@ -313,15 +313,47 @@ expect_line() {
     if grep -qxF -- "$2" "$1"; then pass "$3"; else fail "$3 (no line '$2' in $1)"; fi
 }
 # mouse_done_ok <log> <packets>: test=mouse's summary: every packet from
-# 3 bytes each, no bad byte, overflow or drop; IRQ12 delivered once per
-# byte read (plus at most one edge latched while it was masked, with
-# nothing waiting), never with a port 1 byte. Prints the figures.
+# its bytes (3 each; 1.5 stage 7: 4 each when the boot logged "Mouse:
+# IntelliMouse wheel (ID 3)"), no bad byte, overflow or drop; IRQ12
+# delivered once per byte read (plus at most one edge latched while it
+# was masked, with nothing waiting), never with a port 1 byte. Prints the
+# figures.
 mouse_done_ok() {
-    local d i b e
+    local d i b e per=3
+    grep -qxF "Mouse: IntelliMouse wheel (ID 3)" "$1" && per=4
     d=$(grep -E '^Mouse test: done: ' "$1" | head -n 1)
-    echo "      ${d:-no Mouse test: done line}"
-    read -r i b e <<< "$(sed -nE "s/^Mouse test: done: $2 packets from $(( $2 * 3 )) bytes \(0 bad bytes, 0 overflows, 0 dropped: queue full\); IRQ12 delivered ([0-9]+) times: ([0-9]+) bytes read, ([0-9]+) with nothing waiting, 0 with a port 1 byte$/\1 \2 \3/p" <<< "$d")"
-    [ -n "${e:-}" ] && [ "$b" -eq $(( $2 * 3 )) ] && [ "$e" -le 1 ] && [ "$i" -eq $(( b + e )) ]
+    echo "      ${d:-no Mouse test: done line} ($per bytes a packet)"
+    read -r i b e <<< "$(sed -nE "s/^Mouse test: done: $2 packets from $(( $2 * per )) bytes \(0 bad bytes, 0 overflows, 0 dropped: queue full\); IRQ12 delivered ([0-9]+) times: ([0-9]+) bytes read, ([0-9]+) with nothing waiting, 0 with a port 1 byte$/\1 \2 \3/p" <<< "$d")"
+    [ -n "${e:-}" ] && [ "$b" -eq $(( $2 * per )) ] && [ "$e" -le 1 ] && [ "$i" -eq $(( b + e )) ]
+}
+
+# ---- 1.5 stage 7: the mouse wheel (parts static and 5) ----
+
+# wheel_boot <log> <seconds> <qemu args> -- <qmp_wheel.py args...>: as
+# mouse_boot, with tests/qmp_wheel.py (QMP input-send-event's wheel-up and
+# wheel-down buttons; tests/qmp_keys.py unchanged, only imported). WB_OUT
+# holds its output (also kept in <log>.wheel.txt).
+QMPWHEEL=$(dirname "$0")/qmp_wheel.py
+MOUSE_WHEEL="Mouse: IntelliMouse wheel (ID 3)"
+wheel_boot() {
+    local log=$1 secs=$2 sock=$OUT/qmp-wheel.sock t0 qpid qargs=()
+    shift 2
+    while [ "$1" != "--" ]; do qargs+=("$1"); shift; done
+    shift
+    rm -f "$log" "$sock"
+    t0=$(date +%s%N)
+    timeout "$secs" qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M "${qargs[@]}" >/dev/null 2>&1 &
+    qpid=$!
+    WB_OUT=$(python3 "$QMPWHEEL" "$sock" "$log" "$@" --timeout $((secs - 15)) 2>&1)
+    grep -v '^MISMATCH ' <<< "$WB_OUT" | sed 's/^/      /'
+    grep '^MISMATCH ' <<< "$WB_OUT" | head -n 5 | sed 's/^/      /'
+    echo "$WB_OUT" > "${log%.log}.wheel.txt"
+    sleep 0.5
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+    boot_seconds "$log" "$t0"
 }
 
 # ---- 1.3 stage 3b: the desktop behind test=desktop (parts 2 and 3) ----

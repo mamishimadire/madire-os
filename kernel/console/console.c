@@ -1632,6 +1632,23 @@ bool console_active(void)
     return active;
 }
 
+/* 1.5 stage 7: the wheel's notches, as Shift+PgUp/PgDn's pages but by
+ * SB_WHEEL_LINES lines each (console.h); the same early returns as
+ * console_handle_key's before its scrollback keys. */
+void console_wheel(int32_t notches)
+{
+    if (!active || sleeping || catting || copying || awaiting_key || fg_pid || notches == 0)
+        return;
+    uint32_t lines = (notches < 0 ? (uint32_t)-notches : (uint32_t)notches) * SB_WHEEL_LINES;
+    enum sb_move m = notches < 0 ? sb_lines_up(&sb, lines) : sb_lines_down(&sb, lines);
+    if (m == SB_EMPTY)
+        klogf("console: scrollback is empty\n");
+    else if (m == SB_MOVED && sb_scrolled(&sb))
+        show_view();
+    else if (m == SB_MOVED)
+        show_bottom();                      /* the wheel down reached the live screen */
+}
+
 void console_handle_key(const struct key_event *e)
 {
     if (!active)

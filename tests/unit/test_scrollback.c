@@ -1,6 +1,7 @@
-/* Unit tests for kernel/console/scrollback.c (console scrollback, 0.9.2),
- * plus a check that the (unchanged) scancode decoder delivers Shift+PgUp
- * and Shift+PgDn as the console expects. */
+/* Unit tests for kernel/console/scrollback.c (console scrollback, 0.9.2;
+ * 1.5 stage 7: the mouse wheel's moves by lines), plus a check that the
+ * (unchanged) scancode decoder delivers Shift+PgUp and Shift+PgDn as the
+ * console expects. */
 #include <stdio.h>
 #include <string.h>
 #include "drivers/keyboard/scancode.h"
@@ -124,6 +125,66 @@ static void test_few_lines(void)
     CHECK_EQ(sb_page_up(&sb), SB_UNCHANGED);
     CHECK_EQ(sb_page_down(&sb), SB_MOVED);         /* 24 >= 3: back at the bottom */
     CHECK(!sb_scrolled(&sb));
+}
+
+/* 1.5 stage 7 (C8): the wheel's moves, SB_WHEEL_LINES (3) lines a notch. */
+static void test_wheel_lines(void)
+{
+    sb_init(&sb);
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_EMPTY);
+    CHECK_EQ(sb_lines_down(&sb, 3), SB_UNCHANGED);
+    push_lines(1, 100);
+    CHECK_EQ(SB_WHEEL_LINES, 3);
+    CHECK_EQ(sb_lines_up(&sb, 0), SB_UNCHANGED);
+    CHECK(!sb_scrolled(&sb));
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_MOVED);       /* the top 3 lines above the screen's first row */
+    CHECK(sb_scrolled(&sb));
+    CHECK_EQ(sb_first_shown(&sb), 98);
+    CHECK_EQ(sb_first_shown(&sb), sb_total(&sb) - 27);
+    struct sb_source src = sb_view_row(&sb, 3);    /* row 3: the live screen's first row */
+    CHECK(src.from_screen && src.index == 0);
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 95);
+    CHECK_EQ(sb_lines_up(&sb, 6), SB_MOVED);       /* two notches in one packet */
+    CHECK_EQ(sb_first_shown(&sb), 89);
+    CHECK_EQ(sb_lines_down(&sb, 0), SB_UNCHANGED);
+    CHECK_EQ(sb_lines_down(&sb, 3), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 92);
+    CHECK_EQ(sb_lines_down(&sb, 6), SB_MOVED);     /* top 97: still a kept line */
+    CHECK(sb_scrolled(&sb));
+    CHECK_EQ(sb_first_shown(&sb), 98);
+    CHECK_EQ(sb_lines_down(&sb, 3), SB_MOVED);     /* top 100: the live screen */
+    CHECK(!sb_scrolled(&sb));
+    CHECK_EQ(sb_first_shown(&sb), 101);
+    CHECK_EQ(sb_lines_down(&sb, 3), SB_UNCHANGED);
+    CHECK_EQ(sb_lines_down(&sb, 300), SB_UNCHANGED);
+
+    /* Stops at line 1; far down in one move returns to the bottom. */
+    CHECK_EQ(sb_lines_up(&sb, 99), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 2);
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 1);
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_UNCHANGED);
+    CHECK_EQ(sb_lines_down(&sb, 381), SB_MOVED);
+    CHECK(!sb_scrolled(&sb));
+
+    /* Fewer kept lines than a notch: up shows from line 1, down returns. */
+    sb_init(&sb);
+    push_lines(1, 2);
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 1);
+    CHECK_EQ(sb_lines_up(&sb, 3), SB_UNCHANGED);
+    CHECK_EQ(sb_lines_down(&sb, 3), SB_MOVED);
+    CHECK(!sb_scrolled(&sb));
+
+    /* A page and the wheel mix: Shift+PgUp, then a notch down. */
+    sb_init(&sb);
+    push_lines(1, 100);
+    CHECK_EQ(sb_page_up(&sb), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 77);
+    CHECK_EQ(sb_lines_down(&sb, 3), SB_MOVED);
+    CHECK_EQ(sb_first_shown(&sb), 80);
+    CHECK(sb_to_bottom(&sb));
 }
 
 static void test_view_rows(void)
@@ -318,6 +379,7 @@ int main(void)
     RUN(test_wrap_at_1000);
     RUN(test_paging);
     RUN(test_few_lines);
+    RUN(test_wheel_lines);
     RUN(test_view_rows);
     RUN(test_push_while_scrolled_when_full);
     RUN(test_indicator);

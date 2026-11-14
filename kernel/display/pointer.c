@@ -160,15 +160,19 @@ static void count_edges(uint8_t b, uint32_t *n)
 
 static void log_packet(uint32_t n, const struct mouse_event *e)
 {
-    char held[4], down[16], up[16], at[32];
+    char held[4], down[16], up[16], at[32], wheel[16];
     buttons_str(held, e->buttons);
     edge_str(down, sizeof(down), "pressed", e->pressed);
     edge_str(up, sizeof(up), "released", e->released);
     at[0] = 0;
     if (on_screen)
         ksnprintf(at, sizeof(at), " at (%d, %d)", px, py);
-    kserialf("mouse: packet %u: dx %c%u dy %c%u buttons %s%s%s%s%s\n", n, sign(e->dx), magnitude(e->dx),
-             sign(e->dy), magnitude(e->dy), held, down, up, e->overflow ? " overflow (motion dropped)" : "", at);
+    wheel[0] = 0;                       /* 1.5 stage 7: only a packet that moved the wheel says so */
+    if (e->wheel)
+        ksnprintf(wheel, sizeof(wheel), " wheel %c%u", sign(e->wheel), magnitude(e->wheel));
+    kserialf("mouse: packet %u: dx %c%u dy %c%u buttons %s%s%s%s%s%s\n", n, sign(e->dx), magnitude(e->dx),
+             sign(e->dy), magnitude(e->dy), held, down, up, wheel, e->overflow ? " overflow (motion dropped)" : "",
+             at);
 }
 
 uint32_t pointer_poll(void)
@@ -193,10 +197,16 @@ uint32_t pointer_poll(void)
             mouse_counts(&c);
             log_packet(c.packets, &e);
         }
-        /* 1.3 stage 4a: the desktop's windows (after the packet's line). */
-        if (on_screen)
+        /* 1.3 stage 4a: the desktop's windows (after the packet's line).
+         * 1.5 stage 7: the middle button's press passed on too, and the
+         * wheel's notches after the buttons. */
+        if (on_screen) {
             desktop_pointer(px, py, e.pressed & MOUSE_B0_LEFT, e.released & MOUSE_B0_LEFT,
-                            e.pressed & MOUSE_B0_RIGHT);        /* 1.3 stage 5: the right button too */
+                            e.pressed & MOUSE_B0_RIGHT,         /* 1.3 stage 5: the right button too */
+                            e.pressed & MOUSE_B0_MIDDLE);
+            if (e.wheel)
+                desktop_wheel(px, py, e.wheel);
+        }
     }
     if (taken && on_screen && thread_screen_allowed() && !panic_active) {
         draw_at(px, py);

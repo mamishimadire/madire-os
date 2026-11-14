@@ -3304,3 +3304,179 @@ else
     fail "[1.5] -machine acpi=off: the fallback screen not in the cell grid (screen-poweroff-acpioff.txt) or QEMU not running (still running: $PW_ALIVE)"
 fi
 echo "      [1.5] Shut down: $(( $(date +%s) - PW_T0 )) s (report only)"
+
+section "[1.5] The mouse wheel: test=mouse under QEMU -kernel, the IntelliMouse ID 3 and 4-byte packets (stage 7)"
+# docs/plans/1.5.md, C8, risks 50 and 51. After 1.2's start sequence the
+# driver turns reporting off, sets the sample rate to 200, 100 and 80, reads
+# the device ID (0xF2), sets the rate back to 100 and turns reporting on;
+# QEMU's PS/2 mouse answers ID 3 and sends 4-byte packets from then on, the
+# fourth byte the wheel (QEMU counts wheel-up as -1). Three packets through
+# tests/qmp_wheel.py (QMP input-send-event; wheel_boot, qemu-lib.sh): a
+# wheel-up notch, a move (+5, -3), two wheel-down notches in one packet;
+# each of the kernel's packet lines as predicted ("wheel -1", "wheel +2");
+# test=mouse's counts: 3 packets from 12 bytes. QEMU -kernel: no
+# framebuffer, no pointer.
+MW_T0=$(date +%s)
+MW_L=$OUT/serial-mouse-wheel.log
+WB_OUT=""
+wheel_boot "$MW_L" 120 -kernel "$KERNEL" -append "test=mouse" -- "wait:$MOUSE_READY" wheel:-1 move:5,-3 wheel:2 \
+    --until "System ready."
+grep -E "^Mouse|^mouse: packet " "$MW_L" | sed 's/^/      /'
+if START="$MOUSE_START" WHEEL="$MOUSE_WHEEL" MASK="$MOUSE_MASK" awk '
+        $0 == ENVIRON["START"] && !s { s = NR }
+        $0 == ENVIRON["WHEEL"] { w++; if (!wn) wn = NR }
+        $0 == ENVIRON["MASK"] && !m { m = NR }
+        /^Mouse: standard 3-byte packets / { std++ }
+        END { exit !(s && wn && m && s < wn && wn < m && w == 1 && !std) }' "$MW_L"; then
+    pass "[1.5] test=mouse under QEMU -kernel: '$MOUSE_WHEEL' logged once, after 1.2's start line (unchanged) and before the IRQ12 line; no 'standard 3-byte packets' line"
+else
+    fail "[1.5] test=mouse under QEMU -kernel: no '$MOUSE_WHEEL' line once between the start line and the IRQ12 line, or a 'standard 3-byte packets' line (see ${MW_L##*/})"
+fi
+if grep -qxF "PACKETS sent=3 exact=3" <<< "$WB_OUT" &&
+   grep -qxF "mouse: packet 1: dx +0 dy +0 buttons --- wheel -1" "$MW_L" &&
+   grep -qxF "mouse: packet 3: dx +0 dy +0 buttons --- wheel +2" "$MW_L"; then
+    pass "[1.5] test=mouse: a wheel-up notch ('wheel -1'), a move (+5, -3) and two wheel-down notches in one packet ('wheel +2') decoded exactly from 4-byte packets, in order"
+else
+    fail "[1.5] test=mouse: the wheel packets not decoded exactly ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_wheel)' <<< "$WB_OUT" | head -n 3 | tr '\n' ' '))"
+fi
+if mouse_done_ok "$MW_L" 3 && grep -qxF "Mouse test: motion dx +5 dy -3; pressed L 0 M 0 R 0, released L 0 M 0 R 0" "$MW_L" &&
+   grep -q "^System ready\." "$MW_L" && ! grep -q "FAILED" "$MW_L" && ! grep -qE "PANIC|MISMATCH" "$MW_L"; then
+    pass "[1.5] test=mouse: 3 packets from 12 bytes (4 each), IRQ12 once per byte, no bad byte, overflow or drop; the motion as injected; System ready, no FAILED status line, no panic"
+else
+    fail "[1.5] test=mouse: the counts are not 3 packets from 12 bytes through IRQ12, the motion differs, or no System ready, a FAILED status line or a panic (see ${MW_L##*/})"
+fi
+echo "      [1.5] the mouse wheel (static): $(( $(date +%s) - MW_T0 )) s (report only)"
+
+section "[1.5] Shut down in Disk mode while another thread waits for the disk lock: -machine acpi=off, and the 2 s wait with the ACPI tables (test=poweroffwait; stage 7)"
+# The S6 review's case (docs/plans/1.5.md, C3, C6b, D; the disk lock's
+# rules, kernel/proc/disklock.h). test=poweroffwait (kernel/power/power.h)
+# starts a kernel thread, "pw-waiter", that makes a file call every tick
+# (fd_vfs_acquire: in Disk mode the disk lock first), and leaves PM1a_CNT
+# and PM1b_CNT unwritten. Thread 0's Shut down ("poweroff -y", the same
+# path as the dialog's Shut down) takes the disk lock and keeps it; the
+# waiter then waits for it, yielding (thread 0, its holder, stays ready, so
+# no "can never take its turn" panic). Both boots: a marked read-write test
+# disk, a file written, then poweroff -y. (1-2) -machine acpi=off with
+# test=blkslow=20 (each disk write of the save waits 20 ms more, yielding
+# while it holds the disk lock, so the waiter runs during the save): no
+# ACPI tables, so the fallback screen comes at once after the save. (3-4)
+# ACPI on: the tables found and checked, PM1a_CNT not written, the 2 s
+# "still running?" wait (thread 0 yields: the waiter waits for the disk
+# lock during it), then the reason "the computer did not power off". Each:
+# the waiter's line before the fallback screen (it waits for the disk lock
+# now; other threads' waits since Shut down began above 0), the fallback
+# screen's two lines, no PANIC, FAILED or "can never take its turn" line,
+# QEMU still running 1 s later (halted, not powered off).
+PWW_T0=$(date +%s)
+PWW_W=$OUT/poweroffwait
+rm -rf "${PWW_W:?}" && mkdir -p "$PWW_W/tree"
+printf 'kept on the disk\n' > "$PWW_W/tree/note.txt"
+PWW_OK=1
+for pww_n in 1 2; do
+    disk_mkfs "$PWW_W/fs$pww_n.img" 16384 1024 256 2048 "$PWW_W/tree" > "$PWW_W/mkfs$pww_n.txt" 2>&1 &&
+        disk_image mbr "$PWW_W/fs$pww_n.img" "$PWW_W/disk$pww_n.img" > /dev/null 2>&1 || PWW_OK=0
+done
+# pww_boot <log> <disk image> <qemu args...>: the boot with the disk; the
+# keys after System ready; returns once the fallback screen's second line
+# is logged (at most 60 s after the keys). PWW_ALIVE: yes if QEMU still ran
+# 1 s after it; PWW_GAP: the host's seconds from the first line matching
+# PWW_FROM to the fallback's second line (report only).
+pww_boot() {
+    local log=$1 img=$2 sock=$OUT/qmp-pww.sock qpid out i t1=""
+    shift 2
+    rm -f "$log" "$sock"
+    timeout 150 qemu-system-x86_64 -display none -no-reboot -serial file:"$log" \
+        -qmp unix:"$sock",server=on,wait=off -m 128M -kernel "$KERNEL" "$@" \
+        -drive file="$img",if=none,id=pww-disk,format=raw -device ich9-ahci,id=pww-ahci,addr=0x5 \
+        -device ide-hd,drive=pww-disk,bus=pww-ahci.0 >/dev/null 2>&1 &
+    qpid=$!
+    out=$(python3 "$QMPKEYS" "$sock" "$log" "System ready." \
+          --text "x{wait:1}echo pw-wait > /home/pw.txt{ret}{wait:1}poweroff -y{ret}" --gap 0.05 2>&1)
+    echo "$out" | sed 's/^/      /'
+    case "$out" in *ERROR*) fail "[1.5] key injection into ${log##*/}" ;; esac
+    PWW_GAP=none
+    for i in $(seq 1 600); do
+        [ -z "$t1" ] && grep -qE "$PWW_FROM" "$log" 2>/dev/null && t1=$(date +%s%N)
+        grep -q '^Madire OS could not power off by itself' "$log" 2>/dev/null && break
+        sleep 0.1
+    done
+    [ -n "$t1" ] && PWW_GAP=$(( ($(date +%s%N) - t1) / 100000000 )) && PWW_GAP="$((PWW_GAP / 10)).$((PWW_GAP % 10))"
+    sleep 1
+    if kill -0 "$qpid" 2>/dev/null; then PWW_ALIVE=yes; else PWW_ALIVE=no; fi
+    kill "$qpid" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    [ -f "$log" ] || : > "$log"
+}
+pww_lines() { grep -E '^(console: power-off|Power: |Power test|ACPI: |ext2: save before power-off|Saving files)|safe to turn off|could not power off|never take its turn|PANIC' "$1" | sed "s/^/      $2: /"; }
+# pww_waiter_ok <log>: the waiter started, and its line on Shut down says
+# it waits for the disk lock now, with other threads' waits above 0.
+PWW_WAITER='^Power test \(test=poweroffwait\): since Shut down began the waiter \(thread [0-9]+\) began ([0-9]+) file calls and finished [0-9]+; other threads'"'"' waits for the disk lock: ([0-9]+) yields; the waiter waits for it now: yes \(thread state (ready|running)\)$'
+pww_waiter_ok() {
+    local b y
+    grep -qE '^Power test \(test=poweroffwait\): the waiter thread started \(thread [0-9]+\): a file call every tick; the ACPI power-off will not write PM1a_CNT or PM1b_CNT$' "$1" || return 1
+    read -r b y <<< "$(sed -nE "s/$PWW_WAITER/\\1 \\2/p" "$1" | head -n 1)"
+    [ -n "${y:-}" ] && [ "$b" -ge 1 ] && [ "$y" -ge 1 ]
+}
+
+# (1-2) -machine acpi=off, test=blkslow=20.
+PWW_L1=$OUT/serial-poweroffwait-acpioff.log
+if [ "$PWW_OK" -eq 1 ]; then
+    PWW_FROM='^Power: shutting down \(Disk mode\)$'
+    pww_boot "$PWW_L1" "$PWW_W/disk1.img" -machine acpi=off -append "test=blkslow=20 test=poweroffwait"
+else : > "$PWW_L1"; PWW_ALIVE=no; PWW_GAP=none; fi
+pww_lines "$PWW_L1" acpi=off
+echo "      acpi=off: blkslow lines during the save: $(grep -cE "^blk: test=blkslow: thread 0 " "$PWW_L1"); from 'Power: shutting down' to the fallback: ${PWW_GAP} s (host, report only); QEMU still running 1 s after the fallback: $PWW_ALIVE"
+if [ "$PWW_OK" -eq 1 ] && RE="$PWW_WAITER" awk '
+        $0 == "console: power-off confirmed (-y)" && !c { c = NR }
+        $0 == "Power: shutting down (Disk mode)" && c && !p { p = NR }
+        /^ext2: save before power-off: done in [0-9]+ ms / { if (p && !sv) sv = NR }
+        /^ACPI: no ACPI tables found \(/ { a++; if (sv && !an) an = NR }
+        $0 ~ ENVIRON["RE"] { if (an && !w) w = NR }
+        END { exit !(c && p && sv && an && w && c < p && p < sv && sv < an && an < w && a == 1) }' "$PWW_L1" &&
+   pww_waiter_ok "$PWW_L1"; then
+    pass "[1.5] Shut down in Disk mode, -machine acpi=off, a waiter on the disk lock (test=blkslow=20 test=poweroffwait): 'Power: shutting down (Disk mode)', the save before power-off done, 'ACPI: no ACPI tables found (...)', then the waiter's line: it waits for the disk lock now, other threads' waits since Shut down began above 0"
+else
+    fail "[1.5] Shut down in Disk mode, -machine acpi=off, a waiter on the disk lock: the lines not in order, the save not done, or the waiter not waiting for the disk lock (see ${PWW_L1##*/})"
+fi
+if SAFE="$PW_SAFE" awk '
+        /^Power test \(test=poweroffwait\): since Shut down began / && !w { w = NR }
+        $0 == ENVIRON["SAFE"] && w && !s { s = NR }
+        $0 == "Madire OS could not power off by itself (no ACPI tables found)." && s && !r { r = NR }
+        END { exit !(w && s && r) }' "$PWW_L1" && [ "$PWW_ALIVE" = yes ] &&
+   ! grep -qE 'PANIC|FAILED|never take its turn' "$PWW_L1"; then
+    pass "[1.5] Shut down in Disk mode, -machine acpi=off, a waiter on the disk lock: after the waiter's line the fallback screen's two lines ('$PW_SAFE', 'Madire OS could not power off by itself (no ACPI tables found).'); no PANIC, FAILED or 'can never take its turn' line; QEMU still running 1 s later (halted, not powered off)"
+else
+    fail "[1.5] Shut down in Disk mode, -machine acpi=off, a waiter on the disk lock: no fallback screen after the waiter's line, a PANIC, FAILED or 'can never take its turn' line, or QEMU not running (still running: $PWW_ALIVE)"
+fi
+
+# (3-4) ACPI on: the 2 s wait.
+PWW_L2=$OUT/serial-poweroffwait-acpi.log
+if [ "$PWW_OK" -eq 1 ]; then
+    PWW_FROM='^ACPI: test=poweroffwait: '
+    pww_boot "$PWW_L2" "$PWW_W/disk2.img" -append "test=poweroffwait"
+else : > "$PWW_L2"; PWW_ALIVE=no; PWW_GAP=none; fi
+pww_lines "$PWW_L2" acpi
+echo "      acpi: from the 'ACPI: test=poweroffwait' line to the fallback: ${PWW_GAP} s (host; the kernel's wait is 2 s; report only); QEMU still running 1 s after the fallback: $PWW_ALIVE"
+if [ "$PWW_OK" -eq 1 ] && RE="$PW_ACPI" W="$PWW_WAITER" awk '
+        $0 == "Power: shutting down (Disk mode)" && !p { p = NR }
+        /^ext2: save before power-off: done in [0-9]+ ms / { if (p && !sv) sv = NR }
+        $0 ~ ENVIRON["RE"] { a++; if (sv && !an) an = NR }
+        $0 == "ACPI: test=poweroffwait: PM1a_CNT and PM1b_CNT not written (the computer stays on for the 2 s wait)" { t++; if (an && !tn) tn = NR }
+        $0 ~ ENVIRON["W"] { if (tn && !w) w = NR }
+        END { exit !(p && sv && an && tn && w && p < sv && sv < an && an < tn && tn < w && a == 1 && t == 1) }' "$PWW_L2" &&
+   pww_waiter_ok "$PWW_L2"; then
+    pass "[1.5] Shut down's 2 s wait in Disk mode with the ACPI tables (test=poweroffwait): the save done, one ACPI: line (the tables, _S5, PM1a_CNT, SCI_EN), 'ACPI: test=poweroffwait: PM1a_CNT and PM1b_CNT not written ...', then after the wait the waiter's line: it waits for the disk lock now, other threads' waits since Shut down began above 0"
+else
+    fail "[1.5] Shut down's 2 s wait with the ACPI tables: the lines not in order and once, or the waiter not waiting for the disk lock (see ${PWW_L2##*/})"
+fi
+if SAFE="$PW_SAFE" awk '
+        /^Power test \(test=poweroffwait\): since Shut down began / && !w { w = NR }
+        $0 == ENVIRON["SAFE"] && w && !s { s = NR }
+        $0 == "Madire OS could not power off by itself (the computer did not power off)." && s && !r { r = NR }
+        END { exit !(w && s && r) }' "$PWW_L2" && [ "$PWW_ALIVE" = yes ] &&
+   ! grep -qE 'PANIC|FAILED|never take its turn' "$PWW_L2"; then
+    pass "[1.5] Shut down's 2 s wait with the ACPI tables: after the waiter's line the fallback screen's two lines ('$PW_SAFE', 'Madire OS could not power off by itself (the computer did not power off).'); no PANIC, FAILED or 'can never take its turn' line; QEMU still running 1 s later (halted, not powered off)"
+else
+    fail "[1.5] Shut down's 2 s wait with the ACPI tables: no fallback screen after the waiter's line, a PANIC, FAILED or 'can never take its turn' line, or QEMU not running (still running: $PWW_ALIVE)"
+fi
+echo "      [1.5] Shut down with a waiter: $(( $(date +%s) - PWW_T0 )) s (report only)"

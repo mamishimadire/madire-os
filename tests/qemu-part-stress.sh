@@ -318,10 +318,11 @@ echo "$row"
 section "[stress] The mouse burst: 1000 packets under test=mouse (1.2 stage 7)"
 # tests/qmp_mouse.py's burst: 1000 moves (every 25th also a left button
 # change), sent as fast as the kernel decodes them with never more than 4
-# waiting (the PS/2 device's own queue holds 5, so it never merges two);
-# each of the kernel's 1000 packet lines must be the predicted one, in
-# order, and test=mouse's counts must show every byte through IRQ12 and
-# none dropped. QEMU -kernel: no framebuffer, no pointer.
+# waiting (the PS/2 device's own queue holds 5 3-byte packets, and 4 of
+# the 4-byte packets the wheel's ID 3 brings since 1.5 stage 7, so it
+# never merges two); each of the kernel's 1000 packet lines must be the
+# predicted one, in order, and test=mouse's counts must show every byte
+# through IRQ12 and none dropped. QEMU -kernel: no framebuffer, no pointer.
 LOG=$OUT/serial-mouse-burst.log
 MB_OUT=""
 mouse_boot "$LOG" 300 -kernel "$KERNEL" -append "test=mouse" -- "wait:$MOUSE_READY" burst:1000 --until "System ready."
@@ -331,9 +332,9 @@ else
     fail "[stress] mouse burst: not every packet decoded exactly ($(grep -E '^(BURST|PACKETS|MISMATCH|WAIT|qmp_mouse)' <<< "$MB_OUT" | head -n 3 | tr '\n' ' '))"
 fi
 if mouse_done_ok "$LOG" 1000 && grep -q "^System ready\." "$LOG" && ! grep -qE "PANIC|FAILED" "$LOG"; then
-    pass "[stress] mouse burst: test=mouse counted 1000 packets from 3000 bytes, IRQ12 once per byte, 0 bad bytes, overflows or drops; System ready, no panic"
+    pass "[stress] mouse burst: test=mouse counted 1000 packets from 4000 bytes (4-byte packets since the wheel's ID 3, 1.5 stage 7), IRQ12 once per byte, 0 bad bytes, overflows or drops; System ready, no panic"
 else
-    fail "[stress] mouse burst: the counts are not 1000 packets from 3000 bytes through IRQ12, or no System ready, or a panic (see $LOG)"
+    fail "[stress] mouse burst: the counts are not 1000 packets from 4000 bytes through IRQ12, or no System ready, or a panic (see $LOG)"
 fi
 
 section "[stress] The drag burst: 1000 packets dragging the About window (test=desktop desktopabout, 1024x768x32; 1.3 stage 4b)"

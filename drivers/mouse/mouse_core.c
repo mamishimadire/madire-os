@@ -25,13 +25,12 @@ static bool write_config(const struct i8042_bus *bus, uint8_t cfg)
     return i8042_send_command(bus, MOUSE_CTL_WRITE_CONFIG) && i8042_send_data(bus, cfg);
 }
 
-/* A mouse command and its reply: the next port 2 byte, within one wait.
- * Port 1 bytes on the way (port 1 is off, so only one already in the
- * controller) are dropped and counted. */
-static bool aux_command(const struct i8042_bus *bus, struct mouse_start *r, uint8_t cmd, uint8_t *reply)
+/* The next port 2 byte, within one wait. Port 1 bytes on the way (port 1
+ * is off, so only one already in the controller) are dropped and counted.
+ * (1.5 stage 7: aux_command's wait on its own, for Get Device ID's second
+ * byte.) */
+static bool aux_reply(const struct i8042_bus *bus, struct mouse_start *r, uint8_t *reply)
 {
-    if (!i8042_send_command(bus, MOUSE_CTL_WRITE_AUX) || !i8042_send_data(bus, cmd))
-        return false;
     struct i8042_wait w;
     i8042_wait_begin(bus, &w);
     for (uint32_t i = 0; i < MOUSE_REPLY_LIMIT; i++) {
@@ -46,6 +45,14 @@ static bool aux_command(const struct i8042_bus *bus, struct mouse_start *r, uint
         r->skipped++;
     }
     return false;
+}
+
+/* A mouse command and its reply: the next port 2 byte, within one wait. */
+static bool aux_command(const struct i8042_bus *bus, struct mouse_start *r, uint8_t cmd, uint8_t *reply)
+{
+    if (!i8042_send_command(bus, MOUSE_CTL_WRITE_AUX) || !i8042_send_data(bus, cmd))
+        return false;
+    return aux_reply(bus, r, reply);
 }
 
 static bool fail(struct mouse_start *r, enum mouse_start_step step, bool timed_out, uint8_t reply)
@@ -120,6 +127,79 @@ bool mouse_start(const struct i8042_bus *bus, struct mouse_start *r)
            acknowledged(bus, r, MOUSE_DEV_SET_DEFAULTS, MOUSE_START_DEFAULTS) &&
            !inject(r, 5, MOUSE_START_REPORTING) &&
            acknowledged(bus, r, MOUSE_DEV_ENABLE_REPORTING, MOUSE_START_REPORTING);
+}
+
+/* ---- 1.5 stage 7 (C8): the IntelliMouse wheel ---- */
+
+/* A step of the knock that failed: the byte, and no reply or the reply. */
+static bool wheel_failed(struct mouse_wheel *w, uint8_t byte, bool timed_out, uint8_t reply)
+{
+    w->failed = true;
+    w->failed_byte = byte;
+    w->timed_out = timed_out;
+    w->reply = reply;
+    return false;
+}
+
+/* One byte to the mouse (a command or a rate), acknowledged. */
+static bool wheel_ack(const struct i8042_bus *bus, struct mouse_start *r, struct mouse_wheel *w, uint8_t byte)
+{
+    uint8_t reply = 0;
+    if (!aux_command(bus, r, byte, &reply))
+        return wheel_failed(w, byte, true, 0);
+    if (reply != MOUSE_DEV_ACK)
+        return wheel_failed(w, byte, false, reply);
+    return true;
+}
+
+/* Reporting off: with reporting on, motion bytes may come before the ACK;
+ * they are dropped and counted (at most MOUSE_STRAY_LIMIT). A resend or
+ * error answer ends it at once (with that reply). */
+static bool wheel_quiet(const struct i8042_bus *bus, struct mouse_start *r, struct mouse_wheel *w)
+{
+    uint8_t reply = 0;
+    if (!aux_command(bus, r, MOUSE_DEV_DISABLE_REPORTING, &reply))
+        return wheel_failed(w, MOUSE_DEV_DISABLE_REPORTING, true, 0);
+    while (reply != MOUSE_DEV_ACK && reply != MOUSE_DEV_RESEND && reply != MOUSE_DEV_ERROR &&
+           w->stray < MOUSE_STRAY_LIMIT) {
+        w->stray++;
+        if (!aux_reply(bus, r, &reply))
+            return wheel_failed(w, MOUSE_DEV_DISABLE_REPORTING, true, 0);
+    }
+    if (reply != MOUSE_DEV_ACK)
+        return wheel_failed(w, MOUSE_DEV_DISABLE_REPORTING, false, reply);
+    return true;
+}
+
+bool mouse_wheel_start(const struct i8042_bus *bus, struct mouse_start *r, struct mouse_wheel *w)
+{
+    static const uint8_t knock[] = {
+        MOUSE_DEV_SET_RATE, 200, MOUSE_DEV_SET_RATE, 100, MOUSE_DEV_SET_RATE, 80,
+    };
+    *w = (struct mouse_wheel){ 0 };
+    bool quiet = wheel_quiet(bus, r, w);
+    bool ok = quiet;
+    for (uint32_t i = 0; ok && i < sizeof(knock); i++)
+        ok = wheel_ack(bus, r, w, knock[i]);
+    if (ok && wheel_ack(bus, r, w, MOUSE_DEV_GET_ID)) {
+        uint8_t id = 0;
+        if (aux_reply(bus, r, &id)) {
+            w->have_id = true;
+            w->id = id;
+            w->wheel = id == MOUSE_ID_WHEEL;
+        } else {
+            wheel_failed(w, MOUSE_DEV_GET_ID, true, 0);
+        }
+    }
+    /* The rate back to the defaults' (the knock left it at 80, or less
+     * far if it stopped early), with its own failure. */
+    if (quiet) {
+        uint8_t reply = 0;
+        bool back = aux_command(bus, r, MOUSE_DEV_SET_RATE, &reply) && reply == MOUSE_DEV_ACK &&
+                    aux_command(bus, r, MOUSE_RATE_DEFAULT, &reply) && reply == MOUSE_DEV_ACK;
+        w->rate_failed = !back;
+    }
+    return acknowledged(bus, r, MOUSE_DEV_ENABLE_REPORTING, MOUSE_START_REPORTING);
 }
 
 bool mouse_enable_irq(const struct i8042_bus *bus, struct mouse_start *r)
@@ -210,6 +290,12 @@ void mouse_decoder_init(struct mouse_decoder *d)
     *d = (struct mouse_decoder){ 0 };
 }
 
+void mouse_decoder_wheel(struct mouse_decoder *d)
+{
+    d->wheel = true;
+    d->have = 0;
+}
+
 bool mouse_decode(struct mouse_decoder *d, uint8_t byte, struct mouse_event *out)
 {
     if (d->have == 0 && !(byte & MOUSE_B0_ALWAYS)) {
@@ -217,7 +303,7 @@ bool mouse_decode(struct mouse_decoder *d, uint8_t byte, struct mouse_event *out
         return false;
     }
     d->bytes[d->have++] = byte;
-    if (d->have < 3)
+    if (d->have < (d->wheel ? 4u : 3u))
         return false;
     d->have = 0;
 
@@ -232,6 +318,7 @@ bool mouse_decode(struct mouse_decoder *d, uint8_t byte, struct mouse_event *out
     }
     out->dx = dx;
     out->dy = -dy;                      /* the mouse counts up, the screen down */
+    out->wheel = d->wheel ? (int32_t)d->bytes[3] - ((d->bytes[3] & 0x80) ? 256 : 0) : 0;
     out->buttons = b0 & MOUSE_BUTTONS;
     out->pressed = out->buttons & (uint8_t)~d->buttons;
     out->released = d->buttons & (uint8_t)~out->buttons;
