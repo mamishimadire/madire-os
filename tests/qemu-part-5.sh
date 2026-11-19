@@ -1124,7 +1124,8 @@ else
     fail "[1.5] window management: the Alt+Tab ring: $(grep -E '^(WSCREEN 7|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
 fi
 if grep -qxF "madire> echo tab-ok" "$W8P_L" && grep -qxF "tab-ok" "$W8P_L" &&
-   ! sed -n '/^desktop: switch: Console chosen (Alt released)$/,$p' "$W8P_L" | grep -q "^desktop: switch:"; then
+   grep -qxF "desktop: switch: Console chosen (Alt released)" "$W8P_L" &&
+   ! sed '0,/^desktop: switch: Console chosen (Alt released)$/d' "$W8P_L" | grep -q "^desktop: switch:"; then
     pass "[1.5] window management: plain Tab still reaches the focused Console window: \"ech\" Tab completes to \"echo \" (madire> echo tab-ok, then tab-ok); no switch line after it"
 else
     fail "[1.5] window management: plain Tab in the Console window did not complete, or a switch line followed it (see ${W8P_L##*/})"
