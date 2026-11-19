@@ -525,7 +525,7 @@ desktop_case() {
 # includes its lines).
 desktop_about_case() {
     local name=$1 mode=$2 pct=$3 label=$4 extra=${5:-} log w h s mb ok d1 d2 pt
-    local ax ay gx gy ww wh bar left
+    local ax ay gx gy ww wh bar left right
     w=${mode%%x*}; h=${mode#*x}; h=${h%%x*}; s=$((pct / 25))
     # Boot 1: surfaces.
     log=$OUT/serial-desktop-about-$name.log
@@ -533,7 +533,7 @@ desktop_about_case() {
     DT_OUT=""
     if [ -n "$DT_ISO" ]; then
         DT_UNTIL="" desktop_boot "$log" "$DT_ISO" "${w}x${h}" wshot rel:-1000,-1000 to:title drag:-120,-60 wshot \
-            to:title-right drag:-2000,1000 wshot to:close wshot press wshot release wshot --about
+            to:title@About drag:2000,1000 wshot to:title@About drag:-400,0 to:close wshot press wshot release wshot --about
     else : > "$log"; fi
     grep -E "^Desktop|^desktop: (about|open|drag|close|focus)" "$log" | head -n 24 | sed 's/^/      /'
     mb=$(sed -nE 's/^Memory: [0-9]+ MB detected, ([0-9]+) MB usable below 4 GiB, .*/\1/p' "$log" | head -n 1)
@@ -569,14 +569,18 @@ desktop_about_case() {
     ok=0
     if [ -n "$d2" ]; then
         read -r ax ay gx gy ww wh bar left <<< "$d2"
-        if [ $((ay + wh)) -gt "$bar" ] && [ $((gy + wh)) -eq "$bar" ] && [ "$ax" -lt "$left" ] && [ "$gx" -eq "$left" ] &&
-           [ "$left" -eq $(( (48 * s + 2) / 4 - ww )) ] && grep -qxF "desktop: drag About to ($gx, $gy) ${ww}x${wh}" "$log" &&
+        # 1.5 stage 8: the right edge (the title-bar buttons leave no title
+        # point far enough right to reach the left clamp; test_place_clamp
+        # keeps the left one): 48 dp of the window on the screen at the right.
+        right=$((w - (48 * s + 2) / 4))
+        if [ $((ay + wh)) -gt "$bar" ] && [ $((gy + wh)) -eq "$bar" ] && [ "$ax" -gt "$right" ] && [ "$gx" -eq "$right" ] &&
+           grep -qxF "desktop: drag About to ($gx, $gy) ${ww}x${wh}" "$log" &&
            grep -qE "^WSCREEN 3 size=${w}x${h} differ=0 " <<< "$DT_OUT"; then
             ok=1
         fi
     fi
     if [ "$ok" = 1 ]; then
-        pass "[1.3] $label: a drag that asks to go under the taskbar and past the left edge is clamped (its bottom on the taskbar's top, 48 dp left on the screen; logged as predicted: ($gx, $gy)); the screen equals the reference"
+        pass "[1.3] $label: a drag that asks to go under the taskbar and past the right edge is clamped (its bottom on the taskbar's top, 48 dp left on the screen; logged as predicted: ($gx, $gy)); the screen equals the reference"
     else
         fail "[1.3] $label: the clamped drag: $(grep -E '^(DRAG 2|WSCREEN 3|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
     fi

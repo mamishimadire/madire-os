@@ -3483,8 +3483,9 @@ echo "      [1.5] Shut down with a waiter: $(( $(date +%s) - PWW_T0 )) s (report
 
 section "[1.5] The title-bar buttons, a maximised window and the taskbar's window buttons against tests/desktop_ref.py, and their contrast check (stage 8)"
 # docs/plans/1.5.md, C4; kernel/display/ui_window.h. The host tool
-# (build/desktopdump) draws, painted in tiles of 97 x 61 (the exposure
-# path): chrome (the Console window with its minimise button, an About
+# (build/desktopdump) draws, each window painted whole (as the traced 1.3
+# window scenes: the colour pairs are recorded from a button's centre
+# whatever the clip): chrome (the Console window with its minimise button, an About
 # window over it with minimise and maximise, every button normal);
 # chrome_hover (About's minimise on hover, its maximise pressed, the
 # Console window's minimise on hover); chrome_max (an About window alone,

@@ -588,9 +588,11 @@ static int scene_console(struct surface *s, const struct fbcon_layout *cl, int k
  * normal; 1 chrome_hover: the About window's minimise button on hover, its
  * maximise button pressed, the Console window's minimise on hover; 2
  * chrome_max: an About window alone, maximised (the restore icon; its
- * content in its own size, centred across). Painted in tiles of 97 x 61
- * from (-7, -13) (the exposure path; each pixel the same whatever the
- * clip). */
+ * content in its own size, centred across). Each window painted whole, in
+ * one pass, as the traced 1.3 window scenes (the colour pairs are recorded
+ * from a button's centre whatever the clip, so tiles would record pixels
+ * not yet painted or already painted; the exposure path is proven by
+ * windows_exposed and console_exposed). */
 static int scene_chrome(struct surface *s, const struct fbcon_layout *cl, int variant)
 {
     struct desktop_layout l;
@@ -633,15 +635,12 @@ static int scene_chrome(struct surface *s, const struct fbcon_layout *cl, int va
     } else if (variant == 2) {
         ui_wm_toggle_maximise(&wm, a);
     }
-    for (int32_t y = -13; y < (int32_t)s->height; y += 61)
-        for (int32_t x = -7; x < (int32_t)s->width; x += 97)
-            for (int i = 0; i < n; i++) {
-                struct ui_canvas c;
-                ui_canvas_init(&c, s);
-                ui_canvas_clip(&c, ui_rect_intersect((struct rect){ x, y, 97, 61 }, win[i].r));
-                if (!ui_rect_empty(c.clip))
-                    ui_window_draw(&c, &win[i], win[i].r, &win[i] == a, UI_BUTTON_NORMAL, sc, &f);
-            }
+    for (int i = 0; i < n; i++) {
+        struct ui_canvas c;
+        ui_canvas_init(&c, s);
+        ui_canvas_clip(&c, win[i].r);
+        ui_window_draw(&c, &win[i], win[i].r, &win[i] == a, UI_BUTTON_NORMAL, sc, &f);
+    }
     printf("SCENE chrome: scale %u %%, %s; the About window at (%d, %d) %dx%d%s\n", sc * 25,
            variant == 0 ? "every button normal" : variant == 1 ? "minimise on hover, maximise pressed" : "maximised",
            a->r.x, a->r.y, a->r.w, a->r.h, variant != 2 ? ", over the Console window" : "");

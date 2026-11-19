@@ -576,6 +576,12 @@ def drag_burst(qmp, serial, win, m, count, keys):
     print("DRAGBURST sent=%d exact=%d seconds=%.1f keys=%d" % (count, count - bad, seconds, sent_keys), flush=True)
 
 
+# The steps main() hands to window_step (1.5 stage 8: one list each, so a
+# step window_step handles is never left out of main()'s router).
+WINDOW_STEPS = ("wshot", "press", "release", "esc", "click", "rpress", "rrelease", "mpress", "dclick")
+WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq")
+
+
 def window_step(step, qmp, serial, dump, win, m, shots):
     """One of the window steps; returns the new number of screens taken."""
     if step == "wshot":
@@ -715,9 +721,8 @@ def main():
         wshots = 0                      # 1.3 stage 4a: WSCREEN steps
         for step in a.steps:
             left = max(a.timeout - (time.monotonic() - t0), 1)
-            if win and (step in ("wshot", "press", "release", "esc", "click", "rpress", "rrelease") or
-                        step.split(":")[0] in
-                        ("to", "rel", "drag", "key", "dragburst")):
+            # 1.5 stage 8: mpress, dclick and kseq: as well (window_step's steps).
+            if win and (step in WINDOW_STEPS or step.split(":")[0] in WINDOW_PREFIXES):
                 windowed = True
                 wshots = window_step(step, qmp, serial, dump, win, m, wshots)
             elif step == "screen":
