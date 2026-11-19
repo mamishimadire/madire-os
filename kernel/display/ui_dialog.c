@@ -22,10 +22,15 @@ void ui_dialog_init(struct ui_dialog *d, uint32_t s, const struct ui_fonts *f, i
     /* Field by field: no struct copy the compiler could turn into a library call. */
     d->w.name = UI_DIALOG_TITLE;
     d->w.title = UI_DIALOG_TITLE;
-    d->w.icon = UI_ICON_RESTART;
+    d->w.icon = UI_ICON_POWER;          /* 1.5 stage 8: the power icon (Design Guide, section 9) */
     d->w.w = w;
     d->w.h = h;
     d->w.esc_closes = false;
+    d->w.buttons = 0;                   /* 1.5 stage 8: close only */
+    d->w.minimised = false;
+    d->w.maximised = false;
+    d->w.min_st = UI_BUTTON_NORMAL;
+    d->w.max_st = UI_BUTTON_NORMAL;
     d->w.paint = ui_dialog_paint;
     d->w.ctx = d;
     d->w.open = true;

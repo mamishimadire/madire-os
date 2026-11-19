@@ -57,6 +57,10 @@
  * composed through ui_blit_round; console_exposed: console_about painted
  * directly in tiles of 97 x 61 pixels from (-7, -13) (the exposure path).
  *
+ * 1.5 stage 8: chrome, chrome_hover, chrome_max (the title-bar buttons,
+ * a maximised window) and taskbuttons (the taskbar's window buttons in
+ * each state, the Alt+Tab ring); see scene_chrome and scene_taskbuttons.
+ *
  * 1.3 stage 5: the menus, the M button and the Restart dialog
  * (kernel/display/ui_menu.h, ui_dialog.h, desktop_core.h), each on bg.deep
  * with the taskbar (the clock 09:41) and its M button: mbutton_hover,
@@ -577,6 +581,113 @@ static int scene_console(struct surface *s, const struct fbcon_layout *cl, int k
     return n == 2 && about.short_scratch ? 1 : 0;
 }
 
+/* ---- 1.5 stage 8: the title-bar buttons and the taskbar's window buttons ---- */
+
+/* variant 0 chrome: on bg.deep the Console window (minimise only) and an
+ * About window opened over it (minimise and maximise), every button
+ * normal; 1 chrome_hover: the About window's minimise button on hover, its
+ * maximise button pressed, the Console window's minimise on hover; 2
+ * chrome_max: an About window alone, maximised (the restore icon; its
+ * content in its own size, centred across). Painted in tiles of 97 x 61
+ * from (-7, -13) (the exposure path; each pixel the same whatever the
+ * clip). */
+static int scene_chrome(struct surface *s, const struct fbcon_layout *cl, int variant)
+{
+    struct desktop_layout l;
+    struct ui_fonts f;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font) || !ui_fonts_for_scale(cl->scale, &f))
+        return 1;
+    uint32_t sc = cl->scale;
+    for (uint32_t i = 0; i < UI_CONSOLE_COLS * UI_CONSOLE_ROWS; i++) {
+        uint32_t row = i / UI_CONSOLE_COLS, col = i % UI_CONSOLE_COLS;
+        dump_cells[i] = (uint16_t)(((i * 7 + row) & 0xFF) | ((row + col) % 16) << 8 | ((row / 5) % 8) << 12);
+    }
+    dump_cells[24 * 80] = 0x1FDB;
+    dump_cells[24 * 80 + 79] = 0x1FDB;
+    static const char display[] = "2560x1440x32";
+    static struct ui_about about;
+    struct ui_window win[2];
+    struct ui_wm wm;
+    int32_t w, h;
+    int n = 0;
+    ui_wm_init(&wm, (int32_t)s->width, (int32_t)s->height, l.bar.y, sc, 0);
+    if (variant != 2) {
+        ui_console_size(sc, f.regular, &w, &h);
+        win[n] = (struct ui_window){ .name = "Console", .title = "Console", .icon = UI_ICON_CONSOLE, .w = w, .h = h,
+                                     .buttons = UI_WIN_MINIMISE, .paint = dump_console_paint, .ctx = &f };
+        if (!ui_wm_open(&wm, &win[n++]))
+            return 1;
+    }
+    ui_about_setup(&about, sc, &f, "1.3", dump_loader, display, "127 MB", about_scratch[0], UI_ABOUT_SCRATCH);
+    ui_about_size(sc, &w, &h);
+    win[n] = (struct ui_window){ .name = "About", .title = UI_ABOUT_TITLE, .icon = UI_ICON_ABOUT, .w = w, .h = h,
+                                 .esc_closes = true, .buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE,
+                                 .paint = ui_about_paint, .ctx = &about };
+    if (!ui_wm_open(&wm, &win[n++]))
+        return 1;
+    struct ui_window *a = &win[n - 1];
+    if (variant == 1) {
+        a->min_st = UI_BUTTON_HOVER;
+        a->max_st = UI_BUTTON_PRESSED;
+        win[0].min_st = UI_BUTTON_HOVER;
+    } else if (variant == 2) {
+        ui_wm_toggle_maximise(&wm, a);
+    }
+    for (int32_t y = -13; y < (int32_t)s->height; y += 61)
+        for (int32_t x = -7; x < (int32_t)s->width; x += 97)
+            for (int i = 0; i < n; i++) {
+                struct ui_canvas c;
+                ui_canvas_init(&c, s);
+                ui_canvas_clip(&c, ui_rect_intersect((struct rect){ x, y, 97, 61 }, win[i].r));
+                if (!ui_rect_empty(c.clip))
+                    ui_window_draw(&c, &win[i], win[i].r, &win[i] == a, UI_BUTTON_NORMAL, sc, &f);
+            }
+    printf("SCENE chrome: scale %u %%, %s; the About window at (%d, %d) %dx%d%s\n", sc * 25,
+           variant == 0 ? "every button normal" : variant == 1 ? "minimise on hover, maximise pressed" : "maximised",
+           a->r.x, a->r.y, a->r.w, a->r.h, variant != 2 ? ", over the Console window" : "");
+    return about.short_scratch ? 1 : 0;
+}
+
+/* The taskbar (its clock "09:41") with six window buttons, in the order
+ * they opened: About (focused: the fill and the bar), Console (hover),
+ * a long title clipped (pressed), Power (minimised: normal), Restart (the
+ * Alt+Tab ring), Close (normal); the six share the span. */
+static int scene_taskbuttons(struct surface *s, const struct fbcon_layout *cl)
+{
+    struct desktop_layout l;
+    struct ui_fonts f;
+    if (!desktop_layout(&l, s->width, s->height, cl->scale, cl->font) || !ui_fonts_for_scale(cl->scale, &f))
+        return 1;
+    uint32_t sc = cl->scale;
+    static const char *const titles[6] = { UI_ABOUT_TITLE, "Console", "A title much longer than its button",
+                                           "Power", "Restart", "Close" };
+    static const int icons[6] = { UI_ICON_ABOUT, UI_ICON_CONSOLE, UI_ICON_CALCULATOR, UI_ICON_POWER,
+                                  UI_ICON_RESTART, UI_ICON_CLOSE };
+    struct ui_window win[6];
+    struct ui_wm wm;
+    desktop_draw_taskbar(s, &l, (struct rect){ 0, 0, (int32_t)s->width, (int32_t)s->height }, "09:41");
+    ui_wm_init(&wm, (int32_t)s->width, (int32_t)s->height, l.bar.y, sc, 0);
+    ui_wm_set_taskbar(&wm, l.m_cell.x + l.m_cell.w + ui_px(4, sc), l.clock_box.x - ui_px(16, sc));
+    for (int i = 0; i < 6; i++) {
+        win[i] = (struct ui_window){ .name = titles[i], .title = titles[i], .icon = icons[i], .w = 100, .h = 100 };
+        if (!ui_wm_open(&wm, &win[i]))
+            return 1;
+    }
+    ui_wm_activate(&wm, &win[0]);
+    win[1].task_st = UI_BUTTON_HOVER;
+    win[2].task_st = UI_BUTTON_PRESSED;
+    ui_wm_minimise(&wm, &win[3]);
+    wm.switching = true;
+    wm.target = &win[4];
+    struct ui_canvas c;
+    ui_canvas_init(&c, s);
+    ui_wm_draw_taskbar(&c, &wm, &f);
+    struct rect b0 = ui_wm_task_rect(&wm, 0);
+    printf("SCENE taskbuttons: scale %u %%, six buttons %dx%d from (%d, %d), 4 dp apart\n", sc * 25, b0.w, b0.h,
+           b0.x, b0.y);
+    return 0;
+}
+
 /* ---- 1.3 stage 5: the menus, the M button and the Restart dialog ---- */
 
 static uint16_t menu_scratch[UI_ABOUT_SCRATCH];
@@ -730,6 +841,14 @@ int main(int argc, char **argv)
         rc = scene_console(&s, &cl, 2, false);
     } else if (strcmp(argv[4], "console_exposed") == 0) {
         rc = scene_console(&s, &cl, 2, true);
+    } else if (strcmp(argv[4], "chrome") == 0) {                  /* 1.5 stage 8 */
+        rc = scene_chrome(&s, &cl, 0);
+    } else if (strcmp(argv[4], "chrome_hover") == 0) {
+        rc = scene_chrome(&s, &cl, 1);
+    } else if (strcmp(argv[4], "chrome_max") == 0) {
+        rc = scene_chrome(&s, &cl, 2);
+    } else if (strcmp(argv[4], "taskbuttons") == 0) {
+        rc = scene_taskbuttons(&s, &cl);
     } else if (strncmp(argv[4], "mbutton_", 8) == 0 || strncmp(argv[4], "menu_", 5) == 0 ||
                strncmp(argv[4], "dialog", 6) == 0) {          /* 1.3 stage 5 */
         rc = scene_menus(&s, &cl, argv[4]);

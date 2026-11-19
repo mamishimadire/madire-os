@@ -179,6 +179,12 @@ bool desktop_take_console(void);
  * typed); DESKTOP_KEY_CONSOLE: the console takes the key; DESKTOP_KEY_TAKEN:
  * nothing more to do. */
 enum desktop_key_route { DESKTOP_KEY_TAKEN, DESKTOP_KEY_OPENED, DESKTOP_KEY_CONSOLE };
-enum desktop_key_route desktop_key(uint8_t keycode, bool pressed);
+/* 1.5 stage 8: `flags`, the event's KEY_SHIFT / KEY_CTRL / KEY_ALT
+ * (drivers/keyboard/scancode.h): with no menu or dialog open, Tab pressed
+ * with Alt held (no Ctrl) is Alt+Tab (with Shift: back): the taskbar's
+ * ring moves (ui_window.h); while a window is marked, the Tab's release is
+ * taken, Alt's release chooses it and Esc cancels. None of these keys
+ * reaches the console; plain Tab does, as before. */
+enum desktop_key_route desktop_key(uint8_t keycode, bool pressed, uint8_t flags);
 
 #endif

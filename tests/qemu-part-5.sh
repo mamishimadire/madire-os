@@ -1044,3 +1044,97 @@ else
     fail "[1.5] wheel: a packet not exact, a wait not met, or a panic, FAILED line or dropped byte ($(grep -E '^(PACKETS|MISMATCH|WAIT|qmp_wheel)' <<< "$WB_OUT" | head -n 3 | tr '\n' ' '))"
 fi
 echo "      [1.5] the mouse wheel (part 5): $(( $(date +%s) - WH_T0 )) s (report only)"
+
+section "[1.5] Window management: the taskbar's window buttons, minimise, maximise, the double click, the middle click, Alt+Tab (test=desktop desktopabout, 1024x768x32; stage 8)"
+# docs/plans/1.5.md, C4 and the note at the top (Alt+Tab); ui_window.h. One
+# boot of a test ISO (test=desktop desktopabout desktoplog mouselog: the
+# About window open at the start); tests/qmp_desktop.py follows every packet
+# and key with tests/desktop_ref.py's model (WM, Menus) and compares seven
+# screens with its rendering (the Console window's grid from vga_shadow):
+# (1) a click on the desktop, a key opens the Console window: two windows,
+# two taskbar buttons (the Console window's focused); (2) the focused
+# window's taskbar button minimises it; its button again restores it;
+# About's taskbar button raises and focuses it (it lies under the Console
+# window); (3) About's maximise button: the area above the taskbar (its
+# content centred);
+# the restore button puts it back; a double click on its title bar
+# maximises it, another restores it; (4) back to normal; the Console
+# window's minimise button, then a middle click on its taskbar button
+# closes it (hides); (5) About alone; a click on the desktop, a key opens
+# the Console window again, then Alt+Tab (Alt held, Tab, Alt released)
+# chooses About; (6) About focused; About minimised by its button;
+# Shift+Alt+Tab marks it and restores it; Alt+Tab, Tab, Esc cancels; Alt
+# held with one Tab: (7) the ring on the Console window's taskbar button;
+# Alt released chooses it; then plain Tab completes "ech" in the Console
+# window ("echo tab-ok"). Every window and menu line as the model predicts,
+# in order; every packet exact.
+W8P_T0=$(date +%s)
+W8P_L=$OUT/serial-window-management.log
+desktop_iso "winmgmt" "test=desktop desktopabout desktoplog mouselog" ""
+W8P_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+W8P_SHP=$(printf '0x%x' $(( 0x${W8P_SHV:-0} - 0xffffffff80000000 )))
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$W8P_L" "$DT_ISO" 1024x768 ready rel:-1000,-1000 to:desktop click "type:x" wshot \
+        to:task@Console click wshot to:task@Console click to:task@About click \
+        to:max@About click wshot to:max@About click to:title@About dclick to:title@About dclick wshot \
+        to:min@Console click to:task@Console mpress wshot \
+        to:desktop click "type:z" "kseq:alt:down,tab,alt:up" wshot \
+        to:min@About click "kseq:shift:down,alt:down,tab,alt:up,shift:up" "kseq:alt:down,tab,tab,esc,alt:up" \
+        "kseq:alt:down,tab" wshot "kseq:alt:up" "type:ech{tab}tab-ok{ret}" "wait:tab-ok" \
+        --about --shadow "$W8P_SHP"
+else : > "$W8P_L"; fi
+grep -E "^desktop: (open|close|focus|minimise [A-Z]|restore|maximise [A-Z]|unmaximise|switch)" "$W8P_L" | head -n 40 | sed 's/^/      /'
+grep -E "^(WSCREEN|EVENTS|MENUS|PACKETS|qmp_desktop)" <<< "$DT_OUT" | sed 's/^/      /'
+w8_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$DT_OUT"; }
+if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$W8P_L" && w8_ws 1; then
+    pass "[1.5] window management: About and the Console window open, the taskbar shows a button for each (icon and title; the Console window's focused: the fill and the accent bar); the title bars show minimise and maximise (About) and minimise (the Console window); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window management: two windows and their taskbar buttons: $(grep -E '^(WSCREEN 1|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ') (see ${W8P_L##*/})"
+fi
+if awk '$0 == "desktop: minimise Console" && !m { m = NR } $0 == "desktop: restore Console" && m && !r { r = NR }
+        END { exit !(m && r) }' "$W8P_L" && w8_ws 2; then
+    pass "[1.5] window management: the focused Console window's taskbar button minimises it (logged; the screen without it pixel for pixel) and the button again restores it (logged)"
+else
+    fail "[1.5] window management: minimise and restore by the taskbar button: $(grep -E '^(WSCREEN 2|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+if [ "$(grep -cxF "desktop: maximise About to (0, 0) 1024x728" "$W8P_L")" -eq 2 ] &&
+   [ "$(grep -cxF "desktop: unmaximise About to (336, 175) 352x377" "$W8P_L")" -eq 2 ] && w8_ws 3 && w8_ws 4; then
+    pass "[1.5] window management: About's maximise button fills the area above the taskbar (0, 0) 1024x728 (its content centred; the restore icon) pixel for pixel; its restore button and a double click on the title bar (maximise, then restore) each logged; back at (336, 175) 352x377 pixel for pixel"
+else
+    fail "[1.5] window management: maximise, restore or the double click: $(grep -E '^(WSCREEN [34]|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+if grep -qxF "desktop: close Console (middle click)" "$W8P_L" && w8_ws 5; then
+    pass "[1.5] window management: a middle click on the minimised Console window's taskbar button closes (hides) it: logged; About alone with one taskbar button pixel for pixel"
+else
+    fail "[1.5] window management: the middle click: $(grep -E '^(WSCREEN 5|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+if awk '$0 == "desktop: switch: About marked (Alt+Tab)" { a++ } $0 == "desktop: switch: About chosen (Alt released)" { c++ }
+        $0 == "desktop: switch: cancelled (Esc)" { x++ }
+        $0 == "desktop: restore About" && c >= 1 { r++ }
+        END { exit !(a >= 2 && c == 2 && x == 1 && r >= 1) }' "$W8P_L" && w8_ws 6; then
+    pass "[1.5] window management: Alt+Tab marks the previous window (About) and Alt's release chooses it (the screen pixel for pixel); Shift+Alt+Tab marks the minimised About and restores it; Alt+Tab, Tab, Esc cancels (logged)"
+else
+    fail "[1.5] window management: Alt+Tab, Shift+Alt+Tab or Esc: $(grep -E '^(WSCREEN 6|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+if grep -qxF "desktop: switch: Console marked (Alt+Tab)" "$W8P_L" && grep -qxF "desktop: switch: Console chosen (Alt released)" "$W8P_L" &&
+   w8_ws 7; then
+    pass "[1.5] window management: with Alt held after one Tab the ring is on the Console window's taskbar button and nothing else has moved (pixel for pixel); Alt's release chooses it"
+else
+    fail "[1.5] window management: the Alt+Tab ring: $(grep -E '^(WSCREEN 7|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+if grep -qxF "madire> echo tab-ok" "$W8P_L" && grep -qxF "tab-ok" "$W8P_L" &&
+   ! sed -n '/^desktop: switch: Console chosen (Alt released)$/,$p' "$W8P_L" | grep -q "^desktop: switch:"; then
+    pass "[1.5] window management: plain Tab still reaches the focused Console window: \"ech\" Tab completes to \"echo \" (madire> echo tab-ok, then tab-ok); no switch line after it"
+else
+    fail "[1.5] window management: plain Tab in the Console window did not complete, or a switch line followed it (see ${W8P_L##*/})"
+fi
+if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+   grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$DT_OUT" &&
+   grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$DT_OUT" &&
+   ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|events not logged|MISMATCH" "$W8P_L"; then
+    pass "[1.5] window management: every window line (open, raise, focus, minimise, restore, maximise, the buttons' states, the taskbar buttons' states, switch) and every menu line as the model predicts, in order; every packet exact; no panic, FAILED line or drop"
+else
+    fail "[1.5] window management: the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
+fi
+echo "      [1.5] window management (part 5): $(( $(date +%s) - W8P_T0 )) s (report only)"

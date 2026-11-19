@@ -136,6 +136,21 @@ state 3 s after its own frame marker before the cut. More steps:
                   they may (the wordmark, the ready line, the taskbar);
                   prints
     HANDOVER m_box=<x>,<y>,<w>x<h> m_differ=<n> outside=<n> (...)
+
+1.5 stage 8 (window management; docs/plans/1.5.md, C4) more steps:
+    to:min@NAME, to:max@NAME, to:close@NAME  the centre of window NAME's
+                  minimise, maximise (or restore) or close button;
+    to:task@NAME  the centre of window NAME's taskbar button;
+    mpress        the middle button pressed, then released (no move);
+    dclick        a click, then a second click at once: the model takes
+                  the second press as a double click (any other left press
+                  that follows a click on a title bar is sent at least
+                  0.7 s after it, so the kernel, whose double click lasts
+                  UI_WM_DCLICK_TICKS (500 ms), never sees one by chance);
+    kseq:K[:down|:up],...  key events one at a time through QMP's
+                  input-send-event (a K alone: pressed, then released), the
+                  model following each with the modifiers held (Alt+Tab:
+                  kseq:alt:down,tab,tab,alt:up).
 """
 import argparse
 import os
@@ -219,7 +234,7 @@ def screen(qmp, serial, dump, n, pointer_at):
 
 # ---- 1.3 stage 4a: the windows ----
 
-WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close) ")
+WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close|minimise|restore|maximise|unmaximise|switch:|taskbar) ")
 MENU_EVENT = re.compile(r"^desktop: (menu|dialog|M button)[ :]")      # 1.3 stage 5
 ABOUT_VALUE = re.compile(r"^desktop: about (Version|Boot loader|Display|Memory|Mode): (.*)$")
 
@@ -238,15 +253,19 @@ class Windows:
         self.console_size = desktop_ref.console_size(self.s)
         if about:
             aw, ah = desktop_ref.about_size(self.s)
-            self.wm.open("About", aw, ah, True)
+            self.wm.open("About", aw, ah, True, desktop_ref.WINDOW_BUTTONS["About"])
         self.menus = desktop_ref.Menus(self.wm)            # 1.3 stage 5
+        self.mods = set()                                   # 1.5 stage 8: the modifiers held
+        self.click_t = None                                 # 1.5 stage 8: when the last title click ended
 
     def changed(self, before):
         """True if the model's look changed since `before` (its state())."""
         return self.state() != before
 
     def state(self):
-        return [(w["name"], w["r"], w["close"], w is self.wm.focus) for w in self.wm.z] + [self.menus.state()]
+        return [(w["name"], w["r"], w["close"], w is self.wm.focus, w["min"], w["max"], w["task"], w["minimised"],
+                 w["maximised"]) for w in self.wm.z] + [self.menus.state(), self.wm.switching,
+                                                        self.wm.target and self.wm.target["name"]]
 
     def target(self, where):
         d = lambda n: desktop_ref.px(n, self.s)  # noqa: E731
@@ -270,6 +289,19 @@ class Windows:
                 labels = [lab.decode() for lab in desktop_ref.DIALOG_LABELS]
                 c = desktop_ref.dialog_button(mn.dlg["r"], self.s, labels.index(where[4:]))
             return c[0] + c[2] // 2, c[1] + c[3] // 2
+        if "@" in where and where.split("@")[0] in ("min", "max", "close", "task"):     # 1.5 stage 8
+            part, name = where.split("@")
+            win = next((w for w in self.wm.z if w["name"] == name), None)
+            if win is None:
+                raise RuntimeError("no open window %s (model)" % name)
+            if part == "task":
+                c = desktop_ref.task_rect(self.wm, self.wm.order.index(win))
+            else:
+                c = desktop_ref.part_rect(win["r"], self.s, win["buttons"],
+                                          {"min": "minimise", "max": "maximise", "close": "close"}[part])
+                if c is None or win["minimised"]:
+                    raise RuntimeError("window %s has no %s button shown (model)" % (name, part))
+            return c[0] + c[2] // 2, c[1] + c[3] // 2
         if "@" in where:                # 1.3 stage 4b: a named window's own visible point
             part, name = where.split("@")
             win = next((w for w in self.wm.z if w["name"] == name), None)
@@ -291,8 +323,11 @@ class Windows:
         r = self.wm.z[-1]["r"]
         if where == "title":
             return r[0] + d(100), r[1] + d(16)
-        if where == "title-right":                      # the title bar's right end, before the close button
-            return r[0] + d(312), r[1] + d(16)
+        if where == "title-right":                      # the title bar's right end, before its buttons
+            # 1.5 stage 8: 8 dp before the leftmost title-bar button (was r.x + 312 dp,
+            # 8 dp before the close button of a 352 dp window).
+            top = self.wm.z[-1]
+            return r[0] + r[2] - (1 + len(top["buttons"])) * d(32) - d(8), r[1] + d(16)
         if where == "close":
             c = self.wm.close_rect(r)
             return c[0] + c[2] // 2, c[1] + c[3] // 2
@@ -301,7 +336,26 @@ class Windows:
         raise ValueError("unknown place %r" % where)
 
     def key(self, qcode, pressed):
-        """One key event: the menus first (1.3 stage 5), then the window manager."""
+        """One key event: 1.5 stage 8: Alt+Tab first (desktop_key: with no
+        menu or dialog open); the menus (1.3 stage 5), then the window
+        manager."""
+        mods = self.mods
+        if qcode in ("alt", "alt_r", "shift", "shift_r", "ctrl", "ctrl_r"):
+            (mods.add if pressed else mods.discard)(qcode)
+        if not self.menus.menu and not self.menus.dlg:
+            alt = bool(mods & {"alt", "alt_r"}) and not mods & {"ctrl", "ctrl_r"}
+            if qcode == "tab" and pressed and alt:
+                self.wm.switch_step(bool(mods & {"shift", "shift_r"}))
+                return "taken"
+            if self.wm.switching:
+                if qcode == "tab":
+                    return "taken"
+                if qcode in ("alt", "alt_r") and not pressed:
+                    self.wm.switch_commit()
+                    return "taken"
+                if qcode == "esc" and pressed:
+                    self.wm.switch_cancel()
+                    return "taken"
         if self.menus.key(qcode, pressed) == "wm":
             return self.wm.key(self.console_size, pressed, qcode == "esc")
         return "taken"
@@ -319,18 +373,28 @@ class Windows:
         return desktop_ref.about_values(self.s, *(got[k] for k in keys))
 
 
-def packet(m, win, serial, dx, dy, button=None, which="left"):
+def packet(m, win, serial, dx, dy, button=None, which="left", double=False):
     """One packet (a move, or a button with no move), checked, then given
     to the model (1.3 stage 5: its menus first; `which` button, left or
-    right); a change moves the sync point to its line."""
+    right; 1.5 stage 8: or middle, and `double`: the second press of a
+    double click); a change moves the sync point to its line."""
     before = win.state()
+    left = which == "left"
+    if left and button is True and not double and win.wm.click_w is not None and win.click_t is not None:
+        wait = 0.7 - (time.monotonic() - win.click_t)   # 1.5 stage 8: never a double click by chance
+        if wait > 0:
+            time.sleep(wait)
     if button is None:
         n, want = m.move(dx, dy)
     else:
         n, want = m.button(which, button)
     m.check(n, want)
-    left = which == "left"
-    win.menus.pointer(m.x, m.y, left and button is True, left and button is False, not left and button is True)
+    win.menus.pointer(m.x, m.y, left and button is True, left and button is False,
+                      which == "right" and button is True, double)
+    if which == "middle" and button is True:
+        win.menus.middle(m.x, m.y)
+    if left and button is False and win.wm.click_w is not None:
+        win.click_t = time.monotonic()
     if win.changed(before):
         win.sync = m.last_line
 
@@ -361,15 +425,10 @@ def wtake(qmp, serial, dump, win, pointer_at):
     shell = win.menus.view()                    # 1.3 stage 5
     if clock is None:
         return w, h, -1, None, "no 'desktop: clock' line after a frame marker", seen
-    shown = []
     values = win.values(serial) if any(x["name"] == "About" for x in win.wm.z) else None
-    for x in win.wm.z:
-        one = {"r": x["r"], "active": x is win.wm.focus, "close": x["close"], "values": values}
-        if x["name"] == "Console":
-            if shadow is None:
-                raise RuntimeError("a Console window to draw but no --shadow")
-            one["grid"] = desktop_ref.shadow_grid(shadow)
-        shown.append(one)
+    if shadow is None and any(x["name"] == "Console" and not x["minimised"] for x in win.wm.z):
+        raise RuntimeError("a Console window to draw but no --shadow")
+    shown = desktop_ref.wm_shown(win.wm, values, desktop_ref.shadow_grid(shadow) if shadow is not None else None)
     want = desktop_ref.desktop_windows(w, h, clock.encode("ascii"), shown, shell)
     desc = "the desktop with the clock %s (frame %d)" % (clock, frame)
     for x in win.wm.z:
@@ -535,6 +594,26 @@ def window_step(step, qmp, serial, dump, win, m, shots):
         packet(m, win, serial, 0, 0, False)
     elif step in ("rpress", "rrelease"):
         packet(m, win, serial, 0, 0, step == "rpress", "right")
+    elif step == "mpress":                                      # 1.5 stage 8
+        packet(m, win, serial, 0, 0, True, "middle")
+        packet(m, win, serial, 0, 0, False, "middle")
+    elif step == "dclick":
+        packet(m, win, serial, 0, 0, True)
+        packet(m, win, serial, 0, 0, False)
+        packet(m, win, serial, 0, 0, True, double=True)
+        packet(m, win, serial, 0, 0, False)
+    elif step.startswith("kseq:"):
+        before, mbefore = len(win.wm.events), len(win.menus.events)
+        for item in step[5:].split(","):
+            k, _, how = item.partition(":")
+            for down in ((True, False) if how == "" else (how == "down",)):
+                qmp.command("input-send-event",
+                            events=[{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": k}}}])
+                win.key(k, down)
+                time.sleep(0.05)
+        wait_events(serial, win, before, mbefore)
+        if len(win.wm.events) == before and len(win.menus.events) == mbefore:
+            time.sleep(1.5)
     elif step.startswith("drag:"):
         dx, dy = (int(v) for v in step[5:].split(","))
         packet(m, win, serial, 0, 0, True)

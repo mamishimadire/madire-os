@@ -344,9 +344,14 @@ ICONS = {   # in dp on the 24 dp grid; the M is the logo's strokes (below)
     "backspace": [[(8, 5), (21, 5), (21, 19), (8, 19), (2, 12), (8, 5)], [(12, 9.5), (17, 14.5)],
                   [(17, 9.5), (12, 14.5)]],
     "chevron": [[(9, 5), (16, 12), (9, 19)]],
+    # 1.5 stage 8: the title-bar buttons' icons and the power icon.
+    "minimise": [[(6, 12), (18, 12)]],
+    "maximise": [box(6, 6, 18, 18)],
+    "unmaximise": [box(5, 9, 15, 19), [(9, 9), (9, 5), (19, 5), (19, 15), (15, 15)]],
+    "power": [arc(12, 13, 8, 30, 330, 15), [(12, 3), (12, 12)]],
 }
 ICON_ORDER = ["M", "console", "about", "restart", "calculator", "close", "plus", "minus", "times", "divide",
-              "backspace", "chevron"]
+              "backspace", "chevron", "minimise", "maximise", "unmaximise", "power"]
 
 
 def unit(v):
@@ -842,29 +847,105 @@ def about_client(scr, tok, s, r, values):
     text(scr, f, r[0] + (r[2] - len(ABOUT_FOOTER) * f[1]) // 2, r[1] + px(337, s), ABOUT_FOOTER, tok["text.muted"])
 
 
-def window(scr, tok, s, r, title, icon_name, active, close, client):
+def part_rect(r, s, buttons, part):
+    """1.5 stage 8 (ui_window_part_rect): the title-bar button `part`
+    (close, maximise, minimise) from the right: close, then maximise if
+    the window has it, then minimise; None if it has no such button."""
+    tb = px(32, s)
+    if part == "close":
+        k = 0
+    elif part == "maximise" and "max" in buttons:
+        k = 1
+    elif part == "minimise" and "min" in buttons:
+        k = 2 if "max" in buttons else 1
+    else:
+        return None
+    return (r[0] + r[2] - (k + 1) * tb, r[1], tb, tb)
+
+
+def window(scr, tok, s, r, title, icon_name, active, close, client, extra=None):
     """A window at r (ui_window.h): the frame, the client, the title bar,
-    the close button in state `close` (normal, hover, pressed)."""
+    the close button in state `close` (normal, hover, pressed). 1.5 stage
+    8: `extra` (or None: close only) a dict buttons (a set of "min",
+    "max"), min and max (their states), maximised, size (w, h: the client
+    painted in its own size, centred across the window, when maximised)."""
+    extra = extra or {"buttons": set(), "min": "normal", "max": "normal", "maximised": False, "size": None}
+    buttons = extra["buttons"]
     R, tb = px(6, s), px(32, s)
     fill_round(scr, r, R, 15, tok["surface.window"])
     frame_round(scr, r, R, px(1, s), 15, tok["border.window" if active else "border.inactive"])
-    client(scr, r)
+    if extra["maximised"]:
+        w, h = extra["size"]
+        client(scr, (r[0] + (r[2] - w) // 2, r[1], w, h))
+    else:
+        client(scr, r)
     ip = px(16, s)
     icon(scr, icon_name, r[0] + px(8, s), r[1] + (tb - ip) // 2, ip, tok["text"])
     cr = (r[0] + r[2] - tb, r[1], tb, tb)
+    left = r[0] + r[2] - (1 + len(buttons)) * tb
     tx = r[0] + px(32, s)
     keep = scr.clip
-    scr.clip = meet(keep, (tx, r[1], cr[0] - px(8, s) - tx, tb))
+    scr.clip = meet(keep, (tx, r[1], left - px(8, s) - tx, tb))
     if scr.clip is not None:
         text(scr, font(s, True), tx, r[1] + (tb - FONT_PX[s]) // 2, title, tok["text" if active else "text.muted"])
     scr.clip = keep
     style = ([NONE, tok["danger"], tok["danger.pressed"]], [tok["text"]] * 3, False, 6, TR)
     button(scr, tok, cr, style, close, False, s, ic="close", icon_dp=16)
+    tstyle = ([NONE, tok["surface.hover"], tok["accent.pressed"]], [tok["text"]] * 3, False, 0, 0)
+    if "max" in buttons:
+        button(scr, tok, part_rect(r, s, buttons, "maximise"), tstyle, extra["max"], False, s,
+               ic="unmaximise" if extra["maximised"] else "maximise", icon_dp=16)
+    if "min" in buttons:
+        button(scr, tok, part_rect(r, s, buttons, "minimise"), tstyle, extra["min"], False, s,
+               ic="minimise", icon_dp=16)
 
 
-def about_window(scr, tok, s, r, active, close, values):
+def task_width(wm):
+    """1.5 stage 8: each taskbar button's width (ui_window.h)."""
+    gap, most, least, n = px(4, wm.s), px(160, wm.s), px(40, wm.s), len(wm.order)
+    if n == 0:
+        return 0
+    room = wm.task_x1 - wm.task_x0 - (n - 1) * gap
+    return max(min(max(room, 0) // n, most), least)
+
+
+def task_rect(wm, k):
+    top, bw, gap = wm.bar + px(1, wm.s), task_width(wm), px(4, wm.s)
+    return (wm.task_x0 + k * (bw + gap), top, bw, wm.h - top)
+
+
+def task_buttons(scr, tok, s, task):
+    """1.5 stage 8: the taskbar's window buttons (ui_wm_draw_taskbar):
+    task is a list of dicts r, icon, title, state, focused, target."""
+    f = font(s, False)
+    for b in task:
+        r = b["r"]
+        keep = scr.clip
+        scr.clip = meet(keep, r)
+        if scr.clip is not None:
+            bar = b["focused"] or b["state"] == "pressed"
+            if bar or b["state"] == "hover":
+                fill(scr, r, tok["surface.active"])
+            if bar:
+                h = px(2, s)
+                fill(scr, (r[0], r[1] + r[3] - h, r[2], h), tok["accent"])
+            ip = px(16, s)
+            icon(scr, b["icon"], r[0] + px(8, s), r[1] + (r[3] - ip) // 2, ip, tok["text"])
+            tx = r[0] + px(32, s)
+            inner = scr.clip
+            scr.clip = meet(inner, (tx, r[1], r[0] + r[2] - px(8, s) - tx, r[3]))
+            if scr.clip is not None:
+                text(scr, f, tx, r[1] + (r[3] - f[2]) // 2, b["title"], tok["text"])
+            scr.clip = inner
+            if b["target"]:
+                g = px(2, s)
+                frame_round(scr, inflate(r, -g), px(4, s), g, 15, tok["accent"])
+        scr.clip = keep
+
+
+def about_window(scr, tok, s, r, active, close, values, extra=None):
     window(scr, tok, s, r, ABOUT_TITLE, "about", active, close,
-           lambda scr_, r_: about_client(scr_, tok, s, r_, values))
+           lambda scr_, r_: about_client(scr_, tok, s, r_, values), extra)
 
 
 # ---- The Console window (1.3 stage 4b; kernel/display/ui_console.h) ----
@@ -945,23 +1026,36 @@ def console_client(scr, s, r, grid):
             scr.pix[o:o + (b - a) * 3] = rows[key][(a - x0) * 3:(b - x0) * 3]
 
 
-def console_window(scr, tok, s, r, active, close, grid):
+def console_window(scr, tok, s, r, active, close, grid, extra=None):
     window(scr, tok, s, r, CONSOLE_TITLE, "console", active, close,
-           lambda scr_, r_: console_client(scr_, s, r_, grid))
+           lambda scr_, r_: console_client(scr_, s, r_, grid), extra)
+
+
+WINDOW_BUTTONS = {"About": {"min", "max"}, "Console": {"min"}}     # 1.5 stage 8 (desktop.c)
+WINDOW_LOOK = {"About": ("about", ABOUT_TITLE), "Console": ("console", CONSOLE_TITLE)}
 
 
 class WM:
     """The window manager's rules (ui_window.h), written here again: where
     windows open, the clamp, hit testing, focus and z-order, the drag, the
-    close button, Esc. Each change is kept as the kernel's desktoplog line
-    would say it (desktop: ...), in the kernel's order."""
+    close button, Esc; 1.5 stage 8: the minimise and maximise buttons,
+    minimised and maximised windows, the double click on a title bar, the
+    taskbar's window buttons (the order they opened, their states), the
+    middle button on them, Alt+Tab over the most-recently-focused order.
+    Each change is kept as the kernel's desktoplog line would say it
+    (desktop: ...), in the kernel's order."""
 
     def __init__(self, w, h, s):
         self.w, self.h, self.s = w, h, s
         self.bar = h - px(40, s)
-        self.z, self.focus = [], None           # windows: dicts name, w, h, r, esc, close
+        self.z, self.focus = [], None           # windows: dicts name, w, h, r, esc, close, ...
+        self.order, self.mru = [], []           # 1.5 stage 8: the taskbar's order; most recently focused first
         self.x, self.y = w // 2, h // 2
         self.left, self.drag, self.pressed = False, None, None
+        self.pressed_part, self.task_pressed, self.click_w = "close", None, None
+        self.switching, self.switch_i, self.target = False, 0, None
+        L = layout(w, h)
+        self.task_x0, self.task_x1 = px(40, s) + px(4, s), L["clock"][0] - px(16, s)
         self.events = []
 
     def clamp(self, r):
@@ -973,7 +1067,7 @@ class WM:
     def place(self, w, h):
         step = px(24, self.s)
         x, y = int((self.w - w) / 2), max(int((self.bar - h) / 2), 0)
-        for _ in range(4):
+        for _ in range(6):                      # 1.5 stage 8: UI_WINDOWS_MAX 4 -> 6
             if not any(o["r"][0] == x and o["r"][1] == y for o in self.z):
                 break
             x, y = x + step, y + step
@@ -985,15 +1079,25 @@ class WM:
 
     @staticmethod
     def inside(r, x, y):
-        return r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
+        return r is not None and r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
 
     def hit(self, x, y):
         for win in reversed(self.z):
-            if self.inside(win["r"], x, y):
-                if self.inside(self.close_rect(win["r"]), x, y):
-                    return "close", win
-                return ("title" if y < win["r"][1] + px(32, self.s) else "body"), win
-        return ("taskbar" if y >= self.bar else "desktop"), None
+            if win["minimised"] or not self.inside(win["r"], x, y):
+                continue
+            if self.inside(self.close_rect(win["r"]), x, y):
+                return "close", win
+            if self.inside(part_rect(win["r"], self.s, win["buttons"], "maximise"), x, y):
+                return "maximise", win
+            if self.inside(part_rect(win["r"], self.s, win["buttons"], "minimise"), x, y):
+                return "minimise", win
+            return ("title" if y < win["r"][1] + px(32, self.s) else "body"), win
+        if y >= self.bar:
+            for k, win in enumerate(self.order):
+                if self.inside(task_rect(self, k), x, y):
+                    return "taskbutton", win
+            return "taskbar", None
+        return "desktop", None
 
     def ev(self, line):
         self.events.append("desktop: " + line)
@@ -1002,6 +1106,9 @@ class WM:
         if self.focus is win:
             return
         self.focus = win
+        if win:
+            self.mru.remove(win)
+            self.mru.insert(0, win)
         self.ev("focus %s" % win["name"] if win else "focus none")
 
     def raise_(self, win):
@@ -1010,60 +1117,140 @@ class WM:
             self.z.append(win)
             self.ev("raise %s" % win["name"])
 
+    def part_state(self, win, part):
+        if self.drag or win["minimised"]:
+            return "normal"
+        over = self.hit(self.x, self.y) == (part, win)
+        if self.pressed:
+            return "pressed" if self.pressed is win and self.pressed_part == part and over else "normal"
+        return "hover" if over and not self.left else "normal"
+
     def state(self, win):
+        return self.part_state(win, "close")
+
+    def task_state(self, win):
         if self.drag:
             return "normal"
-        part, at = self.hit(self.x, self.y)
-        over = part == "close" and at is win
-        if self.pressed:
-            return "pressed" if self.pressed is win and over else "normal"
-        return "hover" if over and not self.left else "normal"
+        over = self.hit(self.x, self.y) == ("taskbutton", win)
+        if self.task_pressed:
+            return "pressed" if self.task_pressed is win and over else "normal"
+        return "hover" if over and not self.left and not self.pressed else "normal"
 
     def states(self):
         for win in self.z:
-            st = self.state(win)
-            if st != win["close"]:
-                win["close"] = st
-                self.ev("close button of %s: %s" % (win["name"], st))
+            for key, part, line in (("close", "close", "close button of %s: %s"),
+                                    ("max", "maximise", "maximise button of %s: %s"),
+                                    ("min", "minimise", "minimise button of %s: %s")):
+                st = self.part_state(win, part)
+                if st != win[key]:
+                    win[key] = st
+                    self.ev(line % (win["name"], st))
+            st = self.task_state(win)
+            if st != win["task"]:
+                win["task"] = st
+                self.ev("taskbar button %s: %s" % (win["name"], st))
 
-    def open(self, name, w, h, esc):
-        win = {"name": name, "w": w, "h": h, "esc": esc, "close": "normal"}
+    def open(self, name, w, h, esc, buttons=None, look=None):
+        win = {"name": name, "w": w, "h": h, "esc": esc, "close": "normal", "min": "normal", "max": "normal",
+               "task": "normal", "buttons": set(buttons or ()), "minimised": False, "maximised": False,
+               "normal": None, "look": look or WINDOW_LOOK.get(name)}
         win["r"] = self.place(w, h)
         self.z.append(win)
+        self.order.append(win)
+        self.mru.append(win)
         self.ev("open %s at (%d, %d) %dx%d" % ((name,) + win["r"]))
         self.set_focus(win)
         self.states()
         return win
 
+    def top_shown(self):
+        return next((x for x in reversed(self.z) if not x["minimised"]), None)
+
     def close(self, win, why):
         self.z.remove(win)
+        self.order.remove(win)
+        self.mru.remove(win)
         if self.pressed is win:
             self.pressed = None
         if self.drag is win:
             self.drag = None
+        if self.task_pressed is win:
+            self.task_pressed = None
+        if self.click_w is win:
+            self.click_w = None
+        if self.switching and self.target is win:
+            self.switching, self.target = False, None
         self.ev("close %s (%s)" % (win["name"], why))
         if self.focus is win:
             self.focus = None
-            if self.z:
-                self.set_focus(self.z[-1])
+            top = self.top_shown()
+            if top:
+                self.set_focus(top)
             else:
                 self.ev("focus none")
 
-    def pointer(self, x, y, down=False, up=False):
+    def minimise(self, win):
+        if win["minimised"]:
+            return
+        win["minimised"] = True
+        if self.drag is win:
+            self.drag = None
+        if self.pressed is win:
+            self.pressed = None
+        if self.click_w is win:
+            self.click_w = None
+        self.ev("minimise %s" % win["name"])
+        if self.focus is win:
+            self.focus = None
+            top = self.top_shown()
+            if top:
+                self.set_focus(top)
+            else:
+                self.ev("focus none")
+
+    def activate(self, win):
+        """ui_wm_activate: restored (if minimised), raised, focused."""
+        if win["minimised"]:
+            win["minimised"] = False
+            self.ev("restore %s" % win["name"])
+        self.raise_(win)
+        self.set_focus(win)
+        self.states()
+
+    def toggle_max(self, win):
+        if win["minimised"] or "max" not in win["buttons"]:
+            return
+        if win["maximised"]:
+            win["maximised"], win["r"] = False, win["normal"]
+        else:
+            win["normal"], win["maximised"], win["r"] = win["r"], True, (0, 0, self.w, self.bar)
+        self.ev("%s %s to (%d, %d) %dx%d" % (("maximise" if win["maximised"] else "unmaximise", win["name"])
+                                              + tuple(win["r"])))
+
+    def pointer(self, x, y, down=False, up=False, double=False):
+        """One packet; `double`: a press the test sends right after a
+        click on the same title bar (the kernel's double click, within
+        UI_WM_DCLICK_TICKS: tests/qmp_desktop.py keeps other clicks apart)."""
         self.x, self.y = x, y
-        if self.drag:
+        if self.drag and not self.drag["maximised"]:
             win, (gx, gy, gr) = self.drag, self.grab
             win["r"] = self.clamp((gr[0] + x - gx, gr[1] + y - gy, gr[2], gr[3]))
         if down and not self.left:
             self.left = True
             part, win = self.hit(x, y)
-            if part == "desktop":
+            dclick = double and self.click_w is win and part == "title"
+            self.click_w = None
+            if part == "taskbutton":
+                self.task_pressed = win
+            elif part == "desktop":
                 self.set_focus(None)
             elif part != "taskbar":
                 self.raise_(win)
                 self.set_focus(win)
-                if part == "close":
-                    self.pressed = win
+                if part in ("close", "minimise", "maximise"):
+                    self.pressed, self.pressed_part = win, part
+                elif part == "title" and dclick and "max" in win["buttons"]:
+                    self.toggle_max(win)
                 elif part == "title":
                     self.drag, self.grab = win, (x, y, win["r"])
         if up and self.left:
@@ -1072,12 +1259,67 @@ class WM:
                 win, self.drag = self.drag, None
                 if win["r"][:2] != self.grab[2][:2]:
                     self.ev("drag %s to (%d, %d) %dx%d" % ((win["name"],) + win["r"]))
+                else:
+                    self.click_w = win
             if self.pressed:
-                win, self.pressed = self.pressed, None
-                part, at = self.hit(x, y)
-                if part == "close" and at is win:
-                    self.close(win, "the close button")
+                win, part, self.pressed = self.pressed, self.pressed_part, None
+                if self.hit(x, y) == (part, win):
+                    if part == "close":
+                        self.close(win, "the close button")
+                    elif part == "minimise":
+                        self.minimise(win)
+                    else:
+                        self.toggle_max(win)
+            if self.task_pressed:
+                win, self.task_pressed = self.task_pressed, None
+                if self.hit(x, y) == ("taskbutton", win):
+                    if win["minimised"] or self.focus is not win:
+                        self.activate(win)
+                    else:
+                        self.minimise(win)
         self.states()
+
+    def middle(self, x, y):
+        """1.5 stage 8 (ui_wm_middle): the middle button pressed."""
+        self.x, self.y = x, y
+        part, win = self.hit(x, y)
+        if part == "taskbutton":
+            self.close(win, "middle click")
+        self.states()
+
+    def switch_step(self, back):
+        n = len(self.mru)
+        if n == 0:
+            return False
+        if not self.switching:
+            self.switching, self.switch_i = True, (n - 1 if back else (1 if n > 1 else 0))
+        else:
+            self.switch_i = (self.switch_i + (n - 1 if back else 1)) % n
+        self.target = self.mru[self.switch_i]
+        self.ev("switch: %s marked (Alt+Tab)" % self.target["name"])
+        return True
+
+    def switch_commit(self):
+        if not self.switching:
+            return
+        win, self.switching, self.target = self.target, False, None
+        self.ev("switch: %s chosen (Alt released)" % win["name"])
+        self.activate(win)
+
+    def switch_cancel(self):
+        if not self.switching:
+            return
+        self.switching, self.target = False, None
+        self.ev("switch: cancelled (Esc)")
+
+    def task_view(self):
+        """The taskbar buttons as task_buttons() draws them."""
+        out = []
+        for k, win in enumerate(self.order):
+            ic, title = win["look"]
+            out.append({"r": task_rect(self, k), "icon": ic, "title": title, "state": win["task"],
+                        "focused": self.focus is win, "target": self.switching and self.target is win})
+        return out
 
     def cancel(self):
         """1.3 stage 5 (ui_wm_cancel): a held left button let go, nothing
@@ -1090,6 +1332,8 @@ class WM:
             if win["r"][:2] != self.grab[2][:2]:
                 self.ev("drag %s to (%d, %d) %dx%d" % ((win["name"],) + win["r"]))
         self.pressed = None
+        self.task_pressed = None
+        self.click_w = None
         self.states()
 
     def esc(self):
@@ -1111,11 +1355,9 @@ class WM:
                 return "taken"
             con = next((w for w in self.z if w["name"] == "Console"), None)
             if con is None:
-                self.open("Console", console_size[0], console_size[1], False)
+                self.open("Console", console_size[0], console_size[1], False, WINDOW_BUTTONS["Console"])
             else:
-                self.raise_(con)
-                self.set_focus(con)
-                self.states()
+                self.activate(con)
             return "opened"
         if self.focus["name"] == "Console":
             return "console"
@@ -1123,6 +1365,22 @@ class WM:
             self.esc()
         return "taken"
 
+
+def wm_shown(wm, values, grid=None):
+    """1.5 stage 8: the windows to draw (desktop_windows' list), bottom to
+    top, minimised ones left out: a dict r, active, close, values, extra
+    (window()'s), and grid for the Console window."""
+    shown = []
+    for z in wm.z:
+        if z["minimised"]:
+            continue
+        one = {"r": z["r"], "active": z is wm.focus, "close": z["close"], "values": values,
+               "extra": {"buttons": z["buttons"], "min": z["min"], "max": z["max"], "maximised": z["maximised"],
+                         "size": (z["w"], z["h"])}}
+        if z["name"] == "Console":
+            one["grid"] = grid() if callable(grid) else grid
+        shown.append(one)
+    return shown
 
 def scene_windows(scr, tok, s, close="normal"):
     """tests/desktopdump.c's window scenes: two About windows on bg.deep,
@@ -1151,12 +1409,13 @@ def desktop_windows(w, h, clock, windows, shell=None):
     scr.pix = bytearray(desktop(w, h, clock))
     for win in windows:
         if win.get("grid") is not None:
-            console_window(scr, tok, s, win["r"], win["active"], win["close"], win["grid"])
+            console_window(scr, tok, s, win["r"], win["active"], win["close"], win["grid"], win.get("extra"))
         else:
-            about_window(scr, tok, s, win["r"], win["active"], win["close"], win["values"])
+            about_window(scr, tok, s, win["r"], win["active"], win["close"], win["values"], win.get("extra"))
     if shell is not None:
         if shell["m"] != "normal":
             taskbar(scr, tok, clock, shell["m"])
+        task_buttons(scr, tok, s, shell.get("task", []))          # 1.5 stage 8
         if shell["menu"] is not None:
             menu_draw(scr, tok, shell["menu"])
         if shell["dialog"] is not None:
@@ -1185,13 +1444,61 @@ def scene_console(scr, tok, s, kind):
         c["r"][0], c["r"][1], cw, chh, a["r"][0], a["r"][1])
 
 
+# ---- 1.5 stage 8: the title-bar buttons and the taskbar's window buttons ----
+
+def scene_chrome(scr, tok, s, variant):
+    """tests/desktopdump.c's chrome scenes: chrome (the Console window,
+    minimise only, then an About window over it, minimise and maximise,
+    every button normal), chrome_hover (About's minimise on hover, its
+    maximise pressed, the Console window's minimise on hover), chrome_max
+    (an About window alone, maximised)."""
+    wm = WM(scr.w, scr.h, s)
+    c = None
+    if variant != "max":
+        cw, chh = console_size(s)
+        c = wm.open("Console", cw, chh, False, WINDOW_BUTTONS["Console"])
+    aw, ah = about_size(s)
+    a = wm.open("About", aw, ah, True, WINDOW_BUTTONS["About"])
+    if variant == "hover":
+        a["min"], a["max"], c["min"] = "hover", "pressed", "hover"
+    elif variant == "max":
+        wm.toggle_max(a)
+    values = about_values(s, b"1.3", DUMP_LOADER, DUMP_DISPLAY, b"127 MB")
+    for win in wm_shown(wm, values, dump_grid()):
+        if win.get("grid") is not None:
+            console_window(scr, tok, s, win["r"], win["active"], "normal", win["grid"], win["extra"])
+        else:
+            about_window(scr, tok, s, win["r"], win["active"], "normal", values, win["extra"])
+    return "%s; the About window at (%d, %d) %dx%d" % ((variant,) + a["r"])
+
+
+TASK_SCENE = [(ABOUT_TITLE, "about"), (b"Console", "console"), (b"A title much longer than its button", "calculator"),
+              (b"Power", "power"), (b"Restart", "restart"), (b"Close", "close")]
+
+
+def scene_taskbuttons(scr, tok, s):
+    """tests/desktopdump.c's taskbuttons scene: the taskbar with six window
+    buttons: focused, hover, pressed (a long title clipped), minimised,
+    the Alt+Tab ring, normal."""
+    taskbar(scr, tok, FIXED_CLOCK)
+    wm = WM(scr.w, scr.h, s)
+    wins = [wm.open(t.decode(), 100, 100, False, None, (ic, t)) for t, ic in TASK_SCENE]
+    wm.activate(wins[0])
+    wins[1]["task"], wins[2]["task"] = "hover", "pressed"
+    wm.minimise(wins[3])
+    wm.switching, wm.target = True, wins[4]
+    task_buttons(scr, tok, s, wm.task_view())
+    r = task_rect(wm, 0)
+    return "six buttons %dx%d from (%d, %d)" % (r[2], r[3], r[0], r[1])
+
+
 # ---- The menus, the M button and the Restart dialog (1.3 stage 5) ----
 
 # kernel/display/ui_menu.h: size in dp, a header, the rows' tops and the
 # dividers in dp, each row's label, icon and action.
 MENU_DEFS = {
     "M": {"w": 288, "h": 182, "header": True, "rows": [61, 97, 142], "dividers": [56, 137],
-          "labels": [b"About", b"Console", b"Power..."], "icons": ["about", "console", "restart"],
+          "labels": [b"About", b"Console", b"Power..."], "icons": ["about", "console", "power"],
           "actions": ["about", "console", "power"]},
     "desktop": {"w": 224, "h": 80, "header": False, "rows": [4, 40], "dividers": [],
                 "labels": [b"Open Console", b"About Madire OS"], "icons": ["console", "about"],
@@ -1337,7 +1644,7 @@ def dialog_draw(scr, tok, s, dlg):
         for b in (0, 1, 2):
             button(scr_, tok, dialog_button(r, s, b), st[1 if b == 2 else 0], dlg["btn"][b],
                    dlg["ring"] and dlg["focus"] == b, s, lab=DIALOG_LABELS[b])
-    window(scr, tok, s, dlg["r"], b"Power", "restart", True, dlg["close"], client)
+    window(scr, tok, s, dlg["r"], b"Power", "power", True, dlg["close"], client)
 
 
 MENU_NAMES = {"M": "M", "desktop": "desktop"}
@@ -1369,7 +1676,8 @@ class Menus:
 
     def view(self):
         return {"m": self.m_state, "menu": dict(self.menu) if self.menu else None,
-                "dialog": {**self.dlg, "btn": list(self.dlg["btn"])} if self.dlg else None}
+                "dialog": {**self.dlg, "btn": list(self.dlg["btn"])} if self.dlg else None,
+                "task": self.wm.task_view()}                    # 1.5 stage 8
 
     def state(self):
         m = self.menu
@@ -1414,15 +1722,14 @@ class Menus:
                                                    "the keyboard" if ring else "the pointer"))
 
     def wm_open(self, name):
-        """ui_wm_open: open the window, or raise and focus it if it is open."""
+        """ui_wm_open: open the window, or raise and focus it if it is open
+        (1.5 stage 8: restored first if it is minimised)."""
         win = next((w for w in self.wm.z if w["name"] == name), None)
         if win is None:
             w, h = about_size(self.wm.s) if name == "About" else console_size(self.wm.s)
-            self.wm.open(name, w, h, name == "About")
+            self.wm.open(name, w, h, name == "About", WINDOW_BUTTONS[name])
         else:
-            self.wm.raise_(win)
-            self.wm.set_focus(win)
-            self.wm.states()
+            self.wm.activate(win)
 
     def choose(self, row, by_key):
         d = MENU_DEFS[self.menu["kind"]]
@@ -1497,7 +1804,7 @@ class Menus:
             if row >= 0:
                 self.choose(row, False)
 
-    def pointer(self, x, y, down=False, up=False, right=False):
+    def pointer(self, x, y, down=False, up=False, right=False, double=False):
         self.x, self.y = x, y
         if self.dlg:
             at = dialog_hit(self.dlg, x, y)
@@ -1545,10 +1852,16 @@ class Menus:
         elif down and self.over_m() and not self.wm.left:
             self.left, self.press = True, "m"
         else:
-            self.wm.pointer(x, y, down, up)
+            self.wm.pointer(x, y, down, up, double)
             if right and not self.wm.left and self.wm.hit(x, y)[0] == "desktop":
                 self.open_menu("desktop", False)
         self.update_m()
+
+    def middle(self, x, y):
+        """1.5 stage 8 (desktop_pointer): the middle button pressed, after
+        the packet's pointer() call; nothing with a menu or the dialog open."""
+        if not self.menu and not self.dlg:
+            self.wm.middle(x, y)
 
     def key(self, qcode, pressed=True):
         """One key event (its qcode); "wm" if the window manager takes it."""
@@ -1780,7 +2093,12 @@ SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, 
           "windows_pressed": lambda scr, tok, s: scene_windows(scr, tok, s, "pressed"),
           "console": lambda scr, tok, s: scene_console(scr, tok, s, "active"),
           "console_inactive": lambda scr, tok, s: scene_console(scr, tok, s, "inactive"),
-          "console_about": lambda scr, tok, s: scene_console(scr, tok, s, "about")}
+          "console_about": lambda scr, tok, s: scene_console(scr, tok, s, "about"),
+          # 1.5 stage 8
+          "chrome": lambda scr, tok, s: scene_chrome(scr, tok, s, "normal"),
+          "chrome_hover": lambda scr, tok, s: scene_chrome(scr, tok, s, "hover"),
+          "chrome_max": lambda scr, tok, s: scene_chrome(scr, tok, s, "max"),
+          "taskbuttons": scene_taskbuttons}
 SCENES.update({name: (lambda scr, tok, s, n=name: scene_menus(scr, tok, s, n)) for name in MENU_SCENES})
 
 

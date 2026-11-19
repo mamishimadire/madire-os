@@ -68,7 +68,7 @@ static void test_sizes_and_rows(void)
     CHECK_EQ(ui_menu_action(UI_MENU_DESKTOP, 0), UI_MENU_CONSOLE);
     CHECK_EQ(ui_menu_action(UI_MENU_DESKTOP, 1), UI_MENU_ABOUT);
     CHECK_EQ(ui_menu_action(UI_MENU_DESKTOP, 2), UI_MENU_NONE);
-    CHECK_EQ(ui_menu_icon(UI_MENU_M, 2), UI_ICON_RESTART);
+    CHECK_EQ(ui_menu_icon(UI_MENU_M, 2), UI_ICON_POWER);
     CHECK_EQ(ui_menu_icon(UI_MENU_DESKTOP, 0), UI_ICON_CONSOLE);
     CHECK_EQ(ui_menu_icon(UI_MENU_M, 5), UI_ICON_NONE);
 }

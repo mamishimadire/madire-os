@@ -840,7 +840,7 @@ static void __attribute__((noreturn)) idle_loop(const struct memory_stats *mem,
                  * focused the console takes it; with the About window
                  * focused Esc closes it. 1.3 stage 5: the menus, the
                  * Restart dialog and the Windows key read it first. */
-                enum desktop_key_route r = desktop_key(e.keycode, e.flags & KEY_PRESSED);
+                enum desktop_key_route r = desktop_key(e.keycode, e.flags & KEY_PRESSED, e.flags);  /* 1.5 stage 8 */
                 if (r == DESKTOP_KEY_OPENED && !console_active()) {
                     BOOTSCREEN_SAFE(bootscreen_last_key(&e));
                     console_start(mem);

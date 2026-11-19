@@ -378,5 +378,19 @@
 # owner's approval, before the commit): mouse_done_ok's bytes per packet
 # (4 after the ID 3 line) and the texts of part 1's and the stress part's
 # mouse counts checks (44 and 4000 bytes).
-1.5 52
+# Stage 8: 29 more (C4, window management; Alt+Tab; the power icon): in
+# part static 21: the scenes chrome, chrome_hover, chrome_max and
+# taskbuttons in five modes (20) and their contrast check (1); in part 5 8:
+# one window-management session (two windows and their taskbar buttons;
+# minimise and restore by the taskbar button; maximise, restore and the
+# double click; the middle click; Alt+Tab, Shift+Alt+Tab and Esc; the
+# Alt+Tab ring; plain Tab in the Console window; every line and packet as
+# the model predicts). New cases in the unit suite ui_window (no new
+# suite). Changed, not added (the owner's approval, before the commit; H2
+# item 9): every QEMU screen with a window or a taskbar window button (the
+# title-bar buttons, the taskbar's buttons), the M menu's Power... row and
+# the power dialog's title (the power icon), part static's icons scene (the
+# four new icons) and its menu and dialog scenes; the unit checks of the
+# window limit (6) and of the Power... row's and the dialog's icon.
+1.5 81
 unit-suites 110

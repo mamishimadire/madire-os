@@ -3480,3 +3480,60 @@ else
     fail "[1.5] Shut down's 2 s wait with the ACPI tables: no fallback screen after the waiter's line, a PANIC, FAILED or 'can never take its turn' line, or QEMU not running (still running: $PWW_ALIVE)"
 fi
 echo "      [1.5] Shut down with a waiter: $(( $(date +%s) - PWW_T0 )) s (report only)"
+
+section "[1.5] The title-bar buttons, a maximised window and the taskbar's window buttons against tests/desktop_ref.py, and their contrast check (stage 8)"
+# docs/plans/1.5.md, C4; kernel/display/ui_window.h. The host tool
+# (build/desktopdump) draws, painted in tiles of 97 x 61 (the exposure
+# path): chrome (the Console window with its minimise button, an About
+# window over it with minimise and maximise, every button normal);
+# chrome_hover (About's minimise on hover, its maximise pressed, the
+# Console window's minimise on hover); chrome_max (an About window alone,
+# maximised: the area above the taskbar, the restore icon, its content in
+# its own size centred across); taskbuttons (the taskbar with six window
+# buttons: the focused window's fill and accent bar, hover, pressed with
+# a long title clipped, minimised, the Alt+Tab ring, normal; the span
+# shared). desktop_ref.py draws them from ui_window.h's rules. Five modes,
+# both pixel formats, every scale but 125 %. The colour pairs they draw are
+# checked against the Design Guide's section 12 table as in 1.3 stage 4a
+# (their own pairs file; the hover fills carried by the pointer, the
+# focused and pressed taskbar fills by their accent bar).
+W8_T0=$(date +%s)
+PAIRS8=$OUT/desktop-pairs-chrome.txt
+rm -f "$PAIRS8"
+desktop8_static() {   # desktop8_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS8 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'EOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+EOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.5] the window scene $4 at $1x$2x$(($3 * 8)) (ui_window.c: the title-bar buttons, maximise, the taskbar's window buttons) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.5] the window scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in chrome chrome_hover chrome_max taskbuttons; do
+        # shellcheck disable=SC2086
+        desktop8_static $mode $scene
+    done
+done
+CONTRAST8=$(python3 "$DREF" --contrast "$PAIRS8" 2>&1)
+printf '%s\n' "$CONTRAST8" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST8" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST8" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 4 scenes \(chrome chrome_hover chrome_max taskbuttons\)$' &&
+   printf '%s\n' "$CONTRAST8" | grep -qE '^CONTRAST carried pass carried-bar ' &&
+   printf '%s\n' "$CONTRAST8" | grep -qE '^CONTRAST carried pass carried-pointer '; then
+    pass "[1.5] contrast: every colour pair the title-bar buttons and the taskbar's window buttons draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; the hover fills carried by the pointer, the focused and pressed taskbar fills by their passing accent bar"
+else
+    fail "[1.5] contrast: a colour pair the title-bar or taskbar buttons draw is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its bar or pointer (see the CONTRAST lines)"
+fi
+echo "      [1.5] the window buttons (static): $(( $(date +%s) - W8_T0 )) s (report only)"

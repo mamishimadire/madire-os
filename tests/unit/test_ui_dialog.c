@@ -61,7 +61,7 @@ static void test_place_and_state(void)
     CHECK(w == 450 && h == 215);
     ui_dialog_init(&dlg, 4, &f, 1024, 728, false);
     CHECK(same_rect(dlg.w.r, 332, 278, 360, 172));
-    CHECK(dlg.w.open && strcmp(dlg.w.title, "Power") == 0 && dlg.w.icon == UI_ICON_RESTART);
+    CHECK(dlg.w.open && strcmp(dlg.w.title, "Power") == 0 && dlg.w.icon == UI_ICON_POWER);
     CHECK(dlg.focus == UI_DLG_CANCEL && !dlg.ring);
     CHECK(dlg.btn[UI_DLG_CANCEL] == UI_BUTTON_NORMAL && dlg.btn[UI_DLG_RESTART] == UI_BUTTON_NORMAL &&
           dlg.btn[UI_DLG_SHUTDOWN] == UI_BUTTON_NORMAL);

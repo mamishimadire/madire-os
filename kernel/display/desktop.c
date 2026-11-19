@@ -166,10 +166,14 @@ static void windows_layer(void *ctx, struct surface *b, struct rect r)
     (void)ctx;
     for (uint32_t i = 0; i < wm.n; i++) {
         struct desk_window *d = (struct desk_window *)wm.z[i];
+        if (d->w.minimised)                 /* 1.5 stage 8: a minimised window is not drawn */
+            continue;
         struct ui_canvas c = { b, ui_rect_intersect(r, d->w.r) };
         if (ui_rect_empty(c.clip))
             continue;
-        if (d->has_surface)
+        /* 1.5 stage 8: a maximised window is drawn on exposure (its
+         * surface keeps its own size; S9 brings screen-sized surfaces). */
+        if (d->has_surface && !d->w.maximised)
             ui_blit_round(&c, d->w.r, &d->surf, ui_window_radius(scale), UI_CORNERS_ALL);
         else
             ui_window_draw(&c, &d->w, d->w.r, wm.focus == &d->w, d->w.close, scale, &fonts);
@@ -180,6 +184,11 @@ static void taskbar_layer(void *ctx, struct surface *b, struct rect r)
 {
     (void)ctx;
     desktop_draw_taskbar_m(b, &lay, r, clock, desk_menus.m_state);    /* 1.3 stage 5: the M button's state */
+    struct ui_canvas c;                 /* 1.5 stage 8: the window buttons */
+    ui_canvas_init(&c, b);
+    ui_canvas_clip(&c, r);
+    if (!ui_rect_empty(c.clip))
+        ui_wm_draw_taskbar(&c, &wm, &fonts);
 }
 
 /* 1.3 stage 5: an open menu and the Restart dialog, above everything else,
@@ -219,7 +228,7 @@ static void refresh_surfaces(void)
         if (!d->w.dirty)
             continue;
         d->w.dirty = false;
-        if (!d->has_surface)
+        if (!d->has_surface || d->w.maximised)  /* 1.5 stage 8: maximised: drawn on exposure */
             continue;
         int32_t w = d->w.w, h = d->w.h, R = ui_window_radius(scale), tb = ui_window_title_h(scale);
         struct rect whole = { 0, 0, w, h };
@@ -501,6 +510,40 @@ static void log_events(void)
         case UI_EV_CLOSE_STATE:
             kserialf("desktop: close button of %s: %s\n", name, close_states[e->state]);
             break;
+        /* 1.5 stage 8 (C4) */
+        case UI_EV_MINIMISE:
+            kserialf("desktop: minimise %s\n", name);
+            break;
+        case UI_EV_RESTORE:
+            kserialf("desktop: restore %s\n", name);
+            break;
+        case UI_EV_MAXIMISE:
+            kserialf("desktop: maximise %s to (%d, %d) %dx%d\n", name, e->r.x, e->r.y, e->r.w, e->r.h);
+            break;
+        case UI_EV_UNMAXIMISE:
+            kserialf("desktop: unmaximise %s to (%d, %d) %dx%d\n", name, e->r.x, e->r.y, e->r.w, e->r.h);
+            break;
+        case UI_EV_CLOSE_MIDDLE:
+            kserialf("desktop: close %s (middle click)\n", name);
+            break;
+        case UI_EV_MIN_STATE:
+            kserialf("desktop: minimise button of %s: %s\n", name, close_states[e->state]);
+            break;
+        case UI_EV_MAX_STATE:
+            kserialf("desktop: maximise button of %s: %s\n", name, close_states[e->state]);
+            break;
+        case UI_EV_TASK_STATE:
+            kserialf("desktop: taskbar button %s: %s\n", name, close_states[e->state]);
+            break;
+        case UI_EV_SWITCH_SELECT:
+            kserialf("desktop: switch: %s marked (Alt+Tab)\n", name);
+            break;
+        case UI_EV_SWITCH_CHOSEN:
+            kserialf("desktop: switch: %s chosen (Alt released)\n", name);
+            break;
+        case UI_EV_SWITCH_CANCEL:
+            kserialf("desktop: switch: cancelled (Esc)\n");
+            break;
         }
     }
     if (wm.lost_ev) {
@@ -670,6 +713,7 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
     console_win.w.w = w;
     console_win.w.h = h;
     console_win.w.paint = desk_console_paint;   /* 1.3 stage 4b */
+    console_win.w.buttons = UI_WIN_MINIMISE;    /* 1.5 stage 8: 80x25 stays: minimise only (C4) */
     ksnprintf(about_display, sizeof(about_display), "%ux%ux%u", fi->width, fi->height, fi->bpp);
     ksnprintf(about_memory, sizeof(about_memory), "%u MB", usable_mb);
     ui_about_setup(&about, scale, &fonts, MADIRE_OS_VERSION, loader_name, about_display, about_memory,
@@ -689,6 +733,7 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
     about_win.w.w = w;
     about_win.w.h = h;
     about_win.w.esc_closes = true;
+    about_win.w.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;   /* 1.5 stage 8 (C4) */
     about_win.w.paint = ui_about_paint;
     about_win.w.ctx = &about;
     size_t need = ui_about_scratch(scale, fi->width, fi->height);
@@ -837,6 +882,9 @@ static bool desk_begin(const struct fb_info *fi, const struct fbcon_layout *cl)
     comp_add_layer(&comp, taskbar_layer, 0);
     comp_add_layer(&comp, desk_overlay_layer, 0);                /* 1.3 stage 5 */
     ui_wm_init(&wm, (int32_t)fi->width, (int32_t)fi->height, lay.bar.y, scale, &comp.damage);
+    /* 1.5 stage 8: the window buttons from 4 dp after the M cell to 16 dp
+     * before the clock. */
+    ui_wm_set_taskbar(&wm, lay.m_cell.x + lay.m_cell.w + ui_px(4, scale), lay.clock_box.x - ui_px(16, scale));
     ui_menus_init(&desk_menus, &wm, &about_win.w, &console_win.w, lay.m_cell, &fonts);
     size_t menu_need = ui_menu_scratch(scale, fi->width, fi->height);
     if (menu_need > UI_ABOUT_SCRATCH)
@@ -882,10 +930,14 @@ void desktop_poll(void)
 
 void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool right_down, bool middle_down)
 {
-    (void)middle_down;                  /* 1.5 stage 7: passed on; S8 (C4) uses it */
     if (!showing)
         return;
+    ui_wm_set_now(&wm, timer_ticks());  /* 1.5 stage 8: the double click's clock */
     ui_menus_pointer(&desk_menus, x, y, left_down, left_up, right_down);   /* 1.3 stage 5 */
+    /* 1.5 stage 8: a middle press on a taskbar button closes its window
+     * (nothing while a menu or the dialog is open). */
+    if (middle_down && !desk_menus.menu_open && !desk_menus.dlg_open)
+        ui_wm_middle(&wm, x, y);
     log_events();
     if (desk_menu_done() == UI_MENU_CONSOLE)
         desk_console_wanted = true;
@@ -954,11 +1006,36 @@ static enum ui_menus_key desk_key_of(uint8_t keycode)
     }
 }
 
-enum desktop_key_route desktop_key(uint8_t keycode, bool pressed)
+enum desktop_key_route desktop_key(uint8_t keycode, bool pressed, uint8_t flags)
 {
     if (!showing)
         return DESKTOP_KEY_TAKEN;
     enum desktop_key_route out = DESKTOP_KEY_TAKEN;
+    /* 1.5 stage 8: Alt+Tab and Shift+Alt+Tab, before the menus and the
+     * Console window see the key (desktop.h); with no menu and no dialog
+     * open. Plain Tab goes on as before. */
+    if (!desk_menus.menu_open && !desk_menus.dlg_open) {
+        bool tab = keycode == KEY_TAB, alt = (flags & KEY_ALT) && !(flags & KEY_CTRL);
+        if (tab && pressed && alt) {
+            ui_wm_switch_step(&wm, (flags & KEY_SHIFT) != 0);
+            log_events();
+            return DESKTOP_KEY_TAKEN;
+        }
+        if (wm.switching) {
+            if (tab)
+                return DESKTOP_KEY_TAKEN;           /* the Tab's release */
+            if ((keycode == KEY_LALT || keycode == KEY_RALT) && !pressed) {
+                ui_wm_switch_commit(&wm);
+                log_events();
+                return DESKTOP_KEY_TAKEN;
+            }
+            if (keycode == KEY_ESC && pressed) {
+                ui_wm_switch_cancel(&wm);
+                log_events();
+                return DESKTOP_KEY_TAKEN;
+            }
+        }
+    }
     /* 1.3 stage 5: the dialog, the Windows key and an open menu first. */
     if (ui_menus_key(&desk_menus, desk_key_of(keycode), pressed) == UI_MENUS_TO_WM) {
         enum ui_key_route r = ui_wm_key(&wm, &console_win.w, pressed, keycode == KEY_ESC);

@@ -165,10 +165,11 @@ static void test_hit_z_focus(void)
     /* Opening an open window raises and focuses it. */
     ui_wm_open(&m, &b);
     CHECK(m.z[1] == &b && m.focus == &b && count(&m, UI_EV_OPEN) == 0 && count(&m, UI_EV_RAISE) == 1);
-    /* At most UI_WINDOWS_MAX. */
+    /* At most UI_WINDOWS_MAX (1.5 stage 8: 6). */
     struct ui_window c = win("C", 100, 100, false), d = win("D", 100, 100, false), e = win("E", 100, 100, false);
-    CHECK(ui_wm_open(&m, &c) && ui_wm_open(&m, &d));
-    CHECK(!ui_wm_open(&m, &e) && m.n == 4);
+    struct ui_window f = win("F", 100, 100, false), g = win("G", 100, 100, false);
+    CHECK(ui_wm_open(&m, &c) && ui_wm_open(&m, &d) && ui_wm_open(&m, &e) && ui_wm_open(&m, &f));
+    CHECK(!ui_wm_open(&m, &g) && m.n == 6);
 }
 
 static void test_drag(void)
@@ -382,6 +383,214 @@ static void test_frame_pixels(void)
     CHECK_EQ(surface_get(&sf, 10 + 352 - 33, 10 + 31), UI_SURFACE_WINDOW);
 }
 
+/* ---- 1.5 stage 8 ---- */
+
+static void click(struct ui_wm *m, int32_t x, int32_t y)
+{
+    ui_wm_pointer(m, x, y, true, false);
+    ui_wm_pointer(m, x, y, false, true);
+}
+
+/* The title-bar buttons, minimise, maximise and restore. */
+static void test_min_max_restore(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window a = win("A", 352, 377, false), c = win("C", 642, 433, false);
+    a.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    c.buttons = UI_WIN_MINIMISE;
+    ui_wm_open(&m, &c);                             /* (191, 147) */
+    ui_wm_open(&m, &a);                             /* (336, 175) */
+    struct ui_window *at;
+    CHECK(same_rect(ui_window_part_rect(&a, a.r, 4, UI_HIT_MAXIMISE), 336 + 352 - 64, 175, 32, 32));
+    CHECK(same_rect(ui_window_part_rect(&a, a.r, 4, UI_HIT_MINIMISE), 336 + 352 - 96, 175, 32, 32));
+    CHECK(same_rect(ui_window_part_rect(&c, c.r, 4, UI_HIT_MINIMISE), 191 + 642 - 64, 147, 32, 32));
+    CHECK(ui_rect_empty(ui_window_part_rect(&c, c.r, 4, UI_HIT_MAXIMISE)));
+    CHECK(ui_wm_hit(&m, 600, 190, &at) == UI_HIT_MINIMISE && at == &a);
+    CHECK(ui_wm_hit(&m, 630, 190, &at) == UI_HIT_MAXIMISE && at == &a);
+    CHECK(ui_wm_hit(&m, 670, 190, &at) == UI_HIT_CLOSE && at == &a);
+    CHECK(ui_wm_hit(&m, 780, 160, &at) == UI_HIT_MINIMISE && at == &c);
+    CHECK(ui_wm_hit(&m, 740, 160, &at) == UI_HIT_TITLE && at == &c);      /* no maximise button */
+    /* Hover and press states, as the close button's. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 630, 190, false, false);
+    CHECK(a.max_st == UI_BUTTON_HOVER && count(&m, UI_EV_MAX_STATE) == 1 && a.dirty);
+    ui_wm_pointer(&m, 630, 190, true, false);
+    CHECK(a.max_st == UI_BUTTON_PRESSED && m.pressed == &a && m.pressed_part == UI_HIT_MAXIMISE);
+    /* Maximise: the area above the taskbar; the rectangle kept. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 630, 190, false, true);
+    CHECK(a.maximised && same_rect(a.r, 0, 0, 1024, 728) && same_rect(a.normal_r, 336, 175, 352, 377));
+    CHECK(count(&m, UI_EV_MAXIMISE) == 1);
+    /* A maximised window is not dragged; the press and release make a click. */
+    ui_wm_pointer(&m, 500, 10, true, false);
+    ui_wm_pointer(&m, 600, 100, false, false);
+    CHECK(same_rect(a.r, 0, 0, 1024, 728));
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 600, 100, false, true);
+    CHECK(count(&m, UI_EV_DRAG) == 0 && m.click_w == &a);
+    /* Restore (the maximise button's place at the right end). */
+    CHECK(ui_wm_hit(&m, 970, 10, &at) == UI_HIT_MAXIMISE && at == &a);
+    ui_wm_clear_events(&m);
+    click(&m, 970, 10);
+    CHECK(!a.maximised && same_rect(a.r, 336, 175, 352, 377) && count(&m, UI_EV_UNMAXIMISE) == 1);
+    /* Minimise: no hit, the focus to the top window shown. */
+    ui_wm_clear_events(&m);
+    click(&m, 600, 190);
+    CHECK(a.minimised && m.focus == &c && count(&m, UI_EV_MINIMISE) == 1 && count(&m, UI_EV_FOCUS) == 1);
+    CHECK(ui_wm_hit(&m, 400, 300, &at) == UI_HIT_BODY && at == &c);
+    ui_wm_clear_events(&m);
+    click(&m, 780, 160);
+    CHECK(c.minimised && m.focus == 0 && count(&m, UI_EV_UNFOCUS) == 1);
+    /* No window focused: a key opens the Console window: restored. */
+    ui_wm_clear_events(&m);
+    CHECK(ui_wm_key(&m, &c, true, false) == UI_KEY_OPENED);
+    CHECK(!c.minimised && m.focus == &c && count(&m, UI_EV_RESTORE) == 1 && count(&m, UI_EV_OPEN) == 0);
+    /* No maximise for a window without the button. */
+    ui_wm_toggle_maximise(&m, &c);
+    CHECK(!c.maximised && same_rect(c.r, 191, 147, 642, 433));
+    /* Opening a minimised window restores it. */
+    CHECK(ui_wm_open(&m, &a) && !a.minimised && m.focus == &a && m.z[1] == &a);
+}
+
+/* The taskbar's window buttons: places, states, the click and the middle click. */
+static void test_taskbar_buttons(void)
+{
+    struct ui_wm m = wm_1024();
+    ui_wm_set_taskbar(&m, 44, 952);
+    struct ui_window a = win("A", 352, 377, false), c = win("C", 642, 433, false);
+    a.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    c.buttons = UI_WIN_MINIMISE;
+    ui_wm_open(&m, &a);
+    ui_wm_open(&m, &c);
+    CHECK(m.order[0] == &a && m.order[1] == &c);
+    CHECK(same_rect(ui_wm_task_rect(&m, 0), 44, 729, 160, 39) && same_rect(ui_wm_task_rect(&m, 1), 208, 729, 160, 39));
+    CHECK(same_rect(ui_wm_task_strip(&m), 44, 729, 908, 39));
+    struct ui_window *at;
+    CHECK(ui_wm_hit(&m, 100, 740, &at) == UI_HIT_TASKBUTTON && at == &a);
+    CHECK(ui_wm_hit(&m, 300, 740, &at) == UI_HIT_TASKBUTTON && at == &c);
+    CHECK(ui_wm_hit(&m, 500, 740, &at) == UI_HIT_TASKBAR && !at);
+    CHECK(ui_wm_hit(&m, 100, 728, &at) == UI_HIT_TASKBAR);                 /* the top line */
+    /* Hover, pressed; the release over it raises and focuses A. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 100, 740, false, false);
+    CHECK(a.task_st == UI_BUTTON_HOVER && count(&m, UI_EV_TASK_STATE) == 1);
+    ui_wm_pointer(&m, 100, 740, true, false);
+    CHECK(a.task_st == UI_BUTTON_PRESSED && m.task_pressed == &a && m.focus == &c);
+    ui_wm_pointer(&m, 100, 740, false, true);
+    CHECK(m.focus == &a && m.z[1] == &a && a.task_st == UI_BUTTON_HOVER);
+    /* The focused window's button minimises it; again restores it. */
+    ui_wm_clear_events(&m);
+    click(&m, 100, 740);
+    CHECK(a.minimised && m.focus == &c && count(&m, UI_EV_MINIMISE) == 1);
+    ui_wm_clear_events(&m);
+    click(&m, 100, 740);
+    CHECK(!a.minimised && m.focus == &a && count(&m, UI_EV_RESTORE) == 1 && m.z[1] == &a);
+    /* Released elsewhere: nothing. */
+    ui_wm_pointer(&m, 300, 740, true, false);
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 500, 740, false, true);
+    CHECK(m.focus == &a && c.task_st == UI_BUTTON_NORMAL && count(&m, UI_EV_FOCUS) == 0);
+    /* The middle button closes C; A's button moves to the first place. */
+    ui_wm_clear_events(&m);
+    ui_wm_middle(&m, 300, 740);
+    CHECK(!c.open && m.n == 1 && m.order[0] == &a && count(&m, UI_EV_CLOSE_MIDDLE) == 1);
+    ui_wm_middle(&m, 500, 740);                     /* not on a button: nothing */
+    CHECK(m.n == 1);
+    /* Six windows share the span: 148 px each. */
+    struct ui_window w2 = win("W2", 100, 100, false), w3 = win("W3", 100, 100, false);
+    struct ui_window w4 = win("W4", 100, 100, false), w5 = win("W5", 100, 100, false);
+    struct ui_window w6 = win("W6", 100, 100, false);
+    CHECK(ui_wm_open(&m, &w2) && ui_wm_open(&m, &w3) && ui_wm_open(&m, &w4) && ui_wm_open(&m, &w5) &&
+          ui_wm_open(&m, &w6) && m.n == 6);
+    CHECK(same_rect(ui_wm_task_rect(&m, 5), 44 + 5 * 152, 729, 148, 39));
+}
+
+/* Alt+Tab over the most-recently-focused order, minimised windows included. */
+static void test_switch(void)
+{
+    struct ui_wm m = wm_1024();
+    CHECK(!ui_wm_switch_step(&m, false));           /* no window */
+    struct ui_window a = win("A", 100, 100, false), b = win("B", 100, 100, false), c = win("C", 100, 100, false);
+    ui_wm_open(&m, &a);
+    ui_wm_open(&m, &b);
+    ui_wm_open(&m, &c);
+    CHECK(m.mru[0] == &c && m.mru[1] == &b && m.mru[2] == &a);
+    ui_wm_clear_events(&m);
+    CHECK(ui_wm_switch_step(&m, false) && m.switching && m.target == &b);  /* the previous window */
+    CHECK(ui_wm_switch_step(&m, false) && m.target == &a);
+    CHECK(ui_wm_switch_step(&m, false) && m.target == &c);                 /* round again */
+    CHECK(count(&m, UI_EV_SWITCH_SELECT) == 3 && m.focus == &c);           /* nothing moves yet */
+    ui_wm_switch_step(&m, false);
+    ui_wm_clear_events(&m);
+    ui_wm_switch_commit(&m);
+    CHECK(!m.switching && m.focus == &b && m.z[2] == &b && count(&m, UI_EV_SWITCH_CHOSEN) == 1);
+    CHECK(m.mru[0] == &b && m.mru[1] == &c && m.mru[2] == &a);
+    /* A minimised window is chosen and restored. */
+    ui_wm_minimise(&m, &a);
+    CHECK(a.minimised && m.focus == &b);
+    ui_wm_switch_step(&m, true);                    /* back: the last one, A */
+    CHECK(m.target == &a);
+    ui_wm_switch_commit(&m);
+    CHECK(!a.minimised && m.focus == &a && m.mru[0] == &a);
+    /* Back twice (the order A, B, C: C, then B), then Esc: nothing changes. */
+    ui_wm_switch_step(&m, true);
+    CHECK(m.target == &c);
+    ui_wm_switch_step(&m, true);
+    CHECK(m.target == &b);
+    ui_wm_clear_events(&m);
+    ui_wm_switch_cancel(&m);
+    CHECK(!m.switching && m.focus == &a && count(&m, UI_EV_SWITCH_CANCEL) == 1 && count(&m, UI_EV_FOCUS) == 0);
+    /* The marked window closed (its taskbar button, the middle button): no switch left. */
+    ui_wm_switch_step(&m, false);
+    CHECK(m.target == &b && m.order[1] == &b);
+    ui_wm_middle(&m, -1, -1);                       /* no button there: still marked */
+    CHECK(m.switching && m.target == &b);
+    ui_wm_middle(&m, ui_wm_task_rect(&m, 1).x + 1, 740);
+    CHECK(!b.open && !m.switching && m.target == 0 && m.focus == &a);
+}
+
+/* The double click on a title bar toggles maximise (UI_WM_DCLICK_TICKS). */
+static void test_double_click(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window a = win("A", 352, 377, false), b = win("B", 352, 377, false);
+    a.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    ui_wm_open(&m, &a);                             /* (336, 175) */
+    ui_wm_set_now(&m, 100);
+    click(&m, 400, 190);
+    CHECK(m.click_w == &a && !a.maximised);
+    ui_wm_set_now(&m, 150);                         /* 50 ticks: still a double click */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 404, 194, true, false);       /* 4 px away: still */
+    CHECK(a.maximised && m.drag == 0 && count(&m, UI_EV_MAXIMISE) == 1);
+    ui_wm_pointer(&m, 404, 194, false, true);
+    CHECK(m.click_w == 0);                          /* the second press makes no new click */
+    ui_wm_set_now(&m, 300);
+    click(&m, 400, 10);
+    ui_wm_set_now(&m, 351);                         /* 51 ticks: two clicks */
+    click(&m, 400, 10);
+    CHECK(a.maximised);
+    ui_wm_set_now(&m, 360);
+    ui_wm_pointer(&m, 405, 10, true, false);        /* 5 px away: not a double click */
+    ui_wm_pointer(&m, 405, 10, false, true);
+    CHECK(a.maximised);
+    ui_wm_set_now(&m, 365);
+    click(&m, 405, 10);
+    CHECK(!a.maximised && same_rect(a.r, 336, 175, 352, 377));
+    /* A window without maximise: a double click only drags (nothing moves). */
+    ui_wm_open(&m, &b);                             /* (360, 199) */
+    ui_wm_set_now(&m, 400);
+    click(&m, 420, 210);
+    ui_wm_pointer(&m, 420, 210, true, false);
+    CHECK(m.drag == &b && !b.maximised);
+    ui_wm_pointer(&m, 420, 210, false, true);
+    /* A drag is not a click. */
+    ui_wm_pointer(&m, 420, 210, true, false);
+    ui_wm_pointer(&m, 430, 220, false, false);
+    ui_wm_pointer(&m, 430, 220, false, true);
+    CHECK(m.click_w == 0);
+}
+
 int main(void)
 {
     printf("test_ui_window\n");
@@ -393,5 +602,9 @@ int main(void)
     RUN(test_title_press_drags);
     RUN(test_surface_equals_direct);
     RUN(test_frame_pixels);
+    RUN(test_min_max_restore);
+    RUN(test_taskbar_buttons);
+    RUN(test_switch);
+    RUN(test_double_click);
     return unit_report("test_ui_window");
 }

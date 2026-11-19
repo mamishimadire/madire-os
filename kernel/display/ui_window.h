@@ -52,6 +52,46 @@
  *     hover while the pointer is over it (no drag, no button pressed
  *     elsewhere); else normal;
  *   - Esc (ui_wm_esc): closes the focused window if it closes on Esc.
+ *
+ * 1.5 stage 8 (docs/plans/1.5.md, C4; the Design Guide, sections 8 and 10):
+ *   - a window's title-bar buttons, from the right: close, then maximise
+ *     (restore when maximised) if its `buttons` has UI_WIN_MAXIMISE, then
+ *     minimise if it has UI_WIN_MINIMISE; each a tb x tb target with its
+ *     16 dp icon in `text`, no fill when normal, `surface.hover` on hover,
+ *     `accent.pressed` while pressed (square corners); the title clipped to
+ *     end 8 dp before the leftmost button. A window with no `buttons` (the
+ *     dialog, the 1.3 scenes) looks as before;
+ *   - minimise hides the window (no hit, not drawn) until it is restored;
+ *     the focus passes to the top window that is not minimised (or none);
+ *   - maximise: the window fills the area above the taskbar, (0, 0, W,
+ *     bar); restore (unmaximise) puts back the rectangle it had. A
+ *     maximised window is not dragged. Its client is painted in its own
+ *     size (w x h), centred across the window, from its top;
+ *   - a double click on the title bar of a window that can maximise
+ *     toggles maximise: a press there within UI_WM_DCLICK_TICKS of the
+ *     release that ended a click on the same title bar (a press and a
+ *     release with no drag), within 4 dp of that click's press; no drag
+ *     starts from it;
+ *   - the taskbar's window buttons (ui_wm_task_rect): one per open window,
+ *     minimised ones included, in the order they opened, from task_x0
+ *     (ui_wm_set_taskbar) to at most task_x1, 4 dp apart, each 160 dp wide
+ *     or less (the space shared evenly, never under 40 dp), from below the
+ *     taskbar's 1 dp top line to its bottom. Drawn: the window's icon (16
+ *     dp) 8 dp from the button's left, centred down; its title in the
+ *     regular font at 32 dp, centred down, clipped to end 8 dp before the
+ *     button's right; `text` for both. States as the M button's: hover
+ *     fills `surface.active`; the focused window's button and a pressed one
+ *     also get a 2 dp `accent` bar along the bottom; normal (and minimised)
+ *     draws no fill. A left press on a button presses it; the release over
+ *     it: a minimised window is restored (raised and focused), the focused
+ *     one minimised, any other raised and focused. A middle press on a
+ *     button closes its window (ui_wm_middle);
+ *   - Alt+Tab (ui_wm_switch_*): the windows in most-recently-focused order
+ *     (minimised ones included); the first step marks the one after the
+ *     focused window (back: the last), each further step the next
+ *     (back: the previous), with a 2 dp `accent` ring of radius 4 dp, 2 dp
+ *     inside its taskbar button; the commit restores, raises and focuses
+ *     the marked window; cancel just removes the ring.
  */
 
 #include <stdbool.h>
@@ -61,8 +101,13 @@
 #include "kernel/display/ui_rect.h"
 #include "kernel/display/ui_widget.h"
 
-#define UI_WINDOWS_MAX   4
-#define UI_WM_EVENTS     16
+#define UI_WINDOWS_MAX   6      /* 1.5 stage 8: 4 -> 6 (C4) */
+#define UI_WM_EVENTS     32     /* 1.5 stage 8: 16 -> 32 (a restore logs more) */
+#define UI_WM_DCLICK_TICKS 50u  /* 1.5 stage 8: 500 ms at 100 Hz */
+
+/* 1.5 stage 8: a window's title-bar buttons beside close. */
+#define UI_WIN_MINIMISE 0x1u
+#define UI_WIN_MAXIMISE 0x2u
 
 struct ui_window {
     /* Set by the window's owner. */
@@ -71,20 +116,32 @@ struct ui_window {
     int icon;                   /* ui_icon.h */
     int32_t w, h;               /* pixels */
     bool esc_closes;
+    uint32_t buttons;           /* 1.5 stage 8: UI_WIN_MINIMISE | UI_WIN_MAXIMISE (0: close only) */
     void (*paint)(const struct ui_canvas *c, struct rect r, void *ctx);     /* the client, inside r */
     void *ctx;
     /* Kept by the window manager. */
     bool open;
     struct rect r;
     enum ui_button_state close;     /* the close button's state as last drawn */
-    bool dirty;                 /* its look (focus or close button) changed since ui_wm_clean */
+    bool dirty;                 /* its look (focus or a title-bar button) changed since ui_wm_clean */
+    /* 1.5 stage 8. */
+    bool minimised, maximised;
+    struct rect normal_r;       /* the rectangle before maximise */
+    enum ui_button_state min_st, max_st;    /* the minimise and maximise buttons' states */
+    enum ui_button_state task_st;           /* its taskbar button's state */
 };
 
-enum ui_hit { UI_HIT_DESKTOP, UI_HIT_TASKBAR, UI_HIT_BODY, UI_HIT_TITLE, UI_HIT_CLOSE };
+enum ui_hit {
+    UI_HIT_DESKTOP, UI_HIT_TASKBAR, UI_HIT_BODY, UI_HIT_TITLE, UI_HIT_CLOSE,
+    UI_HIT_MINIMISE, UI_HIT_MAXIMISE, UI_HIT_TASKBUTTON     /* 1.5 stage 8 */
+};
 
 enum ui_wm_event_kind {
     UI_EV_OPEN, UI_EV_RAISE, UI_EV_FOCUS, UI_EV_UNFOCUS, UI_EV_DRAG, UI_EV_CLOSE_BUTTON, UI_EV_CLOSE_ESC,
-    UI_EV_CLOSE_STATE
+    UI_EV_CLOSE_STATE,
+    /* 1.5 stage 8 */
+    UI_EV_MINIMISE, UI_EV_RESTORE, UI_EV_MAXIMISE, UI_EV_UNMAXIMISE, UI_EV_CLOSE_MIDDLE, UI_EV_MIN_STATE,
+    UI_EV_MAX_STATE, UI_EV_TASK_STATE, UI_EV_SWITCH_SELECT, UI_EV_SWITCH_CHOSEN, UI_EV_SWITCH_CANCEL
 };
 
 struct ui_wm_event {
@@ -106,10 +163,24 @@ struct ui_wm {
     struct ui_window *drag;     /* the window being dragged (it has the pointer) */
     int32_t grab_x, grab_y;     /* the pointer when the drag started */
     struct rect grab_r;         /* the window then */
-    struct ui_window *pressed;  /* the window whose close button was pressed */
+    struct ui_window *pressed;  /* the window whose title-bar button (pressed_part) was pressed */
     struct ui_wm_event ev[UI_WM_EVENTS];    /* what the last call changed, in order */
     uint32_t n_ev;
     uint32_t lost_ev;           /* events not kept (the list full) */
+    /* 1.5 stage 8. */
+    enum ui_hit pressed_part;   /* UI_HIT_CLOSE, UI_HIT_MINIMISE or UI_HIT_MAXIMISE */
+    struct ui_window *order[UI_WINDOWS_MAX];    /* the taskbar's order: as they opened (n of them) */
+    struct ui_window *mru[UI_WINDOWS_MAX];      /* most recently focused first (n of them) */
+    struct ui_window *task_pressed;             /* the window whose taskbar button is pressed */
+    int32_t task_x0, task_x1;   /* the taskbar buttons' span (ui_wm_set_taskbar) */
+    bool switching;             /* Alt+Tab: a window marked */
+    uint32_t switch_i;          /* its place in mru */
+    struct ui_window *target;   /* the marked window */
+    uint64_t now;               /* the time in ticks (ui_wm_set_now) */
+    struct ui_window *click_w;  /* the window whose title bar the last click was on (or none) */
+    uint64_t click_at;          /* that click's release */
+    int32_t click_x, click_y;   /* that click's press */
+    int32_t press_x, press_y;   /* the last left press */
 };
 
 /* Pixels of the frame: the title bar (32 dp), the edge (1 dp), the corner
@@ -177,5 +248,46 @@ enum ui_button_state ui_wm_close_state(const struct ui_wm *m, const struct ui_wi
 
 /* Empties the event list (each call above adds to it). */
 void ui_wm_clear_events(struct ui_wm *m);
+
+/* ---- 1.5 stage 8 ---- */
+
+/* The target of title-bar button `part` (UI_HIT_CLOSE, UI_HIT_MAXIMISE or
+ * UI_HIT_MINIMISE) of w at r; an empty rectangle if w has no such button. */
+struct rect ui_window_part_rect(const struct ui_window *w, struct rect r, uint32_t s, enum ui_hit part);
+
+/* The state of title-bar button `part` of w now (as the close button's). */
+enum ui_button_state ui_wm_part_state(const struct ui_wm *m, const struct ui_window *w, enum ui_hit part);
+
+/* The taskbar buttons' span: from x0 to at most x1. */
+void ui_wm_set_taskbar(struct ui_wm *m, int32_t x0, int32_t x1);
+
+/* Taskbar button k (0 to n - 1, in m->order). */
+struct rect ui_wm_task_rect(const struct ui_wm *m, uint32_t k);
+
+/* The taskbar buttons' strip (every button's place, damaged as a whole). */
+struct rect ui_wm_task_strip(const struct ui_wm *m);
+
+/* Draws the taskbar buttons (the rules above) with the fonts of m's scale. */
+void ui_wm_draw_taskbar(const struct ui_canvas *c, const struct ui_wm *m, const struct ui_fonts *f);
+
+/* The time in ticks, before a pointer call (for the double click). */
+void ui_wm_set_now(struct ui_wm *m, uint64_t now);
+
+/* The middle button pressed at (x, y): on a taskbar button, its window
+ * closes (UI_EV_CLOSE_MIDDLE). */
+void ui_wm_middle(struct ui_wm *m, int32_t x, int32_t y);
+
+/* Restores (if minimised), raises and focuses w (an open window). */
+void ui_wm_activate(struct ui_wm *m, struct ui_window *w);
+
+/* Minimise w; maximise or restore w (toggle). */
+void ui_wm_minimise(struct ui_wm *m, struct ui_window *w);
+void ui_wm_toggle_maximise(struct ui_wm *m, struct ui_window *w);
+
+/* Alt+Tab: one step (back for Shift+Alt+Tab; false with no open window),
+ * the commit (Alt released) and cancel (Esc). */
+bool ui_wm_switch_step(struct ui_wm *m, bool back);
+void ui_wm_switch_commit(struct ui_wm *m);
+void ui_wm_switch_cancel(struct ui_wm *m);
 
 #endif

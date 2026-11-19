@@ -119,9 +119,10 @@ def console_window_desktop(w, h, clock, pointer_at=None):
     wm = D.WM(w, h, s)
     wm.key(D.console_size(s), True, False)
     wm.key(D.console_size(s), False, False)
-    shown = [{"r": x["r"], "active": x is wm.focus, "close": x["close"], "values": None,
-              "grid": D.shadow_grid(console_cleared())} for x in wm.z]
-    pix = D.desktop_windows(w, h, clock, shown)
+    # 1.5 stage 8: the minimise button and the taskbar's Console button.
+    shown = D.wm_shown(wm, None, D.shadow_grid(console_cleared()))
+    pix = D.desktop_windows(w, h, clock, shown, {"m": "normal", "menu": None, "dialog": None,
+                                                  "task": wm.task_view()})
     if pointer_at is not None:
         import pointer_ref  # noqa: E402
         pix, _ = pointer_ref.paint(pix, w, h, *pointer_at)
@@ -243,13 +244,9 @@ def vbox_session(w, h, about=None, on_shot=None):
             win.key(k, False)
 
     def render():
-        shown = []
         values = D.about_values(win.s, *about) if any(z["name"] == "About" for z in win.wm.z) else None
-        for z in win.wm.z:
-            one = {"r": z["r"], "active": z is win.wm.focus, "close": z["close"], "values": values}
-            if z["name"] == "Console":
-                one["grid"] = D.shadow_grid(console_cleared())
-            shown.append(one)
+        # 1.5 stage 8: the title-bar buttons, minimised windows left out (desktop_ref.wm_shown).
+        shown = D.wm_shown(win.wm, values, lambda: D.shadow_grid(console_cleared()))
         pix = D.desktop_windows(w, h, b"00:00", shown, win.menus.view())
         if moved:
             import pointer_ref  # noqa: E402

@@ -18,6 +18,15 @@
  *   backspace   (8, 5) (21, 5) (21, 19) (8, 19) (2, 12) (8, 5); the x
  *               (12, 9.5)-(17, 14.5) and (17, 9.5)-(12, 14.5)
  *   chevron     (9, 5) (16, 12) (9, 19)
+ * 1.5 stage 8:
+ *   minimise    (6, 12)-(18, 12)
+ *   maximise    a square (6, 6)-(18, 18)
+ *   unmaximise  (restore) a square (5, 9)-(15, 19) and the square behind
+ *               it, offset up and right: (9, 9) (9, 5) (19, 5) (19, 15)
+ *               (15, 15)
+ *   power       a circle at (12, 13), radius 8, from 30 to 330 degrees
+ *               clockwise from the top (open at the top); the line
+ *               (12, 3)-(12, 12)
  * A circle's point at a degrees clockwise from the top is
  * (cx + r sin a, cy - r cos a), rounded to the nearest unit.
  */
@@ -42,6 +51,15 @@ const int16_t icon_points[][2] = {
     { 96, 140 }, { 64, 40 }, { 168, 40 }, { 168, 152 }, { 64, 152 }, { 16, 96 },
     { 64, 40 }, { 96, 76 }, { 136, 116 }, { 136, 76 }, { 96, 116 }, { 72, 40 },
     { 128, 96 }, { 72, 152 },
+    /* 1.5 stage 8 */
+    { 48, 96 }, { 144, 96 },                                                        /* minimise */
+    { 48, 48 }, { 144, 48 }, { 144, 144 }, { 48, 144 }, { 48, 48 },                 /* maximise */
+    { 40, 72 }, { 120, 72 }, { 120, 152 }, { 40, 152 }, { 40, 72 },                 /* unmaximise */
+    { 72, 72 }, { 72, 40 }, { 152, 40 }, { 152, 120 }, { 120, 120 },
+    { 128, 49 }, { 141, 59 }, { 151, 72 }, { 158, 87 }, { 160, 104 }, { 158, 121 },  /* power */
+    { 151, 136 }, { 141, 149 }, { 128, 159 }, { 113, 166 }, { 96, 168 }, { 79, 166 },
+    { 64, 159 }, { 51, 149 }, { 41, 136 }, { 34, 121 }, { 32, 104 }, { 34, 87 },
+    { 41, 72 }, { 51, 59 }, { 64, 49 }, { 96, 24 }, { 96, 96 },
 };
 
 const struct icon_poly icon_polys[] = {
@@ -56,6 +74,10 @@ const struct icon_poly icon_polys[] = {
     { 87, 2 }, { 89, 1 }, { 90, 1 },                            /* divide */
     { 91, 6 }, { 97, 2 }, { 99, 2 },                            /* backspace */
     { 101, 3 },                                                 /* chevron */
+    { 104, 2 },                                                 /* minimise (1.5 stage 8) */
+    { 106, 5 },                                                 /* maximise */
+    { 111, 5 }, { 116, 5 },                                     /* unmaximise */
+    { 121, 21 }, { 142, 2 },                                    /* power */
 };
 
 const struct icon_def icon_defs[ICON_STROKED] = {
@@ -70,4 +92,8 @@ const struct icon_def icon_defs[ICON_STROKED] = {
     [ICON_DIVIDE] = { 21, 3 },
     [ICON_BACKSPACE] = { 24, 3 },
     [ICON_CHEVRON] = { 27, 1 },
+    [ICON_MINIMISE] = { 28, 1 },
+    [ICON_MAXIMISE] = { 29, 1 },
+    [ICON_UNMAXIMISE] = { 30, 2 },
+    [ICON_POWER] = { 32, 2 },
 };
