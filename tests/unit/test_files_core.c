@@ -406,7 +406,6 @@ static void files_clipboard(void)
     struct files_clip c;
     char p[32];
     uint32_t len = 0;
-    volatile uint32_t past = FILES_CLIP_MAX;    /* not a constant: gcc 15 would check off[64] on the refused path */
     files_clip_init(&c, cstore);
     CHECK(files_clip_empty(&c));
     files_clip_begin(&c, true);
@@ -419,7 +418,12 @@ static void files_clipboard(void)
     CHECK(!files_clip_empty(&c));
     CHECK(strcmp(files_clip_path(&c, 63, &len), "/home/user/f63") == 0);
     CHECK_EQ(len, 14);
-    CHECK(files_clip_path(&c, past, &len) == 0);
+    CHECK(files_clip_path(&c, 64, &len) == 0);          /* entry 64: refused (the arrays hold 64) */
+    c.n = 70;                                           /* even with a count past the arrays */
+    CHECK(files_clip_path(&c, 64, &len) == 0);
+    CHECK(files_clip_path(&c, 69, &len) == 0);
+    CHECK_EQ(files_clip_add(&c, "/home/user/h", 12), FILES_CLIP_FULL);
+    c.n = 64;
     files_clip_begin(&c, false);
     CHECK(files_clip_empty(&c));
     CHECK(!c.cut);

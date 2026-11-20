@@ -110,7 +110,7 @@ enum files_add files_folder_add(struct files_folder *f, const char *name, uint32
 
 const char *files_entry_name(const struct files_folder *f, uint32_t i)
 {
-    return i < f->n ? f->names + f->e[i].name_off : 0;
+    return i < f->n && i < f->cap ? f->names + f->e[i].name_off : 0;
 }
 
 int files_name_compare(const char *a, uint32_t la, const char *b, uint32_t lb)
@@ -539,7 +539,7 @@ enum files_clip_add files_clip_add(struct files_clip *c, const char *path, uint3
 {
     if (len == 0 || len > FILES_PATH_MAX)
         return FILES_CLIP_TOO_LONG;
-    if (c->n == FILES_CLIP_MAX)
+    if (c->n >= FILES_CLIP_MAX)
         return FILES_CLIP_FULL;
     fc_copy(c->store + c->used, path, len);
     c->store[c->used + len] = 0;
@@ -557,7 +557,7 @@ bool files_clip_empty(const struct files_clip *c)
 
 const char *files_clip_path(const struct files_clip *c, uint32_t i, uint32_t *len)
 {
-    if (i >= c->n)
+    if (i >= c->n || i >= FILES_CLIP_MAX)       /* the count, and the arrays' own size */
         return 0;
     *len = c->len[i];
     return c->store + c->off[i];
@@ -813,7 +813,7 @@ enum files_walk_result files_walk_step(struct files_walk *w)
         return fc_finish(w, FILES_WALK_ERROR);
     }
     if (k == FILES_K_DIR) {
-        if (w->depth == FILES_DEPTH_MAX + 1) {
+        if (w->depth >= FILES_DEPTH_MAX + 1) {  /* lv[] holds FILES_DEPTH_MAX + 1 levels */
             fc_back(w);
             return fc_finish(w, FILES_WALK_DEEP);
         }
