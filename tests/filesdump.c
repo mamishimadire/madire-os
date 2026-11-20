@@ -279,8 +279,11 @@ static void mode_history(void)
                     at = i;
             if (op[0] == 'X' && at < 0 && missing_n < 64 && n >= 0)
                 strcpy(missing[missing_n++], (char *)buf);
-            if (op[0] == 'Y' && at >= 0)
-                strcpy(missing[at], missing[--missing_n]);
+            if (op[0] == 'Y' && at >= 0) {      /* the last entry moves into the gap (never onto itself) */
+                missing_n--;
+                if (at != missing_n)
+                    memmove(missing[at], missing[missing_n], strlen(missing[missing_n]) + 1);
+            }
             continue;
         }
         if (op[0] == 'G') {
