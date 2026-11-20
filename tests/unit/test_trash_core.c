@@ -323,8 +323,11 @@ static char fake_seen[16][TRASH_PATH_MAX + 1];
 static enum trash_kind fake_lstat(void *ctx, const char *path)
 {
     (void)ctx;
-    if (fake_calls < 16)
-        strcpy(fake_seen[fake_calls], path);
+    if (fake_calls < 16) {
+        size_t n = strnlen(path, TRASH_PATH_MAX);      /* at most 4,096 bytes and the NUL */
+        memcpy(fake_seen[fake_calls], path, n);
+        fake_seen[fake_calls][n] = 0;
+    }
     fake_calls++;
     for (int i = 0; fake_paths[i]; i++)
         if (strcmp(fake_paths[i], path) == 0)
@@ -351,7 +354,7 @@ static enum trash_restore restore(const char *path, uint32_t *at)
 
 static void ti_restore_through_symlink(void)
 {
-    uint32_t at;
+    uint32_t at = 0;
     /* /home/user/Docs is a link: refused there, never looked through */
     CHECK_EQ(restore("/home/user/Docs/a.txt", &at), TR_PARENT_NOT_FOLDER);
     CHECK_EQ(at, 15);
@@ -374,7 +377,7 @@ static void ti_restore_through_symlink(void)
 
 static void ti_restore_parent_is_link(void)
 {
-    uint32_t at;
+    uint32_t at = 0;
     /* making the missing folder New under the link Docs is refused */
     CHECK_EQ(restore("/home/user/Docs/New/a.txt", &at), TR_PARENT_NOT_FOLDER);
     CHECK_EQ(at, 15);

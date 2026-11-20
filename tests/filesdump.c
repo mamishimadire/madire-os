@@ -134,7 +134,7 @@ static void mode_encode(void)
         }
         uint32_t e = trash_path_encode((const char *)buf, (uint32_t)n, enc, sizeof(enc));
         if (e) {
-            uint32_t dl;
+            uint32_t dl = 0;
             put_hex(enc, e);
             enum trash_info_result r = trash_path_decode(enc, e, dec, &dl);
             printf(" %s ", trash_info_reason(r));
@@ -205,7 +205,8 @@ static void mode_limit(void)
             if (stop)
                 continue;
             enum files_add r = add_row(&f);
-            codes[nc++] = "OSFB"[r];
+            if (nc < (int)sizeof(codes) - 1)        /* the inputs send at most 1,504 rows */
+                codes[nc++] = "OSFB"[r];
             if (r == FILES_ADD_FULL)
                 stop = 1;
         }
@@ -277,12 +278,14 @@ static void mode_history(void)
             for (int i = 0; i < missing_n; i++)
                 if (n >= 0 && strcmp(missing[i], (char *)buf) == 0)
                     at = i;
-            if (op[0] == 'X' && at < 0 && missing_n < 64 && n >= 0)
-                strcpy(missing[missing_n++], (char *)buf);
+            if (op[0] == 'X' && at < 0 && missing_n < 64 && n >= 0 && n <= (long)FILES_PATH_MAX) {
+                memcpy(missing[missing_n], buf, (size_t)n);         /* n bytes and a NUL: 4,097 at most */
+                missing[missing_n++][n] = 0;
+            }
             if (op[0] == 'Y' && at >= 0) {      /* the last entry moves into the gap (never onto itself) */
                 missing_n--;
                 if (at != missing_n)
-                    memmove(missing[at], missing[missing_n], strlen(missing[missing_n]) + 1);
+                    memmove(missing[at], missing[missing_n], strnlen(missing[missing_n], FILES_PATH_MAX) + 1);
             }
             continue;
         }
@@ -430,9 +433,13 @@ static void mode_clip(void)
                 char *tl = field(&s);
                 taken_n = 0;
                 if (strcmp(tl, "-") != 0) {
-                    for (char *t = strtok(tl, ","); t && taken_n < 1000; t = strtok(0, ","))
-                        if (unhex(t, strlen(t), buf2, sizeof(buf2)) >= 0)
-                            strcpy(taken[taken_n++], (char *)buf2);
+                    for (char *t = strtok(tl, ","); t && taken_n < 1000; t = strtok(0, ",")) {
+                        long tn = unhex(t, strlen(t), buf2, sizeof(buf2));
+                        if (tn >= 0 && tn <= (long)FILES_NAME_MAX) {    /* tn bytes and a NUL: 256 at most */
+                            memcpy(taken[taken_n], buf2, (size_t)tn);
+                            taken[taken_n++][tn] = 0;
+                        }
+                    }
                 }
                 l = files_unique_name((const char *)buf, (uint32_t)n, atoi(fo) != 0,
                                       atoi(re) ? FILES_VARIANT_RESTORED : FILES_VARIANT_NUMBER, name_taken, 0, out);

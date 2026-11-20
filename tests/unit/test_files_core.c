@@ -27,9 +27,9 @@ static char scratch[FILES_PATH_MAX + 1];
 
 static int is_cur(enum files_view v, const char *path)
 {
-    enum files_view cv;
-    const char *cp;
-    uint32_t cl;
+    enum files_view cv = FILES_VIEW_FOLDER;
+    const char *cp = "";
+    uint32_t cl = 0;
     if (!files_history_current(&hist, &cv, &cp, &cl))
         return 0;
     return cv == v && cl == strlen(path) && memcmp(cp, path, cl) == 0;
@@ -190,7 +190,7 @@ static bool exists(void *ctx, const char *path)
 
 static void files_history_back_forward_up(void)
 {
-    uint32_t removed;
+    uint32_t removed = 0;
     memset(gone, 0, sizeof(gone));
     files_history_init(&hist, hstore);
     CHECK(!files_history_can_back(&hist));
@@ -244,7 +244,7 @@ static void files_history_back_forward_up(void)
 
 static void files_history_limit_64(void)
 {
-    uint32_t removed;
+    uint32_t removed = 0;
     char p[32];
     memset(gone, 0, sizeof(gone));
     files_history_init(&hist, hstore);
@@ -272,17 +272,18 @@ static void files_history_limit_64(void)
     memset(scratch, 'p', FILES_PATH_MAX);
     scratch[0] = '/';
     CHECK(files_history_go(&hist, FILES_VIEW_FOLDER, scratch, FILES_PATH_MAX));
-    enum files_view v;
-    const char *cp;
-    uint32_t cl;
+    enum files_view v = FILES_VIEW_TRASH;
+    const char *cp = 0;
+    uint32_t cl = 0;
     CHECK(files_history_current(&hist, &v, &cp, &cl));
+    CHECK_EQ(v, FILES_VIEW_FOLDER);
     CHECK_EQ(cl, FILES_PATH_MAX);
-    CHECK_EQ(cp[FILES_PATH_MAX], 0);
+    CHECK(cp != 0 && cp[FILES_PATH_MAX] == 0);
 }
 
 static void files_history_missing_folder(void)
 {
-    uint32_t removed;
+    uint32_t removed = 0;
     memset(gone, 0, sizeof(gone));
     files_history_init(&hist, hstore);
     go("/home/user/A");
@@ -404,7 +405,8 @@ static void files_clipboard(void)
 {
     struct files_clip c;
     char p[32];
-    uint32_t len;
+    uint32_t len = 0;
+    volatile uint32_t past = FILES_CLIP_MAX;    /* not a constant: gcc 15 would check off[64] on the refused path */
     files_clip_init(&c, cstore);
     CHECK(files_clip_empty(&c));
     files_clip_begin(&c, true);
@@ -417,7 +419,7 @@ static void files_clipboard(void)
     CHECK(!files_clip_empty(&c));
     CHECK(strcmp(files_clip_path(&c, 63, &len), "/home/user/f63") == 0);
     CHECK_EQ(len, 14);
-    CHECK(files_clip_path(&c, 64, &len) == 0);
+    CHECK(files_clip_path(&c, past, &len) == 0);
     files_clip_begin(&c, false);
     CHECK(files_clip_empty(&c));
     CHECK(!c.cut);
@@ -702,7 +704,7 @@ static void files_empty_trash_symlink_not_followed(void)
 
 static void files_paste_target_through_symlink(void)
 {
-    uint32_t at;
+    uint32_t at = 0;
     ffs_reset();
     make_outside();
     ffs_make("/home/user/docs/a.txt", FILES_K_FILE, 1, 1);
