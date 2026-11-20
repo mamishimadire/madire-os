@@ -92,6 +92,32 @@
  *     (back: the previous), with a 2 dp `accent` ring of radius 4 dp, 2 dp
  *     inside its taskbar button; the commit restores, raises and focuses
  *     the marked window; cancel just removes the ring.
+ *
+ * 1.5 stage 9 (docs/plans/1.5.md, C4): resizing by the edges and corners.
+ *   - a window whose owner sets `resizable` (with its minimum size min_w x
+ *     min_h, in pixels) has a grab band of ui_window_band(s) = 8 dp
+ *     (ui_px(8, s): 8 px at 100 %, 10 at 125 %, 12 at 150 %, 16 at 200 %)
+ *     inside each edge of its rectangle (ui_window_edges): left, right,
+ *     top, bottom, and where two meet, a corner. The title-bar buttons come
+ *     first (the top-right corner is the close button); no band while the
+ *     window is maximised or minimised;
+ *   - a left press in the band raises and focuses the window (as on its
+ *     body) and starts a resize, which keeps the pointer (capture) until the
+ *     button is released: the band's edges follow the pointer 1:1 from the
+ *     press, the opposite edges stay (ui_wm_resize_rect, below); the
+ *     release logs UI_EV_RESIZE if the rectangle changed;
+ *   - ui_wm_resize_rect: the size stays between the minimum and the
+ *     largest, the screen's width by the area above the taskbar (or the
+ *     size it started with, if larger); a moving edge never goes further off
+ *     the screen than it started (left >= min(0, its start), right <=
+ *     max(W, its start), top >= 0, bottom <= the taskbar's top), and 48 dp
+ *     stay on the screen (right >= min(48 dp, its start), left <= max(W -
+ *     48 dp, its start)). A rectangle the rules allowed at the start is
+ *     always allowed, so the window never jumps;
+ *   - a resized window keeps its size when maximised and restored, and
+ *     opens again at its own size (w x h; sizes are not saved). Its client
+ *     is painted in its own size, centred across the window, from its top
+ *     (as a maximised window's).
  */
 
 #include <stdbool.h>
@@ -109,6 +135,12 @@
 #define UI_WIN_MINIMISE 0x1u
 #define UI_WIN_MAXIMISE 0x2u
 
+/* 1.5 stage 9: the edges a point of the grab band lies on (ui_window_edges). */
+#define UI_EDGE_LEFT   0x1u
+#define UI_EDGE_RIGHT  0x2u
+#define UI_EDGE_TOP    0x4u
+#define UI_EDGE_BOTTOM 0x8u
+
 struct ui_window {
     /* Set by the window's owner. */
     const char *name;           /* in the log: "About" */
@@ -119,6 +151,8 @@ struct ui_window {
     uint32_t buttons;           /* 1.5 stage 8: UI_WIN_MINIMISE | UI_WIN_MAXIMISE (0: close only) */
     void (*paint)(const struct ui_canvas *c, struct rect r, void *ctx);     /* the client, inside r */
     void *ctx;
+    bool resizable;             /* 1.5 stage 9: the grab band (min_w x min_h the smallest size) */
+    int32_t min_w, min_h;
     /* Kept by the window manager. */
     bool open;
     struct rect r;
@@ -133,7 +167,8 @@ struct ui_window {
 
 enum ui_hit {
     UI_HIT_DESKTOP, UI_HIT_TASKBAR, UI_HIT_BODY, UI_HIT_TITLE, UI_HIT_CLOSE,
-    UI_HIT_MINIMISE, UI_HIT_MAXIMISE, UI_HIT_TASKBUTTON     /* 1.5 stage 8 */
+    UI_HIT_MINIMISE, UI_HIT_MAXIMISE, UI_HIT_TASKBUTTON,    /* 1.5 stage 8 */
+    UI_HIT_RESIZE                                           /* 1.5 stage 9: the grab band */
 };
 
 enum ui_wm_event_kind {
@@ -141,7 +176,8 @@ enum ui_wm_event_kind {
     UI_EV_CLOSE_STATE,
     /* 1.5 stage 8 */
     UI_EV_MINIMISE, UI_EV_RESTORE, UI_EV_MAXIMISE, UI_EV_UNMAXIMISE, UI_EV_CLOSE_MIDDLE, UI_EV_MIN_STATE,
-    UI_EV_MAX_STATE, UI_EV_TASK_STATE, UI_EV_SWITCH_SELECT, UI_EV_SWITCH_CHOSEN, UI_EV_SWITCH_CANCEL
+    UI_EV_MAX_STATE, UI_EV_TASK_STATE, UI_EV_SWITCH_SELECT, UI_EV_SWITCH_CHOSEN, UI_EV_SWITCH_CANCEL,
+    UI_EV_RESIZE                /* 1.5 stage 9 */
 };
 
 struct ui_wm_event {
@@ -181,6 +217,10 @@ struct ui_wm {
     uint64_t click_at;          /* that click's release */
     int32_t click_x, click_y;   /* that click's press */
     int32_t press_x, press_y;   /* the last left press */
+    /* 1.5 stage 9: the window being resized (it has the pointer) and the
+     * edges that move; the grab in grab_x, grab_y, grab_r. */
+    struct ui_window *resize;
+    uint32_t resize_edges;
 };
 
 /* Pixels of the frame: the title bar (32 dp), the edge (1 dp), the corner
@@ -289,5 +329,19 @@ void ui_wm_toggle_maximise(struct ui_wm *m, struct ui_window *w);
 bool ui_wm_switch_step(struct ui_wm *m, bool back);
 void ui_wm_switch_commit(struct ui_wm *m);
 void ui_wm_switch_cancel(struct ui_wm *m);
+
+/* ---- 1.5 stage 9 ---- */
+
+/* The grab band's width in pixels: 8 dp. */
+int32_t ui_window_band(uint32_t s);
+
+/* The edges (UI_EDGE_*) of w at r whose band holds (x, y); 0 outside the
+ * band, outside r, or if w is not resizable, maximised or minimised. */
+uint32_t ui_window_edges(const struct ui_window *w, struct rect r, uint32_t s, int32_t x, int32_t y);
+
+/* Where a resize of w that started at g puts it after the pointer moved
+ * (dx, dy) since the press, moving `edges` (the rules above). */
+struct rect ui_wm_resize_rect(const struct ui_wm *m, const struct ui_window *w, struct rect g, uint32_t edges,
+                              int64_t dx, int64_t dy);
 
 #endif

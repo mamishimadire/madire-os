@@ -151,6 +151,20 @@ state 3 s after its own frame marker before the cut. More steps:
                   input-send-event (a K alone: pressed, then released), the
                   model following each with the modifiers held (Alt+Tab:
                   kseq:alt:down,tab,tab,alt:up).
+
+1.5 stage 9 (resizing by the edges and corners; docs/plans/1.5.md, C4)
+more steps (the window lines now include "desktop: resize ..."):
+    to:edge-SIDE@NAME  a point of window NAME's grab band (8 dp inside its
+                  edges), half the band in from SIDE (left, right, top,
+                  bottom, topleft, bottomleft, bottomright: the top-right
+                  corner is the close button), centred along the other
+                  axis; the model must give that point to the band of
+                  exactly those edges;
+    resize:DX,DY  press (the pointer in a grab band), rel:DX,DY, release;
+                  prints
+    RESIZE <n> <name> edges <e> from (<x>, <y>) <w>x<h> moved (<dx>, <dy>) got (<x>, <y>) <w>x<h>
+                  (the window before, the pointer's own movement, and
+                  where the rules put the window).
 """
 import argparse
 import os
@@ -234,7 +248,9 @@ def screen(qmp, serial, dump, n, pointer_at):
 
 # ---- 1.3 stage 4a: the windows ----
 
-WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close|minimise|restore|maximise|unmaximise|switch:|taskbar) ")
+# 1.5 stage 9: resize lines too.
+WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close|minimise|restore|maximise|unmaximise|switch:|taskbar|"
+                       r"resize) ")
 MENU_EVENT = re.compile(r"^desktop: (menu|dialog|M button)[ :]")      # 1.3 stage 5
 ABOUT_VALUE = re.compile(r"^desktop: about (Version|Boot loader|Display|Memory|Mode): (.*)$")
 
@@ -249,6 +265,7 @@ class Windows:
         self.wm = desktop_ref.WM(self.w, self.h, self.s)
         self.sync = 0                   # the serial line after which the next frame shows the model
         self.drags = 0
+        self.resizes = 0                # 1.5 stage 9: RESIZE lines
         self.shadow = shadow            # 1.3 stage 4b: vga_shadow's physical address (hex), or None
         self.console_size = desktop_ref.console_size(self.s)
         if about:
@@ -302,6 +319,21 @@ class Windows:
                 if c is None or win["minimised"]:
                     raise RuntimeError("window %s has no %s button shown (model)" % (name, part))
             return c[0] + c[2] // 2, c[1] + c[3] // 2
+        if "@" in where and where.split("@")[0].startswith("edge-"):    # 1.5 stage 9: the grab band
+            part, name = where.split("@")
+            want = EDGE_SIDES.get(part[5:])
+            win = next((w for w in self.wm.z if w["name"] == name), None)
+            if want is None or win is None:
+                raise RuntimeError("no side %r or no open window %s (model)" % (part[5:], name))
+            r, b = win["r"], d(8)
+            x = (r[0] + b // 2 if want & desktop_ref.EDGE_LEFT else
+                 r[0] + r[2] - 1 - b // 2 if want & desktop_ref.EDGE_RIGHT else r[0] + r[2] // 2)
+            y = (r[1] + b // 2 if want & desktop_ref.EDGE_TOP else
+                 r[1] + r[3] - 1 - b // 2 if want & desktop_ref.EDGE_BOTTOM else r[1] + r[3] // 2)
+            if not (0 <= x < self.w and 0 <= y < self.wm.bar) or self.wm.hit(x, y) != ("resize", win) or \
+                    self.wm.edges(win, x, y) != want:
+                raise RuntimeError("%s's %s band not under the pointer at (%d, %d) (model)" % (name, part[5:], x, y))
+            return x, y
         if "@" in where:                # 1.3 stage 4b: a named window's own visible point
             part, name = where.split("@")
             win = next((w for w in self.wm.z if w["name"] == name), None)
@@ -579,7 +611,9 @@ def drag_burst(qmp, serial, win, m, count, keys):
 # The steps main() hands to window_step (1.5 stage 8: one list each, so a
 # step window_step handles is never left out of main()'s router).
 WINDOW_STEPS = ("wshot", "press", "release", "esc", "click", "rpress", "rrelease", "mpress", "dclick")
-WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq")
+WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq", "resize")     # 1.5 stage 9: resize
+# 1.5 stage 9: to:edge-SIDE@NAME (ui_window.h's UI_EDGE_*; the top-right corner is the close button).
+EDGE_SIDES = {"left": 1, "right": 2, "top": 4, "bottom": 8, "topleft": 5, "bottomleft": 9, "bottomright": 10}
 
 
 def window_step(step, qmp, serial, dump, win, m, shots):
@@ -633,6 +667,17 @@ def window_step(step, qmp, serial, dump, win, m, shots):
         print("DRAG %d asked (%d, %d) got (%d, %d) %dx%d bar %d left %d" % (
             win.drags, asked[0], asked[1], target["r"][0], target["r"][1], target["r"][2], target["r"][3],
             win.wm.bar, desktop_ref.px(48, win.s) - target["r"][2]), flush=True)
+    elif step.startswith("resize:"):                             # 1.5 stage 9
+        dx, dy = (int(v) for v in step[7:].split(","))
+        packet(m, win, serial, 0, 0, True)
+        if win.wm.resize is None:
+            raise RuntimeError("resize: the press was not in a window's grab band (model)")
+        target, start, edges, x0, y0 = win.wm.resize, tuple(win.wm.resize["r"]), win.wm.resize_edges, m.x, m.y
+        rel(m, win, serial, dx, dy)
+        packet(m, win, serial, 0, 0, False)
+        win.resizes += 1
+        print("RESIZE %d %s edges %d from (%d, %d) %dx%d moved (%d, %d) got (%d, %d) %dx%d" % (
+            (win.resizes, target["name"], edges) + start + (m.x - x0, m.y - y0) + tuple(target["r"])), flush=True)
     elif step.startswith("dragburst:"):                          # 1.3 stage 4b
         parts = step.split(":", 2)
         drag_burst(qmp, serial, win, m, int(parts[1]), parts[2] if len(parts) > 2 else "")

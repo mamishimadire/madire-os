@@ -139,6 +139,19 @@ uint32_t desktop_surface_pages(uint32_t width, uint32_t height, uint32_t bytes_p
     return (uint32_t)((bytes + PAGE - 1) / PAGE);
 }
 
+void desktop_surface_size(bool resizable, uint32_t w, uint32_t h, uint32_t screen_w, uint32_t bar_y,
+                          uint32_t *sw, uint32_t *sh)
+{
+    *sw = w;
+    *sh = h;
+    if (!resizable)
+        return;
+    if (screen_w > *sw)
+        *sw = screen_w;
+    if (bar_y > *sh)
+        *sh = bar_y;
+}
+
 bool desktop_area_plan(const struct desktop_area *a, uint32_t pages, struct desktop_area_item *it)
 {
     uint64_t after = (uint64_t)a->pages + pages, display = (uint64_t)a->taken + after + area_tables(after);

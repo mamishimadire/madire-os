@@ -57,7 +57,16 @@ struct desk_window {
     struct surface surf;
     bool has_surface;
     bool painted;               /* the surface painted whole once */
+    int32_t painted_w, painted_h;   /* 1.5 stage 9: the size it was painted whole at */
 };
+
+/* 1.5 stage 9: d is drawn from its surface: it has one and the window's
+ * rectangle fits in it (a resizable window's surface is the largest it can
+ * be, desktop_surface_size); otherwise it is drawn on exposure. */
+static bool desk_from_surface(const struct desk_window *d)
+{
+    return d->has_surface && (uint32_t)d->w.r.w <= d->surf.width && (uint32_t)d->w.r.h <= d->surf.height;
+}
 
 static bool nosurface, about_at_start;
 static bool desk_panic;                 /* 1.3 stage 4b: the test option desktoppanic */
@@ -171,9 +180,10 @@ static void windows_layer(void *ctx, struct surface *b, struct rect r)
         struct ui_canvas c = { b, ui_rect_intersect(r, d->w.r) };
         if (ui_rect_empty(c.clip))
             continue;
-        /* 1.5 stage 8: a maximised window is drawn on exposure (its
-         * surface keeps its own size; S9 brings screen-sized surfaces). */
-        if (d->has_surface && !d->w.maximised)
+        /* 1.5 stage 9: from its surface whenever it fits there (a
+         * resizable window's surface is screen-wide, so maximised and
+         * resized windows too; stage 8 drew a maximised one on exposure). */
+        if (desk_from_surface(d))
             ui_blit_round(&c, d->w.r, &d->surf, ui_window_radius(scale), UI_CORNERS_ALL);
         else
             ui_window_draw(&c, &d->w, d->w.r, wm.focus == &d->w, d->w.close, scale, &fonts);
@@ -220,7 +230,9 @@ static void present(void *ctx, struct rect r)
 
 /* 1.3 stage 4a: a window's surface painted again where its look changed:
  * whole the first time, then its title bar and edges (with the corners'
- * squares). Each pixel gets the same value whatever the clip. */
+ * squares). Each pixel gets the same value whatever the clip. 1.5 stage 9:
+ * at the window's present size (its rectangle's), whole again whenever that
+ * size changed (maximise, restore, a resize). */
 static void refresh_surfaces(void)
 {
     for (uint32_t i = 0; i < wm.n; i++) {
@@ -228,9 +240,11 @@ static void refresh_surfaces(void)
         if (!d->w.dirty)
             continue;
         d->w.dirty = false;
-        if (!d->has_surface || d->w.maximised)  /* 1.5 stage 8: maximised: drawn on exposure */
+        if (!desk_from_surface(d))
             continue;
-        int32_t w = d->w.w, h = d->w.h, R = ui_window_radius(scale), tb = ui_window_title_h(scale);
+        int32_t w = d->w.r.w, h = d->w.r.h, R = ui_window_radius(scale), tb = ui_window_title_h(scale);
+        if (w != d->painted_w || h != d->painted_h)
+            d->painted = false;
         struct rect whole = { 0, 0, w, h };
         struct rect parts[4] = {
             { 0, 0, w, tb > R ? tb : R }, { 0, 0, R, h }, { w - R, 0, R, h }, { 0, h - R, w, R },
@@ -243,6 +257,8 @@ static void refresh_surfaces(void)
             ui_window_draw(&c, &d->w, whole, wm.focus == &d->w, d->w.close, scale, &fonts);
         }
         d->painted = true;
+        d->painted_w = w;
+        d->painted_h = h;
     }
 }
 
@@ -544,6 +560,9 @@ static void log_events(void)
         case UI_EV_SWITCH_CANCEL:
             kserialf("desktop: switch: cancelled (Esc)\n");
             break;
+        case UI_EV_RESIZE:                  /* 1.5 stage 9 */
+            kserialf("desktop: resize %s to (%d, %d) %dx%d\n", name, e->r.x, e->r.y, e->r.w, e->r.h);
+            break;
         }
     }
     if (wm.lost_ev) {
@@ -629,8 +648,11 @@ static void plan_cache(uint32_t free_pages)
 static void plan_surface(struct desktop_area *area, struct desk_window *d)
 {
     const struct fb_info *fi = display_info();
-    uint32_t pitch = (uint32_t)d->w.w * fi->bytes_per_pixel;
-    uint32_t pages = desktop_surface_pages((uint32_t)d->w.w, (uint32_t)d->w.h, fi->bytes_per_pixel);
+    uint32_t sw, sh;                    /* 1.5 stage 9: a resizable window's is screen-wide */
+    desktop_surface_size(d->w.resizable, (uint32_t)d->w.w, (uint32_t)d->w.h, fi->width, (uint32_t)lay.bar.y, &sw,
+                         &sh);
+    uint32_t pitch = sw * fi->bytes_per_pixel;
+    uint32_t pages = desktop_surface_pages(sw, sh, fi->bytes_per_pixel);
     if (nosurface) {
         klogf("Desktop: window %s drawn on exposure (test option desktopnosurface)\n", d->w.name);
         return;
@@ -650,10 +672,9 @@ static void plan_surface(struct desktop_area *area, struct desk_window *d)
     }
     desktop_area_take(area, &it);
     uint64_t va = VM_DESKTOP_BASE + (uint64_t)it.first * VM_PAGE_SIZE;
-    d->has_surface = surface_init(&d->surf, (void *)(uintptr_t)va, (uint32_t)d->w.w, (uint32_t)d->w.h, pitch,
-                                  fi->bytes_per_pixel);
-    klogf("Desktop: slot 506: window surface %s at 0x%016llx (%u pages of free RAM, %dx%d, pitch %u), %u page "
-          "tables; the display's pages %u of a share of %u\n", d->w.name, (ull)va, pages, d->w.w, d->w.h, pitch,
+    d->has_surface = surface_init(&d->surf, (void *)(uintptr_t)va, sw, sh, pitch, fi->bytes_per_pixel);
+    klogf("Desktop: slot 506: window surface %s at 0x%016llx (%u pages of free RAM, %ux%u, pitch %u), %u page "
+          "tables; the display's pages %u of a share of %u\n", d->w.name, (ull)va, pages, sw, sh, pitch,
           tables, it.display, area->share);
 }
 
@@ -734,6 +755,9 @@ static void setup_windows(const struct fb_info *fi, const struct fbcon_layout *c
     about_win.w.h = h;
     about_win.w.esc_closes = true;
     about_win.w.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;   /* 1.5 stage 8 (C4) */
+    about_win.w.resizable = true;       /* 1.5 stage 9 (C4): it grows; its own size is the smallest */
+    about_win.w.min_w = w;
+    about_win.w.min_h = h;
     about_win.w.paint = ui_about_paint;
     about_win.w.ctx = &about;
     size_t need = ui_about_scratch(scale, fi->width, fi->height);

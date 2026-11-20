@@ -12,7 +12,12 @@
  * window painted on its own surface and composed through ui_blit_round
  * equal, byte for byte, to the window painted on the screen directly, in
  * every state, at every scale, at both pixel formats, partly off the
- * screen and in odd tiles (docs/plans/1.3.md, C4, A1). Fonts are made
+ * screen and in odd tiles (docs/plans/1.3.md, C4, A1). 1.5 stage 9: the
+ * grab band (8 dp, each edge and corner, the buttons first, none when not
+ * resizable, maximised or minimised), the resize (capture, 1:1, the
+ * minimum, the event, maximise and restore, cancel), extreme pointer
+ * values for every edge and corner, and a resized window on a larger
+ * surface equal to the window painted directly. Fonts are made
  * here (a fixed bit pattern), so the suite needs no generated font. The
  * toolkit's modules are included directly; surface_core.c,
  * wallpaper_core.c and coverage_core.c are linked (the Makefile). */
@@ -591,6 +596,274 @@ static void test_double_click(void)
     CHECK(m.click_w == 0);
 }
 
+/* ---- 1.5 stage 9: resizing by the edges and corners ---- */
+
+static struct ui_window resizable_win(const char *name)
+{
+    struct ui_window a = win(name, 352, 377, false);
+    a.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    a.resizable = true;
+    a.min_w = 352;
+    a.min_h = 377;
+    return a;
+}
+
+static uint32_t edges_at(const struct ui_wm *m, int32_t x, int32_t y)
+{
+    struct ui_window *at;
+    if (ui_wm_hit(m, x, y, &at) != UI_HIT_RESIZE)
+        return 0;
+    return ui_window_edges(at, at->r, m->scale, x, y);
+}
+
+/* The band: 8 dp inside each edge, the corners, the buttons first; none on
+ * a window that is not resizable, maximised or minimised. */
+static void test_resize_band(void)
+{
+    CHECK_EQ(ui_window_band(4), 8);
+    CHECK_EQ(ui_window_band(5), 10);
+    CHECK_EQ(ui_window_band(6), 12);
+    CHECK_EQ(ui_window_band(8), 16);
+    struct ui_wm m = wm_1024();
+    struct ui_window a = resizable_win("A"), *at;
+    ui_wm_open(&m, &a);                             /* (336, 175) 352 x 377: right 688, bottom 552 */
+    CHECK_EQ(edges_at(&m, 336, 300), UI_EDGE_LEFT);
+    CHECK_EQ(edges_at(&m, 343, 300), UI_EDGE_LEFT);
+    CHECK(ui_wm_hit(&m, 344, 300, &at) == UI_HIT_BODY && at == &a);
+    CHECK_EQ(edges_at(&m, 687, 300), UI_EDGE_RIGHT);
+    CHECK_EQ(edges_at(&m, 680, 300), UI_EDGE_RIGHT);
+    CHECK(ui_wm_hit(&m, 679, 300, &at) == UI_HIT_BODY);
+    CHECK_EQ(edges_at(&m, 500, 175), UI_EDGE_TOP);
+    CHECK_EQ(edges_at(&m, 500, 182), UI_EDGE_TOP);
+    CHECK(ui_wm_hit(&m, 500, 183, &at) == UI_HIT_TITLE);
+    CHECK_EQ(edges_at(&m, 500, 551), UI_EDGE_BOTTOM);
+    CHECK_EQ(edges_at(&m, 500, 544), UI_EDGE_BOTTOM);
+    CHECK(ui_wm_hit(&m, 500, 543, &at) == UI_HIT_BODY);
+    CHECK_EQ(edges_at(&m, 336, 175), UI_EDGE_LEFT | UI_EDGE_TOP);
+    CHECK_EQ(edges_at(&m, 336, 551), UI_EDGE_LEFT | UI_EDGE_BOTTOM);
+    CHECK_EQ(edges_at(&m, 687, 551), UI_EDGE_RIGHT | UI_EDGE_BOTTOM);
+    CHECK(ui_wm_hit(&m, 687, 175, &at) == UI_HIT_CLOSE);            /* the top-right corner: close */
+    CHECK_EQ(edges_at(&m, 591, 175), UI_EDGE_TOP);                  /* just left of minimise */
+    CHECK(ui_wm_hit(&m, 592, 175, &at) == UI_HIT_MINIMISE);
+    CHECK(ui_wm_hit(&m, 335, 300, &at) == UI_HIT_DESKTOP);          /* outside: the desktop */
+    /* The 1.3 checks' title point (8 dp in) and body point stay outside the band. */
+    CHECK(ui_wm_hit(&m, 336 + 8, 175 + 16, &at) == UI_HIT_TITLE);
+    CHECK(ui_wm_hit(&m, 336 + 40, 175 + 250, &at) == UI_HIT_BODY);
+    /* Not resizable, maximised, minimised: no band. */
+    a.resizable = false;
+    CHECK(ui_wm_hit(&m, 336, 300, &at) == UI_HIT_BODY && ui_window_edges(&a, a.r, 4, 336, 300) == 0);
+    a.resizable = true;
+    ui_wm_toggle_maximise(&m, &a);
+    CHECK(ui_wm_hit(&m, 0, 300, &at) == UI_HIT_BODY && ui_wm_hit(&m, 1023, 300, &at) == UI_HIT_BODY);
+    CHECK(ui_wm_hit(&m, 500, 727, &at) == UI_HIT_BODY);
+    ui_wm_toggle_maximise(&m, &a);
+    ui_wm_minimise(&m, &a);
+    CHECK(ui_window_edges(&a, a.r, 4, 336, 300) == 0 && ui_wm_hit(&m, 336, 300, &at) == UI_HIT_DESKTOP);
+    /* 200 %: 16 px. */
+    struct ui_wm big;
+    ui_wm_init(&big, 2560, 1440, 1440 - 80, 8, 0);
+    struct ui_window b = resizable_win("B");
+    b.r = (struct rect){ 100, 100, 704, 754 };
+    CHECK_EQ(ui_window_edges(&b, b.r, 8, 115, 400), UI_EDGE_LEFT);
+    CHECK_EQ(ui_window_edges(&b, b.r, 8, 116, 400), 0);
+}
+
+/* A resize: capture, 1:1 from the grab, the minimum, the event only if the
+ * rectangle changed, raised and focused by the press; each edge. */
+static void test_resize_drag(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window a = resizable_win("A"), c = win("C", 642, 433, false);
+    c.buttons = UI_WIN_MINIMISE;
+    ui_wm_open(&m, &a);                             /* (336, 175) */
+    ui_wm_open(&m, &c);                             /* (191, 147) 642 x 433: over A's middle */
+    ui_wm_clear_events(&m);
+    /* C (191-832 x 147-579, not resizable) covers A whole: no band of A under it. */
+    struct ui_window *at;
+    CHECK(ui_wm_hit(&m, 687, 300, &at) == UI_HIT_BODY && at == &c);
+    CHECK(ui_wm_hit(&m, 340, 178, &at) == UI_HIT_TITLE && at == &c);
+    /* C dragged down by its title bar (clamped at y 728 - 433 = 295): A's top shows. */
+    ui_wm_pointer(&m, 300, 160, true, false);
+    ui_wm_pointer(&m, 300, 560, false, false);
+    ui_wm_pointer(&m, 300, 560, false, true);
+    CHECK(same_rect(c.r, 191, 295, 642, 433));
+    ui_wm_clear_events(&m);
+    ui_damage_clear(&dmg);
+    /* A's top-left corner: the press raises and focuses A and starts the resize. */
+    ui_wm_pointer(&m, 340, 178, true, false);
+    CHECK(m.resize == &a && m.resize_edges == (UI_EDGE_LEFT | UI_EDGE_TOP) && m.z[1] == &a && m.focus == &a);
+    CHECK(count(&m, UI_EV_RAISE) == 1 && count(&m, UI_EV_FOCUS) == 1 && !m.drag && !m.pressed);
+    ui_wm_pointer(&m, 290, 128, false, false);      /* 50 left, 50 up */
+    CHECK(same_rect(a.r, 286, 125, 402, 427) && a.dirty && dmg.n >= 1);
+    /* Captured: over C's minimise button nothing hovers. */
+    ui_wm_pointer(&m, 191 + 642 - 48, 295 + 16, false, false);
+    CHECK(c.min_st == UI_BUTTON_NORMAL && c.close == UI_BUTTON_NORMAL);
+    ui_wm_pointer(&m, 300, 140, false, false);      /* back: 1:1 from the grab again */
+    CHECK(same_rect(a.r, 296, 137, 392, 415));
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 300, 140, false, true);
+    CHECK(!m.resize && count(&m, UI_EV_RESIZE) == 1 && same_rect(m.ev[0].r, 296, 137, 392, 415));
+    /* The right edge (A at 296-687, now on top): grow by 100, then below the minimum. */
+    ui_wm_pointer(&m, 685, 300, true, false);
+    CHECK(m.resize == &a && m.resize_edges == UI_EDGE_RIGHT);
+    ui_wm_pointer(&m, 785, 330, false, false);      /* the y movement changes nothing */
+    CHECK(same_rect(a.r, 296, 137, 492, 415));
+    ui_wm_pointer(&m, 100, 330, false, false);      /* asks 392 - 585 + ...: the minimum, 352 */
+    CHECK(same_rect(a.r, 296, 137, 352, 415));
+    ui_wm_pointer(&m, 735, 330, false, true);
+    CHECK(same_rect(a.r, 296, 137, 442, 415));
+    /* The bottom edge: 415 -> 377 is the minimum. */
+    ui_wm_pointer(&m, 400, 137 + 415 - 1, true, false);
+    CHECK(m.resize_edges == UI_EDGE_BOTTOM);
+    ui_wm_pointer(&m, 400, 137 + 415 - 1 - 100, false, false);
+    CHECK(same_rect(a.r, 296, 137, 442, 377));
+    ui_wm_pointer(&m, 400, 137 + 415 - 1 - 100, false, true);
+    /* A press and release in the band without a move: no event, no click on the title bar. */
+    ui_wm_clear_events(&m);
+    click(&m, 298, 300);
+    CHECK(count(&m, UI_EV_RESIZE) == 0 && m.n_ev == 0 && m.click_w == 0 && !m.resize);
+    /* Maximise keeps the resized rectangle; restore puts it back; no band while maximised. */
+    ui_wm_toggle_maximise(&m, &a);
+    CHECK(same_rect(a.r, 0, 0, 1024, 728) && same_rect(a.normal_r, 296, 137, 442, 377));
+    ui_wm_pointer(&m, 1023, 300, true, false);
+    CHECK(!m.resize);
+    ui_wm_pointer(&m, 1023, 300, false, true);
+    ui_wm_toggle_maximise(&m, &a);
+    CHECK(same_rect(a.r, 296, 137, 442, 377));
+    /* The menus take the pointer during a resize (ui_wm_cancel): the event, nothing more. */
+    ui_wm_pointer(&m, 297, 300, true, false);
+    ui_wm_pointer(&m, 247, 300, false, false);
+    ui_wm_clear_events(&m);
+    ui_wm_cancel(&m);
+    CHECK(!m.resize && count(&m, UI_EV_RESIZE) == 1 && same_rect(a.r, 246, 137, 492, 377));
+    ui_wm_pointer(&m, 100, 300, false, false);
+    CHECK(same_rect(a.r, 246, 137, 492, 377));      /* no longer captured */
+    /* Closed, then opened again: its own size. */
+    ui_wm_pointer(&m, 247, 300, true, false);
+    ui_wm_minimise(&m, &a);
+    CHECK(!m.resize);
+    ui_wm_pointer(&m, 247, 300, false, true);
+    ui_wm_activate(&m, &a);
+    click(&m, 246 + 492 - 16, 137 + 16);            /* the close button */
+    CHECK(!a.open);
+    ui_wm_open(&m, &a);
+    CHECK(a.r.w == 352 && a.r.h == 377);
+}
+
+/* Extreme pointer values for each edge and corner: the limits hold. */
+static void test_resize_extremes(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window a = resizable_win("A");
+    ui_wm_open(&m, &a);                             /* (336, 175) 352 x 377 */
+    static const struct { int32_t px, py; } far[4] = {
+        { INT32_MIN, INT32_MIN }, { INT32_MAX, INT32_MAX }, { INT32_MIN, INT32_MAX }, { INT32_MAX, INT32_MIN },
+    };
+    struct { int32_t x, y; uint32_t e; } grab[8] = {
+        { 336, 300, UI_EDGE_LEFT }, { 687, 300, UI_EDGE_RIGHT }, { 500, 175, UI_EDGE_TOP },
+        { 500, 551, UI_EDGE_BOTTOM }, { 336, 175, UI_EDGE_LEFT | UI_EDGE_TOP },
+        { 336, 551, UI_EDGE_LEFT | UI_EDGE_BOTTOM }, { 687, 551, UI_EDGE_RIGHT | UI_EDGE_BOTTOM },
+        { 690, 551, 0 },                            /* outside: nothing */
+    };
+    for (int g = 0; g < 8; g++)
+        for (int f = 0; f < 4; f++) {
+            ui_wm_pointer(&m, grab[g].x, grab[g].y, true, false);
+            CHECK(m.resize_edges == grab[g].e || (!grab[g].e && !m.resize));
+            ui_wm_pointer(&m, far[f].px, far[f].py, false, false);
+            struct rect r = a.r;
+            /* The limits: the minimum, the area above the taskbar, 48 dp on the screen. */
+            CHECK(r.w >= 352 && r.h >= 377 && r.w <= 1024 && r.h <= 728);
+            CHECK(r.x >= 0 && r.y >= 0 && (int64_t)r.x + r.w <= 1024 && (int64_t)r.y + r.h <= 728);
+            /* The edges that do not move stay. */
+            if (!(grab[g].e & UI_EDGE_LEFT) && grab[g].e)
+                CHECK_EQ(r.x, 336);
+            if (!(grab[g].e & UI_EDGE_TOP) && grab[g].e)
+                CHECK_EQ(r.y, 175);
+            if (!(grab[g].e & UI_EDGE_RIGHT) && grab[g].e)
+                CHECK_EQ(r.x + r.w, 688);
+            if (!(grab[g].e & UI_EDGE_BOTTOM) && grab[g].e)
+                CHECK_EQ(r.y + r.h, 552);
+            ui_wm_pointer(&m, far[f].px, far[f].py, false, true);
+            /* Back to the start for the next case. */
+            a.r = (struct rect){ 336, 175, 352, 377 };
+        }
+    /* The exact figures, edge by edge (ui_wm_resize_rect; g = A's start). */
+    struct rect g = { 336, 175, 352, 377 };
+    int64_t big = (int64_t)1 << 40;
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_LEFT, -big, 0), 0, 175, 688, 377));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_LEFT, big, 0), 336, 175, 352, 377));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_RIGHT, big, 0), 336, 175, 688, 377));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_RIGHT, -big, 0), 336, 175, 352, 377));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_TOP, 0, -big), 336, 0, 352, 552));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_TOP, 0, big), 336, 175, 352, 377));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_BOTTOM, 0, big), 336, 175, 352, 553));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_BOTTOM, 0, -big), 336, 175, 352, 377));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_RIGHT | UI_EDGE_BOTTOM, big, big), 336, 175, 688, 553));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, UI_EDGE_LEFT | UI_EDGE_TOP, -big, -big), 0, 0, 688, 552));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, g, 0, -big, big), 336, 175, 352, 377));
+    /* A window mostly off the left (48 dp left on the screen): its left edge
+     * goes no further off, its right edge keeps 48 dp on the screen. */
+    struct rect off = { 48 - 600, 100, 600, 400 };
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, off, UI_EDGE_LEFT, -big, 0), -552, 100, 600, 400));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, off, UI_EDGE_RIGHT, -big, 0), -552, 100, 600, 400));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, off, UI_EDGE_LEFT, big, 0), -552 + 248, 100, 352, 400));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, off, UI_EDGE_RIGHT, big, 0), -552, 100, 1024, 400));
+    /* Mostly off the right: the right edge goes no further off; the left keeps 48 dp. */
+    struct rect offr = { 1024 - 48, 100, 600, 400 };
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, offr, UI_EDGE_RIGHT, big, 0), 976, 100, 600, 400));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, offr, UI_EDGE_LEFT, big, 0), 976, 100, 600, 400));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, offr, UI_EDGE_RIGHT, -big, 0), 976, 100, 352, 400));
+    /* Larger than the area at the start: kept, never forced smaller. */
+    struct rect huge = { 0, 0, 1100, 900 };
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, huge, UI_EDGE_RIGHT, big, 0), 0, 0, 1100, 900));
+    CHECK(same_rect(ui_wm_resize_rect(&m, &a, huge, UI_EDGE_BOTTOM, 0, -big), 0, 0, 1100, 377));
+    /* A minimum above the start (or none): the start is the smallest; 1 px at least. */
+    struct ui_window z = resizable_win("Z");
+    z.min_w = 0;
+    z.min_h = 5000;
+    CHECK(same_rect(ui_wm_resize_rect(&m, &z, g, UI_EDGE_RIGHT | UI_EDGE_BOTTOM, -big, -big), 336, 175, 1, 377));
+}
+
+/* A resized window painted on a larger (screen-wide) surface at (0, 0) and
+ * composed through ui_blit_round equals the window painted directly; its
+ * client in its own size, centred across. */
+static void test_resize_surface_equals_direct(void)
+{
+    static const uint32_t scales[2] = { 4, 8 };
+    for (int i = 0; i < 2; i++) {
+        uint32_t s = scales[i], W = 900, H = 700, bpp = 4;
+        struct ui_fonts f = fonts_for(s);
+        struct ui_window w = win("A", 200, 150, false);
+        w.paint = client;
+        w.ctx = &f;
+        w.resizable = true;
+        w.min_w = 200;
+        w.min_h = 150;
+        struct rect r = { 37, 41, 333, 261 };
+        uint8_t *a = malloc((size_t)W * H * bpp), *b = malloc((size_t)W * H * bpp), *sp = malloc((size_t)W * H * bpp);
+        for (size_t k = 0; k < (size_t)W * H * bpp; k++)
+            a[k] = b[k] = (uint8_t)(k * 5 + (k >> 8));
+        memset(sp, 0x5A, (size_t)W * H * bpp);
+        struct surface sa, sb, ss;
+        surface_init(&sa, a, W, H, W * bpp, bpp);
+        surface_init(&sb, b, W, H, W * bpp, bpp);
+        surface_init(&ss, sp, W, H, W * bpp, bpp);      /* larger than the window */
+        struct ui_canvas ca, cs, cb;
+        ui_canvas_init(&ca, &sa);
+        ui_window_draw(&ca, &w, r, true, UI_BUTTON_NORMAL, s, &f);
+        ui_canvas_init(&cs, &ss);
+        ui_window_draw(&cs, &w, (struct rect){ 0, 0, r.w, r.h }, true, UI_BUTTON_NORMAL, s, &f);
+        ui_canvas_init(&cb, &sb);
+        ui_blit_round(&cb, r, &ss, ui_window_radius(s), UI_CORNERS_ALL);
+        CHECK(memcmp(a, b, (size_t)W * H * bpp) == 0);
+        /* The client centred: its box at (r.w - 200) / 2 + 20 from the left, 50 down. */
+        CHECK_EQ(surface_get(&sa, (uint32_t)(r.x + (r.w - 200) / 2 + 20), (uint32_t)(r.y + 50)), UI_BORDER);
+        free(a);
+        free(b);
+        free(sp);
+    }
+}
+
 int main(void)
 {
     printf("test_ui_window\n");
@@ -606,5 +879,9 @@ int main(void)
     RUN(test_taskbar_buttons);
     RUN(test_switch);
     RUN(test_double_click);
+    RUN(test_resize_band);
+    RUN(test_resize_drag);
+    RUN(test_resize_extremes);
+    RUN(test_resize_surface_equals_direct);
     return unit_report("test_ui_window");
 }

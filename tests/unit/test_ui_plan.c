@@ -5,7 +5,8 @@
  * tables each adds; at the quarter share exactly and one page over; the
  * fallbacks: the cache refused and the surfaces placed from page 0, the
  * Console refused and About still placed (smaller), nothing placed; an
- * item of no pages never fits. The toolkit's modules are included
+ * item of no pages never fits; 1.5 stage 9: a resizable window's surface
+ * size (screen-wide, desktop_surface_size). The toolkit's modules are included
  * directly; surface_core.c, wallpaper_core.c and coverage_core.c are
  * linked (the Makefile). */
 #include <stdint.h>
@@ -23,6 +24,23 @@ static void test_surface_pages(void)
     CHECK_EQ(desktop_surface_pages(352, 377, 4), 130);          /* 530,816 bytes */
     CHECK_EQ(desktop_surface_pages(352, 377, 3), 98);           /* 398,112 bytes */
     CHECK_EQ(desktop_surface_pages(1, 1, 3), 1);
+}
+
+/* 1.5 stage 9: a resizable window's surface: the screen's width by the area
+ * above the taskbar, each side at least its own; others their own size. */
+static void test_surface_size(void)
+{
+    uint32_t sw, sh;
+    desktop_surface_size(false, 642, 433, 1024, 728, &sw, &sh);
+    CHECK(sw == 642 && sh == 433);
+    desktop_surface_size(true, 352, 377, 1024, 728, &sw, &sh);
+    CHECK(sw == 1024 && sh == 728);
+    CHECK_EQ(desktop_surface_pages(sw, sh, 4), 728);            /* 2,981,888 bytes */
+    desktop_surface_size(true, 352, 377, 800, 560, &sw, &sh);
+    CHECK(sw == 800 && sh == 560);
+    CHECK_EQ(desktop_surface_pages(sw, sh, 3), 329);            /* 1,344,000 bytes */
+    desktop_surface_size(true, 1100, 900, 1024, 728, &sw, &sh); /* larger than the area: its own */
+    CHECK(sw == 1100 && sh == 900);
 }
 
 /* The cache alone: the same figures as stage 3's plan. */
@@ -118,6 +136,7 @@ int main(void)
 {
     printf("test_ui_plan\n");
     RUN(test_surface_pages);
+    RUN(test_surface_size);
     RUN(test_cache_alone);
     RUN(test_order);
     RUN(test_share_edges);

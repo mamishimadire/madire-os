@@ -548,9 +548,9 @@ desktop_about_case() {
     pt=$(python3 "$(dirname "$0")/pagetables.py" "$log" --label "desktop-about-$name")
     grep -E "window surface|PAGETABLES_SURFACES" <<< "$pt" | sed 's/^/      /'
     if grep -qE "^Desktop: slot 506: window surface Console at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, [0-9]+x[0-9]+, pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
-       grep -qE "^Desktop: slot 506: window surface About at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, $(( (352 * s + 2) / 4 ))x$(( (377 * s + 2) / 4 )), pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
+       grep -qE "^Desktop: slot 506: window surface About at 0xfffffd00[0-9a-f]{8} \([0-9]+ pages of free RAM, ${w}x$(( h - (40 * s + 2) / 4 )), pitch [0-9]+\), [0-9]+ page tables; " "$log" &&
        grep -qE "^PAGETABLES_SURFACES label=desktop-about-$name cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$pt"; then
-        pass "[1.3] $label: the window surfaces (Console, then About, 352x377 dp) in slot 506 right after the background cache, under the share; tests/pagetables.py models them: tables and pages equal the kernel's walk"
+        pass "[1.3] $label: the window surfaces (Console, then About: the screen's width by the area above the taskbar, resizable since 1.5 stage 9) in slot 506 right after the background cache, under the share; tests/pagetables.py models them: tables and pages equal the kernel's walk"
     else
         fail "[1.3] $label: window surface lines or tests/pagetables.py's model: $(grep -E '^PAGETABLES_SURFACES' <<< "$pt")"
     fi

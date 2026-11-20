@@ -1139,3 +1139,141 @@ else
     fail "[1.5] window management: the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$DT_OUT" | tr '\n' ' ')"
 fi
 echo "      [1.5] window management (part 5): $(( $(date +%s) - W8P_T0 )) s (report only)"
+
+section "[1.5] Resizing by the edges and corners: About's grab band, its minimum, the area above the taskbar, its full-width surface, desktopnosurface (test=desktop desktopabout, 1024x768x32; stage 9)"
+# docs/plans/1.5.md, C4; ui_window.h (1.5 stage 9). Boot 1 (test=desktop
+# desktopabout desktoplog mouselog: About open at the start, (336, 175)
+# 352x377, resizable, its own size the smallest): tests/qmp_desktop.py
+# follows every packet with tests/desktop_ref.py's model and compares eight
+# screens with its rendering (the Console window's grid from vga_shadow):
+# (1) About's right edge dragged 100 px right: 452x377; (2) its bottom-left
+# corner 80 px left and 60 down: (256, 175) 532x437; (3) its top edge 100
+# up: (256, 75) 532x537; (4) maximised by its button (drawn from its
+# surface); (5) restored to the resized rectangle, then dragged by its title
+# bar 100 right and 50 down: (356, 125); (6) its right edge, then its bottom
+# edge, dragged far inwards (the pointer stops at the screen's edge): each
+# stops at the minimum, 352 and 377; (7) its bottom-right corner dragged far
+# out (the pointer stops at the screen's corner): the right edge stops at
+# the screen's, the bottom at the taskbar's top, 668x603; then its top-left
+# corner far out: (0, 0) 1024x728, the whole area above the taskbar, not
+# maximised; (8) About minimised, a key opens the Console window (not
+# resizable): a press 2 px inside its left edge and a move of 100 px left
+# change nothing. About's surface is the screen's width by the area above
+# the taskbar (desktop_surface_size), modelled by tests/pagetables.py. Boot
+# 2 (the same with desktopnosurface): the right edge and the bottom-left
+# corner as in (1) and (2), then maximised: both screens drawn on exposure.
+# The RESIZE lines give each resize: the window before, the pointer's own
+# movement and where the rules put it; every value below was worked out
+# from the rules by hand.
+R9_T0=$(date +%s)
+R9_L=$OUT/serial-window-resize.log
+R9_N=$OUT/serial-window-resize-nosurface.log
+desktop_iso "winresize" "test=desktop desktopabout desktoplog mouselog" ""
+R9_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+R9_SHP=$(printf '0x%x' $(( 0x${R9_SHV:-0} - 0xffffffff80000000 )))
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$R9_L" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        to:edge-right@About resize:100,0 wshot to:edge-bottomleft@About resize:-80,60 wshot \
+        to:edge-top@About resize:0,-100 wshot to:max@About click wshot to:max@About click to:title drag:100,50 wshot \
+        to:edge-right@About resize:-1000,0 to:edge-bottom@About resize:0,-1000 wshot \
+        to:edge-bottomright@About resize:2000,2000 to:edge-topleft@About resize:-2000,-2000 wshot \
+        to:min@About click "type:x" to:body@Console rel:-6,0 press rel:-100,0 release wshot \
+        --about --shadow "$R9_SHP"
+else : > "$R9_L"; fi
+R9_OUT=$DT_OUT
+desktop_iso "winresize-nosurface" "test=desktop desktopabout desktopnosurface desktoplog mouselog" ""
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$R9_N" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        to:edge-right@About resize:100,0 to:edge-bottomleft@About resize:-80,60 wshot to:max@About click wshot --about
+else : > "$R9_N"; fi
+R9_NOUT=$DT_OUT
+R9_PT=$(python3 "$(dirname "$0")/pagetables.py" "$R9_L" --label "window-resize")
+grep -E "^Desktop: (slot 506: window surface|window About)|^desktop: (resize|maximise|unmaximise|drag|open Console)" "$R9_L" |
+    head -n 20 | sed 's/^/      /'
+grep -E "^(WSCREEN|RESIZE|DRAG|EVENTS|MENUS|PACKETS|qmp_desktop)" <<< "$R9_OUT" | sed 's/^/      /'
+grep -E "^(WSCREEN|RESIZE|EVENTS|PACKETS|qmp_desktop)" <<< "$R9_NOUT" | sed 's/^/      nosurface: /'
+grep -E "^PAGETABLES_SURFACES" <<< "$R9_PT" | sed 's/^/      /'
+# r9_ws <n> <qmp_desktop output>: screen n equals the reference.
+r9_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$2"; }
+# r9_rs <output> <n> <edges> <from> <moved> <got>: RESIZE line n, whole.
+r9_rs() { grep -qxF "RESIZE $2 About edges $3 from $4 moved $5 got $6" <<< "$1"; }
+if r9_rs "$R9_OUT" 1 2 "(336, 175) 352x377" "(100, 0)" "(336, 175) 452x377" &&
+   grep -qxF "desktop: resize About to (336, 175) 452x377" "$R9_L" && r9_ws 1 "$R9_OUT"; then
+    pass "[1.5] window resize: About's right edge dragged 100 px right: 452x377, its left edge where it was (logged as predicted: desktop: resize About to (336, 175) 452x377); its content centred in its own size; the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: the right edge: $(grep -E '^(RESIZE 1 |WSCREEN 1 |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ') (see ${R9_L##*/})"
+fi
+if r9_rs "$R9_OUT" 2 9 "(336, 175) 452x377" "(-80, 60)" "(256, 175) 532x437" &&
+   grep -qxF "desktop: resize About to (256, 175) 532x437" "$R9_L" && r9_ws 2 "$R9_OUT"; then
+    pass "[1.5] window resize: About's bottom-left corner dragged 80 px left and 60 down moves its left and bottom edges together: (256, 175) 532x437 (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: the bottom-left corner: $(grep -E '^(RESIZE 2 |WSCREEN 2 |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+if r9_rs "$R9_OUT" 3 4 "(256, 175) 532x437" "(0, -100)" "(256, 75) 532x537" &&
+   grep -qxF "desktop: resize About to (256, 75) 532x537" "$R9_L" && r9_ws 3 "$R9_OUT"; then
+    pass "[1.5] window resize: About's top edge dragged 100 px up: (256, 75) 532x537, its bottom edge where it was (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: the top edge: $(grep -E '^(RESIZE 3 |WSCREEN 3 |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+if grep -qxF "desktop: maximise About to (0, 0) 1024x728" "$R9_L" &&
+   grep -qxF "desktop: unmaximise About to (256, 75) 532x537" "$R9_L" &&
+   grep -qxF "DRAG 1 asked (356, 125) got (356, 125) 532x537 bar 728 left -484" <<< "$R9_OUT" &&
+   grep -qxF "desktop: drag About to (356, 125) 532x537" "$R9_L" && r9_ws 4 "$R9_OUT" && r9_ws 5 "$R9_OUT"; then
+    pass "[1.5] window resize: the resized About maximised (the area above the taskbar, pixel for pixel) and restored to its resized rectangle (256, 75) 532x537 (logged); then a drag by its title bar moves it 1:1 at its new size, to (356, 125) (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: maximise and restore after a resize, or the drag: $(grep -E '^(DRAG 1 |WSCREEN [45] |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+if r9_rs "$R9_OUT" 4 2 "(356, 125) 532x537" "(-883, 0)" "(356, 125) 352x537" &&
+   r9_rs "$R9_OUT" 5 8 "(356, 125) 352x537" "(0, -657)" "(356, 125) 352x377" &&
+   grep -qxF "desktop: resize About to (356, 125) 352x537" "$R9_L" &&
+   grep -qxF "desktop: resize About to (356, 125) 352x377" "$R9_L" && r9_ws 6 "$R9_OUT"; then
+    pass "[1.5] window resize: About's right edge and then its bottom edge dragged to the screen's left and top edges stop at its minimum, its own size 352x377 (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: the minimum: $(grep -E '^(RESIZE [45] |WSCREEN 6 |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+if r9_rs "$R9_OUT" 6 10 "(356, 125) 352x377" "(320, 270)" "(356, 125) 668x603" &&
+   r9_rs "$R9_OUT" 7 5 "(356, 125) 668x603" "(-360, -129)" "(0, 0) 1024x728" &&
+   grep -qxF "desktop: resize About to (356, 125) 668x603" "$R9_L" &&
+   grep -qxF "desktop: resize About to (0, 0) 1024x728" "$R9_L" &&
+   [ "$(grep -cxF "desktop: maximise About to (0, 0) 1024x728" "$R9_L")" -eq 1 ] && r9_ws 7 "$R9_OUT"; then
+    pass "[1.5] window resize: About's bottom-right corner dragged past the screen's corner stops at the screen's right edge and the taskbar's top (668x603), its top-left corner past the screen's top-left at (0, 0): 1024x728, the whole area above the taskbar, not maximised (logged as predicted; no second maximise line); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: the area's limits: $(grep -E '^(RESIZE [67] |WSCREEN 7 |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+if grep -qxF "Desktop: a key opened the Console window (the key is not typed)" "$R9_L" &&
+   grep -qxF "desktop: open Console at (191, 147) 642x433" "$R9_L" &&
+   ! grep -qE "^desktop: (resize|drag) Console " "$R9_L" && r9_ws 8 "$R9_OUT"; then
+    pass "[1.5] window resize: the Console window (not resizable, 80x25) has no grab band: a press 2 px inside its left edge and a move of 100 px to the left change nothing (no resize or drag line; it stays at (191, 147) 642x433); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window resize: the Console window's edge: $(grep -E '^(WSCREEN 8 |qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+if grep -qE "^Desktop: slot 506: window surface About at 0xfffffd00[0-9a-f]{8} \(728 pages of free RAM, 1024x728, pitch 4096\), [0-9]+ page tables; " "$R9_L" &&
+   grep -qE "^PAGETABLES_SURFACES label=window-resize cache=present surfaces=Console,About computed=([0-9]+/[0-9]+) logged=\1 MATCH$" <<< "$R9_PT" &&
+   ! grep -q "^Desktop: window About drawn on exposure" "$R9_L" && r9_ws 4 "$R9_OUT" && r9_ws 7 "$R9_OUT"; then
+    pass "[1.5] window resize: About's surface is the screen's width by the area above the taskbar (1024x728, 728 pages, pitch 4096), so its resized and maximised screens are drawn from it (pixel for pixel); tests/pagetables.py models slot 506 with it: tables and pages equal the kernel's walk"
+else
+    fail "[1.5] window resize: About's full-width surface: $(grep -E '^Desktop: (slot 506: window surface About|window About)' "$R9_L" | tr '\n' ' ') $(grep -E '^PAGETABLES_SURFACES' <<< "$R9_PT")"
+fi
+if grep -qxF "Desktop: window About drawn on exposure (test option desktopnosurface)" "$R9_N" &&
+   r9_rs "$R9_NOUT" 1 2 "(336, 175) 352x377" "(100, 0)" "(336, 175) 452x377" &&
+   r9_rs "$R9_NOUT" 2 9 "(336, 175) 452x377" "(-80, 60)" "(256, 175) 532x437" &&
+   grep -qxF "desktop: resize About to (256, 175) 532x437" "$R9_N" &&
+   grep -qxF "desktop: maximise About to (0, 0) 1024x728" "$R9_N" && r9_ws 1 "$R9_NOUT" && r9_ws 2 "$R9_NOUT" &&
+   grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9_NOUT" &&
+   grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$R9_NOUT" &&
+   ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|events not logged|MISMATCH" "$R9_N"; then
+    pass "[1.5] window resize, desktopnosurface: About drawn on exposure, resized by its right edge and its bottom-left corner as with a surface (logged as predicted) and then maximised: both screens equal the reference pixel for pixel; every window line as the model predicts, every packet exact; no panic, FAILED line or drop"
+else
+    fail "[1.5] window resize, desktopnosurface: $(grep -E '^(RESIZE|WSCREEN|EVENTS|PACKETS|qmp_desktop)' <<< "$R9_NOUT" | tr '\n' ' ') (see ${R9_N##*/})"
+fi
+if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9_OUT" &&
+   grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9_OUT" &&
+   grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$R9_OUT" &&
+   ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|events not logged|MISMATCH" "$R9_L"; then
+    pass "[1.5] window resize: every window line (raise, focus, resize, maximise, unmaximise, drag, minimise, open, the buttons' and taskbar buttons' states) and every menu line as the model predicts, in order; every packet exact; no panic, FAILED line or drop"
+else
+    fail "[1.5] window resize: the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
+fi
+echo "      [1.5] window resize (part 5): $(( $(date +%s) - R9_T0 )) s (report only)"

@@ -874,7 +874,9 @@ def window(scr, tok, s, r, title, icon_name, active, close, client, extra=None):
     R, tb = px(6, s), px(32, s)
     fill_round(scr, r, R, 15, tok["surface.window"])
     frame_round(scr, r, R, px(1, s), 15, tok["border.window" if active else "border.inactive"])
-    if extra["maximised"]:
+    # 1.5 stage 9: a resizable window's client too (its own size, centred
+    # across; the same as r while the window has its own size).
+    if extra["maximised"] or (extra.get("resizable") and tuple(r[2:4]) != tuple(extra["size"])):
         w, h = extra["size"]
         client(scr, (r[0] + (r[2] - w) // 2, r[1], w, h))
     else:
@@ -1032,6 +1034,8 @@ def console_window(scr, tok, s, r, active, close, grid, extra=None):
 
 
 WINDOW_BUTTONS = {"About": {"min", "max"}, "Console": {"min"}}     # 1.5 stage 8 (desktop.c)
+WINDOW_RESIZABLE = {"About"}     # 1.5 stage 9 (desktop.c): its own size the smallest
+EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, EDGE_BOTTOM = 1, 2, 4, 8           # ui_window.h's UI_EDGE_*
 WINDOW_LOOK = {"About": ("about", ABOUT_TITLE), "Console": ("console", CONSOLE_TITLE)}
 
 
@@ -1041,7 +1045,9 @@ class WM:
     close button, Esc; 1.5 stage 8: the minimise and maximise buttons,
     minimised and maximised windows, the double click on a title bar, the
     taskbar's window buttons (the order they opened, their states), the
-    middle button on them, Alt+Tab over the most-recently-focused order.
+    middle button on them, Alt+Tab over the most-recently-focused order;
+    1.5 stage 9: the grab band of a resizable window (8 dp inside each
+    edge, after the title-bar buttons) and the resize (resize_rect).
     Each change is kept as the kernel's desktoplog line would say it
     (desktop: ...), in the kernel's order."""
 
@@ -1051,6 +1057,7 @@ class WM:
         self.z, self.focus = [], None           # windows: dicts name, w, h, r, esc, close, ...
         self.order, self.mru = [], []           # 1.5 stage 8: the taskbar's order; most recently focused first
         self.x, self.y = w // 2, h // 2
+        self.resize, self.resize_edges = None, 0    # 1.5 stage 9: the window being resized, its moving edges
         self.left, self.drag, self.pressed = False, None, None
         self.pressed_part, self.task_pressed, self.click_w = "close", None, None
         self.switching, self.switch_i, self.target = False, 0, None
@@ -1091,6 +1098,8 @@ class WM:
                 return "maximise", win
             if self.inside(part_rect(win["r"], self.s, win["buttons"], "minimise"), x, y):
                 return "minimise", win
+            if self.edges(win, x, y):                   # 1.5 stage 9: after the buttons
+                return "resize", win
             return ("title" if y < win["r"][1] + px(32, self.s) else "body"), win
         if y >= self.bar:
             for k, win in enumerate(self.order):
@@ -1098,6 +1107,49 @@ class WM:
                     return "taskbutton", win
             return "taskbar", None
         return "desktop", None
+
+    def edges(self, win, x, y):
+        """1.5 stage 9 (ui_window_edges): the edges whose band (8 dp inside
+        the rectangle) holds (x, y); 0 when not resizable, maximised or
+        minimised, or outside."""
+        r = win["r"]
+        if not win.get("resizable") or win["maximised"] or win["minimised"] or not self.inside(r, x, y):
+            return 0
+        b, e = px(8, self.s), 0
+        if x < r[0] + b:
+            e |= EDGE_LEFT
+        elif x >= r[0] + r[2] - b:
+            e |= EDGE_RIGHT
+        if y < r[1] + b:
+            e |= EDGE_TOP
+        elif y >= r[1] + r[3] - b:
+            e |= EDGE_BOTTOM
+        return e
+
+    def resize_rect(self, win, g, edges, dx, dy):
+        """1.5 stage 9 (ui_wm_resize_rect): the moving edges 1:1, the size
+        between the minimum and the area above the taskbar (each never past
+        the start), no edge further off the screen than it started, 48 dp
+        on the screen."""
+        keep = px(48, self.s)
+        minw, minh = min(max(win["min_size"][0], 1), g[2]), min(max(win["min_size"][1], 1), g[3])
+        maxw, maxh = max(self.w, g[2]), max(self.bar, g[3])
+        clamp = lambda v, lo, hi: min(max(v, lo), hi)  # noqa: E731
+        left, top, right, bottom = g[0], g[1], g[0] + g[2], g[1] + g[3]
+        if edges & EDGE_LEFT:
+            left = clamp(g[0] + dx, max(right - maxw, min(0, g[0])), min(right - minw, max(self.w - keep, g[0])))
+        elif edges & EDGE_RIGHT:
+            right = clamp(right + dx, max(left + minw, min(keep, right)), min(left + maxw, max(self.w, right)))
+        if edges & EDGE_TOP:
+            top = clamp(g[1] + dy, max(bottom - maxh, min(0, g[1])), bottom - minh)
+        elif edges & EDGE_BOTTOM:
+            bottom = clamp(bottom + dy, top + minh, min(top + maxh, max(self.bar, bottom)))
+        return (left, top, right - left, bottom - top)
+
+    def resize_end(self):
+        win, self.resize = self.resize, None
+        if win and tuple(win["r"]) != tuple(self.grab[2]):
+            self.ev("resize %s to (%d, %d) %dx%d" % ((win["name"],) + tuple(win["r"])))
 
     def ev(self, line):
         self.events.append("desktop: " + line)
@@ -1118,7 +1170,7 @@ class WM:
             self.ev("raise %s" % win["name"])
 
     def part_state(self, win, part):
-        if self.drag or win["minimised"]:
+        if self.drag or self.resize or win["minimised"]:     # 1.5 stage 9: a resize as a drag
             return "normal"
         over = self.hit(self.x, self.y) == (part, win)
         if self.pressed:
@@ -1129,7 +1181,7 @@ class WM:
         return self.part_state(win, "close")
 
     def task_state(self, win):
-        if self.drag:
+        if self.drag or self.resize:                    # 1.5 stage 9: a resize as a drag
             return "normal"
         over = self.hit(self.x, self.y) == ("taskbutton", win)
         if self.task_pressed:
@@ -1153,7 +1205,8 @@ class WM:
     def open(self, name, w, h, esc, buttons=None, look=None):
         win = {"name": name, "w": w, "h": h, "esc": esc, "close": "normal", "min": "normal", "max": "normal",
                "task": "normal", "buttons": set(buttons or ()), "minimised": False, "maximised": False,
-               "normal": None, "look": look or WINDOW_LOOK.get(name)}
+               "normal": None, "look": look or WINDOW_LOOK.get(name),
+               "resizable": name in WINDOW_RESIZABLE, "min_size": (w, h)}   # 1.5 stage 9
         win["r"] = self.place(w, h)
         self.z.append(win)
         self.order.append(win)
@@ -1174,6 +1227,8 @@ class WM:
             self.pressed = None
         if self.drag is win:
             self.drag = None
+        if self.resize is win:                          # 1.5 stage 9
+            self.resize = None
         if self.task_pressed is win:
             self.task_pressed = None
         if self.click_w is win:
@@ -1195,6 +1250,8 @@ class WM:
         win["minimised"] = True
         if self.drag is win:
             self.drag = None
+        if self.resize is win:                          # 1.5 stage 9
+            self.resize = None
         if self.pressed is win:
             self.pressed = None
         if self.click_w is win:
@@ -1235,6 +1292,9 @@ class WM:
         if self.drag and not self.drag["maximised"]:
             win, (gx, gy, gr) = self.drag, self.grab
             win["r"] = self.clamp((gr[0] + x - gx, gr[1] + y - gy, gr[2], gr[3]))
+        if self.resize:                                 # 1.5 stage 9
+            gx, gy, gr = self.grab
+            self.resize["r"] = self.resize_rect(self.resize, gr, self.resize_edges, x - gx, y - gy)
         if down and not self.left:
             self.left = True
             part, win = self.hit(x, y)
@@ -1249,12 +1309,16 @@ class WM:
                 self.set_focus(win)
                 if part in ("close", "minimise", "maximise"):
                     self.pressed, self.pressed_part = win, part
+                elif part == "resize":                  # 1.5 stage 9: the grab band
+                    self.resize, self.resize_edges = win, self.edges(win, x, y)
+                    self.grab = (x, y, win["r"])
                 elif part == "title" and dclick and "max" in win["buttons"]:
                     self.toggle_max(win)
                 elif part == "title":
                     self.drag, self.grab = win, (x, y, win["r"])
         if up and self.left:
             self.left = False
+            self.resize_end()                           # 1.5 stage 9
             if self.drag:
                 win, self.drag = self.drag, None
                 if win["r"][:2] != self.grab[2][:2]:
@@ -1327,6 +1391,7 @@ class WM:
         if not self.left:
             return
         self.left = False
+        self.resize_end()                               # 1.5 stage 9
         if self.drag:
             win, self.drag = self.drag, None
             if win["r"][:2] != self.grab[2][:2]:
@@ -1376,7 +1441,7 @@ def wm_shown(wm, values, grid=None):
             continue
         one = {"r": z["r"], "active": z is wm.focus, "close": z["close"], "values": values,
                "extra": {"buttons": z["buttons"], "min": z["min"], "max": z["max"], "maximised": z["maximised"],
-                         "size": (z["w"], z["h"])}}
+                         "size": (z["w"], z["h"]), "resizable": z.get("resizable", False)}}
         if z["name"] == "Console":
             one["grid"] = grid() if callable(grid) else grid
         shown.append(one)

@@ -78,9 +78,9 @@ void ui_window_draw(const struct ui_canvas *c, const struct ui_window *w, struct
     ui_fill_round(c, r, R, UI_CORNERS_ALL, UI_SURFACE_WINDOW);
     ui_frame_round(c, r, R, ui_window_edge(s), UI_CORNERS_ALL, active ? UI_BORDER_WINDOW : UI_BORDER_INACTIVE);
     /* 1.5 stage 8: a maximised window's client in its own size, centred
-     * across the window, from its top. */
+     * across the window, from its top; 1.5 stage 9: a resized one's too. */
     struct rect client = r;
-    if (w->maximised)
+    if (w->maximised || (w->resizable && (r.w != w->w || r.h != w->h)))
         client = (struct rect){ r.x + (r.w - w->w) / 2, r.y, w->w, w->h };
     if (w->paint)
         w->paint(c, client, w->ctx);
@@ -137,6 +137,8 @@ void ui_wm_init(struct ui_wm *m, int32_t width, int32_t height, int32_t bar_y, u
     m->click_y = 0;
     m->press_x = 0;
     m->press_y = 0;
+    m->resize = 0;                      /* 1.5 stage 9 */
+    m->resize_edges = 0;
 }
 
 void ui_wm_clear_events(struct ui_wm *m)
@@ -257,6 +259,8 @@ enum ui_hit ui_wm_hit(const struct ui_wm *m, int32_t x, int32_t y, struct ui_win
             return UI_HIT_MAXIMISE;
         if (ui_rect_contains(ui_window_part_rect(win, win->r, m->scale, UI_HIT_MINIMISE), x, y))
             return UI_HIT_MINIMISE;
+        if (ui_window_edges(win, win->r, m->scale, x, y))   /* 1.5 stage 9: after the buttons */
+            return UI_HIT_RESIZE;
         if (y < (int64_t)win->r.y + ui_window_title_h(m->scale))
             return UI_HIT_TITLE;
         return UI_HIT_BODY;
@@ -319,7 +323,7 @@ static void raise_window(struct ui_wm *m, struct ui_window *w)
  * it with no button held and nothing pressed; else normal. */
 static enum ui_button_state win_task_state(const struct ui_wm *m, const struct ui_window *w)
 {
-    if (!w->open || m->drag)
+    if (!w->open || m->drag || m->resize)   /* 1.5 stage 9: a resize as a drag */
         return UI_BUTTON_NORMAL;
     struct ui_window *at;
     bool over = ui_wm_hit(m, m->x, m->y, &at) == UI_HIT_TASKBUTTON && at == w;
@@ -367,7 +371,7 @@ static void update_close_states(struct ui_wm *m)
 
 enum ui_button_state ui_wm_part_state(const struct ui_wm *m, const struct ui_window *w, enum ui_hit part)
 {
-    if (!w->open || m->drag || w->minimised)
+    if (!w->open || m->drag || m->resize || w->minimised)      /* 1.5 stage 9: a resize as a drag */
         return UI_BUTTON_NORMAL;
     struct ui_window *at;
     bool over = ui_wm_hit(m, m->x, m->y, &at) == part && at == w;
@@ -428,6 +432,8 @@ static void close_window(struct ui_wm *m, struct ui_window *w, enum ui_wm_event_
         m->pressed = 0;
     if (m->drag == w)
         m->drag = 0;
+    if (m->resize == w)                     /* 1.5 stage 9 */
+        m->resize = 0;
     if (m->task_pressed == w)
         m->task_pressed = 0;
     if (m->click_w == w)
@@ -457,6 +463,8 @@ void ui_wm_minimise(struct ui_wm *m, struct ui_window *w)
     w->minimised = true;
     if (m->drag == w)
         m->drag = 0;
+    if (m->resize == w)                     /* 1.5 stage 9 */
+        m->resize = 0;
     if (m->pressed == w)
         m->pressed = 0;
     if (m->click_w == w)
@@ -540,6 +548,12 @@ static void press(struct ui_wm *m)
     if (hit == UI_HIT_CLOSE || hit == UI_HIT_MINIMISE || hit == UI_HIT_MAXIMISE) {
         m->pressed = w;
         m->pressed_part = hit;
+    } else if (hit == UI_HIT_RESIZE) {      /* 1.5 stage 9: the grab band */
+        m->resize = w;
+        m->resize_edges = ui_window_edges(w, w->r, m->scale, m->x, m->y);
+        m->grab_x = m->x;
+        m->grab_y = m->y;
+        m->grab_r = w->r;
     } else if (hit == UI_HIT_TITLE && dclick && (w->buttons & UI_WIN_MAXIMISE)) {
         ui_wm_toggle_maximise(m, w);        /* 1.5 stage 8: the double click; no drag */
     } else if (hit == UI_HIT_TITLE) {
@@ -550,8 +564,22 @@ static void press(struct ui_wm *m)
     }
 }
 
+/* 1.5 stage 9: a resize ends (the release, or the menus taking the pointer):
+ * its event if the rectangle changed. */
+static void win_resize_end(struct ui_wm *m)
+{
+    struct ui_window *w = m->resize;
+    if (!w)
+        return;
+    m->resize = 0;
+    struct rect g = m->grab_r;
+    if (w->r.x != g.x || w->r.y != g.y || w->r.w != g.w || w->r.h != g.h)
+        event(m, UI_EV_RESIZE, w);
+}
+
 static void release(struct ui_wm *m)
 {
+    win_resize_end(m);                      /* 1.5 stage 9 */
     if (m->drag) {
         struct ui_window *w = m->drag;
         m->drag = 0;
@@ -607,6 +635,17 @@ void ui_wm_pointer(struct ui_wm *m, int32_t x, int32_t y, bool down, bool up)
             damage(m, w->r);
         }
     }
+    if (m->resize) {                        /* 1.5 stage 9 */
+        struct ui_window *w = m->resize;
+        struct rect r = ui_wm_resize_rect(m, w, m->grab_r, m->resize_edges, (int64_t)x - m->grab_x,
+                                          (int64_t)y - m->grab_y);
+        if (r.x != w->r.x || r.y != w->r.y || r.w != w->r.w || r.h != w->r.h) {
+            damage(m, w->r);
+            w->r = r;
+            w->dirty = true;                /* its surface painted again at the new size */
+            damage(m, w->r);
+        }
+    }
     if (down && !m->left) {
         m->left = true;
         press(m);
@@ -633,6 +672,7 @@ void ui_wm_cancel(struct ui_wm *m)
     if (!m->left)
         return;
     m->left = false;
+    win_resize_end(m);                      /* 1.5 stage 9 */
     if (m->drag) {
         struct ui_window *w = m->drag;
         m->drag = 0;
@@ -800,4 +840,68 @@ void ui_wm_switch_cancel(struct ui_wm *m)
     m->target = 0;
     task_damage(m);
     event(m, UI_EV_SWITCH_CANCEL, 0);
+}
+
+/* ---- 1.5 stage 9: resizing by the edges and corners ---- */
+
+int32_t ui_window_band(uint32_t s)
+{
+    return ui_px(8, s);
+}
+
+uint32_t ui_window_edges(const struct ui_window *w, struct rect r, uint32_t s, int32_t x, int32_t y)
+{
+    if (!w->resizable || w->maximised || w->minimised || !ui_rect_contains(r, x, y))
+        return 0;
+    int64_t b = ui_window_band(s);
+    uint32_t e = 0;
+    if ((int64_t)x < (int64_t)r.x + b)
+        e |= UI_EDGE_LEFT;
+    else if ((int64_t)x >= (int64_t)r.x + r.w - b)
+        e |= UI_EDGE_RIGHT;
+    if ((int64_t)y < (int64_t)r.y + b)
+        e |= UI_EDGE_TOP;
+    else if ((int64_t)y >= (int64_t)r.y + r.h - b)
+        e |= UI_EDGE_BOTTOM;
+    return e;
+}
+
+static int64_t win_max64(int64_t a, int64_t b)
+{
+    return a > b ? a : b;
+}
+
+static int64_t win_min64(int64_t a, int64_t b)
+{
+    return a < b ? a : b;
+}
+
+/* v kept in [lo, hi]; the callers' ranges always hold the edge's start, so
+ * lo <= hi. */
+static int64_t win_clamp64(int64_t v, int64_t lo, int64_t hi)
+{
+    return v > hi ? hi : v < lo ? lo : v;
+}
+
+struct rect ui_wm_resize_rect(const struct ui_wm *m, const struct ui_window *w, struct rect g, uint32_t edges,
+                              int64_t dx, int64_t dy)
+{
+    int64_t keep = ui_px(48, m->scale);
+    /* The smallest: the window's minimum (at least 1 px), never above the
+     * size it started with; the largest: the area above the taskbar, never
+     * below the size it started with. */
+    int64_t minw = win_min64(win_max64(w->min_w, 1), g.w), minh = win_min64(win_max64(w->min_h, 1), g.h);
+    int64_t maxw = win_max64(m->width, g.w), maxh = win_max64(m->bar_y, g.h);
+    int64_t left = g.x, top = g.y, right = (int64_t)g.x + g.w, bottom = (int64_t)g.y + g.h;
+    if (edges & UI_EDGE_LEFT)
+        left = win_clamp64(g.x + dx, win_max64(right - maxw, win_min64(0, g.x)),
+                           win_min64(right - minw, win_max64((int64_t)m->width - keep, g.x)));
+    else if (edges & UI_EDGE_RIGHT)
+        right = win_clamp64(right + dx, win_max64(left + minw, win_min64(keep, right)),
+                            win_min64(left + maxw, win_max64(m->width, right)));
+    if (edges & UI_EDGE_TOP)
+        top = win_clamp64(g.y + dy, win_max64(bottom - maxh, win_min64(0, g.y)), bottom - minh);
+    else if (edges & UI_EDGE_BOTTOM)
+        bottom = win_clamp64(bottom + dy, top + minh, win_min64(top + maxh, win_max64(m->bar_y, bottom)));
+    return (struct rect){ (int32_t)left, (int32_t)top, (int32_t)(right - left), (int32_t)(bottom - top) };
 }

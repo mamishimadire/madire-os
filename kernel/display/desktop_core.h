@@ -133,6 +133,13 @@ void desktop_area_init(struct desktop_area *a, uint32_t taken, uint32_t free_pag
 /* The pages of a surface: width x bytes per pixel x height bytes, in whole pages. */
 uint32_t desktop_surface_pages(uint32_t width, uint32_t height, uint32_t bytes_per_pixel);
 
+/* 1.5 stage 9 (docs/plans/1.5.md, C4): the surface of a w x h window: its
+ * own size; for a resizable window the largest it can become, the screen's
+ * width by the area above the taskbar (bar_y rows), each side at least its
+ * own. */
+void desktop_surface_size(bool resizable, uint32_t w, uint32_t h, uint32_t screen_w, uint32_t bar_y,
+                          uint32_t *sw, uint32_t *sh);
+
 /* Plans an item of `pages` pages after the ones mapped; returns it->fits. */
 bool desktop_area_plan(const struct desktop_area *a, uint32_t pages, struct desktop_area_item *it);
 
