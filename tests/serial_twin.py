@@ -15,7 +15,10 @@ differences, each named in the output:
              "Mouse: ..." line (the mouse starts on framebuffer boots
              only, decision 10); since 1.3 stage 3b also every
              "Desktop: ..." line (the desktop runs on framebuffer boots
-             only, docs/plans/1.3.md, section G);
+             only, docs/plans/1.3.md, section G); since 1.5 stage 12 also
+             the "home: Live mode: ..." line (Live mode's home folders
+             are made when the desktop starts, so on framebuffer boots
+             only, docs/plans/1.5.md, C5);
   frames     the walk-check's free-frame items ("Paging check: PML4 frame
              (free RAM) ..." and "Paging check: page table frame (free
              RAM) ..."), one pair per page table: slot 506 adds page
@@ -54,7 +57,7 @@ import re
 import sys
 
 FB_ONLY = re.compile(r"^(Display: slot 506: |Display: console on the framebuffer: |Paging check: display |Mouse: |"
-                     r"Desktop: )")
+                     r"Desktop: |home: Live mode: )")
 FRAMES = re.compile(r"^Paging check: (PML4 frame|page table frame) \(free RAM\) ")
 DISPLAY = re.compile(r"^Display: (framebuffer |VGA text )")
 FIGURES = re.compile(r"^(Paging|Kernel heap self-test: no page leak|Scheduler self-test: everything returned|"

@@ -230,8 +230,6 @@ def take(qmp, serial, dump, pointer_at):
     HANDOVER["after"] = (w, h, pix)
     frame, clock = last_clock(serial)
     seen = markers(serial)
-    serial.poll()
-    win.lines_cut = len(serial.lines)          # 1.5 stage 12: the Files lines up to the screen only
     qmp.command("cont")
     if clock is None:
         return w, h, -1, None, "no 'desktop: clock' line after a frame marker", seen
@@ -292,6 +290,7 @@ class Windows:
         self.mods = set()                                   # 1.5 stage 8: the modifiers held
         self.serial = None                                  # 1.5 stage 12 (main sets it)
         self.lines_cut = None                               # wtake: the lines up to the screen
+        self.key_cut = None                                 # mark_send: the lines before the last key sent
         self.files_nomem = False
         self.viewer_bytes = b""
         self.click_t = None                                 # 1.5 stage 8: when the last title click ended
@@ -542,10 +541,23 @@ class Windows:
         return {"title": title, "buf": self.viewer_bytes[:n], "cut": st.get("cut") == "1",
                 "top": int(st.get("top", 0)), "sb": {"0": "normal", "1": "hover", "2": "drag"}.get(st.get("sb", "0"))}
 
+    def mark_send(self):
+        """Called just before a key is sent to the guest: the lines logged
+        up to then, so the model judges a key on the state before it (the
+        kernel may log the key's own result before the model reads it)."""
+        if self.serial:
+            self.serial.poll()
+            self.key_cut = len(self.serial.lines)
+
     def files_esc_closes(self):
         """files_app.c: Esc closes Files unless a rename or the info panel
-        takes it (ui_files_esc)."""
-        st = self.files_lines()[0]
+        takes it (ui_files_esc); judged on the lines logged before the Esc
+        was sent (mark_send)."""
+        cut, self.lines_cut = self.lines_cut, self.key_cut
+        try:
+            st = self.files_lines()[0]
+        finally:
+            self.lines_cut = cut
         return not st or st.get("mode") == "nomem" or (st.get("mode") == "list" and st.get("rename") != "1")
 
     def key(self, qcode, pressed):
@@ -565,6 +577,7 @@ class Windows:
             if a == "files":                            # 1.5 stage 12: Super+E
                 if self.menus.menu:
                     self.menus.close()
+                self.wm.ev("shortcut Super+E")          # desktop.c logs it before opening (desktoplog)
                 self.files_open()
                 return "taken"
             if a == "menu":
@@ -654,6 +667,8 @@ def wtake(qmp, serial, dump, win, pointer_at):
         qmp.command("pmemsave", val=int(win.shadow, 16), size=fbcon_ref.SHADOW_SIZE, filename=mem)
     frame, clock = last_clock(serial)
     seen = markers(serial)
+    serial.poll()
+    win.lines_cut = len(serial.lines)          # 1.5 stage 12: the Files lines up to the screen only
     qmp.command("cont")
     if win.shadow and any(x["name"] == "Console" for x in win.wm.z):
         shadow = open(mem, "rb").read()
@@ -800,6 +815,7 @@ def drag_burst(qmp, serial, win, m, count, keys):
         if sent_keys < len(actions) and i % every == every - 1:
             value = actions[sent_keys][1]
             sent_keys += 1
+            win.mark_send()
             qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value], **{"hold-time": 20})
             model_keys(win, value)
     for n, want in pending:
@@ -807,6 +823,7 @@ def drag_burst(qmp, serial, win, m, count, keys):
     seconds = time.monotonic() - t0
     packet(m, win, serial, 0, 0, False)
     for _, value in actions[sent_keys:]:
+        win.mark_send()
         qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value], **{"hold-time": 20})
         model_keys(win, value)
         sent_keys += 1
@@ -874,6 +891,7 @@ def window_step(step, qmp, serial, dump, win, m, shots):
         for item in step[5:].split(","):
             k, _, how = item.partition(":")
             for down in ((True, False) if how == "" else (how == "down",)):
+                win.mark_send()
                 qmp.command("input-send-event",
                             events=[{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": k}}}])
                 win.key(k, down)
@@ -1078,6 +1096,8 @@ def main():
                     if kind == "wait":
                         time.sleep(value)
                         continue
+                    if win:
+                        win.mark_send()
                     qmp.command("send-key", keys=[{"type": "qcode", "data": k} for k in value],
                                 **{"hold-time": 20})
                     if win:

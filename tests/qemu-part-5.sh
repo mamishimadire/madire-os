@@ -1579,7 +1579,8 @@ if [ -n "$DT_ISO" ]; then
         to:desktop fsync wshot \
         "kseq:down,ret" "wait:Files: read $F12_DOC: 5 entries in 1 holds of at most 16, 4 shown" fsync wshot \
         "to:fbtn@New Folder" click "wait:Files: folder 'New Folder' made in $F12_DOC" fsync \
-        "type:Work{ret}" "wait:Files: 'New Folder' renamed to 'Work' in $F12_DOC" to:desktop fsync wshot \
+        "type:${F12_BS4}${F12_BS4}{backspace}{backspace}Work{ret}" \
+        "wait:Files: 'New Folder' renamed to 'Work' in $F12_DOC" to:desktop fsync wshot \
         "kseq:f2" "type:${F12_BS4}a/b{ret}" "wait:files: status 1 A name can't contain '/'." \
         "type:{backspace}{backspace}{backspace}..{ret}" "wait:files: status 1 This name is reserved." \
         "type:{backspace}{backspace}notes.txt{ret}" "wait:files: status 1 That name is already used here." \
@@ -1793,7 +1794,7 @@ desktop_iso "filesnomem" "test=desktop livehome filesnomem desktoplog mouselog" 
 DT_OUT=""
 if [ -n "$DT_ISO" ]; then
     DT_UNTIL="" desktop_boot "$F12_C" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
-        "kseq:meta_l:down,e,meta_l:up" "wait:Files: not enough memory (test option filesnomem): only the message shown" \
+        "kseq:meta_l:down,e,meta_l:up" fsync \
         to:desktop fsync wshot to:close@Files click fsync --filesnomem
 else : > "$F12_C"; fi
 F12_COUT=$DT_OUT
