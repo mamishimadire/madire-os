@@ -5,7 +5,8 @@
 # session at the end was added in stage 1. 1.0 stage 2 adds the [1.0]
 # storage diagnostics (test=fslimits, test=fsfill at 32M and 64M) last;
 # stage 3 the VFS lock's test=klock after them. 1.3 stage 8: the
-# splash-to-desktop handover at 1024x768x32 at the end.
+# splash-to-desktop handover at 1024x768x32 at the end. 1.5 stage 12: the
+# SMEP and SMAP enforced boots (0.10) moved unchanged to part 5 (A3).
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 
@@ -341,63 +342,6 @@ else
     fail "[0.10] SMAP CPU: clac evidence missing (${CL:-no line})"
 fi
 expect "$LOG" "^clac test: PASS$"                     "[0.10] SMAP CPU: clac test PASS"
-
-section "[0.10] SMEP and SMAP enforced: the kernel touches a user page (test=smep, test=smap)"
-UVA=0x0000000000400000
-LOG=$OUT/serial-smep.log
-boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smep"
-expect "$LOG" "^SMEP test: user page $UVA \(present, user, executable: ret\); CR4.SMEP=1: the kernel calls it, this must fault$" \
-                                                      "[0.10] smep: present, executable user page built and entered first"
-expect "$LOG" "KERNEL PANIC"                          "[0.10] smep: crash screen shown"
-expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.10] smep: exception 14"
-expect "$LOG" "Error code: 0x00000011"                "[0.10] smep: error code 0x11 (present, instruction fetch, kernel mode)"
-expect_in_order "$LOG" "[0.10] smep: decoded and named as a SMEP violation at the user page" \
-    "^ Page fault: protection violation, read, kernel mode$" "^ Details: instruction fetch$" \
-    "^ Cause: SMEP violation \(the kernel executed a user page\)$" "^ Address: $UVA$"
-expect "$LOG" "RIP=$UVA  CS=0x0008"                   "[0.10] smep: RIP is the user page, CS the kernel's (ring 0)"
-expect "$LOG" "CR2=$UVA"                              "[0.10] smep: CR2 is the fetched user address"
-reject "$LOG" "NX violation"                          "[0.10] smep: not misnamed as an NX violation"
-reject "$LOG" "System ready|without a fault"          "[0.10] smep: halted, the fetch was refused"
-w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
-if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
-    pass "[0.10] smep: crash screen lines at most 79 characters (longest $w)"
-else
-    fail "[0.10] smep: crash screen line of $w characters (limit 79), or no crash screen"
-fi
-UVA=0x0000000000500000
-LOG=$OUT/serial-smapread.log
-boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smap"
-expect "$LOG" "^SMAP test: user page $UVA \(present, user, writable, holds 0x5a5a5a5a5a5a5a5a\); RFLAGS.AC=0, CR4.SMAP=1: the kernel reads it, this must fault$" \
-                                                      "[0.10] smap: present user data page built and entered first"
-expect "$LOG" "KERNEL PANIC"                          "[0.10] smap: crash screen shown"
-expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.10] smap: exception 14"
-expect "$LOG" "Error code: 0x00000001"                "[0.10] smap: error code 0x01 (present, read, kernel mode)"
-expect_in_order "$LOG" "[0.10] smap: decoded and named as a SMAP violation at the user page" \
-    "^ Page fault: protection violation, read, kernel mode$" \
-    "^ Cause: SMAP violation \(the kernel read a user page, AC=0\)$" "^ Address: $UVA$"
-expect "$LOG" "CR2=$UVA"                              "[0.10] smap: CR2 is the user address read"
-RF=$(grep -m1 -oE 'CS=0x0008  RFLAGS=0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}$')
-if [ -n "${RF:-}" ] && [ $(( RF & 0x40000 )) -eq 0 ]; then
-    pass "[0.10] smap: faulted in ring 0 with RFLAGS.AC clear ($RF)"
-else
-    fail "[0.10] smap: ring-0 RFLAGS with AC clear not found (${RF:-missing})"
-fi
-reject "$LOG" "System ready|without a fault"          "[0.10] smap: halted, the read was refused"
-w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
-if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
-    pass "[0.10] smap: crash screen lines at most 79 characters (longest $w)"
-else
-    fail "[0.10] smap: crash screen line of $w characters (limit 79), or no crash screen"
-fi
-for t in smep smap; do
-    T=$(tr 'a-z' 'A-Z' <<< "$t")
-    LOG=$OUT/serial-$t-default.log
-    boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=$t"
-    expect "$LOG" "^$T test: NOT APPLICABLE \(not supported by this CPU\)$" \
-                                                      "[0.10] $t on the default CPU: NOT APPLICABLE"
-    expect "$LOG" "System ready\."                    "[0.10] $t on the default CPU: boots normally"
-    reject "$LOG" "PANIC|$T test: user page"          "[0.10] $t on the default CPU: no access tried, no panic"
-done
 
 section "[0.10] RSP0 follows every thread switch (test=rsp0)"
 thread_diag rsp0 15

@@ -94,6 +94,24 @@ uint32_t vfs_boot_free_pages(void)
     return boot_free_pages;
 }
 
+int vfs_live_home(uint32_t *made)
+{
+    static const char *const vfs_home_dirs[] = {
+        "/home/user", "/home/user/Desktop", "/home/user/Documents", "/home/user/Downloads",
+        "/home/user/Pictures", "/home/user/Music", "/home/user/Videos",
+    };
+    *made = 0;
+    for (uint32_t i = 0; i < sizeof(vfs_home_dirs) / sizeof(vfs_home_dirs[0]); i++) {
+        int r = vfs_create(&vfs, vfs.root, vfs_home_dirs[i], VNODE_DIR, 0755, NULL);
+        if (r == -FS_EEXIST)
+            continue;
+        if (r != 0)
+            return r;
+        (*made)++;
+    }
+    return 0;
+}
+
 struct klock *vfs_lock(void)
 {
     return &lock;

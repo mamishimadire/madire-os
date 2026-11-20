@@ -18,6 +18,8 @@
 #include "kernel/display/ui_draw.c"
 #include "kernel/display/icons.c"
 #include "kernel/display/ui_icon.c"
+#include "kernel/display/cicons.c"            /* 1.5 stage 12: ui_icon.c draws the colour icons */
+#include "kernel/display/ui_cicon.c"
 
 #define SW  120
 #define SH  120
@@ -60,7 +62,7 @@ static void test_table(void)
         next_poly += icon_defs[i].polys;
     }
     CHECK_EQ(next_poly, sizeof(icon_polys) / sizeof(icon_polys[0]));
-    CHECK_EQ(next_point, 144);      /* 1.5 stage 8: 104 + minimise 2, maximise 5, restore 10, power 23 */
+    CHECK_EQ(next_point, 159);      /* 1.5 stage 8: 104 + minimise 2, maximise 5, restore 10, power 23; 1.5 stage 12: back 5, forward 5, up 5 */
     CHECK_EQ(UI_ICON_COUNT, ICON_STROKED + 1);
     /* The M's strokes are kernel/logo.c's (part static checks the copy). */
     CHECK_EQ(splash_logo_strokes[0][0], 95);

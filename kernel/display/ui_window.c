@@ -80,7 +80,7 @@ void ui_window_draw(const struct ui_canvas *c, const struct ui_window *w, struct
     /* 1.5 stage 8: a maximised window's client in its own size, centred
      * across the window, from its top; 1.5 stage 9: a resized one's too. */
     struct rect client = r;
-    if (w->maximised || (w->resizable && (r.w != w->w || r.h != w->h)))
+    if (!w->grows && (w->maximised || (w->resizable && (r.w != w->w || r.h != w->h))))
         client = (struct rect){ r.x + (r.w - w->w) / 2, r.y, w->w, w->h };
     if (w->paint)
         w->paint(c, client, w->ctx);

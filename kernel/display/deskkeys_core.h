@@ -18,7 +18,8 @@
  *   - any other key pressed while a Super key is held sets the mark and is
  *     taken: Up DK_UP, Down DK_DOWN, Left DK_LEFT, Right DK_RIGHT, Pause
  *     DK_ABOUT, D DK_SHOW_DESKTOP, M DK_MINIMISE_ALL (with Shift
- *     DK_RESTORE_ALL); any other key does nothing (DK_TAKEN); with the
+ *     DK_RESTORE_ALL), E DK_FILES (1.5 stage 12: Super+E opens Files);
+ *     any other key does nothing (DK_TAKEN); with the
  *     power dialog open, nothing (DK_TAKEN). Letters are matched whatever
  *     their case (Caps Lock), Shift by its flag. Releases pass (DK_PASS),
  *     so a modifier's release still reaches Alt+Tab;
@@ -44,7 +45,8 @@ enum deskkeys_action {
     DK_UP, DK_DOWN, DK_LEFT, DK_RIGHT,
     DK_SHOW_DESKTOP, DK_MINIMISE_ALL, DK_RESTORE_ALL,
     DK_ABOUT,           /* Super+Pause */
-    DK_CLOSE            /* Alt+F4 */
+    DK_CLOSE,           /* Alt+F4 */
+    DK_FILES            /* 1.5 stage 12: Super+E */
 };
 
 #define DESKKEYS_SUPER_LEFT  0x1u

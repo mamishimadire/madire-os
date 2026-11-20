@@ -429,5 +429,22 @@
 # (trash_core, files_core). Changed, not added (the owner's approval, before
 # the commit): tests/desktop_ref.py's grid label width (the cell less
 # 4 x d(2), not d(88): the same at 100, 150 and 200 %, so no scene changes).
-1.5 141
-unit-suites 115
+# Stage 12: 37 more (C5, C6c, note (12) with the S12 change, the owner's
+# mockup decisions and review): part static 16 (the scenes fileicons,
+# files and files_grid in five modes against tests/desktop_ref.py, 15, and
+# their contrast check, 1); part 5 21 (boot A, Live mode, 17: Super+E and
+# the memory, the Live home folders, opening a folder, New Folder and
+# rename, the refused names and Esc, New File, the Text Viewer and 64 KiB,
+# the info panel and Esc, hidden files, Back/Forward/Up, the keys, a
+# path-bar jump, a removed folder, the history of 64, the clipped path bar,
+# the close and the memory given back, every line and packet; boot B, the
+# 1,000 limit in holds of 16; boot C, no memory; boot D, read-only Disk
+# mode with links, 2). 2 unit suites (ui_cicon, ui_files); new cases in
+# ext2_vfs (the link mark). Changed, not added (the owner's approval,
+# before the commit): test_deskkeys's Super+E row (DK_TAKEN -> DK_FILES,
+# with E and another letter added), test_ui_icon's point total (144 ->
+# 159: Back, Forward, Up) and part static's 1.3 icons scene (the three
+# arrows). Moved, not changed (A3): part 2's "[0.10] SMEP and SMAP
+# enforced" section (four boots) to part 5; every count unchanged by it.
+1.5 178
+unit-suites 117

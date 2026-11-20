@@ -122,6 +122,11 @@
 void desktop_options(bool wanted, bool default_path, bool log, bool nocache, bool nosurface, bool about,
                      bool panic_test);
 
+/* 1.5 stage 12 (docs/plans/1.5.md, C5): livehome (Live mode's home folders
+ * made when a test=desktop desktop starts, as on the default path),
+ * filesnomem and filesfill (files_app.h's test options). */
+void desktop_files_options(bool livehome, bool nomem, bool fill);
+
 /* 1.3 stage 4a: the About window's values the desktop cannot read itself:
  * the boot loader's name (Multiboot's, or none) and the usable memory in
  * MB (the boot's "Memory: ... MB usable" figure). */

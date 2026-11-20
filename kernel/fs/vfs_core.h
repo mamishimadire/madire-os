@@ -59,6 +59,19 @@ struct vnode {
  * build, not grow every node. */
 _Static_assert(sizeof(struct vnode) == 72, "struct vnode is 72 bytes");
 
+/* 1.5 stage 12 (docs/plans/1.5.md, C6c rule SL): a symbolic link's node
+ * carries this bit in its mode, outside the permission bits 07777 that
+ * every user-visible path shows (stat's st_mode keeps mode & 07777, the
+ * shell's stat prints bits 0-11, getdents' d_type follows the type). The
+ * node stays VNODE_FILE, so a lookup through a link still answers ENOTDIR;
+ * the Files app tells a link from a file by it and never follows one. */
+#define VNODE_MODE_LINK 0x10000u
+
+static inline bool vnode_is_link(const struct vnode *n)
+{
+    return (n->mode & VNODE_MODE_LINK) != 0;
+}
+
 struct vfs_ops {
     /* The entry called name in folder dir, or NULL. */
     struct vnode *(*lookup)(void *fs, struct vnode *dir, const char *name, size_t len);

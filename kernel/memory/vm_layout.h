@@ -21,7 +21,13 @@
  *             1 GiB, so each has its own page directory. 1.3 stage 3: a
  *             third area at VM_DESKTOP_BASE, the desktop's (the
  *             background cache, frames of free RAM), mapped when the
- *             desktop starts (kernel/display/desktop.h), never unmapped
+ *             desktop starts (kernel/display/desktop.h), never unmapped;
+ *             1.5 stage 12: a fourth area at VM_FILES_BASE, the Files
+ *             window's memory (frames of free RAM, zeroed when mapped)
+ *             while it is open, and the Text Viewer's at VM_VIEWER_BASE
+ *             while it is open; every page unmapped (its TLB entry
+ *             invalidated) before its frame is given back at the close
+ *             (kernel/display/files_app.c)
  *   slot 507  (0.9) kernel thread stacks: VM_KSTACK_BASE, one 32 KiB slot
  *             per thread (16 KiB unmapped guard, then the 16 KiB stack);
  *             kernel/proc/sched_core.h
@@ -59,6 +65,13 @@
 #define VM_BACKBUF_BASE       0xFFFFFD0040000000ull /* VM_FB_BASE + 1 GiB */
 #define VM_DESKTOP_BASE       0xFFFFFD0080000000ull /* VM_FB_BASE + 2 GiB (1.3) */
 #define VM_DISPLAY_AREA       0x0000000040000000ull /* each area's size */
+/* 1.5 stage 12 (docs/plans/1.5.md, C5, the S12 approvals): one Files
+ * window and one Text Viewer at once, each its own pages, both in one page
+ * table (the first 2 MiB of the area), each with unmapped pages after it. */
+#define VM_FILES_BASE         0xFFFFFD00C0000000ull /* VM_FB_BASE + 3 GiB */
+#define VM_FILES_PAGES        160u                  /* 640 KiB at most */
+#define VM_VIEWER_BASE        0xFFFFFD00C0100000ull /* VM_FILES_BASE + 1 MiB */
+#define VM_VIEWER_PAGES       32u                   /* 128 KiB at most */
 
 #define VM_KSTACK_INDEX       507u
 #define VM_KSTACK_BASE        0xFFFFFD8000000000ull

@@ -1004,6 +1004,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     desktop_options(cmdline_has("test=desktop"), !cmdline_has("test="), cmdline_word("desktoplog"),
                     cmdline_word("desktopnocache"), cmdline_word("desktopnosurface"), cmdline_word("desktopabout"),
                     cmdline_word("desktoppanic"));                                  /* 1.3 stage 4b */
+    /* 1.5 stage 12: Live mode's home folders on a test=desktop boot, and
+     * the Files window's test options (files_app.h). */
+    desktop_files_options(cmdline_word("livehome"), cmdline_word("filesnomem"), cmdline_word("filesfill"));
 
     bootscreen_draw_header();
 

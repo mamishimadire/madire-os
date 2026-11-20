@@ -95,7 +95,8 @@ static void test_shortcuts(void)
         { KEY_CHAR, 'D', KEY_SHIFT, DK_SHOW_DESKTOP },
         { KEY_CHAR, 'm', 0, DK_MINIMISE_ALL }, { KEY_CHAR, 'M', KEY_CAPS, DK_MINIMISE_ALL },
         { KEY_CHAR, 'M', KEY_SHIFT, DK_RESTORE_ALL }, { KEY_CHAR, 'm', KEY_SHIFT | KEY_CAPS, DK_RESTORE_ALL },
-        { KEY_CHAR, 'e', 0, DK_TAKEN }, { KEY_F4, 0, KEY_ALT, DK_TAKEN }, { KEY_ENTER, '\n', 0, DK_TAKEN },
+        { KEY_CHAR, 'e', 0, DK_FILES }, { KEY_CHAR, 'E', KEY_CAPS, DK_FILES }, { KEY_CHAR, 'q', 0, DK_TAKEN },
+        { KEY_F4, 0, KEY_ALT, DK_TAKEN }, { KEY_ENTER, '\n', 0, DK_TAKEN },
     };
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         struct deskkeys k;

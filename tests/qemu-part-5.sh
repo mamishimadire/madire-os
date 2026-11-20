@@ -13,7 +13,9 @@
 # before the 1.5 sections, and
 # the ext2 tables' boots (1.5 stage 5, the last section); in 1.5 stage 10,
 # moved unchanged from part 3 for its headroom (A3), the menus at
-# 800x600x24 (1.3 stage 5), after the console keys. Each
+# 800x600x24 (1.3 stage 5), after the console keys; in 1.5 stage 12, moved
+# unchanged from part 2 for its headroom (A3), the SMEP and SMAP enforced
+# boots (0.10), after the menus at 800x600x24. Each
 # section boots or builds what it reads itself (no file or variable from
 # another part).
 
@@ -570,6 +572,63 @@ section "[1.3] The menus at 800x600x24: the M button and menu, the right-click m
 # desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
 # ending with Restart; the decision 20 key session; test=mousefail=4).
 desktop_menu_case 800 800x600x24 100 "menus at 800x600x24" "resolution: 800x600x24"
+
+section "[0.10] SMEP and SMAP enforced: the kernel touches a user page (test=smep, test=smap)"
+UVA=0x0000000000400000
+LOG=$OUT/serial-smep.log
+boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smep"
+expect "$LOG" "^SMEP test: user page $UVA \(present, user, executable: ret\); CR4.SMEP=1: the kernel calls it, this must fault$" \
+                                                      "[0.10] smep: present, executable user page built and entered first"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] smep: crash screen shown"
+expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.10] smep: exception 14"
+expect "$LOG" "Error code: 0x00000011"                "[0.10] smep: error code 0x11 (present, instruction fetch, kernel mode)"
+expect_in_order "$LOG" "[0.10] smep: decoded and named as a SMEP violation at the user page" \
+    "^ Page fault: protection violation, read, kernel mode$" "^ Details: instruction fetch$" \
+    "^ Cause: SMEP violation \(the kernel executed a user page\)$" "^ Address: $UVA$"
+expect "$LOG" "RIP=$UVA  CS=0x0008"                   "[0.10] smep: RIP is the user page, CS the kernel's (ring 0)"
+expect "$LOG" "CR2=$UVA"                              "[0.10] smep: CR2 is the fetched user address"
+reject "$LOG" "NX violation"                          "[0.10] smep: not misnamed as an NX violation"
+reject "$LOG" "System ready|without a fault"          "[0.10] smep: halted, the fetch was refused"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.10] smep: crash screen lines at most 79 characters (longest $w)"
+else
+    fail "[0.10] smep: crash screen line of $w characters (limit 79), or no crash screen"
+fi
+UVA=0x0000000000500000
+LOG=$OUT/serial-smapread.log
+boot "$LOG" 8 -m 32M -cpu qemu64,+smep,+smap -kernel "$KERNEL" -append "test=smap"
+expect "$LOG" "^SMAP test: user page $UVA \(present, user, writable, holds 0x5a5a5a5a5a5a5a5a\); RFLAGS.AC=0, CR4.SMAP=1: the kernel reads it, this must fault$" \
+                                                      "[0.10] smap: present user data page built and entered first"
+expect "$LOG" "KERNEL PANIC"                          "[0.10] smap: crash screen shown"
+expect "$LOG" "CPU exception 14: Page Fault \(#PF\)"  "[0.10] smap: exception 14"
+expect "$LOG" "Error code: 0x00000001"                "[0.10] smap: error code 0x01 (present, read, kernel mode)"
+expect_in_order "$LOG" "[0.10] smap: decoded and named as a SMAP violation at the user page" \
+    "^ Page fault: protection violation, read, kernel mode$" \
+    "^ Cause: SMAP violation \(the kernel read a user page, AC=0\)$" "^ Address: $UVA$"
+expect "$LOG" "CR2=$UVA"                              "[0.10] smap: CR2 is the user address read"
+RF=$(grep -m1 -oE 'CS=0x0008  RFLAGS=0x[0-9a-f]{16}' "$LOG" | grep -oE '0x[0-9a-f]{16}$')
+if [ -n "${RF:-}" ] && [ $(( RF & 0x40000 )) -eq 0 ]; then
+    pass "[0.10] smap: faulted in ring 0 with RFLAGS.AC clear ($RF)"
+else
+    fail "[0.10] smap: ring-0 RFLAGS with AC clear not found (${RF:-missing})"
+fi
+reject "$LOG" "System ready|without a fault"          "[0.10] smap: halted, the read was refused"
+w=$(max_width "$LOG" "KERNEL PANIC" "System halted")
+if grep -q "KERNEL PANIC" "$LOG" && [ "$w" -le 79 ]; then
+    pass "[0.10] smap: crash screen lines at most 79 characters (longest $w)"
+else
+    fail "[0.10] smap: crash screen line of $w characters (limit 79), or no crash screen"
+fi
+for t in smep smap; do
+    T=$(tr 'a-z' 'A-Z' <<< "$t")
+    LOG=$OUT/serial-$t-default.log
+    boot "$LOG" 15 -m 32M -kernel "$KERNEL" -append "test=$t"
+    expect "$LOG" "^$T test: NOT APPLICABLE \(not supported by this CPU\)$" \
+                                                      "[0.10] $t on the default CPU: NOT APPLICABLE"
+    expect "$LOG" "System ready\."                    "[0.10] $t on the default CPU: boots normally"
+    reject "$LOG" "PANIC|$T test: user page"          "[0.10] $t on the default CPU: no access tried, no panic"
+done
 
 # ---- 1.5 stage 4: the per-disk I/O lock ----
 
@@ -1463,3 +1522,325 @@ else
     fail "[1.5] window shortcuts (boot B): the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$R9B_BOUT" | tr '\n' ' ')"
 fi
 echo "      [1.5] window snapping and shortcuts (part 5): $(( $(date +%s) - R9B_T0 )) s (report only)"
+
+section "[1.5] The Files window: Super+E, the Live home folders, folders, New Folder, New File, rename, the Text Viewer, the info panel, hidden files, Back, Forward, Up, the path bar, the history of 64, the limits, the memory given back, links in Disk mode (test=desktop, 1024x768x32; stage 12)"
+# docs/plans/1.5.md, C5, C6b, C6c (rule SL) and the S12 row with the owner's
+# approvals (Q1-Q10, the mockup decisions, the Esc rule); files_app.h,
+# ui_files.h, ui_viewer.h. Four boots of test ISOs, each with desktoplog and
+# mouselog; tests/qmp_desktop.py follows every packet and key with
+# tests/desktop_ref.py's model (the windows) and draws the Files window and
+# the Text Viewer from the kernel's "files:" and "viewer:" lines (the
+# folder's items, its path, the status line, the rename field and the
+# view's state), comparing the screens pixel for pixel. Boot A (livehome):
+# the Console window makes the test files in /home/user/Documents (the
+# folder old, notes.txt, data.bin, .hidden, and big.txt from four dmesg
+# outputs, over 64 KiB), then is minimised; Super+E opens Files at Home;
+# Down and Enter open Documents; New Folder and the name Work; the refused
+# names (a '/', '..', a name in use) and Esc; New File twice and a rename;
+# notes.txt in the Text Viewer, then big.txt (only its first 64 KiB, Page
+# Down) and Esc; data.bin in the info panel and Esc (the panel only); Show
+# hidden files on and off; Back, Forward and Up; Alt+Left, Alt+Right,
+# Backspace and Alt+Up; a path-bar jump; a folder removed from the history
+# (rmdir from the Console window, then Forward); 65 moves, then 70 times
+# Alt+Left (63 go back: the history keeps 64); the window at its least
+# width (the path bar clipped); the close (its memory given back) and
+# Super+E again. Boot B (livehome filesfill): /home/user/Many's 1,005
+# files read in holds of 16 (1,000 shown, the limit's row). Boot C
+# (livehome filesnomem): only the message and the close button. Boot D: a
+# marked disk mounted read-only (an unknown RO_COMPAT flag) with a fast and
+# a slow link under /user: the read-only bar, the greyed actions, the links
+# as items (the badge, the type Link), a link opened in the info panel and
+# never followed; the disk image unchanged. Every value below was worked
+# out from the rules.
+F12_T0=$(date +%s)
+F12_A=$OUT/serial-files-live.log
+F12_B=$OUT/serial-files-fill.log
+F12_C=$OUT/serial-files-nomem.log
+F12_D=$OUT/serial-files-disk.log
+F12_W=$OUT/files12
+rm -rf "${F12_W:?}" && mkdir -p "$F12_W/tree/user/Docs"
+printf 'Madire Text Viewer\n' > "$F12_W/notes.txt"
+F12_DOC=/home/user/Documents
+F12_TYPE="type:mkdir $F12_DOC/old{ret}{wait:1}echo Madire Text Viewer > $F12_DOC/notes.txt{ret}{wait:2}"
+F12_TYPE="${F12_TYPE}echo x > $F12_DOC/data.bin{ret}{wait:2}touch $F12_DOC/.hidden{ret}{wait:1}"
+for _ in 1 2 3 4; do F12_TYPE="${F12_TYPE}dmesg 9999 >> $F12_DOC/big.txt{ret}{wait:4}"; done
+F12_BS4="{backspace}{backspace}{backspace}{backspace}"
+F12_HIST=""
+for k in $(seq 1 65); do F12_HIST="$F12_HIST to:fplace@$((k % 2 == 1 ? 1 : 2)) click"; done
+F12_BACK=""
+for _ in $(seq 1 70); do F12_BACK="$F12_BACK kseq:alt:down,left,alt:up"; done
+desktop_iso "fileslive" "test=desktop livehome desktoplog mouselog" ""
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    # shellcheck disable=SC2086
+    DT_UNTIL="" desktop_boot "$F12_A" "$DT_ISO" 1024x768 ready rel:-1000,-1000 "type:x" "$F12_TYPE" \
+        to:min@Console click \
+        "kseq:meta_l:down,e,meta_l:up" "wait:Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" \
+        to:desktop fsync wshot \
+        "kseq:down,ret" "wait:Files: read $F12_DOC: 5 entries in 1 holds of at most 16, 4 shown" fsync wshot \
+        "to:fbtn@New Folder" click "wait:Files: folder 'New Folder' made in $F12_DOC" fsync \
+        "type:Work{ret}" "wait:Files: 'New Folder' renamed to 'Work' in $F12_DOC" to:desktop fsync wshot \
+        "kseq:f2" "type:${F12_BS4}a/b{ret}" "wait:files: status 1 A name can't contain '/'." \
+        "type:{backspace}{backspace}{backspace}..{ret}" "wait:files: status 1 This name is reserved." \
+        "type:{backspace}{backspace}notes.txt{ret}" "wait:files: status 1 That name is already used here." \
+        fsync wshot "kseq:esc" fsync \
+        "to:fbtn@New File" click "wait:Files: file 'New File.txt' made in $F12_DOC" fsync "kseq:esc" fsync \
+        "to:fbtn@New File" click "wait:Files: file 'New File 2.txt' made in $F12_DOC" fsync \
+        "type:${F12_BS4}${F12_BS4}${F12_BS4}{backspace}{backspace}plan.md{ret}" \
+        "wait:Files: 'New File 2.txt' renamed to 'plan.md' in $F12_DOC" fsync \
+        to:fitem@5 dclick vopen:notes.txt \
+        "wait:Text Viewer: read $F12_DOC/notes.txt: 19 bytes in 2 holds of at most 4096" to:desktop fsync wshot \
+        "kseq:esc" fsync \
+        to:fitem@2 dclick vopen:big.txt \
+        "wait:Text Viewer: read $F12_DOC/big.txt: 65536 bytes in 16 holds of at most 4096 (only the first 64 KiB)" \
+        fsync "kseq:pgdn" fsync "kseq:esc" fsync \
+        to:fitem@3 dclick fsync to:desktop fsync wshot "kseq:esc" fsync \
+        "to:fbtn@Show hidden files" click "wait:Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 8 shown" \
+        to:desktop fsync wshot \
+        "to:fbtn@Show hidden files" click "wait:Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" \
+        fsync to:fbtn@Back click fsync to:desktop fsync wshot \
+        to:fbtn@Forward click fsync to:fbtn@Up click fsync \
+        "kseq:alt:down,left,alt:up" fsync "kseq:alt:down,right,alt:up" fsync "kseq:backspace" fsync \
+        "kseq:alt:down,up,alt:up" fsync \
+        to:fplace@2 click fsync to:fpath@0 click fsync \
+        to:fplace@2 click fsync to:fitem@0 dclick fsync to:fbtn@Back click fsync \
+        to:task@Console click "type:rmdir $F12_DOC/old{ret}{wait:1}" to:min@Console click fsync \
+        to:fbtn@Forward click fsync \
+        $F12_HIST fsync $F12_BACK fsync \
+        to:fplace@2 click fsync to:fitem@0 dclick fsync \
+        to:edge-right@Files resize:-400,0 fsync to:desktop fsync wshot \
+        to:close@Files click fsync "kseq:meta_l:down,e,meta_l:up" fsync \
+        --viewerfile "$F12_W/notes.txt"
+else : > "$F12_A"; fi
+F12_AOUT=$DT_OUT
+grep -E "^(Files|Text Viewer|home): |^desktop: (shortcut Super\+E|open (Files|Text Viewer)|close (Files|Text Viewer))" "$F12_A" |
+    head -n 80 | sed 's/^/      /'
+grep -E "^(WSCREEN|EVENTS|MENUS|PACKETS|RESIZE|qmp_desktop)" <<< "$F12_AOUT" | sed 's/^/      boot A: /'
+# f12_ws <n> <qmp_desktop output>: screen n equals the reference.
+f12_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$2"; }
+# f12_order <log> <line>...: the lines, each exactly, in this order.
+f12_order() {
+    local log=$1
+    shift
+    awk -v want="$(printf '%s\n' "$@")" 'BEGIN { n = split(want, w, "\n"); if (w[n] == "") n--; k = 1 }
+         k <= n && $0 == w[k] { k++ } END { exit !(k > n) }' "$log"
+}
+# f12_fsync <n>: the serial line count FSYNC n reported.
+f12_fsync() { sed -nE "s/^FSYNC $1 line ([0-9]+)$/\1/p" <<< "$F12_AOUT"; }
+F12_OPEN=$(grep -m1 -E '^Files: opened at /home/user: [0-9]+ pages of free RAM at 0xfffffd00c0000000, zeroed; 2 page tables added \(free pages [0-9]+ -> [0-9]+\)$' "$F12_A")
+F12_P=$(sed -nE 's/^Files: opened at [^:]+: ([0-9]+) pages .*/\1/p' <<< "$F12_OPEN")
+if [ -n "$F12_OPEN" ] && [ "${F12_P:-0}" -ge 150 ] && [ "${F12_P:-999}" -le 160 ] &&
+   f12_order "$F12_A" "desktop: shortcut Super+E" "desktop: open Files at (152, 124) 720x480" \
+       "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" && f12_ws 1 "$F12_AOUT"; then
+    pass "[1.5] Files: Super+E opens the Files window (152, 124) 720x480 at Home: its memory mapped at VM_FILES_BASE, zeroed ($F12_P pages, at most 160; 2 page tables added), the six home folders read in one hold, the Live bar; the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] Files: Super+E: ${F12_OPEN:-no opened line} $(grep -E '^(WSCREEN 1 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if grep -qxF "home: Live mode: /home/user and its 6 folders made in memory (Desktop, Documents, Downloads, Pictures, Music, Videos)" "$F12_A" &&
+   grep -qxF "Filesystem: / holds home, tmp; 3 nodes, 0 data pages" "$F12_A" &&
+   [ "$(grep -c '^home: Live mode: ' "$F12_A")" -eq 1 ]; then
+    pass "[1.5] Files: Live mode's home folders made once when the desktop starts (livehome): /home/user with Desktop, Documents, Downloads, Pictures, Music and Videos; the boot's filesystem line unchanged (3 nodes, 0 data pages)"
+else
+    fail "[1.5] Files: the Live home folders: $(grep -E '^(home|Filesystem): ' "$F12_A" | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" \
+       "Files: read $F12_DOC: 5 entries in 1 holds of at most 16, 4 shown" && f12_ws 2 "$F12_AOUT"; then
+    pass "[1.5] Files: Down and Enter open Documents (four items shown, .hidden not; the path Home > Documents, Back enabled); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] Files: opening a folder: $(grep -E '^(WSCREEN 2 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: folder 'New Folder' made in $F12_DOC" \
+       "Files: read $F12_DOC: 6 entries in 1 holds of at most 16, 5 shown" \
+       "Files: 'New Folder' renamed to 'Work' in $F12_DOC" && f12_ws 3 "$F12_AOUT"; then
+    pass "[1.5] Files: New Folder makes 'New Folder' and opens its rename field; typing Work and Enter renames it (selected after the reading); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] Files: New Folder and rename: $(grep -E "^Files: (folder|'New Folder')" "$F12_A" | tr '\n' ' ') $(grep -E '^(WSCREEN 3 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "files: status 1 A name can't contain '/'." "files: status 1 This name is reserved." \
+       "files: status 1 That name is already used here." && f12_ws 4 "$F12_AOUT" &&
+   ! grep -qE "^Files: 'Work' renamed" "$F12_A" &&
+   [ "$(grep -c '^desktop: close Files' "$F12_A")" -eq 1 ]; then
+    pass "[1.5] Files: the rename field refuses a '/', '..' and a name in use with their messages (in danger in the status line; the screen pixel for pixel) and Esc cancels the rename without closing the window (Work unchanged; Files closed only once, at the end)"
+else
+    fail "[1.5] Files: the refused names: $(grep -E '^files: status 1 ' "$F12_A" | tr '\n' ' ') $(grep -E '^(WSCREEN 4 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: file 'New File.txt' made in $F12_DOC" "Files: file 'New File 2.txt' made in $F12_DOC" \
+       "Files: 'New File 2.txt' renamed to 'plan.md' in $F12_DOC" &&
+   ! grep -qE "^Files: 'New File\.txt' renamed" "$F12_A"; then
+    pass "[1.5] Files: New File makes 'New File.txt', Esc keeps that name; New File again makes 'New File 2.txt', renamed plan.md"
+else
+    fail "[1.5] Files: New File: $(grep -E "^Files: (file|'New File)" "$F12_A" | tr '\n' ' ')"
+fi
+F12_VC=$(grep -cE '^Text Viewer: closed: [0-9]+ pages unmapped \(TLB invalidated\) and returned; free pages [0-9]+ -> [0-9]+$' "$F12_A")
+if f12_order "$F12_A" "desktop: open Text Viewer at (192, 124) 640x480" \
+       "Text Viewer: read $F12_DOC/notes.txt: 19 bytes in 2 holds of at most 4096" \
+       "desktop: close Text Viewer (Esc)" \
+       "Text Viewer: read $F12_DOC/big.txt: 65536 bytes in 16 holds of at most 4096 (only the first 64 KiB)" &&
+   grep -qE '^Text Viewer: opened at /home/user/Documents/notes\.txt: [0-9]+ pages of free RAM at 0xfffffd00c0100000, zeroed; 0 page tables added ' "$F12_A" &&
+   grep -qE '^viewer: state top=[1-9][0-9]* cut=1 ' "$F12_A" && [ "$F12_VC" -eq 2 ] && f12_ws 5 "$F12_AOUT"; then
+    pass "[1.5] Files: a text file opens in the Text Viewer (its pages at VM_VIEWER_BASE, zeroed; the screen pixel for pixel); a file over 64 KiB shows only its first 64 KiB (the bar; Page Down scrolls); Esc closes it and each close gives its pages back"
+else
+    fail "[1.5] Files: the Text Viewer: $(grep -E '^(Text Viewer|desktop: (open|close) Text)' "$F12_A" | tr '\n' ' ') $(grep -E '^(WSCREEN 5 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if grep -qE '^files: panel F 2 [0-9]+ data\.bin$' "$F12_A" && f12_ws 6 "$F12_AOUT" &&
+   awk '/^files: panel F 2 [0-9]+ data\.bin$/ { p = 1 } p && /^files: state mode=list / { ok = 1; exit } END { exit !ok }' "$F12_A"; then
+    pass "[1.5] Files: a file that is not a text file opens in the info panel (Name, Size, Type, Modified, 'No app can open this file yet.', Close; the screen pixel for pixel); Esc closes only the panel (the list back, the window open)"
+else
+    fail "[1.5] Files: the info panel: $(grep -E '^files: panel ' "$F12_A" | tr '\n' ' ') $(grep -E '^(WSCREEN 6 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+# f12_hidden <read line> <count> <shown: 1 or 0>: after that read line, the
+# items logged include .hidden (1) or not (0) up to the status line, which
+# counts <count> items (the owner's review, S12: dot entries never counted
+# while the checkbox is off).
+f12_hidden() {
+    awk -v d="$1" -v c="files: status 0 $2 items, " -v want="$3" '
+        $0 == d { on = 1; seen = 0; next }
+        on && /^files: item / && / \.hidden$/ { seen = 1 }
+        on && index($0, c) == 1 { ok = (seen == want); exit }
+        END { exit !ok }' "$F12_A"
+}
+if f12_order "$F12_A" "Files: read $F12_DOC: 5 entries in 1 holds of at most 16, 4 shown" \
+       "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 8 shown" \
+       "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" &&
+   f12_hidden "Files: read $F12_DOC: 5 entries in 1 holds of at most 16, 4 shown" 4 0 &&
+   f12_hidden "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 8 shown" 8 1 &&
+   f12_hidden "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" 7 0 && f12_ws 7 "$F12_AOUT"; then
+    pass "[1.5] Files: Show hidden files unticked: .hidden neither shown nor counted (4 items); ticked: the folder read again, .hidden shown and counted (8 items; the checkbox on, the screen pixel for pixel); unticked again: hidden and not counted (7 items)"
+else
+    fail "[1.5] Files: hidden files: $(grep -E "^Files: read $F12_DOC: 8 " "$F12_A" | tr '\n' ' ') $(grep -E '^(WSCREEN 7 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" \
+       "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" \
+       "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" \
+       "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" && f12_ws 8 "$F12_AOUT"; then
+    pass "[1.5] Files: the Back, Forward and Up buttons move through the history (Home, Documents, Home); after Back the screen (Forward enabled) equals the reference pixel for pixel"
+else
+    fail "[1.5] Files: Back, Forward, Up: $(grep -E '^Files: read ' "$F12_A" | tail -n 12 | tr '\n' ' ') $(grep -E '^(WSCREEN 8 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" \
+       "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" \
+       "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown" \
+       "Files: read /home: 1 entries in 1 holds of at most 16, 1 shown" \
+       "Files: read /: 2 entries in 1 holds of at most 16, 2 shown"; then
+    pass "[1.5] Files: Alt+Left, Alt+Right, Backspace and Alt+Up move as Back, Forward, Up and Up (Documents, Home, /home, /)"
+else
+    fail "[1.5] Files: the navigation keys: $(grep -E '^Files: read ' "$F12_A" | tail -n 16 | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: read /: 2 entries in 1 holds of at most 16, 2 shown" \
+       "Files: read $F12_DOC: 8 entries in 1 holds of at most 16, 7 shown" \
+       "Files: read /home/user: 6 entries in 1 holds of at most 16, 6 shown"; then
+    pass "[1.5] Files: a click on the path bar's first part (Home, in Documents) jumps to /home/user"
+else
+    fail "[1.5] Files: the path-bar jump: $(grep -E '^Files: read ' "$F12_A" | tail -n 16 | tr '\n' ' ')"
+fi
+if f12_order "$F12_A" "Files: read $F12_DOC/old: 0 entries in 1 holds of at most 16, 0 shown" \
+       "Files: 1 folder no longer there: removed from the history" "files: status 1 That folder no longer exists."; then
+    pass "[1.5] Files: a folder removed meanwhile (rmdir in the Console window) is skipped and removed from the history by Forward, with 'That folder no longer exists.'"
+else
+    fail "[1.5] Files: the removed folder: $(grep -E '^Files: [0-9]+ folder|no longer exists' "$F12_A" | tr '\n' ' ')"
+fi
+F12_H0=$(f12_fsync "$(sed -nE 's/^FSYNC ([0-9]+) .*/\1/p' <<< "$F12_AOUT" | awk 'END { print NR - 7 }')")
+F12_H1=$(f12_fsync "$(sed -nE 's/^FSYNC ([0-9]+) .*/\1/p' <<< "$F12_AOUT" | awk 'END { print NR - 6 }')")
+F12_HN=$(awk -v a="${F12_H0:-0}" -v b="${F12_H1:-0}" 'NR > a && NR <= b && /^Files: read \/home\/user\/(Desktop|Documents): /' "$F12_A" | wc -l)
+if [ -n "$F12_H0" ] && [ -n "$F12_H1" ] && [ "$F12_HN" -eq 63 ]; then
+    pass "[1.5] Files: after 65 moves, 70 times Alt+Left goes back 63 times: the history keeps 64 entries, the oldest dropped first"
+else
+    fail "[1.5] Files: the history's limit: $F12_HN moves back (expected 63; lines ${F12_H0:-?} to ${F12_H1:-?})"
+fi
+if grep -qE '^RESIZE [0-9]+ Files edges 2 ' <<< "$F12_AOUT" && f12_ws 9 "$F12_AOUT"; then
+    pass "[1.5] Files: at its least width (480 dp) the path bar of /home/user/Documents/Work is clipped at its start ('...' and the last part); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] Files: the clipped path bar: $(grep -E '^(RESIZE|WSCREEN 9 |qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+F12_CL=$(grep -m1 -E '^Files: closed: [0-9]+ pages unmapped \(TLB invalidated\) and returned; free pages [0-9]+ -> [0-9]+$' "$F12_A")
+read -r F12_CN F12_FA F12_FB <<< "$(sed -nE 's/^Files: closed: ([0-9]+) pages .* free pages ([0-9]+) -> ([0-9]+)$/\1 \2 \3/p' <<< "$F12_CL")"
+if [ -n "$F12_CL" ] && [ "${F12_CN:-0}" = "${F12_P:-x}" ] && [ $(( ${F12_FB:-0} - ${F12_FA:-0} )) -eq "${F12_CN:-1}" ] &&
+   [ "$(grep -cE '^Files: opened at /home/user: ' "$F12_A")" -eq 2 ] &&
+   grep -qE '^Files: opened at /home/user: [0-9]+ pages of free RAM at 0xfffffd00c0000000, zeroed; 0 page tables added ' "$F12_A"; then
+    pass "[1.5] Files: the close unmaps every page (TLB invalidated) and gives it back: $F12_CN pages, free pages $F12_FA -> $F12_FB; Super+E opens Files again (its page tables kept)"
+else
+    fail "[1.5] Files: the close: ${F12_CL:-no closed line} (opened with ${F12_P:-?} pages)"
+fi
+if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$F12_AOUT" &&
+   grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$F12_AOUT" &&
+   grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$F12_AOUT" &&
+   ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|events not logged|MISMATCH|key event was lost|stopped \(error" "$F12_A"; then
+    pass "[1.5] Files (boot A): every window line and every menu line as the model predicts, in order; every packet exact; no panic, FAILED line, drop, lost key or failed reading"
+else
+    fail "[1.5] Files (boot A): the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$F12_AOUT" | tr '\n' ' ')"
+fi
+# Boot B: 1,005 files.
+desktop_iso "filesfill" "test=desktop livehome filesfill desktoplog mouselog" ""
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$F12_B" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        "kseq:meta_l:down,e,meta_l:up" "wait:Files: read /home/user: 7 entries in 1 holds of at most 16, 7 shown" \
+        "kseq:down,down,down,ret" "wait:Files: read /home/user/Many: 1001 entries in 63 holds of at most 16, 1000 shown" \
+        fsync "kseq:end" to:desktop fsync wshot
+else : > "$F12_B"; fi
+F12_BOUT=$DT_OUT
+grep -E "^(Files|Files fill test): " "$F12_B" | sed 's/^/      /'
+grep -E "^(WSCREEN|qmp_desktop)" <<< "$F12_BOUT" | sed 's/^/      boot B: /'
+if grep -qxF "Files fill test: /home/user/Many with 1005 empty files (test option filesfill)" "$F12_B" &&
+   grep -qxF "Files: read /home/user/Many: 1001 entries in 63 holds of at most 16, 1000 shown" "$F12_B" &&
+   grep -qE '^files: items 1000 1$' "$F12_B" && grep -qE '^WSCREEN 1 size=1024x768 differ=0 ' <<< "$F12_BOUT"; then
+    pass "[1.5] Files: a folder of 1,005 files is read in holds of 16 entries, one per pass of the desktop's loop (63 holds), stopping at the limit: 1,000 shown and the row 'Showing the first 1000 items of this folder.' (End: the last item; the screen pixel for pixel)"
+else
+    fail "[1.5] Files: the 1,000 limit: $(grep -E '^(Files|Files fill test): ' "$F12_B" | tr '\n' ' ') $(grep -E '^(WSCREEN|qmp_desktop)' <<< "$F12_BOUT" | tr '\n' ' ')"
+fi
+# Boot C: no memory.
+desktop_iso "filesnomem" "test=desktop livehome filesnomem desktoplog mouselog" ""
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$F12_C" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        "kseq:meta_l:down,e,meta_l:up" "wait:Files: not enough memory (test option filesnomem): only the message shown" \
+        to:desktop fsync wshot to:close@Files click fsync --filesnomem
+else : > "$F12_C"; fi
+F12_COUT=$DT_OUT
+grep -E "^Files: " "$F12_C" | sed 's/^/      /'
+grep -E "^(WSCREEN|EVENTS|qmp_desktop)" <<< "$F12_COUT" | sed 's/^/      boot C: /'
+if grep -qxF "Files: not enough memory (test option filesnomem): only the message shown" "$F12_C" &&
+   grep -qxF "Files: closed (no memory was mapped)" "$F12_C" && ! grep -qE '^Files: opened at ' "$F12_C" &&
+   grep -qE '^WSCREEN 1 size=1024x768 differ=0 ' <<< "$F12_COUT" &&
+   grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$F12_COUT" && ! grep -qE "PANIC|FAILED" "$F12_C"; then
+    pass "[1.5] Files: with no memory for the window (filesnomem: the last page refused, every page given back) only 'Not enough memory to open Files.' and the close button are shown (the screen pixel for pixel); the close maps nothing back; no panic"
+else
+    fail "[1.5] Files: no memory: $(grep -E '^Files: ' "$F12_C" | tr '\n' ' ') $(grep -E '^(WSCREEN|EVENTS|qmp_desktop)' <<< "$F12_COUT" | tr '\n' ' ')"
+fi
+# Boot D: Disk mode, read-only, links.
+F12_SLOW=$(printf 'Docs/%070d' 0)
+printf 'Madire Text Viewer\n' > "$F12_W/tree/user/notes.txt"
+ln -s notes.txt "$F12_W/tree/user/link-fast"
+ln -s "$F12_SLOW" "$F12_W/tree/user/link-slow"
+F12_DOK=1
+disk_mkfs "$F12_W/fs.img" 4096 1024 256 256 "$F12_W/tree" > "$F12_W/mkfs.txt" 2>&1 &&
+    python3 -I -B "$(dirname "$0")/ext2_view.py" set "$F12_W/fs.img" "$F12_W/ro-fs.img" $((1024 + 100)) 4 0x8 or > /dev/null 2>&1 &&
+    disk_image mbr "$F12_W/ro-fs.img" "$F12_W/disk.img" > /dev/null 2>&1 || F12_DOK=0
+F12_SUM0=$(sha256sum "$F12_W/disk.img" 2>/dev/null | cut -c1-64)
+desktop_iso "filesdisk" "test=desktop desktoplog mouselog" ""
+DT_OUT=""
+if [ -n "$DT_ISO" ] && [ "$F12_DOK" -eq 1 ]; then
+    DT_DISK="$F12_W/disk.img" DT_UNTIL="" desktop_boot "$F12_D" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        "kseq:meta_l:down,e,meta_l:up" "wait:Files: read /home/user: 4 entries in 1 holds of at most 16, 4 shown" \
+        to:desktop fsync wshot to:fitem@1 dclick fsync to:desktop fsync wshot
+else : > "$F12_D"; fi
+F12_DOUT=$DT_OUT
+F12_SUM1=$(sha256sum "$F12_W/disk.img" 2>/dev/null | cut -c1-64)
+grep -E "^(Files|Text Viewer|mount|Storage): " "$F12_D" | sed 's/^/      /'
+grep -E "^(WSCREEN|qmp_desktop)" <<< "$F12_DOUT" | sed 's/^/      boot D: /'
+if [ "$F12_DOK" -eq 1 ] && grep -qE '^files: state mode=list view=list bar=ro place=0 en=000111000010 ' "$F12_D" &&
+   grep -qE '^files: item 1 L 9 [0-9]+ link-fast$' "$F12_D" && grep -qE '^files: item 2 L 75 [0-9]+ link-slow$' "$F12_D" &&
+   grep -qE '^WSCREEN 1 size=1024x768 differ=0 ' <<< "$F12_DOUT"; then
+    pass "[1.5] Files in Disk mode, read-only: the bar '/home is read-only: changes can't be saved.', New Folder, New File and Rename greyed; a fast and a slow link shown as items with the link badge and the type Link (the screen pixel for pixel)"
+else
+    fail "[1.5] Files read-only with links: $(grep -E '^files: (state|item) ' "$F12_D" | head -n 6 | tr '\n' ' ') $(grep -E '^(WSCREEN 1 |qmp_desktop)' <<< "$F12_DOUT" | tr '\n' ' ')"
+fi
+if [ "$F12_DOK" -eq 1 ] && grep -qxF "Files: 'link-fast' is a link: shown in the info panel (never followed)" "$F12_D" &&
+   grep -qE '^files: panel L 9 [0-9]+ link-fast$' "$F12_D" && ! grep -qE '^(Text Viewer|desktop: open Text Viewer)' "$F12_D" &&
+   grep -qE '^WSCREEN 2 size=1024x768 differ=0 ' <<< "$F12_DOUT" && [ -n "$F12_SUM0" ] && [ "$F12_SUM0" = "$F12_SUM1" ] &&
+   ! grep -qE "PANIC|FAILED" "$F12_D"; then
+    pass "[1.5] Files: a link opens in the info panel with the type Link and is never followed (no Text Viewer; rule SL; the screen pixel for pixel); the disk image unchanged"
+else
+    fail "[1.5] Files: opening a link: $(grep -E "^(Files: 'link|files: panel|Text Viewer)" "$F12_D" | tr '\n' ' ') image ${F12_SUM0:0:12} -> ${F12_SUM1:0:12} $(grep -E '^(WSCREEN 2 |qmp_desktop)' <<< "$F12_DOUT" | tr '\n' ' ')"
+fi
+echo "      [1.5] the Files window (part 5): $(( $(date +%s) - F12_T0 )) s (report only)"

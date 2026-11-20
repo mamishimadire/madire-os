@@ -58,6 +58,20 @@ boot has desktopabout (the About window opens at the start). More steps
                   and where the rules put it);
     key:NAME      one key (a qcode) that the model says changes nothing;
     esc           Esc (the model closes the focused window if it may);
+1.5 stage 12, the Files window and the Text Viewer (drawn from the kernel's
+desktoplog "files:" and "viewer:" lines: the folder's items, the path, the
+status, the rename field and the view's state; the model predicts the
+windows themselves):
+    to:fbtn@LABEL, to:fplace@K, to:fpath@K, to:fitem@I, to:fempty
+                  a point of the Files window: a button by its label (its
+                  centre), place K of the sidebar, part K of the path bar,
+                  item I of the list or grid, the content below its items;
+    fsync         wait until the "files:" and "viewer:" lines have been
+                  quiet for 0.6 s; the next screen comes after the last;
+    vopen:TITLE   the Text Viewer opens now (the key or click just sent
+                  opened a text file), titled TITLE;
+    --filesnomem  the Files window opens with no memory (filesnomem);
+    --viewerfile PATH  the bytes the Text Viewer shows (its first "len").
     wshot         a screen against the desktop with the model's windows
                   (each with its logged About values, cut as ui_about.h
                   says) and, after the first packet, the pointer: taken at
@@ -216,6 +230,8 @@ def take(qmp, serial, dump, pointer_at):
     HANDOVER["after"] = (w, h, pix)
     frame, clock = last_clock(serial)
     seen = markers(serial)
+    serial.poll()
+    win.lines_cut = len(serial.lines)          # 1.5 stage 12: the Files lines up to the screen only
     qmp.command("cont")
     if clock is None:
         return w, h, -1, None, "no 'desktop: clock' line after a frame marker", seen
@@ -274,6 +290,10 @@ class Windows:
             self.wm.open("About", aw, ah, True, desktop_ref.WINDOW_BUTTONS["About"])
         self.menus = desktop_ref.Menus(self.wm)            # 1.3 stage 5
         self.mods = set()                                   # 1.5 stage 8: the modifiers held
+        self.serial = None                                  # 1.5 stage 12 (main sets it)
+        self.lines_cut = None                               # wtake: the lines up to the screen
+        self.files_nomem = False
+        self.viewer_bytes = b""
         self.click_t = None                                 # 1.5 stage 8: when the last title click ended
 
     def changed(self, before):
@@ -307,6 +327,27 @@ class Windows:
                 labels = [lab.decode() for lab in desktop_ref.DIALOG_LABELS]
                 c = desktop_ref.dialog_button(mn.dlg["r"], self.s, labels.index(where[4:]))
             return c[0] + c[2] // 2, c[1] + c[3] // 2
+        if where.split("@")[0] in ("fbtn", "fplace", "fpath", "fitem", "fempty"):      # 1.5 stage 12
+            fw = next((w for w in self.wm.z if w["name"] == "Files"), None)
+            if fw is None:
+                raise RuntimeError("no Files window (model)")
+            v = self.files_view(fw["r"])
+            L = desktop_ref.files_layout(fw["r"], self.s, v.get("bar", "none") != "none")
+            part, _, arg = where.partition("@")
+            if part == "fbtn":
+                r = L["button"][desktop_ref.FILES_PART_NAMES[arg]]
+            elif part == "fplace":
+                r = desktop_ref.files_place_rect(L, self.s, int(arg))
+            elif part == "fpath":
+                t, cx, _ = v["pb"][3][int(arg)]
+                fwd = desktop_ref.font(self.s, False)[1]
+                r = (L["path"][0] + d(32) + cx * fwd, L["path"][1], len(t) * fwd, L["path"][3])
+            elif part == "fitem":
+                r = v["list"].item_rect(int(arg))
+            else:
+                b = v["list"].body()
+                r = (b[0] + d(200), b[1] + b[3] - d(16), 2, 2)
+            return r[0] + r[2] // 2, r[1] + r[3] // 2
         if "@" in where and where.split("@")[0] in ("min", "max", "close", "task"):     # 1.5 stage 8
             part, name = where.split("@")
             win = next((w for w in self.wm.z if w["name"] == name), None)
@@ -368,6 +409,145 @@ class Windows:
             return r[0] + d(40), r[1] + d(250)
         raise ValueError("unknown place %r" % where)
 
+    def files_open(self):
+        """1.5 stage 12: Super+E: Files opened (files_app_open: its size, or
+        the no-memory message's), or activated if it is open."""
+        win = next((w for w in self.wm.z if w["name"] == "Files"), None)
+        if win is not None:
+            self.wm.activate(win)
+            return
+        d = lambda n: desktop_ref.px(n, self.s)  # noqa: E731
+        if self.files_nomem:
+            win = self.wm.open("Files", d(480), d(120), False, (), ("folder", b"Files"))
+            win["resizable"] = False
+            return
+        w, h = min(d(desktop_ref.FILES_W), self.w), min(d(desktop_ref.FILES_H), self.wm.bar)
+        win = self.wm.open("Files", w, h, False, ("min", "max"), ("folder", b"Files"))
+        win["resizable"] = True
+        win["min_size"] = (min(d(480), w), min(d(320), h))
+
+    def viewer_open(self, title):
+        """1.5 stage 12: the Text Viewer opened by Files (files_app.c)."""
+        win = next((w for w in self.wm.z if w["name"] == "Text Viewer"), None)
+        if win is not None:
+            win["look"] = ("textfile", title)
+            return
+        d = lambda n: desktop_ref.px(n, self.s)  # noqa: E731
+        w, h = min(d(desktop_ref.VIEWER_W), self.w), min(d(desktop_ref.VIEWER_H), self.wm.bar)
+        win = self.wm.open("Text Viewer", w, h, True, ("min", "max"), ("textfile", title))
+        win["resizable"] = True
+        win["min_size"] = (min(d(320), w), min(d(240), h))
+
+    def files_lines(self):
+        """The kernel's latest Files lines: (state dict, path (view, bytes),
+        status (error, bytes), field (pos, first, bytes) or None, panel or
+        None, items [(kind, size, mtime, name)], truncated)."""
+        if self.serial:
+            self.serial.poll()
+        lines = self.serial.lines if self.serial else []
+        if self.lines_cut is not None:
+            lines = lines[:self.lines_cut]
+        st, path, status, field, panel, items, trunc = {}, (0, b""), (0, b""), None, None, [], False
+        k = len(lines) - 1
+        while k >= 0 and not lines[k].startswith("files: state "):
+            k -= 1
+        if k >= 0:
+            st = dict(w.split("=", 1) for w in lines[k][len("files: state "):].split(" ") if "=" in w)
+            j = k - 1
+            while j >= 0 and lines[j].startswith("files: ") and not lines[j].startswith("files: state "):
+                ln = lines[j]
+                if ln.startswith("files: path ") and path == (0, b""):
+                    v, _, rest = ln[len("files: path "):].partition(" ")
+                    path = (int(v), rest.encode("latin-1"))
+                elif ln.startswith("files: status "):
+                    e, _, rest = ln[len("files: status "):].partition(" ")
+                    status = (int(e), rest.encode("latin-1"))
+                elif ln.startswith("files: field "):
+                    a, b, rest = ln[len("files: field "):].split(" ", 2)
+                    field = (int(a), int(b), rest.encode("latin-1"))
+                elif ln.startswith("files: panel "):
+                    kd, sz, mt, rest = ln[len("files: panel "):].split(" ", 3)
+                    panel = (kd, int(sz), int(mt), rest.encode("latin-1"))
+                j -= 1
+        i = len(lines) - 1
+        while i >= 0 and not lines[i].startswith("files: items "):
+            i -= 1
+        if i >= 0:
+            n, t = (int(v) for v in lines[i].split()[2:4])
+            trunc = t == 1
+            for ln in lines[i + 1:i + 1 + n]:
+                _, _, idx, kd, sz, mt, rest = (ln.split(" ", 6) + [""])[:7]
+                items.append((kd, int(sz), int(mt), rest.encode("latin-1")))
+        return st, path, status, field, panel, items, trunc
+
+    def files_view(self, r):
+        """The Files window's view at r (ui_files_draw's), from its lines."""
+        import files_ref
+        st, (pv, path), (err, status), field, panel, items, trunc = self.files_lines()
+        if not st or st.get("mode") == "nomem" or self.files_nomem:
+            return {"mode": "nomem"}
+        s = self.s
+        bar = st.get("bar", "none")
+        L = desktop_ref.files_layout(r, s, bar != "none")
+        kinds = {"D": files_ref.K_DIR, "F": files_ref.K_FILE, "L": files_ref.K_LINK}
+        home = path == b"/home/user"
+        emblems = {b"Desktop": "desktop", b"Documents": "documents", b"Downloads": "downloads",
+                   b"Pictures": "pictures", b"Music": "music", b"Videos": "videos"}
+        sel = set(int(v) for v in st.get("sel", "-").split(",") if v.isdigit())
+        rows = []
+        for i, (kd, size, mtime, name) in enumerate(items):
+            typ = files_ref.type_text(kinds[kd], name)
+            ic = ("folder" if not (home and name in emblems) else emblems[name]) if kd == "D" else                 "link" if kd == "L" else "textfile" if typ == "Text file" else "file"
+            rows.append([name, None if kd == "D" else files_ref.size_text(size).encode(), typ.encode(),
+                         files_ref.date_text(mtime).encode(), ic, i in sel])
+        if trunc:
+            rows.append([b"Showing the first 1000 items of this folder.", None, None, None, None, len(items) in sel])
+        if st.get("reading") == "1":
+            rows = []
+        lv = desktop_ref.ListView(st.get("view", "list"), rows, desktop_ref.LIST_TITLES, L["content"], s)
+        lv.top, lv.cursor = int(st.get("top", 0)), int(st.get("cursor", 0))
+        lv.ring = st.get("ring") == "1"
+        lv.sb = {"0": "normal", "1": "hover", "2": "drag"}.get(st.get("sb", "0"), "normal")
+        lv.top = min(lv.top, max(lv.lines() - lv.page(), 0))
+        names = desktop_ref.FILES_PART_NAMES
+        v = {"mode": st.get("mode", "list"), "bar": bar,
+             "enabled": [c == "1" for c in st.get("en", "0" * 12)],
+             "chosen": [c == "1" for c in st.get("chosen", "0" * 12)],
+             "hover": names.get(st.get("hover"), 0), "pressed": names.get(st.get("pressed"), 0),
+             "tip": names.get(st.get("tip"), 0), "place": int(st.get("place", -1)),
+             "pb": files_ref.pathbar(pv, path, desktop_ref.files_path_cells(L, s)), "list": lv,
+             "renaming": st.get("rename") == "1", "status": status, "status_error": err == 1}
+        if field is not None:
+            f = desktop_ref.Field(field[2])
+            f.pos, f.first = field[0], field[1]
+            v["field"] = f
+        if panel is not None:
+            kd, size, mtime, name = panel
+            typ = files_ref.type_text(kinds[kd], name)
+            v["panel_icon"] = "link" if kd == "L" else "textfile" if typ == "Text file" else                 "folder" if kd == "D" else "file"
+            v["panel_values"] = [name, files_ref.size_text(size).encode(), typ.encode(),
+                                 files_ref.date_text(mtime).encode()]
+        return v
+
+    def viewer_view(self, title):
+        lines = self.serial.lines if self.serial else []
+        if self.lines_cut is not None:
+            lines = lines[:self.lines_cut]
+        st = {}
+        for ln in reversed(lines):
+            if ln.startswith("viewer: state "):
+                st = dict(w.split("=", 1) for w in ln[len("viewer: state "):].split(" ") if "=" in w)
+                break
+        n = int(st.get("len", 0))
+        return {"title": title, "buf": self.viewer_bytes[:n], "cut": st.get("cut") == "1",
+                "top": int(st.get("top", 0)), "sb": {"0": "normal", "1": "hover", "2": "drag"}.get(st.get("sb", "0"))}
+
+    def files_esc_closes(self):
+        """files_app.c: Esc closes Files unless a rename or the info panel
+        takes it (ui_files_esc)."""
+        st = self.files_lines()[0]
+        return not st or st.get("mode") == "nomem" or (st.get("mode") == "list" and st.get("rename") != "1")
+
     def key(self, qcode, pressed):
         """One key event: 1.5 stage 9b: the Super key and the window
         shortcuts first; 1.5 stage 8: Alt+Tab (desktop_key: with no menu or
@@ -382,6 +562,11 @@ class Windows:
         if a == "none":
             return "taken"
         if a != "pass":
+            if a == "files":                            # 1.5 stage 12: Super+E
+                if self.menus.menu:
+                    self.menus.close()
+                self.files_open()
+                return "taken"
             if a == "menu":
                 self.menus.key(qcode, True)             # the Super key's press, as before 9b
             elif a != "taken":
@@ -406,6 +591,9 @@ class Windows:
                     self.wm.switch_cancel()
                     return "taken"
         if self.menus.key(qcode, pressed) == "wm":
+            foc = self.wm.focus
+            if foc is not None and foc["name"] == "Files" and qcode == "esc" and pressed:
+                foc["esc"] = self.files_esc_closes()    # 1.5 stage 12 (desktop.c, files_app.c)
             return self.wm.key(self.console_size, pressed, qcode == "esc")
         return "taken"
 
@@ -478,6 +666,13 @@ def wtake(qmp, serial, dump, win, pointer_at):
     if shadow is None and any(x["name"] == "Console" and not x["minimised"] for x in win.wm.z):
         raise RuntimeError("a Console window to draw but no --shadow")
     shown = desktop_ref.wm_shown(win.wm, values, desktop_ref.shadow_grid(shadow) if shadow is not None else None)
+    for one in shown:                           # 1.5 stage 12: from the kernel's "files:" and "viewer:" lines
+        if one["name"] == "Files":
+            one["files"] = win.files_view(one["r"])
+        elif one["name"] == "Text Viewer":
+            look = next((w["look"] for w in win.wm.z if w["name"] == "Text Viewer"), ("textfile", b"Text Viewer"))
+            one["viewer"] = win.viewer_view(look[1])
+    win.lines_cut = None
     want = desktop_ref.desktop_windows(w, h, clock.encode("ascii"), shown, shell)
     desc = "the desktop with the clock %s (frame %d)" % (clock, frame)
     for x in win.wm.z:
@@ -627,8 +822,8 @@ def drag_burst(qmp, serial, win, m, count, keys):
 
 # The steps main() hands to window_step (1.5 stage 8: one list each, so a
 # step window_step handles is never left out of main()'s router).
-WINDOW_STEPS = ("wshot", "press", "release", "esc", "click", "rpress", "rrelease", "mpress", "dclick")
-WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq", "resize")     # 1.5 stage 9: resize
+WINDOW_STEPS = ("wshot", "press", "release", "esc", "click", "rpress", "rrelease", "mpress", "dclick", "fsync")
+WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq", "resize", "vopen")    # 1.5 stage 12: vopen
 # 1.5 stage 9: to:edge-SIDE@NAME (ui_window.h's UI_EDGE_*; the top-right corner is the close button).
 EDGE_SIDES = {"left": 1, "right": 2, "top": 4, "bottom": 8, "topleft": 5, "bottomleft": 9, "bottomright": 10}
 
@@ -638,6 +833,21 @@ def window_step(step, qmp, serial, dump, win, m, shots):
     if step == "wshot":
         shots += 1
         wshot(qmp, serial, dump, win, m, shots)
+    elif step == "fsync":                                       # 1.5 stage 12
+        last, quiet = -1, time.monotonic()
+        while time.monotonic() - quiet < 0.6:
+            serial.poll()
+            k = max((i for i, ln in enumerate(serial.lines) if ln.startswith(("files: ", "viewer: "))), default=-1)
+            if k != last:
+                last, quiet = k, time.monotonic()
+            time.sleep(0.1)
+        win.sync = max(win.sync, last)
+        win.fsyncs = getattr(win, "fsyncs", 0) + 1
+        print("FSYNC %d line %d" % (win.fsyncs, len(serial.lines)), flush=True)    # lines seen (0-based next)
+    elif step.startswith("vopen:"):
+        before = len(win.wm.events)
+        win.viewer_open(step[6:].encode("latin-1"))
+        wait_events(serial, win, before)
     elif step.startswith("to:"):
         x, y = win.target(step[3:])
         rel(m, win, serial, x - m.x, y - m.y)
@@ -758,6 +968,8 @@ def main():
     ap.add_argument("--about", action="store_true")         # 1.3 stage 4a
     ap.add_argument("--shadow")                                 # 1.3 stage 4b
     ap.add_argument("--diskmode", choices=("rw", "ro"))         # 1.4 stage 12: Disk mode's texts
+    ap.add_argument("--filesnomem", action="store_true")        # 1.5 stage 12
+    ap.add_argument("--viewerfile")
     a = ap.parse_args()
     if a.diskmode:
         desktop_ref.set_disk_mode(a.diskmode)
@@ -776,6 +988,10 @@ def main():
         win = Windows(size, a.about, a.shadow) if size else None
         if win:
             win.last_shadow = None
+            win.serial = serial                         # 1.5 stage 12
+            win.files_nomem = a.filesnomem
+            if a.viewerfile:
+                win.viewer_bytes = open(a.viewerfile, "rb").read()
         windowed = a.about
         t0 = time.monotonic()
         qmp.command("cont")

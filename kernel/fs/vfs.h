@@ -43,4 +43,13 @@ struct klock *vfs_lock(void);
 int64_t vfs_boot_epoch(void);
 int64_t vfs_now(void);
 
+/* 1.5 stage 12 (docs/plans/1.5.md, C5, decision 6): Live mode's home
+ * folders, made in memory when the desktop starts (the default path, or a
+ * test boot with the option livehome; desktop.c): /home/user with Desktop,
+ * Documents, Downloads, Pictures, Music and Videos (the Trash's folders are
+ * made when first needed, S13). Each folder already there is kept. The
+ * caller holds the VFS lock, in Live mode only (no disk mounted on /home).
+ * 0 with *made the folders made (0-7), or the first error. */
+int vfs_live_home(uint32_t *made);
+
 #endif

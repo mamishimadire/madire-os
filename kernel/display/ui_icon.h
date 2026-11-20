@@ -37,13 +37,40 @@ enum ui_icon {
     UI_ICON_M, UI_ICON_CONSOLE, UI_ICON_ABOUT, UI_ICON_RESTART, UI_ICON_CALCULATOR, UI_ICON_CLOSE,
     UI_ICON_PLUS, UI_ICON_MINUS, UI_ICON_TIMES, UI_ICON_DIVIDE, UI_ICON_BACKSPACE, UI_ICON_CHEVRON,
     UI_ICON_MINIMISE, UI_ICON_MAXIMISE, UI_ICON_UNMAXIMISE, UI_ICON_POWER,      /* 1.5 stage 8 */
+    UI_ICON_BACK, UI_ICON_FORWARD, UI_ICON_UP,                                  /* 1.5 stage 12 */
     UI_ICON_COUNT
 };
+
+/* 1.5 stage 12 (the owner's mockup decisions): the Files window's stroke
+ * icons, icons.h's second table, drawn as the stroke icons above; their
+ * numbers start at UI_SICON_FIRST. */
+#define UI_SICON_FIRST 32
+enum ui_sicon_id {
+    UI_ICON_NEW_FOLDER = UI_SICON_FIRST, UI_ICON_NEW_FILE, UI_ICON_OPEN, UI_ICON_RENAME, UI_ICON_LIST,
+    UI_ICON_GRID, UI_ICON_CHECK, UI_ICON_PLACE_HOME, UI_ICON_PLACE_DESKTOP, UI_ICON_PLACE_DOCUMENTS,
+    UI_ICON_PLACE_DOWNLOADS, UI_ICON_PLACE_PICTURES, UI_ICON_PLACE_MUSIC, UI_ICON_PLACE_VIDEOS,
+    UI_ICON_PLACE_TRASH, UI_ICON_PLACE_THISPC,
+    UI_SICON_END
+};
+
+/* 1.5 stage 12 (docs/plans/1.5.md, note (12)(a)): the colour icons, drawn
+ * in their own colours by ui_cicon.c (ui_cicon.h's rules; the colour given
+ * to ui_icon_draw is not used). Their numbers start at UI_CICON_FIRST, so
+ * UI_ICON_COUNT stays the stroke icons' count. */
+#define UI_CICON_FIRST 64
+enum ui_cicon_id {
+    UI_ICON_FOLDER = UI_CICON_FIRST, UI_ICON_HOME, UI_ICON_DESKTOP, UI_ICON_DOCUMENTS, UI_ICON_DOWNLOADS,
+    UI_ICON_PICTURES, UI_ICON_MUSIC, UI_ICON_VIDEOS, UI_ICON_FILE, UI_ICON_TEXTFILE, UI_ICON_LINK,
+    UI_ICON_BADGE, UI_ICON_TRASH, UI_ICON_TRASH_FULL,
+    UI_CICON_END
+};
+#define UI_CICON_COUNT (UI_CICON_END - UI_CICON_FIRST)
 
 #define UI_ICON_NONE   (-1)
 #define UI_ICON_MAX_PX 96       /* 48 dp at 200 % */
 
-/* Draws icon `icon` in the px x px box at (x, y) in colour rgb. False
+/* Draws icon `icon` in the px x px box at (x, y) in colour rgb (1.5 stage
+ * 12: a colour icon, UI_CICON_FIRST on, in its own colours). False
  * (nothing drawn) for an unknown icon or px outside 1 to UI_ICON_MAX_PX. */
 bool ui_icon_draw(const struct ui_canvas *c, int icon, int32_t x, int32_t y, int32_t px, uint32_t rgb);
 

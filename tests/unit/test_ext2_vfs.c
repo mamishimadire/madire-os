@@ -12,7 +12,9 @@
  * filesystems), nothing changed in the image or the RAM tree; the
  * per-filesystem file-size limit (the RAM filesystem's 2 MiB, ext2's from
  * its block map, at most 4 GiB - 1); the node table full; a failed disk
- * read (EIO); no memory. The modules are included directly. */
+ * read (EIO); no memory; 1.5 stage 12: the link mark (VNODE_MODE_LINK on
+ * a fast and a slow link only, never in st_mode). The modules are included
+ * directly. */
 #include <stdlib.h>
 #include <string.h>
 #include "tests/unit/unit.h"
@@ -117,6 +119,11 @@ static void data(uint32_t b, uint32_t t, uint64_t from)
         img[b * BS + i] = pat(t, from + i);
 }
 
+/* 1.5 stage 12 (test_link_marked only): "/" also holds two symbolic
+ * links, lfast (17: a fast link, its 5-byte target "a.txt" in i_block) and
+ * lslow (18: a slow link, its 70-byte target in block 34). */
+static int with_links;
+
 /* The image: "/" (2) holds a.txt (12, 1500 bytes, 2 links), sub/ (13)
  * with b.txt (16, "hello"), hole.bin (14: 3000 bytes, only its third block
  * written), big.bin (15: 14 KiB through the single indirect block) and
@@ -155,7 +162,18 @@ static void build(void)
     dent(14, "hole.bin", 1);
     dent(15, "big.bin", 1);
     dent(12, "hard", 1);
+    if (with_links) {
+        dent(17, "lfast", 7);
+        dent(18, "lslow", 7);
+    }
     dir_end();
+    if (with_links) {
+        inode(17, 0120777, 5, 1, 0);
+        memcpy(img + ioff(17) + 40, "a.txt", 5);
+        inode(18, 0120777, 70, 1, 2);
+        iblock(18, 0, 34);
+        memset(img + 34 * BS, 'x', 70);
+    }
 
     inode(12, 0100644, 1500, 2, 4);
     iblock(12, 0, 30);
@@ -564,6 +582,35 @@ static void test_cat_error(void)
     CHECK(strcmp(cat_out, "cat: 'x': error 99.\n") == 0);
 }
 
+/* 1.5 stage 12, ext2_vfs_link_marked (docs/plans/1.5.md, C6c rule SL): a
+ * fast and a slow link carry VNODE_MODE_LINK, a file and a folder do not;
+ * the bit never reaches stat's st_mode (mode & 07777 only); a lookup
+ * through a link still answers ENOTDIR. */
+static void test_link_marked(void)
+{
+    with_links = 1;
+    setup(16);
+    with_links = 0;
+    struct vnode *f = get("/home/lfast"), *sl = get("/home/lslow"), *a = get("/home/a.txt"), *d = get("/home/sub");
+    CHECK(f != NULL && sl != NULL && a != NULL && d != NULL);
+    if (!f || !sl || !a || !d)
+        return;
+    CHECK(f->type == VNODE_FILE && vnode_is_link(f) && (f->mode & 07777u) == 0777u && f->size == 5);
+    CHECK(sl->type == VNODE_FILE && vnode_is_link(sl) && (sl->mode & 07777u) == 0777u && sl->size == 70);
+    CHECK(!vnode_is_link(a) && a->mode == 0644u);
+    CHECK(d->type == VNODE_DIR && !vnode_is_link(d) && d->mode == 0750u);
+    struct fsys_facts facts;
+    struct fs_stat st;
+    memset(&facts, 0, sizeof(facts));
+    facts.kind = FSYS_FILE;
+    facts.mode = f->mode;
+    fsys_stat_fill(&st, &facts);
+    CHECK_EQ(st.st_mode, FS_S_IFREG | 0777u);
+    struct vnode *n = NULL;
+    CHECK_EQ(vfs_lookup(&v, R, "/home/lfast/x", &n), -FS_ENOTDIR);
+    CHECK_EQ(vfs_lookup(&v, R, "/home/lslow/x", &n), -FS_ENOTDIR);
+}
+
 int main(void)
 {
     RUN(test_walk);
@@ -574,5 +621,6 @@ int main(void)
     RUN(test_limits);
     RUN(test_write_ops);
     RUN(test_cat_error);
+    RUN(test_link_marked);
     return unit_report("ext2_vfs");
 }

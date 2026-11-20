@@ -119,6 +119,9 @@
  *     opens again at its own size (w x h; sizes are not saved). Its client
  *     is painted in its own size, centred across the window, from its top
  *     (as a maximised window's).
+ *   - 1.5 stage 12: a window whose owner sets `grows` (Files, the Text
+ *     Viewer) has its client painted at the window's present rectangle,
+ *     maximised, resized or not (its owner lays the client out to fit).
  *
  * 1.5 stage 9b (docs/plans/1.5.md, C4 and item (6)): snapping and the
  * window shortcuts.
@@ -197,6 +200,7 @@ struct ui_window {
     void *ctx;
     bool resizable;             /* 1.5 stage 9: the grab band (min_w x min_h the smallest size) */
     int32_t min_w, min_h;
+    bool grows;                 /* 1.5 stage 12: its client painted at the window's present size (Files) */
     /* Kept by the window manager. */
     bool open;
     struct rect r;

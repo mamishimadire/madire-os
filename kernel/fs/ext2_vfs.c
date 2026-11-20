@@ -41,6 +41,16 @@ static bool ext2_vn_is_dir(const struct ext2_inode *in)
     return (in->mode & EXT2_S_IFMT) == EXT2_S_IFDIR;
 }
 
+/* 1.5 stage 12 (rule SL): the vnode's mode: the permission bits, and
+ * VNODE_MODE_LINK for a symbolic link (vfs_core.h; never followed). */
+static uint32_t ext2_vn_mode(const struct ext2_inode *in)
+{
+    uint32_t m = in->mode & 07777u;
+    if ((in->mode & EXT2_S_IFMT) == EXT2_S_IFLNK)
+        m |= VNODE_MODE_LINK;
+    return m;
+}
+
 /* "." or "..", which are not entries for the VFS. */
 static bool ext2_vn_dots(const struct ext2_dirent *de)
 {
@@ -89,7 +99,7 @@ static void ext2_vn_fill(struct ext2_vfs_node *n)
     n->vn.fs_id = 0;                    /* set by the VFS (vfs_core.c) */
     n->vn.ino = in->ino;
     n->vn.size = in->size;
-    n->vn.mode = in->mode & 07777u;
+    n->vn.mode = ext2_vn_mode(in);
     /* The VFS reads nlink as "has a name" (folders: 1); a file shows its
      * link count to stat (fsys.c). */
     n->vn.nlink = dir || in->links == 0 ? 1u : in->links;
@@ -249,7 +259,7 @@ static int ext2_vn_reload(struct ext2_vfs *x, struct ext2_vfs_node *n)
         return ext2_vn_fail(x);
     bool dir = ext2_vn_is_dir(&n->in);
     n->vn.size = n->in.size;
-    n->vn.mode = n->in.mode & 07777u;
+    n->vn.mode = ext2_vn_mode(&n->in);
     if (n->vn.nlink != 0)
         n->vn.nlink = dir || n->in.links == 0 ? 1u : n->in.links;
     n->vn.atime = n->in.atime;

@@ -58,6 +58,8 @@ static enum deskkeys_action dk_with_super(uint8_t keycode, char ascii, uint8_t f
         return DK_SHOW_DESKTOP;
     if (l == 'm')
         return (flags & KEY_SHIFT) ? DK_RESTORE_ALL : DK_MINIMISE_ALL;
+    if (l == 'e')
+        return DK_FILES;            /* 1.5 stage 12 */
     return DK_TAKEN;
 }
 

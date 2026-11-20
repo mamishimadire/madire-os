@@ -45,7 +45,8 @@ ISO    := $(BUILD)/madire-os.iso
 # coverage_core.c is linked (the splash uses it), so it is no longer here.
 # 1.3 stage 3b: the whole toolkit is linked (the desktop draws with it);
 # TOOLKIT_SRCS still names it for the host tools and part static's checks.
-TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c
+# 1.5 stage 12: and cicons.c, the colour icons' tables.
+TOOLKIT_SRCS := $(sort $(wildcard kernel/display/ui_*.c)) kernel/display/icons.c kernel/display/cicons.c
 # 1.4 stage 6: the ext2 read core (kernel/fs/ext2_core.c) is pure code,
 # compiled with the kernel's flags (make ext2core) for part static's checks,
 # and built into the host tool tests/ext2dump.c and its unit suite. 1.4
@@ -363,11 +364,12 @@ splashdump: $(SPLASHDUMP)
 DESKTOPDUMP := $(BUILD)/desktopdump
 $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.h) kernel/display/wallpaper_core.c \
                 kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
-                kernel/display/desktop_core.c $(GEN)/splash_data.h $(FONT_C)
+                kernel/display/desktop_core.c kernel/files/files_core.c kernel/files/files_core.h \
+                $(GEN)/splash_data.h $(FONT_C)
 	@mkdir -p $(dir $@)
 	$(UNIT_CC) $(UNIT_CFLAGS) -DUI_TRACE -I$(GEN) tests/desktopdump.c $(TOOLKIT_SRCS) kernel/display/wallpaper_core.c \
 	    kernel/display/surface_core.c kernel/display/fbcon_core.c kernel/display/coverage_core.c \
-	    kernel/display/desktop_core.c $(FONT_C) -o $@
+	    kernel/display/desktop_core.c kernel/files/files_core.c $(FONT_C) -o $@
 
 desktopdump: $(DESKTOPDUMP)
 
@@ -422,6 +424,8 @@ $(FILESDUMP_ASAN): tests/filesdump.c $(FILES_DEPS)
 filesdump: $(FILESDUMP) $(FILESDUMP_ASAN)
 $(BUILD)/unit/test_files_core: $(FILES_DEPS) | $(FILESDUMP) $(FILESDUMP_ASAN)
 $(BUILD)/unit/test_trash_core: kernel/files/trash_core.c kernel/files/trash_core.h
+# 1.5 stage 12: the Files window's suite includes the Files core (the path bar).
+$(BUILD)/unit/test_ui_files: kernel/files/files_core.c kernel/files/files_core.h
 
 toolkit: $(TOOLKIT_OBJS)
 

@@ -22,6 +22,7 @@ enum {
     ICON_CONSOLE, ICON_ABOUT, ICON_RESTART, ICON_CALCULATOR, ICON_CLOSE, ICON_PLUS, ICON_MINUS,
     ICON_TIMES, ICON_DIVIDE, ICON_BACKSPACE, ICON_CHEVRON,
     ICON_MINIMISE, ICON_MAXIMISE, ICON_UNMAXIMISE, ICON_POWER,      /* 1.5 stage 8 */
+    ICON_BACK, ICON_FORWARD, ICON_UP,                               /* 1.5 stage 12 */
     ICON_STROKED
 };
 
@@ -38,5 +39,24 @@ struct icon_def {
 extern const int16_t icon_points[][2];
 extern const struct icon_poly icon_polys[];
 extern const struct icon_def icon_defs[ICON_STROKED];
+
+/* 1.5 stage 12 (the owner's mockup decisions): the Files window's own
+ * stroke icons, a second table in the same format (ui_icon.h's
+ * UI_SICON_FIRST on): the buttons New Folder, New File, Open, Rename, List
+ * and Grid, the checkbox's tick, and the sidebar's places (drawn in
+ * `accent`; the path bar's home icon is the Home place's). Kept apart from
+ * the 1.3 list above, so the 1.3 icon scene and its unit totals stay as
+ * they are (tests/unit/test_ui_cicon.c checks this table). */
+enum {
+    ICON_NEW_FOLDER, ICON_NEW_FILE, ICON_OPEN, ICON_RENAME, ICON_LIST, ICON_GRID, ICON_CHECK, ICON_PLACE_HOME,
+    ICON_PLACE_DESKTOP, ICON_PLACE_DOCUMENTS, ICON_PLACE_DOWNLOADS, ICON_PLACE_PICTURES, ICON_PLACE_MUSIC,
+    ICON_PLACE_VIDEOS, ICON_PLACE_TRASH, ICON_PLACE_THISPC,
+    ICON_S12_COUNT
+};
+
+extern const int16_t icon_points2[][2];
+extern const struct icon_poly icon_polys2[];
+extern const struct icon_def icon_defs2[ICON_S12_COUNT];
+extern const uint32_t icon_points2_count, icon_polys2_count;
 
 #endif

@@ -2,6 +2,7 @@
  * The toolkit's stroke icons (1.3 stage 2); see ui_icon.h.
  */
 #include "kernel/display/ui_icon.h"
+#include "kernel/display/ui_cicon.h"
 #include "kernel/display/coverage_core.h"
 #include "kernel/display/icons.h"
 #include "kernel/display/ui_rect.h"
@@ -23,16 +24,20 @@ struct placed {
     int64_t ox, oy;             /* the box's top-left, 24.8 */
     int32_t px;
     int64_t m;                  /* the M's pixels per logo unit, 24.8 */
+    /* 1.5 stage 12: the table it comes from (icons.h's first or second). */
+    const struct icon_def *def;
+    const int16_t (*points)[2];
+    const struct icon_poly *polys;
 };
 
 static int segments(const struct placed *p)
 {
     if (p->icon == UI_ICON_M)
         return 4;
-    const struct icon_def *d = &icon_defs[p->icon - 1];
+    const struct icon_def *d = p->def;
     int n = 0;
     for (uint32_t i = 0; i < d->polys; i++) {
-        uint32_t count = icon_polys[d->first_poly + i].count;
+        uint32_t count = p->polys[d->first_poly + i].count;
         n += count == 1 ? 1 : (int)count - 1;
     }
     return n;
@@ -51,16 +56,16 @@ static bool capsule(const struct placed *p, int k, struct cov_capsule *cap)
                                  p->oy + cx + wp_mul(wp_fx(st[3] * SPLASH_LOGO_RX, SPLASH_LOGO_RY) - half_h, p->m),
                                  SPLASH_LOGO_RX * p->m, s->width, s->height);
     }
-    const struct icon_def *d = &icon_defs[p->icon - 1];
+    const struct icon_def *d = p->def;
     for (uint32_t i = 0; i < d->polys; i++) {
-        const struct icon_poly *poly = &icon_polys[d->first_poly + i];
+        const struct icon_poly *poly = &p->polys[d->first_poly + i];
         int n = poly->count == 1 ? 1 : (int)poly->count - 1;
         if (k >= n) {
             k -= n;
             continue;
         }
-        const int16_t *a = icon_points[poly->first + k];
-        const int16_t *b = icon_points[poly->first + (poly->count == 1 ? k : k + 1)];
+        const int16_t *a = p->points[poly->first + k];
+        const int16_t *b = p->points[poly->first + (poly->count == 1 ? k : k + 1)];
         return cov_capsule_setup(cap, p->ox + wp_fx(a[0] * p->px, ICON_GRID),
                                  p->oy + wp_fx(a[1] * p->px, ICON_GRID),
                                  p->ox + wp_fx(b[0] * p->px, ICON_GRID),
@@ -72,9 +77,20 @@ static bool capsule(const struct placed *p, int k, struct cov_capsule *cap)
 
 bool ui_icon_draw(const struct ui_canvas *c, int icon, int32_t x, int32_t y, int32_t px, uint32_t rgb)
 {
-    if (icon < 0 || icon >= UI_ICON_COUNT || px < 1 || px > UI_ICON_MAX_PX)
+    if (icon >= UI_CICON_FIRST && icon < UI_CICON_END)        /* 1.5 stage 12 */
+        return ui_cicon_draw(c, icon, x, y, px);
+    bool second = icon >= UI_SICON_FIRST && icon < UI_SICON_END;     /* 1.5 stage 12 */
+    if ((!second && (icon < 0 || icon >= UI_ICON_COUNT)) || px < 1 || px > UI_ICON_MAX_PX)
         return false;
-    struct placed p = { c, icon, (int64_t)x << FB, (int64_t)y << FB, px, wp_fx(22 * (int64_t)px, 24 * LOGO_W) };
+    struct placed p = { c, icon, (int64_t)x << FB, (int64_t)y << FB, px, wp_fx(22 * (int64_t)px, 24 * LOGO_W),
+                        0, icon_points, icon_polys };
+    if (second) {
+        p.def = &icon_defs2[icon - UI_SICON_FIRST];
+        p.points = icon_points2;
+        p.polys = icon_polys2;
+    } else if (icon != UI_ICON_M) {
+        p.def = &icon_defs[icon - 1];
+    }
     int n = segments(&p);
     /* The box, clipped. */
     struct rect box = ui_rect_intersect(c->clip, (struct rect){ x, y, px, px });

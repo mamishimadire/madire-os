@@ -349,9 +349,43 @@ ICONS = {   # in dp on the 24 dp grid; the M is the logo's strokes (below)
     "maximise": [box(6, 6, 18, 18)],
     "unmaximise": [box(5, 9, 15, 19), [(9, 9), (9, 5), (19, 5), (19, 15), (15, 15)]],
     "power": [arc(12, 13, 8, 30, 330, 15), [(12, 3), (12, 12)]],
+    # 1.5 stage 12: the Files toolbar's Back, Forward and Up.
+    "back": [[(5, 12), (19, 12)], [(11, 6), (5, 12), (11, 18)]],
+    "forward": [[(5, 12), (19, 12)], [(13, 6), (19, 12), (13, 18)]],
+    "up": [[(12, 5), (12, 19)], [(6, 11), (12, 5), (18, 11)]],
 }
+# 1.5 stage 12 (the owner's mockup decisions): the Files window's own stroke
+# icons, a second table (icons.c's icon_points2 ...) outside the 1.3 icon
+# scene's list (ICON_ORDER): its buttons, the checkbox's tick and the
+# sidebar's places (the path bar's home icon is the place's).
+ICONS.update({
+    "new_folder": [[(3, 6), (9, 6), (11, 8), (21, 8), (21, 19), (3, 19), (3, 6)], [(12, 11), (12, 17)],
+                   [(9, 14), (15, 14)]],
+    "new_file": [[(6, 3), (14, 3), (19, 8), (19, 21), (6, 21), (6, 3)], [(14, 3), (14, 8), (19, 8)],
+                 [(12.5, 11), (12.5, 17)], [(9.5, 14), (15.5, 14)]],
+    "open": [[(3, 19), (3, 6), (9, 6), (11, 8), (19, 8), (19, 11)], [(3, 19), (6, 11), (21, 11), (18, 19), (3, 19)]],
+    "rename": [[(5, 19), (5, 15), (16, 4), (20, 8), (9, 19), (5, 19)], [(13, 7), (17, 11)]],
+    "list": [[(9, 7), (20, 7)], [(9, 12), (20, 12)], [(9, 17), (20, 17)], [(5, 7)], [(5, 12)], [(5, 17)]],
+    "grid": [box(4, 4, 10, 10), box(14, 4, 20, 10), box(4, 14, 10, 20), box(14, 14, 20, 20)],
+    "check": [[(6, 12), (10, 16), (18, 8)]],
+    "place_home": [[(4, 11), (12, 4), (20, 11)], [(6, 9), (6, 20), (18, 20), (18, 9)],
+                   [(10, 20), (10, 14), (14, 14), (14, 20)]],
+    "place_desktop": [box(3, 4, 21, 16), [(12, 16), (12, 20)], [(8, 20), (16, 20)]],
+    "place_documents": [[(6, 3), (14, 3), (19, 8), (19, 21), (6, 21), (6, 3)], [(14, 3), (14, 8), (19, 8)],
+                        [(9, 13), (16, 13)], [(9, 17), (16, 17)]],
+    "place_downloads": [[(12, 4), (12, 15)], [(7, 10), (12, 15), (17, 10)], [(5, 20), (19, 20)]],
+    "place_pictures": [box(3, 5, 21, 19), [(6, 16), (10, 11), (14, 15), (16, 13), (18, 16)], [(16, 9)]],
+    "place_music": [[(10, 17), (10, 5), (19, 3), (19, 15)], arc(7.5, 17, 2.5, 0, 360, 45), arc(16.5, 15, 2.5, 0, 360, 45)],
+    "place_videos": [[(8, 5), (19, 12), (8, 19), (8, 5)]],
+    "place_trash": [[(4, 7), (20, 7)], [(9, 7), (9, 4), (15, 4), (15, 7)], [(6, 7), (7, 20), (17, 20), (18, 7)],
+                    [(10, 10), (10, 17)], [(14, 10), (14, 17)]],
+    "place_thispc": [box(5, 5, 19, 15), [(3, 19), (21, 19)], [(5, 15), (3, 19)], [(19, 15), (21, 19)]],
+})
+S12_ICON_ORDER = ["new_folder", "new_file", "open", "rename", "list", "grid", "check", "place_home", "place_desktop",
+                  "place_documents", "place_downloads", "place_pictures", "place_music", "place_videos",
+                  "place_trash", "place_thispc"]
 ICON_ORDER = ["M", "console", "about", "restart", "calculator", "close", "plus", "minus", "times", "divide",
-              "backspace", "chevron", "minimise", "maximise", "unmaximise", "power"]
+              "backspace", "chevron", "minimise", "maximise", "unmaximise", "power", "back", "forward", "up"]
 
 
 def unit(v):
@@ -359,7 +393,10 @@ def unit(v):
 
 
 def icon(scr, name, x, y, p, c):
-    """Icon `name` in the p x p box at (x, y) (ui_icon.h's rules)."""
+    """Icon `name` in the p x p box at (x, y) (ui_icon.h's rules; 1.5 stage
+    12: a colour icon's own colours, c unused)."""
+    if name in CICONS:
+        return cicon(scr, name, x, y, p)
     ox, oy, caps = x << 8, y << 8, []
     if name == "M":
         m = K.fx(22 * p, 24 * 210)
@@ -380,6 +417,268 @@ def icon(scr, name, x, y, p, c):
     for (qx, qy), a in sorted(cov.items()):
         if x <= qx < x + p and y <= qy < y + p:
             scr.blend(qx, qy, c, a)
+
+
+# ---- Colour icons (1.5 stage 12; docs/plans/1.5.md, note (12)(a); the
+# Design Guide, section 5; kernel/display/ui_cicon.h) ----
+#
+# Each icon has two designs, on a 16 dp and a 48 dp grid, given here in dp
+# (stored in 1/8 dp units: unit()). A shape is ("rrect", colour, (x0, y0,
+# x1, y1, radius), trace), ("poly", colour, [points], trace) or ("stroke",
+# colour, [points], trace): a filled rounded rectangle, a filled polygon
+# (even-odd) or a 2 dp polyline of capsules (as the stroke icons). trace:
+# None, "bg" (the pair it makes with the background is checked) or a token
+# (the pair with that token's shape under it).
+
+def _folder(sz):
+    if sz == 16:
+        return [("rrect", "accent.hover", (1.5, 4, 14.5, 13.5, 1), "bg"),
+                ("poly", "accent.hover", [(9, 4.5), (10.25, 2.5), (14, 2.5), (14.5, 3), (14.5, 4.5)], "bg"),
+                ("rrect", "accent", (1.5, 5.5, 14.5, 13.5, 1), "bg"),
+                ("rrect", "accent.light", (2.5, 5.5, 13.5, 6.5, 0), None)]
+    return [("rrect", "accent.hover", (4, 12, 44, 40, 2), "bg"),
+            ("poly", "accent.hover", [(28, 13), (31, 8), (42, 8), (44, 10), (44, 13)], "bg"),
+            ("rrect", "accent", (4, 15, 44, 40, 2), "bg"),
+            ("rrect", "accent.light", (6, 15, 42, 16, 0), None)]
+
+
+def _emblem(name, sz):
+    e, t = "text.on.accent", "accent"
+    if sz == 16:
+        return {
+            "home": [("poly", e, [(8, 7), (10.75, 9.5), (10, 9.5), (10, 12), (6, 12), (6, 9.5), (5.25, 9.5)], t)],
+            "desktop": [("rrect", e, (5.25, 7.5, 10.75, 10.75, 0), t), ("rrect", e, (6.75, 11, 9.25, 12, 0), t)],
+            "documents": [("poly", e, [(6, 7), (9, 7), (10.25, 8.25), (10.25, 12.25), (6, 12.25)], t)],
+            "downloads": [("poly", e, [(7.25, 7), (8.75, 7), (8.75, 9.5), (10.5, 9.5), (8, 12), (5.5, 9.5),
+                                       (7.25, 9.5)], t)],
+            "pictures": [("poly", e, [(5.25, 12.25), (7.5, 9), (9, 10.5), (9.75, 9.75), (10.75, 12.25)], t),
+                         ("rrect", e, (9, 6.75, 10.5, 8.25, 0.75), t)],
+            "music": [("rrect", e, (8.5, 7, 9.5, 11.5, 0), t), ("rrect", e, (6, 10, 9.5, 12.5, 1.25), t),
+                      ("poly", e, [(9.5, 7), (11, 7.75), (11, 9), (9.5, 8.25)], t)],
+            "videos": [("poly", e, [(6.5, 7.25), (10.75, 9.75), (6.5, 12.25)], t)],
+        }[name]
+    return {
+        "home": [("stroke", e, [(17, 28), (24, 21), (31, 28)], t), ("stroke", e, [(20, 26), (20, 34), (28, 34), (28, 26)], t)],
+        "desktop": [("stroke", e, [(17, 22), (31, 22), (31, 31), (17, 31), (17, 22)], t),
+                    ("stroke", e, [(24, 31), (24, 34)], t), ("stroke", e, [(20, 34), (28, 34)], t)],
+        "documents": [("stroke", e, [(19, 21), (26, 21), (29, 24), (29, 35), (19, 35), (19, 21)], t),
+                      ("stroke", e, [(21.5, 27), (26.5, 27)], t), ("stroke", e, [(21.5, 31), (26.5, 31)], t)],
+        "downloads": [("stroke", e, [(24, 21), (24, 30)], t), ("stroke", e, [(19.5, 25.5), (24, 30), (28.5, 25.5)], t),
+                      ("stroke", e, [(18, 34), (30, 34)], t)],
+        "pictures": [("stroke", e, [(17, 22), (31, 22), (31, 34), (17, 34), (17, 22)], t),
+                     ("stroke", e, [(20, 31), (24, 26.5), (28, 31)], t), ("stroke", e, [(27.5, 25.5)], t)],
+        "music": [("stroke", e, [(27, 21), (27, 32)], t), ("stroke", e, [(27, 21), (31, 23)], t),
+                  ("stroke", e, [(27, 32), (26.4, 33.4), (25, 34), (23.6, 33.4), (23, 32), (23.6, 30.6), (25, 30),
+                                 (26.4, 30.6), (27, 32)], t)],
+        "videos": [("stroke", e, [(21, 22), (30, 28), (21, 34), (21, 22)], t)],
+    }[name]
+
+
+def _file(sz, lines):
+    if sz == 16:
+        out = [("poly", "text", [(3, 1.5), (10, 1.5), (13, 4.5), (13, 14.5), (3, 14.5)], "bg"),
+               ("poly", "text.muted", [(10, 1.5), (13, 4.5), (10, 4.5)], None)]
+        if lines:
+            out += [("rrect", "accent", (5, 7, 11, 8, 0), "text"), ("rrect", "accent", (5, 9.5, 11, 10.5, 0), "text"),
+                    ("rrect", "accent", (5, 12, 9, 13, 0), "text")]
+        return out
+    out = [("poly", "text", [(10, 4), (30, 4), (38, 12), (38, 44), (10, 44)], "bg"),
+           ("poly", "text.muted", [(30, 4), (38, 12), (30, 12)], None)]
+    if lines:
+        out += [("rrect", "accent", (15, 20, 33, 22, 0), "text"), ("rrect", "accent", (15, 26, 33, 28, 0), "text"),
+                ("rrect", "accent", (15, 32, 27, 34, 0), "text")]
+    return out
+
+
+def _badge(sz):
+    if sz == 16:
+        return [("rrect", "surface", (0, 9, 7, 16, 3.5), None),
+                ("poly", "text", [(2.25, 10.75), (5.25, 10.75), (5.25, 13.75)], "surface"),
+                ("poly", "text", [(1.5, 13.75), (3.75, 11.5), (4.5, 12.25), (2.25, 14.5)], "surface")]
+    return [("rrect", "surface", (2, 30, 18, 46, 8), None),
+            ("stroke", "text", [(6.5, 41.5), (13, 35)], "surface"),
+            ("stroke", "text", [(9, 35), (13, 35), (13, 39)], "surface")]
+
+
+def _trash(sz, full):
+    if sz == 16:
+        out = [("poly", "text.muted", [(4, 5.5), (12, 5.5), (11.25, 14.5), (4.75, 14.5)], "bg"),
+               ("rrect", "bg.deep", (5.75, 7, 6.5, 13, 0), None), ("rrect", "bg.deep", (7.625, 7, 8.375, 13, 0), None),
+               ("rrect", "bg.deep", (9.5, 7, 10.25, 13, 0), None),
+               ("rrect", "text", (3, 3.5, 13, 5, 0.5), "bg")]
+        if full:
+            out += [("poly", "accent.light", [(3.5, 3.5), (6.5, 1), (8, 2.5), (6, 3.5)], "bg"),
+                    ("poly", "warning", [(8, 3.5), (11, 1.25), (12.5, 2.75), (11.5, 3.5)], "bg")]
+        else:
+            out += [("rrect", "text", (6.5, 2, 9.5, 3.5, 0), "bg")]
+        return out
+    out = [("poly", "text.muted", [(12, 15), (36, 15), (33.5, 44), (14.5, 44)], "bg"),
+           ("rrect", "bg.deep", (18, 20, 20, 39, 0), None), ("rrect", "bg.deep", (23, 20, 25, 39, 0), None),
+           ("rrect", "bg.deep", (28, 20, 30, 39, 0), None),
+           ("rrect", "text", (9, 10, 39, 14, 1), "bg")]
+    if full:
+        out += [("poly", "accent.light", [(12, 10), (20, 3.5), (23.5, 7.5), (17.5, 10)], "bg"),
+                ("poly", "warning", [(22, 10), (31, 4), (35, 8.5), (32, 10)], "bg")]
+    else:
+        out += [("rrect", "text", (19, 6.5, 29, 10, 0), "bg")]
+    return out
+
+
+CICON_ORDER = ["folder", "home", "desktop", "documents", "downloads", "pictures", "music", "videos", "file",
+               "textfile", "link", "badge", "trash", "trash_full"]
+
+
+def _cicon(name, sz):
+    if name == "folder":
+        return _folder(sz)
+    if name in ("home", "desktop", "documents", "downloads", "pictures", "music", "videos"):
+        return _folder(sz) + _emblem(name, sz)
+    if name == "file":
+        return _file(sz, False)
+    if name == "textfile":
+        return _file(sz, True)
+    if name == "link":
+        return _file(sz, False) + _badge(sz)
+    if name == "badge":
+        return _badge(sz)
+    return _trash(sz, name == "trash_full")
+
+
+CICONS = {n: {16: _cicon(n, 16), 48: _cicon(n, 48)} for n in CICON_ORDER}
+CICON_GRID = {16: 128, 48: 384}
+CICON_SMALL_MAX = 40        # a box of at most 40 pixels uses the 16 dp design
+_CICON_TOK = None
+
+
+def _ceil_div(a, b):
+    return -((-a) // b)
+
+
+def cicon_shape_cov(kind, pts, r, G, P, bx, by, w, h):
+    """{(x, y): coverage 0-256} of one filled shape ("rrect": two corner
+    points and radius r; "poly": its points, even-odd) in the P x P box at
+    (bx, by) on a grid of G units, for the pixels [bx, bx + w) x [by, by +
+    h). 4 x 4 samples per pixel: sample (i, j) of pixel (px, py) at X = (8
+    (px - bx) + 2 i + 1) G, Y = (8 (py - by) + 2 j + 1) G, a point u of the
+    shape at u 8 P; 16 per sample inside (integers only). Row by row with
+    each edge's last sample column (the same as cicon_shape_cov_direct)."""
+    S = 8 * P
+    sc = [(a * S, b * S) for a, b in pts]
+    out = {}
+    ys = [y for _, y in sc]
+    xs = [x for x, _ in sc]
+    # sample rows k (global, from the box's top): Y_k = (2 k + 1) G
+    k0 = max(0, (min(ys) // G - 1) // 2)
+    k1 = min(4 * h - 1, (max(ys) // G + 1) // 2 + 1)
+    rows = {}
+    for k in range(k0, k1 + 1):
+        Y = (2 * k + 1) * G
+        iv = []             # sample columns inside, as (first, last) global indexes
+        if kind == "rrect":
+            X0, Y0, X1, Y1 = sc[0][0], sc[0][1], sc[1][0], sc[1][1]
+            R = r * S
+            if not (Y0 <= Y < Y1):
+                continue
+            # columns with X0 <= X < X1: (2c + 1) G >= X0 and (2c + 1) G < X1
+            c0 = max(0, _ceil_div(_ceil_div(X0, G) - 1, 2))
+            c1 = (_ceil_div(X1, G) - 2) // 2
+            for c in range(c0, min(c1, 4 * w - 1) + 1):
+                X = (2 * c + 1) * G
+                if R > 0:
+                    cx = X0 + R if X < X0 + R else X1 - R if X >= X1 - R else None
+                    cy = Y0 + R if Y < Y0 + R else Y1 - R if Y >= Y1 - R else None
+                    if cx is not None and cy is not None and (X - cx) ** 2 + (Y - cy) ** 2 > R * R:
+                        continue
+                iv.append(c)
+        else:
+            ths = []
+            n = len(sc)
+            for j in range(n):
+                (ax, ay), (bx_, by_) = sc[j], sc[(j + 1) % n]
+                if (ay > Y) == (by_ > Y):
+                    continue
+                D, T = by_ - ay, (Y - ay) * (bx_ - ax)
+                if D < 0:
+                    D, T = -D, -T
+                # the edge toggles sample columns c with (X_c - ax) D < T
+                N = T + ax * D
+                q = _ceil_div(N, G * D)
+                ths.append((q - 2) // 2)        # columns 0 .. this
+            for c in range(0, 4 * w):
+                if sum(1 for t in ths if c <= t) % 2:
+                    iv.append(c)
+        if iv:
+            rows[k] = iv
+    for k, cols in rows.items():
+        py = by + k // 4
+        for c in cols:
+            key = (bx + c // 4, py)
+            out[key] = out.get(key, 0) + 16
+    return out
+
+
+def cicon_shape_cov_direct(kind, pts, r, G, P, bx, by, w, h):
+    """The same by the definition, sample by sample (tests/desktop_ref.py's
+    self-check of cicon_shape_cov)."""
+    S = 8 * P
+    sc = [(a * S, b * S) for a, b in pts]
+    out = {}
+    for py in range(h):
+        for px_ in range(w):
+            n = 0
+            for j in range(4):
+                Y = (8 * py + 2 * j + 1) * G
+                for i in range(4):
+                    X = (8 * px_ + 2 * i + 1) * G
+                    if kind == "rrect":
+                        X0, Y0, X1, Y1 = sc[0][0], sc[0][1], sc[1][0], sc[1][1]
+                        R = r * S
+                        ok = X0 <= X < X1 and Y0 <= Y < Y1
+                        if ok and R > 0:
+                            cx = X0 + R if X < X0 + R else X1 - R if X >= X1 - R else None
+                            cy = Y0 + R if Y < Y0 + R else Y1 - R if Y >= Y1 - R else None
+                            if cx is not None and cy is not None and (X - cx) ** 2 + (Y - cy) ** 2 > R * R:
+                                ok = False
+                    else:
+                        ok = False
+                        m = len(sc)
+                        for e in range(m):
+                            (ax, ay), (bx_, by_) = sc[e], sc[(e + 1) % m]
+                            if (ay > Y) != (by_ > Y):
+                                lhs, t = (X - ax) * (by_ - ay), (Y - ay) * (bx_ - ax)
+                                if (lhs < t) if by_ > ay else (lhs > t):
+                                    ok = not ok
+                    n += ok
+            if n:
+                out[(bx + px_, by + py)] = 16 * n
+    return out
+
+
+def cicon(scr, name, x, y, p):
+    """Colour icon `name` in the p x p box at (x, y) (ui_cicon.h's rules)."""
+    global _CICON_TOK
+    sz = 16 if p <= CICON_SMALL_MAX else 48
+    G = CICON_GRID[sz]
+    if _CICON_TOK is None:
+        _CICON_TOK = colours()
+    tok = _CICON_TOK
+    for kind, colour, data, _ in CICONS[name][sz]:
+        c = tok[colour]
+        if kind == "stroke":
+            ox, oy, rr = x << 8, y << 8, K.fx(8 * p, G)
+            pts = [(ox + K.fx(unit(a) * p, G), oy + K.fx(unit(b) * p, G)) for a, b in data]
+            segs = [(pts[0], pts[0])] if len(pts) == 1 else list(zip(pts, pts[1:]))
+            cov = {}
+            for a, b in segs:
+                MW.capsule(K, cov, a[0], a[1], b[0], b[1], rr, scr.w, scr.h)
+        elif kind == "rrect":
+            x0, y0, x1, y1, rad = data
+            cov = cicon_shape_cov("rrect", [(unit(x0), unit(y0)), (unit(x1), unit(y1))], unit(rad), G, p, x, y, p, p)
+        else:
+            cov = cicon_shape_cov("poly", [(unit(a), unit(b)) for a, b in data], 0, G, p, x, y, p, p)
+        for (qx, qy), a in sorted(cov.items()):
+            if x <= qx < x + p and y <= qy < y + p:
+                scr.blend(qx, qy, c, a)
 
 
 # ---- Rectangles and the damage list (ui_rect.h) ----
@@ -876,7 +1175,9 @@ def window(scr, tok, s, r, title, icon_name, active, close, client, extra=None):
     frame_round(scr, r, R, px(1, s), 15, tok["border.window" if active else "border.inactive"])
     # 1.5 stage 9: a resizable window's client too (its own size, centred
     # across; the same as r while the window has its own size).
-    if extra["maximised"] or (extra.get("resizable") and tuple(r[2:4]) != tuple(extra["size"])):
+    # 1.5 stage 12: a window that grows (Files, the Text Viewer): at its rectangle.
+    if not extra.get("grows") and (extra["maximised"] or (extra.get("resizable") and
+                                                         tuple(r[2:4]) != tuple(extra["size"]))):
         w, h = extra["size"]
         client(scr, (r[0] + (r[2] - w) // 2, r[1], w, h))
     else:
@@ -1040,7 +1341,8 @@ SNAP_LEFT, SNAP_RIGHT = 1, 2                                        # 1.5 stage 
 SHORTCUT_NAMES = {"up": "Super+Up", "down": "Super+Down", "left": "Super+Left", "right": "Super+Right",
                   "show_desktop": "Super+D", "minimise_all": "Super+M", "restore_all": "Super+Shift+M",
                   "about": "Super+Pause", "close": "Alt+F4"}
-WINDOW_LOOK = {"About": ("about", ABOUT_TITLE), "Console": ("console", CONSOLE_TITLE)}
+WINDOW_LOOK = {"About": ("about", ABOUT_TITLE), "Console": ("console", CONSOLE_TITLE),
+               "Files": ("folder", b"Files")}       # 1.5 stage 12 (the Text Viewer's: its file's name)
 
 
 class WM:
@@ -1608,7 +1910,7 @@ def wm_shown(wm, values, grid=None):
     for z in wm.z:
         if z["minimised"]:
             continue
-        one = {"r": z["r"], "active": z is wm.focus, "close": z["close"], "values": values,
+        one = {"name": z["name"], "r": z["r"], "active": z is wm.focus, "close": z["close"], "values": values,
                "extra": {"buttons": z["buttons"], "min": z["min"], "max": z["max"], "maximised": z["maximised"],
                          "size": (z["w"], z["h"]), "resizable": z.get("resizable", False)}}
         if z["name"] == "Console":
@@ -1642,6 +1944,13 @@ def desktop_windows(w, h, clock, windows, shell=None):
     scr = Screen(w, h, tok["bg.deep"])
     scr.pix = bytearray(desktop(w, h, clock))
     for win in windows:
+        if win.get("files") is not None:                            # 1.5 stage 12
+            files_window(scr, tok, s, win["r"], win["active"], win["close"], win["files"], win.get("extra"))
+            continue
+        if win.get("viewer") is not None:
+            viewer_window(scr, tok, s, win["r"], win["active"], win["close"], win["viewer"]["title"],
+                          win["viewer"], win.get("extra"))
+            continue
         if win.get("grid") is not None:
             console_window(scr, tok, s, win["r"], win["active"], win["close"], win["grid"], win.get("extra"))
         else:
@@ -2001,6 +2310,543 @@ def scene_scrollbar(scr, tok, s):
     return "8 scroll bars, bottom %d" % fl.bottom()
 
 
+
+# ---- The Files window and the Text Viewer (1.5 stage 12; kernel/display/
+# ui_files.h, ui_viewer.h; the owner's mockup decisions) ----
+
+FILES_PLACES = [b"Home", b"Desktop", b"Documents", b"Downloads", b"Pictures", b"Music", b"Videos", b"Trash",
+                b"This PC"]
+FILES_PLACE_ICONS = ["place_home", "place_desktop", "place_documents", "place_downloads", "place_pictures",
+                     "place_music", "place_videos", "place_trash", "place_thispc"]
+# The parts (ui_files.h's enum ui_files_part), the buttons first.
+UF_NONE, UF_BACK, UF_FORWARD, UF_UP, UF_LIST, UF_GRID, UF_NEWFOLDER, UF_NEWFILE, UF_OPEN, UF_RENAME, UF_HIDDEN, \
+    UF_CLOSE = range(12)
+UF_BUTTONS = 12
+FILES_BUTTONS = [b"", b"Back", b"Forward", b"Up", b"List", b"Grid", b"New Folder", b"New File", b"Open", b"Rename",
+                 b"Show hidden files", b"Close"]
+FILES_BUTTON_ICONS = [None, "back", "forward", "up", "list", "grid", "new_folder", "new_file", "open", "rename",
+                      None, None]
+FILES_PART_NAMES = {b.decode(): i for i, b in enumerate(FILES_BUTTONS) if b}
+FILES_PANEL_LABELS = [b"Name", b"Size", b"Type", b"Modified"]
+FILES_TIPS = {UF_BACK: b"Back (Alt+Left)", UF_FORWARD: b"Forward (Alt+Right)", UF_UP: b"Up (Alt+Up)"}
+FILES_LIVE = b"Live mode: files are kept in memory only and are lost at restart."
+FILES_RO = b"/home is read-only: changes can't be saved."
+FILES_NOMEM = b"Not enough memory to open Files."
+FILES_NOAPP = b"No app can open this file yet."
+FILES_TEXT_MAX = 320
+FILES_W, FILES_H = 720, 480         # dp
+VIEWER_W, VIEWER_H = 640, 480
+VIEWER_MAX = 65536
+VIEWER_CUT = b"Only the first 64 KiB are shown."
+
+
+def files_button_w(f, part, s):
+    return px(36, s) + len(FILES_BUTTONS[part]) * f[1] + px(12, s)
+
+
+def files_layout(r, s, bar):
+    """ui_files_layout: a dict of rectangles and buttons (a list by part)."""
+    f = font(s, False)
+    d = lambda n: px(n, s)  # noqa: E731
+    E = d(1)
+    x0, x1 = r[0] + E, r[0] + r[2] - E
+    iw, y = x1 - x0, r[1] + d(32)
+    L = {"x0": x0, "iw": iw, "button": [(0, 0, 0, 0)] * UF_BUTTONS}
+    b = L["button"]
+    L["bar"] = (x0, y, iw if bar else 0, d(28) if bar else 0)
+    y += L["bar"][3]
+    L["toolbar"] = (x0, y, iw, d(40))
+    for i in range(3):
+        b[UF_BACK + i] = (x0 + d(8) + i * (d(32) + d(4)), y + d(4), d(32), d(32))
+    gw, lw = files_button_w(f, UF_GRID, s), files_button_w(f, UF_LIST, s)
+    b[UF_GRID] = (x1 - d(8) - gw, y + d(4), gw, d(32))
+    b[UF_LIST] = (b[UF_GRID][0] - d(4) - lw, y + d(4), lw, d(32))
+    p0, p1 = b[UF_UP][0] + d(32) + d(8), b[UF_LIST][0] - d(8)
+    L["path"] = (p0, y + d(4), max(p1 - p0, 0), d(32))
+    y += d(40)
+    L["cmd"] = (x0, y, iw, d(40))
+    bx = x0 + d(8)
+    for i in range(UF_NEWFOLDER, UF_RENAME + 1):
+        w = files_button_w(f, i, s)
+        b[i] = (bx, y + d(4), w, d(32))
+        bx += w + d(4)
+    hw = files_button_w(f, UF_HIDDEN, s)
+    b[UF_HIDDEN] = (x1 - d(8) - hw, y + d(4), hw, d(32))
+    y += d(40)
+    L["status"] = (x0, r[1] + r[3] - E - d(28), iw, d(28))
+    by, bb = y + E, L["status"][1] - E
+    bh = max(bb - by, 0)
+    L["body"] = (x0, by, iw, bh)
+    sw = d(168)
+    L["side"] = (x0, by, min(sw, iw), bh)
+    cx = x0 + sw + E
+    L["content"] = (cx, by, max(x1 - cx, 0), bh)
+    c = L["content"]
+    my = c[1] + d(24) + 4 * d(28) + d(8)
+    b[UF_CLOSE] = (c[0] + d(96), my + d(28) + d(8), len(FILES_BUTTONS[UF_CLOSE]) * f[1] + 2 * d(12), d(32))
+    L["panel_close"] = b[UF_CLOSE]
+    return L
+
+
+def files_path_cells(L, s):
+    room = L["path"][2] - px(32, s) - px(8, s)
+    return room // font(s, False)[1] if room > 0 else 0
+
+
+def files_place_rect(L, s, k):
+    sd = L["side"]
+    return (sd[0], sd[1] + px(8, s) + k * px(32, s) + (px(9, s) if k >= 7 else 0), sd[2], px(32, s))
+
+
+def files_field_rect(lv, i):
+    s = lv.s
+    it = lv.item_rect(i)
+    if lv.view == "grid":
+        return (it[0] + px(2, s), it[1] + px(58, s), it[2] - px(4, s), px(26, s))
+    b = lv.body()
+    xs = b[0] + b[2] - px(144, s) - px(112, s) - px(80, s)
+    return (it[0] + px(32, s), it[1], max(xs - lv.r[0] - px(36, s), 0), it[3])
+
+
+def files_hit(L, v, s, x, y):
+    """ui_files_hit: (part, index); part a button number or "path", "place",
+    "content", "panel", "bar", "status", or None."""
+    def inside(r):
+        return r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
+    if v["mode"] == "nomem":
+        return None, -1
+    for i in range(UF_BACK, UF_HIDDEN + 1):
+        if inside(L["button"][i]):
+            return i, -1
+    if inside(L["path"]):
+        tx, fw = L["path"][0] + px(32, s), font(s, False)[1]
+        pb = v.get("pb")
+        if pb and x >= tx:
+            cell = (x - tx) // fw
+            for k, (t, cx, _) in enumerate(pb[3]):
+                if cx <= cell < cx + len(t):
+                    return "path", k
+        return None, -1
+    if inside(L["side"]):
+        for k in range(9):
+            if inside(files_place_rect(L, s, k)):
+                return "place", k
+        return None, -1
+    if inside(L["content"]):
+        if v["mode"] == "panel":
+            return (UF_CLOSE, -1) if inside(L["panel_close"]) else ("panel", -1)
+        return "content", -1
+    if inside(L["bar"]):
+        return "bar", -1
+    if inside(L["status"]):
+        return "status", -1
+    return None, -1
+
+
+def files_button(scr, tok, v, b, part, s, f):
+    d = lambda n: px(n, s)  # noqa: E731
+    on, chosen, check = v["enabled"][part], v["chosen"][part], part == UF_HIDDEN
+    if part in (UF_LIST, UF_GRID) and v.get("list") is not None:     # the mark follows the view drawn
+        chosen = (v["list"].view == "grid") == (part == UF_GRID)
+    pressed = on and v["pressed"] == part
+    hover = on and not pressed and v["hover"] == part
+    R, E = d(4), d(1)
+    if pressed:
+        fill_round(scr, b, R, 15, tok["accent.pressed"])
+    elif hover:
+        fill_round(scr, b, R, 15, tok["surface.hover"])
+    elif chosen and not check:
+        fill_round(scr, b, R, 15, tok["surface.active"])
+    elif not check:
+        fill_round(scr, b, R, 15, tok["surface"])
+    if not check:
+        frame_round(scr, b, R, E, 15, tok["accent" if chosen and not pressed and not hover else "border"])
+    fg = tok["text" if on else "text.muted"]
+    ip = d(16)
+    iy, ty = b[1] + (b[3] - ip) // 2, b[1] + (b[3] - f[2]) // 2
+    if UF_BACK <= part <= UF_UP:
+        icon(scr, FILES_BUTTON_ICONS[part], b[0] + (b[2] - ip) // 2, iy, ip, fg)
+        return
+    label = FILES_BUTTONS[part]
+    if part == UF_CLOSE:
+        text(scr, f, b[0] + (b[2] - len(label) * f[1]) // 2, ty, label, fg)
+        return
+    ix = b[0] + d(12)
+    if check:
+        box = (ix, iy, ip, ip)
+        if chosen:
+            fill_round(scr, box, d(3), 15, tok["accent"])
+            icon(scr, "check", box[0], box[1], ip, tok["text.on.accent"])
+        else:
+            frame_round(scr, box, d(3), d(2), 15, tok["text.muted"])
+    else:
+        icon(scr, FILES_BUTTON_ICONS[part], ix, iy, ip, fg)
+    text(scr, f, b[0] + d(36), ty, label, fg)
+
+
+def files_text(scr, f, x, y, room, t, c):
+    if t is None:
+        return
+    text(scr, f, x, y, fit(f, shown_name_n(t, FILES_TEXT_MAX), max(room, 0), FILES_TEXT_MAX), c)
+
+
+def shown_name_n(b, size):
+    """ui_name_shown into a buffer of size bytes."""
+    return bytes(c if 0x20 <= c <= 0x7E else 0x3F for c in b[:size - 1])
+
+
+def files_draw(scr, tok, r, s, v):
+    """ui_files_draw: the client of the Files window at r from view v (a
+    dict: mode list/panel/nomem, bar none/live/ro, enabled and chosen (12
+    each), hover, pressed, tip (button numbers or 0), place, pb
+    (files_ref.pathbar's), list (a ListView), renaming, field (a Field),
+    panel_icon, panel_values, status, status_error)."""
+    f = font(s, False)
+    d = lambda n: px(n, s)  # noqa: E731
+    E, fh = d(1), f[2]
+    inner = (r[0] + E, r[1] + d(32), r[2] - 2 * E, r[3] - d(32) - E)
+    keep = scr.clip
+    scr.clip = meet(keep, inner)
+    if scr.clip is None:
+        scr.clip = keep
+        return
+    cv = scr.clip
+    if v["mode"] == "nomem":
+        text(scr, f, inner[0] + d(24), inner[1] + d(24), FILES_NOMEM, tok["text"])
+        scr.clip = keep
+        return
+    L = files_layout(r, s, v["bar"] != "none")
+    if L["bar"][2] > 0:
+        scr.clip = meet(cv, L["bar"])
+        if scr.clip is not None:
+            fill(scr, L["bar"], tok["surface"])
+            text(scr, f, L["bar"][0] + d(12), L["bar"][1] + (L["bar"][3] - fh) // 2,
+                 FILES_LIVE if v["bar"] == "live" else FILES_RO, tok["text"])
+            fill(scr, (L["bar"][0], L["bar"][1] + L["bar"][3] - E, L["bar"][2], E), tok["border"])
+        scr.clip = cv
+    for i in range(UF_BACK, UF_UP + 1):
+        files_button(scr, tok, v, L["button"][i], i, s, f)
+    p = L["path"]
+    if p[2] > 0 and p[3] > 0:
+        fill_round(scr, p, d(4), 15, tok["surface"])
+        scr.clip = meet(cv, p)
+        if scr.clip is not None:
+            ip = d(16)
+            icon(scr, "place_home", p[0] + d(8), p[1] + (p[3] - ip) // 2, ip, tok["accent"])
+            pb = v.get("pb")
+            if pb:
+                tx, ty, fw = p[0] + d(32), p[1] + (p[3] - fh) // 2, f[1]
+                if pb[1]:
+                    text(scr, f, tx, ty, b"...", tok["text.muted"])
+                for k, (t, cx, _) in enumerate(pb[3]):
+                    if k > 0 or (pb[1] and cx >= 6):
+                        text(scr, f, tx + (cx - 3) * fw, ty, b" > ", tok["text.muted"])
+                    text(scr, f, tx + cx * fw, ty, shown_name_n(t[:255], 256), tok["text"])
+        scr.clip = cv
+    for i in range(UF_LIST, UF_HIDDEN + 1):
+        files_button(scr, tok, v, L["button"][i], i, s, f)
+    fill(scr, (L["x0"], L["cmd"][1] + L["cmd"][3], L["iw"], E), tok["border"])
+    fill(scr, (L["side"][0] + L["side"][2], L["body"][1], E, L["body"][3]), tok["border"])
+    fill(scr, (L["x0"], L["status"][1] - E, L["iw"], E), tok["border"])
+    sd = L["side"]
+    if sd[2] > 0 and sd[3] > 0:
+        fill(scr, sd, tok["surface"])
+        scr.clip = meet(cv, sd)
+        if scr.clip is not None:
+            ip = d(16)
+            fill(scr, (sd[0] + d(12), sd[1] + d(8) + 7 * d(32) + d(4), sd[2] - 2 * d(12), d(1)), tok["border"])
+            for k in range(9):
+                it = files_place_rect(L, s, k)
+                if it[1] >= sd[1] + sd[3]:
+                    break
+                if v["place"] == k:
+                    fill(scr, it, tok["surface.active"])
+                    fill(scr, (it[0], it[1] + d(4), d(2), it[3] - 2 * d(4)), tok["accent"])
+                later = k >= 7
+                icon(scr, FILES_PLACE_ICONS[k], it[0] + d(12), it[1] + (it[3] - ip) // 2, ip,
+                     tok["text.muted" if later else "accent"])
+                text(scr, f, it[0] + d(36), it[1] + (it[3] - fh) // 2, FILES_PLACES[k],
+                     tok["text.muted" if later else "text"])
+        scr.clip = cv
+    c = L["content"]
+    if v["mode"] == "panel":
+        scr.clip = meet(cv, c)
+        if scr.clip is not None:
+            if v.get("panel_icon"):
+                icon(scr, v["panel_icon"], c[0] + d(24), c[1] + d(24), d(48), tok["text"])
+            lx, vx = c[0] + d(96), c[0] + d(192)
+            room = c[0] + c[2] - d(16) - vx
+            for k in range(4):
+                ty = c[1] + d(24) + k * d(28) + (d(28) - fh) // 2
+                text(scr, f, lx, ty, FILES_PANEL_LABELS[k], tok["text.muted"])
+                files_text(scr, f, vx, ty, room, v["panel_values"][k], tok["text"])
+            my = c[1] + d(24) + 4 * d(28) + d(8)
+            text(scr, f, lx, my + (d(28) - fh) // 2, FILES_NOAPP, tok["text"])
+            files_button(scr, tok, v, L["panel_close"], UF_CLOSE, s, f)
+        scr.clip = cv
+    elif v.get("list") is not None:
+        scr.clip = meet(cv, c)
+        if scr.clip is not None:
+            lv = v["list"]
+            lc = scr.clip
+            list_draw(scr, tok, lv)
+            scr.clip = lc
+            if v.get("renaming") and lv.cursor < len(lv.items):
+                scr.clip = meet(lc, lv.body())
+                if scr.clip is not None:
+                    field_draw(scr, tok, v["field"], files_field_rect(lv, lv.cursor), s, True)
+        scr.clip = cv
+    st = L["status"]
+    scr.clip = meet(cv, st)
+    if scr.clip is not None:
+        files_text(scr, f, st[0] + d(12), st[1] + (st[3] - fh) // 2, st[2] - d(24), v.get("status"),
+                   tok["danger" if v.get("status_error") else "text.muted"])
+    scr.clip = cv
+    tip = v.get("tip", 0)
+    if UF_BACK <= tip <= UF_UP:
+        b = L["button"][tip]
+        name = FILES_TIPS[tip]
+        box = (b[0], b[1] + b[3] + d(4), len(name) * f[1] + 2 * d(8), d(24))
+        fill_round(scr, box, d(4), 15, tok["surface"])
+        frame_round(scr, box, d(4), E, 15, tok["border.panel"])
+        text(scr, f, box[0] + d(8), box[1] + (box[3] - fh) // 2, name, tok["text"])
+    scr.clip = keep
+
+
+def files_window(scr, tok, s, r, active, close, v, extra=None):
+    extra = dict(extra or {"buttons": {"min", "max"}, "min": "normal", "max": "normal", "maximised": False,
+                           "size": (r[2], r[3])})
+    extra["grows"] = True
+    if v["mode"] == "nomem":
+        extra["buttons"] = set()
+    window(scr, tok, s, r, b"Files", "folder", active, close, lambda scr_, r_: files_draw(scr_, tok, r_, s, v),
+           extra)
+
+
+# The Text Viewer (ui_viewer.h).
+
+def viewer_shown(b):
+    return b if 0x20 <= b <= 0x7E else 0x3F
+
+
+def viewer_next(buf, off, cols):
+    """(the bytes drawn, the next line's offset)."""
+    cols = max(cols, 1)
+    col = drawn = 0
+    i = off
+    while i < len(buf):
+        b = buf[i]
+        if b == 0x0A:
+            i += 1
+            break
+        w = 8 - col % 8 if b == 0x09 else 1
+        if col + w > cols:
+            if col > 0:
+                break
+            w = cols
+        col += w
+        drawn += 1
+        i += 1
+        if col >= cols:
+            if i < len(buf) and buf[i] == 0x0A:
+                i += 1
+            break
+    return drawn, i
+
+
+def viewer_lines(buf, cols):
+    n = off = 0
+    while off < len(buf):
+        off = viewer_next(buf, off, cols)[1]
+        n += 1
+    return n
+
+
+def viewer_line_start(buf, cols, n):
+    off = 0
+    for _ in range(n):
+        if off >= len(buf):
+            break
+        off = viewer_next(buf, off, cols)[1]
+    return off
+
+
+def viewer_body(cut, r, s):
+    E = px(1, s)
+    y = r[1] + px(32, s) + (px(28, s) if cut else 0)
+    b = r[1] + r[3] - E
+    return (r[0] + E, y, r[2] - 2 * E, max(b - y, 0))
+
+
+def viewer_area(cut, r, s):
+    b = viewer_body(cut, r, s)
+    return (b[0], b[1], max(b[2] - px(24, s), 0), b[3])
+
+
+def viewer_sb(cut, r, s):
+    b, a = viewer_body(cut, r, s), viewer_area(cut, r, s)
+    return (a[0] + a[2], b[1], b[2] - a[2], b[3])
+
+
+def viewer_cols(cut, r, s):
+    room = viewer_area(cut, r, s)[2] - 2 * px(8, s)
+    return max(room // font(s, False)[1] if room > 0 else 0, 1)
+
+
+def viewer_page(cut, r, s):
+    room = viewer_area(cut, r, s)[3] - 2 * px(8, s)
+    return room // font(s, False)[2] if room > 0 else 0
+
+
+def viewer_draw(scr, tok, r, s, buf, cut, top, sb):
+    f = font(s, False)
+    d = lambda n: px(n, s)  # noqa: E731
+    E, fh, fw = d(1), f[2], f[1]
+    inner = (r[0] + E, r[1] + d(32), r[2] - 2 * E, r[3] - d(32) - E)
+    keep = scr.clip
+    cv = meet(keep, inner)
+    if cv is None:
+        return
+    if cut:
+        bar = (inner[0], inner[1], inner[2], d(28))
+        scr.clip = meet(cv, bar)
+        if scr.clip is not None:
+            fill(scr, bar, tok["surface"])
+            text(scr, f, bar[0] + d(12), bar[1] + (bar[3] - fh) // 2, VIEWER_CUT, tok["text"])
+            fill(scr, (bar[0], bar[1] + bar[3] - E, bar[2], E), tok["border"])
+    a = viewer_area(cut, r, s)
+    cols, page = viewer_cols(cut, r, s), viewer_page(cut, r, s)
+    lines = viewer_lines(buf, cols)
+    scr.clip = meet(cv, a)
+    if scr.clip is not None:
+        off, k = viewer_line_start(buf, cols, top), 0
+        while off < len(buf):
+            ty = a[1] + d(8) + k * fh
+            if ty >= a[1] + a[3]:
+                break
+            n, nxt = viewer_next(buf, off, cols)
+            col = 0
+            for i in range(n):
+                b = buf[off + i]
+                if b == 0x09:
+                    col += 8 - col % 8
+                    continue
+                ch = viewer_shown(b)
+                if ch != 0x20:
+                    text(scr, f, a[0] + d(8) + col * fw, ty, bytes([ch]), tok["text"])
+                col += 1
+            off, k = nxt, k + 1
+    scr.clip = cv
+    scrollbar_draw(scr, tok, viewer_sb(cut, r, s), lines, page, top, sb, s)
+    scr.clip = keep
+
+
+def viewer_window(scr, tok, s, r, active, close, title, vw, extra=None):
+    extra = dict(extra or {"buttons": {"min", "max"}, "min": "normal", "max": "normal", "maximised": False,
+                           "size": (r[2], r[3])})
+    extra["grows"] = True
+    window(scr, tok, s, r, title, "textfile", active, close,
+           lambda scr_, r_: viewer_draw(scr_, tok, r_, s, vw["buf"], vw["cut"], vw["top"], vw["sb"]), extra)
+
+
+# The scenes (tests/desktopdump.c builds the same).
+
+FILEICON_PAIRS = [("text", "surface"), ("text.muted", "surface"), ("accent", "surface"), ("accent", "surface.active"),
+                  ("text.on.accent", "accent"), ("text", "surface.hover"), ("text", "accent.pressed"),
+                  ("text", "surface.active")]
+
+
+def scene_fileicons(scr, tok, s):
+    """tests/desktopdump.c's fileicons scene: every colour icon at 16 and
+    48 dp (the screen's scale) on surface.window, surface and
+    surface.active; the Files window's stroke icons at 16 and 48 dp in
+    the colour pairs FILEICON_PAIRS."""
+    fl = Flow(scr.w, 8, 4)
+    k = 0
+    for bg in ("surface.window", "surface", "surface.active"):
+        for size in (16, 48):
+            p = px(size, s)
+            for name in CICON_ORDER:
+                cell = fl.place(p + 4, p + 4)
+                fill(scr, cell, tok[bg])
+                icon(scr, name, cell[0] + 2, cell[1] + 2, p, tok["text"])
+                k += 1
+            fl.brk()
+    j = 0
+    for size in (16, 48):
+        p = px(size, s)
+        for name in S12_ICON_ORDER:
+            fg, bg = FILEICON_PAIRS[j % len(FILEICON_PAIRS)]
+            cell = fl.place(p + 4, p + 4)
+            fill(scr, cell, tok[bg])
+            icon(scr, name, cell[0] + 2, cell[1] + 2, p, tok[fg])
+            j += 1
+        fl.brk()
+    return "%d colour icons, %d stroke icons, bottom %d" % (k, j, fl.bottom())
+
+
+SCENE_FILES_ITEMS = [   # name, kind, size text, type, modified, icon (tests/desktopdump.c's)
+    (b"Projects", "D", None, b"Folder", b"2026-11-20 09:15", "folder"),
+    (b"Work", "D", None, b"Folder", b"2026-11-19 17:02", "folder"),
+    (b".hidden-notes", "F", b"0 B", b"File", b"2026-11-18 08:00", "file"),
+    (b"Notes.txt", "F", b"1.2 KiB", b"Text file", b"2026-11-20 10:41", "textfile"),
+    (b"Plan.md", "F", b"3.4 KiB", b"Text file", b"2026-11-20 11:05", "textfile"),
+    (b"Project Link", "L", b"24 B", b"Link", b"2026-11-17 12:30", "link"),
+    (b"data.bin", "F", b"12.0 MiB", b"File", b"2026-11-16 22:59", "file"),
+]
+
+
+def scene_files_view(r, s):
+    """The view of the files scene at window r."""
+    L = files_layout(r, s, True)
+    items = [[n, sz, t, m, ic, i in (3, 4)] for i, (n, _, sz, t, m, ic) in enumerate(SCENE_FILES_ITEMS)]
+    lv = ListView("list", items, LIST_TITLES, L["content"], s)
+    lv.cursor = 4
+    field = Field(b"Plan-2026.md")
+    field_fit(field, field_cols(files_field_rect(lv, 4), s, font(s, False)))
+    enabled = [True] * UF_BUTTONS
+    enabled[UF_FORWARD] = False
+    chosen = [False] * UF_BUTTONS
+    chosen[UF_LIST] = chosen[UF_HIDDEN] = True
+    import files_ref
+    pb = files_ref.pathbar(files_ref.V_FOLDER, b"/home/user/Documents", files_path_cells(L, s))
+    return {"mode": "list", "bar": "live", "enabled": enabled, "chosen": chosen, "hover": UF_NEWFILE,
+            "pressed": UF_OPEN, "tip": UF_BACK, "place": 2, "pb": pb, "list": lv, "renaming": True,
+            "field": field, "status": b"7 items, 300.0 MiB free", "status_error": False}
+
+
+def scene_files_grid(scr, tok, s):
+    """tests/desktopdump.c's files_grid scene (the owner's review, S12):
+    the files scene's window in the grid view, item 3 selected with the
+    ring, no rename field, no hover, press or tooltip; List and Grid
+    marked by the view drawn (a stale List flag set on purpose must not
+    show)."""
+    r = (px(16, s), px(16, s), px(FILES_W, s), px(FILES_H, s))
+    v = scene_files_view(r, s)
+    lv = v["list"]
+    lv.view, lv.cursor, lv.ring = "grid", 3, True
+    for i, it in enumerate(lv.items):
+        it[5] = i == 3
+    v["chosen"] = [False] * UF_BUTTONS
+    v["chosen"][UF_LIST] = v["chosen"][UF_HIDDEN] = True     # List stale on purpose; .hidden-notes listed
+    v.update({"hover": 0, "pressed": 0, "tip": 0, "renaming": False})
+    files_window(scr, tok, s, r, True, "normal", v)
+    return "the window %dx%d, %d columns" % (r[2], r[3], lv.columns())
+
+
+def scene_files(scr, tok, s):
+    """tests/desktopdump.c's files scene: the Files window at (16, 16) dp,
+    720 x 480 dp, active: the Live bar, the path Home > Documents, Forward
+    greyed, List chosen, Show hidden files on, New File on hover, Open
+    pressed, the tooltip of Back, Documents the current place, seven items
+    (folders, a hidden file, text files, a link, a file), two selected, the
+    rename field on the fifth."""
+    r = (px(16, s), px(16, s), px(FILES_W, s), px(FILES_H, s))
+    v = scene_files_view(r, s)
+    files_window(scr, tok, s, r, True, "normal", v)
+    return "the window %dx%d, %d path cells" % (r[2], r[3], files_path_cells(files_layout(r, s, True), s))
+
+
 # ---- The menus, the M button and the Restart dialog (1.3 stage 5) ----
 
 # kernel/display/ui_menu.h: size in dp, a header, the rows' tops and the
@@ -2172,7 +3018,7 @@ class DeskKeys:
 
     SUPER = {"meta_l": 1, "meta_r": 2}
     WITH_SUPER = {"up": "up", "down": "down", "left": "left", "right": "right", "pause": "about",
-                  "d": "show_desktop"}
+                  "d": "show_desktop", "e": "files"}          # 1.5 stage 12: Super+E opens Files
 
     def __init__(self):
         self.held, self.other = 0, False
@@ -2667,7 +3513,8 @@ def contrast_check(path):
     return 0 if bad == 0 else 1
 
 
-SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
+SCENES = {"fileicons": scene_fileicons, "files": scene_files, "files_grid": scene_files_grid,  # 1.5 stage 12
+          "prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
           "taskbar": scene_taskbar, "windows": scene_windows, "windows_exposed": scene_windows,
           "windows_hover": lambda scr, tok, s: scene_windows(scr, tok, s, "hover"),
           "windows_pressed": lambda scr, tok, s: scene_windows(scr, tok, s, "pressed"),

@@ -101,6 +101,7 @@
 #include "kernel/display/ui_console.h"
 #include "kernel/display/ui_dialog.h"
 #include "kernel/display/ui_draw.h"
+#include "kernel/display/ui_files.h"
 #include "kernel/display/ui_font.h"
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_list.h"
@@ -940,6 +941,130 @@ static int scene_scrollbar(struct ui_canvas *c, int32_t W)
     return 0;
 }
 
+/* ---- 1.5 stage 12: the Files window's icons and the window ---- */
+
+static const uint32_t fileicon_pairs[8][2] = {     /* foreground, background (tests/desktop_ref.py's) */
+    { UI_TEXT, UI_SURFACE }, { UI_TEXT_MUTED, UI_SURFACE }, { UI_ACCENT, UI_SURFACE }, { UI_ACCENT, UI_SURFACE_ACTIVE },
+    { UI_TEXT_ON_ACCENT, UI_ACCENT }, { UI_TEXT, UI_SURFACE_HOVER }, { UI_TEXT, UI_ACCENT_PRESSED },
+    { UI_TEXT, UI_SURFACE_ACTIVE },
+};
+
+/* Every colour icon at 16 and 48 dp on surface.window, surface and
+ * surface.active; the Files window's stroke icons at 16 and 48 dp in the
+ * pairs above. */
+static int scene_fileicons(struct ui_canvas *c, int32_t W)
+{
+    static const uint32_t bgs[3] = { UI_SURFACE_WINDOW, UI_SURFACE, UI_SURFACE_ACTIVE };
+    struct flow f;
+    flow_init(&f, W, 8, 4);
+    uint32_t k = 0, j = 0;
+    for (int b = 0; b < 3; b++)
+        for (int z = 0; z < 2; z++) {
+            int32_t p = d(z ? 48 : 16);
+            for (int i = UI_CICON_FIRST; i < UI_CICON_END; i++, k++) {
+                struct rect cell = flow_place(&f, p + 4, p + 4);
+                ui_fill(c, cell, bgs[b]);
+                ui_icon_draw(c, i, cell.x + 2, cell.y + 2, p, UI_TEXT);
+            }
+            flow_break(&f);
+        }
+    for (int z = 0; z < 2; z++) {
+        int32_t p = d(z ? 48 : 16);
+        for (int i = UI_SICON_FIRST; i < UI_SICON_END; i++, j++) {
+            struct rect cell = flow_place(&f, p + 4, p + 4);
+            ui_fill(c, cell, fileicon_pairs[j % 8][1]);
+            ui_icon_draw(c, i, cell.x + 2, cell.y + 2, p, fileicon_pairs[j % 8][0]);
+        }
+        flow_break(&f);
+    }
+    printf("SCENE fileicons: scale %u %%, %u colour icons, %u stroke icons, bottom %d\n", S * 25, k, j,
+           flow_bottom(&f));
+    return 0;
+}
+
+static struct ui_files_view files_scene_view;
+static struct ui_fonts files_scene_fonts;
+
+static void files_scene_paint(const struct ui_canvas *c, struct rect r, void *ctx)
+{
+    (void)ctx;
+    ui_files_draw(c, r, S, &files_scene_fonts, &files_scene_view);
+}
+
+/* The Files window at (16, 16) dp, 720 x 480 dp, active (desktop_ref.py's
+ * scene_files: the same view). */
+static int scene_files(struct ui_canvas *c, bool grid)
+{
+    static const struct {
+        const char *name, *size, *type, *mod;
+        int icon;
+    } rows[7] = {
+        { "Projects", 0, "Folder", "2026-11-20 09:15", UI_ICON_FOLDER },
+        { "Work", 0, "Folder", "2026-11-19 17:02", UI_ICON_FOLDER },
+        { ".hidden-notes", "0 B", "File", "2026-11-18 08:00", UI_ICON_FILE },
+        { "Notes.txt", "1.2 KiB", "Text file", "2026-11-20 10:41", UI_ICON_TEXTFILE },
+        { "Plan.md", "3.4 KiB", "Text file", "2026-11-20 11:05", UI_ICON_TEXTFILE },
+        { "Project Link", "24 B", "Link", "2026-11-17 12:30", UI_ICON_LINK },
+        { "data.bin", "12.0 MiB", "File", "2026-11-16 22:59", UI_ICON_FILE },
+    };
+    static struct ui_list_item items[7];
+    static struct ui_list list;
+    static struct ui_textfield field;
+    static struct files_pathbar pb;
+    static struct ui_window w;
+    if (!ui_fonts_for_scale(S, &files_scene_fonts))
+        return 1;
+    struct rect r = { d(16), d(16), d(720), d(480) };
+    struct ui_files_layout lay;
+    ui_files_layout(r, S, files_scene_fonts.regular, true, &lay);
+    for (int i = 0; i < 7; i++) {
+        items[i].name = rows[i].name;
+        items[i].size = rows[i].size;
+        items[i].type = rows[i].type;
+        items[i].modified = rows[i].mod;
+        items[i].icon = rows[i].icon;
+        items[i].selected = grid ? i == 3 : (i == 3 || i == 4);
+    }
+    ui_list_init(&list, grid ? UI_LIST_GRID : UI_LIST_DETAILS, items, 7, dump_titles, lay.content, S);
+    list.cursor = grid ? 3 : 4;
+    list.ring = grid;
+    ui_textfield_set(&field, "Plan-2026.md");
+    ui_textfield_fit(&field, ui_textfield_cols(ui_files_field_rect(&list, 4), S, files_scene_fonts.regular));
+    files_pathbar(FILES_VIEW_FOLDER, "/home/user/Documents", 20, ui_files_path_cells(&lay, S, files_scene_fonts.regular),
+                  &pb);
+    struct ui_files_view *v = &files_scene_view;
+    v->mode = UI_FILES_LIST;
+    v->bar = UI_FILES_BAR_LIVE;
+    for (int i = 0; i < UF_BUTTONS; i++) {
+        v->enabled[i] = i != UF_FORWARD;
+        v->chosen[i] = i == UF_LIST || i == UF_HIDDEN;      /* files_grid: List stale on purpose */
+    }
+    v->hover = grid ? UF_NONE : UF_NEWFILE;
+    v->pressed = grid ? UF_NONE : UF_OPEN;
+    v->tip = grid ? UF_NONE : UF_BACK;
+    v->place = 2;
+    v->pb = &pb;
+    v->list = &list;
+    v->renaming = !grid;
+    v->field = &field;
+    v->panel_icon = UI_ICON_NONE;
+    v->status = "7 items, 300.0 MiB free";
+    v->status_error = false;
+    w.name = "Files";
+    w.title = "Files";
+    w.icon = UI_ICON_FOLDER;
+    w.w = r.w;
+    w.h = r.h;
+    w.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    w.resizable = true;
+    w.grows = true;
+    w.paint = files_scene_paint;
+    ui_window_draw(c, &w, r, true, UI_BUTTON_NORMAL, S, &files_scene_fonts);
+    printf("SCENE %s: scale %u %%, the window %dx%d, %u path cells\n", grid ? "files_grid" : "files", S * 25, r.w,
+           r.h, ui_files_path_cells(&lay, S, files_scene_fonts.regular));
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -1018,6 +1143,12 @@ int main(int argc, char **argv)
         rc = scene_grid(&c);
     } else if (strcmp(argv[4], "scrollbar") == 0) {
         rc = scene_scrollbar(&c, (int32_t)w);
+    } else if (strcmp(argv[4], "fileicons") == 0) {               /* 1.5 stage 12 */
+        rc = scene_fileicons(&c, (int32_t)w);
+    } else if (strcmp(argv[4], "files") == 0) {
+        rc = scene_files(&c, false);
+    } else if (strcmp(argv[4], "files_grid") == 0) {
+        rc = scene_files(&c, true);
     } else if (strncmp(argv[4], "mbutton_", 8) == 0 || strncmp(argv[4], "menu_", 5) == 0 ||
                strncmp(argv[4], "dialog", 6) == 0) {          /* 1.3 stage 5 */
         rc = scene_menus(&s, &cl, argv[4]);

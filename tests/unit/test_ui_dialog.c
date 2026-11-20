@@ -21,6 +21,8 @@
 #include "kernel/display/ui_draw.c"
 #include "kernel/display/icons.c"
 #include "kernel/display/ui_icon.c"
+#include "kernel/display/cicons.c"            /* 1.5 stage 12: ui_icon.c draws the colour icons */
+#include "kernel/display/ui_cicon.c"
 #include "kernel/display/ui_widget.c"
 #include "kernel/display/ui_window.c"
 #include "kernel/display/ui_dialog.c"

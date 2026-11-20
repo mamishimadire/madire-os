@@ -3692,3 +3692,67 @@ else
     fail "[1.5] files_core.c or trash_core.c is not linked into madire.elf ($F11_LINKED of 4 calls found)"
 fi
 echo "      [1.5] the Files and Trash cores (static): $(( $(date +%s) - F11_T0 )) s (report only)"
+
+section "[1.5] The Files window's icons and the Files window against tests/desktop_ref.py, and their contrast check (stage 12)"
+# docs/plans/1.5.md, note (12)(a) with the S12 change and the owner's
+# mockup decisions (S12); kernel/display/ui_cicon.h, icons.h's second
+# table, ui_files.h; the Design Guide, sections 5, 12 and 14. The host tool
+# (build/desktopdump) draws fileicons (every colour icon at 16 and 48 dp on
+# surface.window, surface and surface.active; the Files window's stroke
+# icons at 16 and 48 dp in eight colour pairs) and files (the Files window,
+# active: the Live bar, the path Home > Documents with its home icon,
+# Forward greyed, List chosen, Show hidden files on, New File on hover,
+# Open pressed, the tooltip of Back, Documents the current place, seven
+# items with two selected and the rename field on one) and files_grid (the
+# same window in the grid view, one item selected with the ring; List and
+# Grid marked by the view drawn: the owner's review, S12). desktop_ref.py
+# draws them from ui_cicon.h's, icons.h's and ui_files.h's rules. Five
+# modes, both pixel formats, every scale but 125 %. The colour pairs they
+# draw are checked against the Design Guide's section 12 table as in 1.3
+# stage 4a (their own pairs file; the selected rows', the current place's
+# and the chosen button's fills carried by their accent marks, the hover
+# fill by the pointer).
+W12_T0=$(date +%s)
+PAIRS12=$OUT/desktop-pairs-files12.txt
+rm -f "$PAIRS12"
+desktop12_static() {   # desktop12_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS12 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'PYEOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+PYEOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        if [ "$4" = fileicons ]; then
+            pass "[1.5] the icon scene at $1x$2x$(($3 * 8)) (ui_cicon.c, cicons.c, icons.c's second table: the colour icons at 16 and 48 dp on three surfaces, the Files window's stroke icons) equals tests/desktop_ref.py's rendering pixel for pixel"
+        else
+            pass "[1.5] the Files window scene $4 at $1x$2x$(($3 * 8)) (ui_files.c with ui_list.c and ui_textfield.c: the bar, the buttons, the checkbox, the path bar, the sidebar, the $([ "$4" = files ] && echo "list with List marked, the rename field, the tooltip" || echo "grid with Grid marked (a stale List flag not shown)"), the status line) equals tests/desktop_ref.py's rendering pixel for pixel"
+        fi
+    else
+        fail "[1.5] the $4 scene at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in fileicons files files_grid; do
+        # shellcheck disable=SC2086
+        desktop12_static $mode $scene
+    done
+done
+CONTRAST12=$(python3 "$DREF" --contrast "$PAIRS12" 2>&1)
+printf '%s\n' "$CONTRAST12" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST12" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST12" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 3 scenes \(fileicons files files_grid\)$' &&
+   printf '%s\n' "$CONTRAST12" | grep -qE '^CONTRAST carried pass carried-bar ' &&
+   printf '%s\n' "$CONTRAST12" | grep -qE '^CONTRAST carried pass carried-pointer '; then
+    pass "[1.5] contrast: every colour pair the Files window's icons and the Files window draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h (the icons' outlines and emblems at least 3:1); the selected fills carried by their passing accent marks, the hover fill by the pointer"
+else
+    fail "[1.5] contrast: a colour pair the Files window's icons or the Files window draws is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its mark (see the CONTRAST lines)"
+fi
+echo "      [1.5] the Files window's scenes (static): $(( $(date +%s) - W12_T0 )) s (report only)"

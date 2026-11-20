@@ -90,7 +90,7 @@ Other numbers read on 2026-10-24, for the record: the About title bar averages `
 
 - **Madire's own icons only.** Fluent UI System Icons are inspiration only and Papirus is study only; neither is ever shipped ([references.md](../references.md)).
 - **Drawn on a 24 dp grid with 2 dp strokes and round caps,** stored as stroke lists (as `kernel/logo.c` stores the M) and drawn by coverage at every scale; sizes 16, 24, 32 and 48 dp.
-- **Colours:** `text` for line icons, `accent` for the active state; no multicolour icons. The M in the logo's gradient is the logo, drawn only where it is not a control (the splash, the desktop, the About window); inside a control it is a single-colour icon (section 12: `accent.deep`, the gradient's deep end, is below 3:1 on every surface).
+- **Colours:** `text` for line icons, `accent` for the active state (and for the Files window's sidebar places, 1.5 stage 12); no multicolour stroke icons. **Colour icons (1.5 stage 12, docs/plans/1.5.md note (12)(a)):** the files and folders are Madire's own full-colour icons (below), drawn from data tables of filled shapes and 2 dp strokes in existing tokens only, never bitmaps; the toolbar's Back, Forward and Up and the Files window's other buttons stay stroke icons. The M in the logo's gradient is the logo, drawn only where it is not a control (the splash, the desktop, the About window); inside a control it is a single-colour icon (section 12: `accent.deep`, the gradient's deep end, is below 3:1 on every surface).
 - **1.3 needs:**
 
 | Icon | Drawn as | Where |
@@ -107,6 +107,22 @@ Other numbers read on 2026-10-24, for the record: the About title bar averages `
 | maximise | a square (6, 6)–(18, 18) (1.5 stage 8) | the title bar's maximise button |
 | restore | a square (5, 9)–(15, 19) and the square behind it, offset up and right (1.5 stage 8) | the title bar's maximise button while the window is maximised |
 | power | a circle at (12, 13), radius 8, open at the top (30° to 330°), and a line (12, 3)–(12, 12) (1.5 stage 8) | the M menu's Power... row, the power dialog's title bar |
+| back, forward, up | an arrow left, right, up: its shaft (5, 12)–(19, 12) (up: (12, 5)–(12, 19)) and its head (1.5 stage 12) | the Files toolbar's Back, Forward and Up |
+
+**The Files window's stroke icons (1.5 stage 12, the owner's mockup decisions):** a second stroke table (`kernel/display/icons.c`), the same grid, strokes and caps: new folder (a folder with a plus), new file (a page with its fold and a plus), open (an open folder), rename (a pencil), list (three lines with dots), grid (four squares), check (a tick, for the checkbox), and the sidebar's places: home (a roof, walls and a door; also the path bar's home icon), desktop (a monitor on a stand), documents (a page with two lines), downloads (an arrow onto a line), pictures (a frame with hills and a sun), music (two notes), videos (a play triangle), trash (a lid, a handle, a bin and two slots), This PC (a laptop). Sixteen icons; the buttons' in `text` (`text.muted` greyed), the places' in `accent` (`text.muted` for the places of later stages), the tick in `text.on.accent` on the checkbox's `accent`.
+
+**The colour icons (1.5 stage 12):** two designs each, on a 16 dp grid and a 48 dp grid (a box of at most 40 pixels uses the 16 dp design); filled rounded rectangles and polygons (4 × 4 samples a pixel) and 2 dp strokes, each in one token (`kernel/display/ui_cicon.h`, `cicons.c`):
+
+| Icon | Drawn as |
+|---|---|
+| folder | the back in `accent.hover` (the S12 change: `accent.pressed` was 2.92:1 on `surface.active`) with a tab at the right end, its left side at the M's stroke angle; the front in `accent` with a 1 dp `accent.light` line along its top |
+| Home, Desktop, Documents, Downloads, Pictures, Music, Videos | the folder with an emblem in `text.on.accent` on the front (48 dp: 2 dp strokes: a house, a monitor, a page with lines, an arrow onto a line, a frame with a hill and a sun, a note, a play triangle; 16 dp: filled shapes) |
+| file | a `text` page with a `text.muted` folded corner |
+| text file | the file with three `accent` lines |
+| link | the file with the link badge: a `surface` disc with a `text` arrow at the bottom left |
+| Trash, empty / full | a tapered `text.muted` bin with three `bg.deep` slots and a `text` lid (empty: with its handle; full: an `accent.light` and a `warning` sheet above the lid) |
+
+Nothing resembles another system's icons; Papirus is study only, Fluent UI System Icons inspiration only. Each icon's outline is at least 3:1 against every surface it is drawn on and each emblem at least 3:1 against its fill (section 12).
 
 ## 6. Layout and display scaling
 
@@ -184,6 +200,7 @@ Every text and icon colour against each background it appears on. Ratios are WCA
 | `text` | `accent.pressed` | a pressed dialog button's label | 5.03:1 | T | pass |
 | `text` | `surface.hover` | the Cancel button's label on hover | 10.41:1 | T | pass |
 | `text.on.accent` | `accent.pressed` | (not used: below T) | 3.47:1 | T | not used |
+| `danger` | `surface.window` | the Files window's status line: a message about something that failed (1.5 stage 12) | 5.33:1 | T | pass |
 
 **Text on the wallpaper:** the wallpaper is not flat, so its rows above give only the flat areas. **No text may lie over a curve's core or its glow** (`accent.glow`, `accent.light`, `glow.hot`). Since 1.3 stage 3b the wallpaper rows above apply to the splash only: the desktop puts no text on the wallpaper (section 6), so its text-box check has nothing to check. The 1.2 splash's text does not meet these rules over the rendered wallpaper (measured in 1.3 stage 3b: the wordmark about 2.11:1, the ready line about 1.01:1, "Booting Madire OS" 4.32–5.21:1); this is a recorded follow-up, not changed in 1.3. A new text box on the wallpaper is checked against the rendered wallpaper under it before it is drawn; if it fails, the layout is raised before it is changed (the colours are not).
 
@@ -214,6 +231,13 @@ Every text and icon colour against each background it appears on. Ratios are WCA
 | `accent.light` | the same four surfaces | (the gradient's light end) | 13.23 / 13.78 / 14.00 / 11.42:1 | – | for the record |
 | `surface.active` | `surface` / `surface.bar` / `surface.window` | the selected-row and M-cell fills alone; a selected list row's or grid cell's fill (1.5 stage 10) | 1.16 / 1.23 / 1.21:1 | N | **fail alone**: a selected row and the pressed or open M button also carry their `accent` bar (sections 9, 10), which passes, and so do a selected list row and grid cell (section 13); the M button's hover is shown by the pointer over it |
 | `border` | `surface.active` | (a pressed key one step lighter: the draft) | 1.08:1 | N | **fail**: a pressed key fills with `accent` instead (section 8) |
+| `accent.hover` | `surface.window` / `surface` / `surface.active` | the folder icon's back and tab (1.5 stage 12) | 7.23 / 6.94 / 5.99:1 | N | pass |
+| `accent` | `text` | a text file icon's lines on its page (1.5 stage 12) | 3.42:1 | N | pass |
+| `text.muted` | `surface` / `surface.active` | a greyed button's icon (Forward with no history), the sidebar's places of later stages; the Trash icon's bin (1.5 stage 12) | 6.31 / 5.45:1 | N | pass |
+| `accent.light` | `surface.window` / `surface` / `surface.active` | the full Trash icon's sheet (1.5 stage 12) | 13.78 / 13.23 / 11.42:1 | N | pass |
+| `warning` | `surface.window` / `surface` / `surface.active` | the full Trash icon's sheet (1.5 stage 12) | 9.08 / 8.72 / 7.53:1 | N | pass |
+
+**Not under a rule (1.5 stage 12):** the colour icons' inner details (the folder's `accent.light` line, the file's folded corner, the Trash's slots, the link badge's disc against the icon under it: each icon is identified by its outline and emblem, which pass above); a button's resting `surface` fill and its 1 dp `border` edge (decorative: a button is identified by its icon and label, which pass); the Files window's dividers and the tooltip's `border.panel` frame. **The chosen view button** (List or Grid) is told by its `accent` edge on `surface.active` (`accent` on `surface.active` passes, 4.28:1), as a selected row by its bar.
 
 **Not under a rule:** the logo in its gradient where it is not a control (the splash, the desktop, the About window: a logo, identified by the wordmark beside it); the one-pixel edges of windows, panels and the taskbar's top line, and the surfaces against the wallpaper (`surface.window`, `surface` and `surface.bar` on the wallpaper 1.12–1.22:1, `border.window` on `bg.base` 1.15:1): these edges are decorative, and each window, menu and the taskbar is identified by its title text, labels and controls, which pass above; dividers (decorative). **The active window** is told from the others by its title's colour (`text` against `text.muted`, both passing on `surface.window`) and by being on top. **The console's grid** keeps 1.2's VGA palette (its own colours, unchanged) and is outside this table.
 
@@ -226,3 +250,19 @@ The toolkit's widgets for the Files app (docs/plans/1.5.md, C5; `kernel/display/
 - **The grid:** cells 96 × 88 dp from the top left, as many per line as fit; the icon (48 dp) in `text`, centred across, 8 dp from the cell's top; the name in `text`, centred, 64 dp from the top, cut with `...` to the cell's width less 4 × 2 dp (1.5 stage 11, the owner's refinement: 88 dp at 100, 150 and 200 %, and clear of the focus ring at 125 %). **A selected cell:** the cell less 2 dp on every side filled with `surface.active` (4 dp corners), with a 2 dp `accent` bar 4 dp above that shape's bottom, 4 dp in from its sides. **The focused cell:** a 2 dp `accent` ring of radius 4 dp on that shape.
 - **Selection and keys (both views):** a click selects one item, Ctrl+click toggles one, Shift+click selects the range from the last item clicked; a double click (the second press within 500 ms, within 4 dp, on the same item) or Enter opens; Up, Down, Home, End, Page Up and Page Down (and Left and Right in the grid) move the focus and select the focused item, with Shift the range; the wheel scrolls 3 rows (list) or one line of cells (grid) a notch.
 - **The scroll bar:** a column 24 dp wide at the view's right (the targets' minimum, section 4), the whole column the target; only when the items do not all fit, a thumb 8 dp wide, centred in the column, with rounded ends (4 dp), in `text.muted`, in `text` on hover and while dragged; no track fill, no arrows. Its track is the column less 4 dp at the top and the bottom; the thumb's length is the track's share of the lines shown, at least 24 dp. A click above or below the thumb moves one page; dragging the thumb scrolls.
+
+## 14. The Files window and the Text Viewer (1.5 stage 12)
+
+The Files app's window (docs/plans/1.5.md, C5; `kernel/display/ui_files.h`, `ui_viewer.h`), with the owner's decisions on the mockup comparison (S12): button boxes, icons beside the labels, a checkbox, `accent` sidebar icons with a divider, a home icon in the path bar. Every size in dp at the screen's scale; the console font, regular. *Chosen, not sampled.*
+
+- **The window:** 720 × 480 dp (at most the area above the taskbar), resizable down to 480 × 320 dp, minimise and maximise; its client follows the window's size. Below the title bar: the Live bar (`Live mode: files are kept in memory only and are lost at restart.`) or the read-only bar (`/home is read-only: changes can't be saved.`), 28 dp, `surface`, text in `text`, a 1 dp `border` line under it.
+- **The toolbar (40 dp):** Back, Forward and Up, 32 dp square buttons with their arrows; the path bar (a `surface` rounded rectangle with the home icon in `accent`, then the parts joined by ` > `, the parts in `text`, the separators and a starting `...` in `text.muted`; each part is a target); List and Grid with their icons.
+- **The command row (40 dp):** New Folder, New File, Open and Rename with their icons, and `Show hidden files` with a checkbox at the right.
+- **Buttons:** 32 dp high, 4 dp corners; which of List and Grid is chosen always follows the view shown (the owner's review, S12); resting: `surface` with a 1 dp `border` edge; hover `surface.hover`; pressed `accent.pressed`; greyed: the icon and label in `text.muted`. The icon (16 dp) 12 dp from the left, the label at 36 dp; Back, Forward and Up show their icon only, centred. **The chosen view** (List or Grid): `surface.active` with a 1 dp `accent` edge (never a solid `accent` fill with `text`, which is 3.42:1).
+- **The checkbox:** a 16 dp box, 3 dp corners: off, a 2 dp `text.muted` frame; on, filled `accent` with the tick in `text.on.accent`. No resting fill around it.
+- **Tooltips:** after the pointer rests 500 ms on Back, Forward or Up, its name with its key (`Back (Alt+Left)`, `Forward (Alt+Right)`, `Up (Alt+Up)`; the owner's decision, S12) in `text` in a `surface` box (4 dp corners, a 1 dp `border.panel` frame), 4 dp below the button.
+- **The sidebar (168 dp, `surface`):** Home, Desktop, Documents, Downloads, Pictures, Music, Videos, then a 1 dp `border` divider (12 dp in from each side) and Trash, This PC; rows 32 dp, the stroke icon (16 dp) in `accent` at 12 dp, the label at 36 dp in `text`; the current place `surface.active` with a 2 dp `accent` bar on its left; places of later stages in `text.muted`.
+- **The content:** the list or the grid (section 13); a folder cut at 1,000 items ends with the row `Showing the first 1000 items of this folder.`; the info panel (the 48 dp icon, the rows Name, Size, Type, Modified, `No app can open this file yet.` and a Close button); the rename field (section 13) over the item's name.
+- **The status line (28 dp):** `<n> items, <X> free` (`1 item, <X> free`) in `text.muted`; a message about something that failed in `danger`.
+- **The Text Viewer:** 640 × 480 dp, resizable down to 320 × 240 dp; the file's name as its title; `Only the first 64 KiB are shown.` in a bar like the Live bar when the file is longer; the text in `text` from 8 dp in, lines wrapped at the window's width, tabs every 8 columns, every byte outside printable ASCII but newline and tab shown as `?` and never interpreted; the scroll bar of section 13.
+- **Not in 1.5** (recorded for later, the owner's S12 decisions): chevron separators drawn as icons in the path bar; larger grid icons or an icon-size slider; a solid-`accent` chosen button.

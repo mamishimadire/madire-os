@@ -14,6 +14,7 @@
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
 #include "kernel/display/fbcon_core.h"
+#include "kernel/display/files_app.h"
 #include "kernel/display/pointer.h"
 #include "kernel/display/splash.h"
 #include "kernel/display/ui_about.h"
@@ -112,6 +113,17 @@ static bool desk_wheel_seen;
 /* 1.5 stage 9b: the Super key and the window shortcuts (deskkeys_core.h). */
 static struct deskkeys desk_keys;
 
+/* 1.5 stage 12 (C5): the Files window and the Text Viewer (files_app.h;
+ * drawn on exposure, no surface), whether each was open after the last
+ * window event (their close gives their memory back), the test options,
+ * the Shift and Ctrl keys held (for a click in the list) and files_app's
+ * view of the desktop. */
+static struct desk_window files_win, viewer_win;
+static bool desk_files_was_open, desk_viewer_was_open;
+static bool desk_livehome, desk_files_nomem, desk_files_fill;
+static uint8_t desk_mods;
+static struct files_app_env desk_files_env;
+
 /* 1.3 stage 7b (report only, desktoplog): during a drag, the damage before
  * and after ui_damage_merge_overlaps (rectangles and pixels), and for each
  * key press passed to the console, the TSC cycles from its being taken out
@@ -139,6 +151,13 @@ void desktop_options(bool w, bool default_path, bool l, bool n, bool ns, bool ab
     nosurface = ns;
     about_at_start = about_opt;
     desk_panic = panic_opt;
+}
+
+void desktop_files_options(bool livehome, bool nomem, bool fill)
+{
+    desk_livehome = livehome;
+    desk_files_nomem = nomem;
+    desk_files_fill = fill;
 }
 
 void desktop_about_info(const char *loader, uint32_t mb)
@@ -517,8 +536,21 @@ static void desk_log_shortcut(const struct ui_wm_event *e)
         kserialf("desktop: shortcut %s: nothing to do\n", n);
 }
 
+/* 1.5 stage 12: a Files or Text Viewer window the window manager closed
+ * (its close button, Esc, Alt+F4, a middle click) gives its memory back. */
+static void desk_files_check(void)
+{
+    if (desk_files_was_open && !files_win.w.open)
+        files_app_closed(&files_win.w);
+    if (desk_viewer_was_open && !viewer_win.w.open)
+        files_app_closed(&viewer_win.w);
+    desk_files_was_open = files_win.w.open;
+    desk_viewer_was_open = viewer_win.w.open;
+}
+
 static void log_events(void)
 {
+    desk_files_check();
     desk_log_menus();
     if (!logging) {
         ui_wm_clear_events(&wm);
@@ -825,6 +857,29 @@ static void open_about(void)
     log_events();
 }
 
+/* 1.5 stage 12: files_app's calls into the desktop. */
+static void desk_files_damage(struct rect r)
+{
+    comp_damage(&comp, r);
+}
+
+static bool desk_files_open(struct ui_window *w)
+{
+    bool ok = ui_wm_open(&wm, w);
+    log_events();
+    return ok;
+}
+
+/* Super+E: Files opened, or activated if it is open (one Files window). */
+static void desk_open_files(void)
+{
+    if (files_win.w.open)
+        ui_wm_activate(&wm, &files_win.w);
+    else
+        files_app_open();
+    log_events();
+}
+
 /* 1.3 stage 5: after the menus had a packet or a key: the About values when
  * a row opened the About window, a line when one opened the Console window
  * (returned: the caller starts the console), and the restart when the
@@ -955,6 +1010,22 @@ static bool desk_begin(const struct fb_info *fi, const struct fbcon_layout *cl)
     if (menu_need > UI_ABOUT_SCRATCH)
         klogf("Desktop: the M menu's wordmark needs %u coverage entries (%u kept): not drawn whole\n",
               (uint32_t)menu_need, (uint32_t)UI_ABOUT_SCRATCH);
+    /* 1.5 stage 12 (C5): Files and the Text Viewer; Live mode's home
+     * folders on the default path and with livehome (decision 6). Field by
+     * field (no struct copy the compiler could turn into a library call). */
+    files_app_options(desk_files_nomem, desk_files_fill);
+    desk_files_env.files = &files_win.w;
+    desk_files_env.viewer = &viewer_win.w;
+    desk_files_env.scale = scale;
+    desk_files_env.fonts = &fonts;
+    desk_files_env.area_w = (int32_t)fi->width;
+    desk_files_env.area_h = lay.bar.y;
+    desk_files_env.damage = desk_files_damage;
+    desk_files_env.open = desk_files_open;
+    desk_files_env.logging = logging;
+    files_app_setup(&desk_files_env);
+    if (!ext2_disk_mounted() && (desk_default || desk_livehome))
+        files_app_live_home();
     pointer_desktop();                  /* 1.3 stage 8: the default path's pointer (on already otherwise) */
     showing = true;
     comp_damage(&comp, (struct rect){ 0, 0, (int32_t)fi->width, (int32_t)fi->height });
@@ -990,6 +1061,7 @@ void desktop_poll(void)
             comp_damage(&comp, lay.clock_box);
         }
     }
+    files_app_poll(timer_ticks());      /* 1.5 stage 12: one hold of a folder or file read */
     compose();
 }
 
@@ -1006,6 +1078,17 @@ void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool ri
     if (middle_down && !desk_menus.menu_open && !desk_menus.dlg_open)
         ui_wm_middle(&wm, x, y);
     log_events();
+    /* 1.5 stage 12: Files and the Text Viewer see the pointer after the
+     * window manager (a press on a window's body raised and focused it);
+     * `top` the window whose body is under it, none over a title bar, a
+     * grab band, the taskbar or while a menu or the dialog is open. */
+    if (!desk_menus.menu_open && !desk_menus.dlg_open) {
+        struct ui_window *top = 0;
+        if (ui_wm_hit(&wm, x, y, &top) != UI_HIT_BODY)
+            top = 0;
+        files_app_pointer(top, x, y, left_down, left_up, desk_mods, timer_ticks());
+        log_events();
+    }
     if (desk_menu_done() == UI_MENU_CONSOLE)
         desk_console_wanted = true;
 }
@@ -1018,7 +1101,13 @@ void desktop_wheel(int32_t x, int32_t y, int32_t notches)
     const char *why = 0;
     if (desk_menus.menu_open || desk_menus.dlg_open)
         why = "a menu or dialog is open";
-    else if (ui_wm_hit(&wm, x, y, &w) != UI_HIT_BODY || w != &console_win.w)
+    else if (ui_wm_hit(&wm, x, y, &w) == UI_HIT_BODY && (w == &files_win.w || w == &viewer_win.w)) {
+        files_app_wheel(w, x, y, notches);  /* 1.5 stage 12 */
+        if (logging)
+            kserialf("desktop: wheel %c%u over %s\n", notches < 0 ? '-' : '+',
+                     (uint32_t)(notches < 0 ? -notches : notches), w->name);
+        return;
+    } else if (ui_wm_hit(&wm, x, y, &w) != UI_HIT_BODY || w != &console_win.w)
         why = "not over the Console window";
     char n[16];
     ksnprintf(n, sizeof(n), "%c%u", notches < 0 ? '-' : '+', (uint32_t)(notches < 0 ? -notches : notches));
@@ -1110,6 +1199,12 @@ static bool desk_keys_first(uint8_t keycode, char ascii, bool pressed, uint8_t f
         return false;
     if (a == DK_MENU) {
         ui_menus_key(&desk_menus, UI_MKEY_WINDOWS, true);   /* as the Super key's press did before */
+    } else if (a == DK_FILES) {
+        if (desk_menus.menu_open)
+            ui_menus_close(&desk_menus);
+        if (logging)
+            kserialf("desktop: shortcut Super+E\n");     /* 1.5 stage 12 */
+        desk_open_files();
     } else if (a != DK_TAKEN) {
         if (desk_menus.menu_open)
             ui_menus_close(&desk_menus);
@@ -1125,6 +1220,7 @@ enum desktop_key_route desktop_key(uint8_t keycode, char ascii, bool pressed, ui
 {
     if (!showing)
         return DESKTOP_KEY_TAKEN;
+    desk_mods = flags & (KEY_SHIFT | KEY_CTRL);     /* 1.5 stage 12: for a click in Files' list */
     if (desk_keys_first(keycode, ascii, pressed, flags))
         return DESKTOP_KEY_TAKEN;
     enum desktop_key_route out = DESKTOP_KEY_TAKEN;
@@ -1155,11 +1251,25 @@ enum desktop_key_route desktop_key(uint8_t keycode, char ascii, bool pressed, ui
     }
     /* 1.3 stage 5: the dialog, the Windows key and an open menu first. */
     if (ui_menus_key(&desk_menus, desk_key_of(keycode), pressed) == UI_MENUS_TO_WM) {
-        enum ui_key_route r = ui_wm_key(&wm, &console_win.w, pressed, keycode == KEY_ESC);
-        if (r == UI_KEY_OPENED)
-            klogf("Desktop: a key opened the Console window (the key is not typed)\n");
-        out = r == UI_KEY_OPENED ? DESKTOP_KEY_OPENED : r == UI_KEY_TO_CONSOLE ? DESKTOP_KEY_CONSOLE
-                                                                               : DESKTOP_KEY_TAKEN;
+        if (wm.focus == &files_win.w || wm.focus == &viewer_win.w) {
+            /* 1.5 stage 12: the focused Files or Text Viewer window takes
+             * the key; Esc that nothing in it took closes it (in Files a
+             * text field or the info panel takes Esc first). */
+            struct key_event e = { keycode, ascii, (uint8_t)(flags | (pressed ? KEY_PRESSED : 0)), 0 };
+            struct ui_window *w = wm.focus;
+            if (!files_app_key(w, &e) && keycode == KEY_ESC && pressed) {
+                bool keep = w->esc_closes;
+                w->esc_closes = true;
+                ui_wm_esc(&wm);
+                w->esc_closes = keep;
+            }
+        } else {
+            enum ui_key_route r = ui_wm_key(&wm, &console_win.w, pressed, keycode == KEY_ESC);
+            if (r == UI_KEY_OPENED)
+                klogf("Desktop: a key opened the Console window (the key is not typed)\n");
+            out = r == UI_KEY_OPENED ? DESKTOP_KEY_OPENED : r == UI_KEY_TO_CONSOLE ? DESKTOP_KEY_CONSOLE
+                                                                                   : DESKTOP_KEY_TAKEN;
+        }
     }
     log_events();
     if (desk_menu_done() == UI_MENU_CONSOLE)
