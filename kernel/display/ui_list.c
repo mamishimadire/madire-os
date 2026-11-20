@@ -420,7 +420,7 @@ void ui_list_draw(const struct ui_canvas *c, const struct ui_list *l, const stru
             if (it->name) {
                 char shown[LIST_TEXT_MAX], cut[LIST_TEXT_MAX];
                 ui_name_shown(it->name, shown, sizeof(shown));
-                ui_text_fit(fr, shown, ui_px(88, s), cut, sizeof(cut));
+                ui_text_fit(fr, shown, cw - 4 * ui_px(2, s), cut, sizeof(cut));
                 ui_text(&body, fr, cell.x + (cw - ui_text_width(fr, cut)) / 2, cell.y + ui_px(64, s), cut, UI_TEXT);
             }
         }

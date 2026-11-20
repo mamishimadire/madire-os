@@ -7,7 +7,7 @@
  * docs/plans/1.5.md, C5; the Design Guide, section 13).
  *
  * The items belong to the caller (Files allocates them when its window
- * opens, S11); each holds its icon, its texts and its selected flag. The
+ * opens, S12); each holds its icon, its texts and its selected flag. The
  * view keeps the first line shown (top), the focused item (cursor), the
  * start of a Shift range (anchor), whether the keyboard moved the focus
  * (ring) and the scroll bar's state. Sorting is the caller's.
@@ -56,8 +56,9 @@
  *     bottom, d(4) in from its sides; the focused cell with the ring on: a
  *     d(2) `accent` frame of radius d(4) on that shape; the icon (48 dp)
  *     in `text`, centred across, d(8) from the cell's top; the name in
- *     `text`, cut with "..." to d(88), centred across, d(64) from the
- *     cell's top;
+ *     `text`, cut with "..." to the cell's width less 4 x d(2) (1.5 stage
+ *     11, the owner's refinement: clear of the focus ring at every scale),
+ *     centred across, d(64) from the cell's top;
  *   - the scroll bar in its column (sb): when the lines are more than the
  *     page, a thumb d(8) wide, centred across sb, a rounded rectangle of
  *     radius d(4) in `text.muted` (`text` on hover and while dragged). Its

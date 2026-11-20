@@ -3597,3 +3597,98 @@ else
     fail "[1.5] contrast: a colour pair the text field, the list, the grid or the scroll bar draws is not in the Design Guide's section 12 table, does not pass, or a selected fill lacks its bar (see the CONTRAST lines)"
 fi
 echo "      [1.5] the widgets (static): $(( $(date +%s) - W10_T0 )) s (report only)"
+
+section "[1.5] The Files and Trash cores: pure objects, and the host tool against tests/files_ref.py (stage 11)"
+# docs/plans/1.5.md, C5, C6 (addition a), C6c rule SL and the S11 row;
+# kernel/files/files_core.h and trash_core.h. The two cores are pure: built
+# with the kernel's flags they may leave no symbol undefined outside the two
+# of them, call no libgcc or libc helper, use no SSE/x87 register, keep no
+# .data or .bss (every buffer is the caller's: the owner's memory rule) and
+# use at most 512 bytes in any one stack frame; both are linked into
+# madire.elf. tests/files_ref.py then sends fixed, generated inputs to the
+# host tool build/filesdump (the same cores) and to build/filesdump-asan
+# (with AddressSanitizer and UndefinedBehaviorSanitizer) and compares every
+# answer with its own model: one FILESREF line per check.
+F11_T0=$(date +%s)
+F11_OBJS="$OUT/kernel/files/files_core.o $OUT/kernel/files/trash_core.o"
+# shellcheck disable=SC2086
+F11_DEF=$(nm --defined-only $F11_OBJS 2>/dev/null | awk 'NF == 3 { print $3 }' | LC_ALL=C sort -u)
+# shellcheck disable=SC2086
+F11_UNDEF=$(nm -u $F11_OBJS 2>/dev/null | awk 'NF == 2 { print $2 }' | LC_ALL=C sort -u | grep -vxFf <(echo "$F11_DEF") | tr '\n' ' ' | sed 's/ *$//')
+F11_HAVE=0
+for o in $F11_OBJS; do [ -s "$o" ] && F11_HAVE=$((F11_HAVE + 1)); done
+echo "      objects: $F11_HAVE of 2; undefined outside them: ${F11_UNDEF:-none}"
+if [ "$F11_HAVE" -eq 2 ] && [ -z "$F11_UNDEF" ]; then
+    pass "[1.5] files_core.o and trash_core.o (kernel flags) leave no symbol undefined outside the two of them"
+else
+    fail "[1.5] files_core.o and trash_core.o: missing ($F11_HAVE of 2) or they need other symbols: $F11_UNDEF"
+fi
+# shellcheck disable=SC2086
+F11_HELP=$(nm -u $F11_OBJS 2>&1 | grep -cE '__(udiv|div|mod|umod|mul|popcount|stack_chk)|^ *U (memset|memcpy|memmove|memcmp|strlen)$')
+# shellcheck disable=SC2086
+F11_SSE=$(objdump -d $F11_OBJS 2>/dev/null | grep -cE '%(x|y|z)mm[0-9]|%st(\(|$)|%mm[0-9]')
+echo "      libgcc/libc helpers: $F11_HELP; SSE/x87 register uses: $F11_SSE"
+if [ "$F11_HAVE" -eq 2 ] && [ "$F11_HELP" -eq 0 ]; then
+    pass "[1.5] files_core.o and trash_core.o call no libgcc or libc helper"
+else
+    fail "[1.5] files_core.o and trash_core.o call $F11_HELP libgcc/libc helper(s) (or are missing)"
+fi
+if [ "$F11_HAVE" -eq 2 ] && [ "$F11_SSE" -eq 0 ]; then
+    pass "[1.5] files_core.o and trash_core.o use no SSE/x87 register"
+else
+    fail "[1.5] files_core.o and trash_core.o use SSE/x87 registers ($F11_SSE) (or are missing)"
+fi
+# shellcheck disable=SC2086
+F11_DATA=$(size -A $F11_OBJS 2>/dev/null | awk '$1 ~ /^\.(data|bss)/ || $1 == "COMMON" { s += $2 } END { print s + 0 }')
+# shellcheck disable=SC2086
+F11_FRAME=$(objdump -d $F11_OBJS 2>/dev/null | grep -oE 'sub +\$0x[0-9a-f]+,%rsp' | sed -E 's/.*\$0x([0-9a-f]+),.*/\1/' |
+            while read -r h; do echo $((16#$h)); done | sort -n | tail -n 1)
+F11_FRAME=${F11_FRAME:-0}
+echo "      .data and .bss: $F11_DATA bytes; largest stack frame: $F11_FRAME bytes"
+if [ "$F11_HAVE" -eq 2 ] && [ "$F11_DATA" -eq 0 ]; then
+    pass "[1.5] files_core.o and trash_core.o keep no .data or .bss (every buffer is the caller's, allocated when Files opens)"
+else
+    fail "[1.5] files_core.o and trash_core.o keep $F11_DATA bytes of .data or .bss (or are missing)"
+fi
+if [ "$F11_HAVE" -eq 2 ] && [ "$F11_FRAME" -le 512 ]; then
+    pass "[1.5] files_core.o and trash_core.o use at most 512 bytes in any one stack frame ($F11_FRAME)"
+else
+    fail "[1.5] files_core.o and trash_core.o: a stack frame of $F11_FRAME bytes (over 512), or the objects are missing"
+fi
+F11_REF=$(python3 "$(dirname "$0")/files_ref.py" --static "$OUT/filesdump" "$OUT/filesdump-asan" 2>&1)
+printf '%s\n' "$F11_REF" | sed 's/^/      /'
+f11_ref() {   # f11_ref <name> <pass text> <fail text>
+    if printf '%s\n' "$F11_REF" | grep -qE "^FILESREF $1 PASS "; then
+        pass "$2"
+    else
+        fail "$3"
+    fi
+}
+f11_ref asan "[1.5] files_ref.py: the host tool built with AddressSanitizer and UndefinedBehaviorSanitizer runs every mode (trash, encode, sort, limit, pathbar, history, walk, clip) with exit 0, no sanitizer report and the plain build's output" \
+    "[1.5] files_ref.py: the sanitizer build failed, reported, or answered differently (see the FILESREF asan line)"
+f11_ref trash "[1.5] files_ref.py: 20,000 generated and mutated .trashinfo files: trash_info_parse's result, path and date equal the model's for every one (C6, addition a)" \
+    "[1.5] files_ref.py: trash_info_parse differs from the model (see the FILESREF trash line)"
+f11_ref encode "[1.5] files_ref.py: 5,000 paths: trash_path_encode and trash_path_decode equal the model, and every file trash_info_build writes reads back to the same path and date (refused exactly where the model refuses)" \
+    "[1.5] files_ref.py: the encoding, the decoding or the file Madire writes differs from the model (see the FILESREF encode line)"
+f11_ref sort "[1.5] files_ref.py: 200 folders of up to 1,000 entries sorted as the model sorts them: folders first, then by name with ASCII case folded, then by the raw bytes" \
+    "[1.5] files_ref.py: files_folder_sort differs from the model (see the FILESREF sort line)"
+f11_ref limit "[1.5] files_ref.py: 30 folders of up to 1,500 entries: the first 1,000 shown entries kept in the folder's order and the next refused (truncated); '.', '..' and hidden names (Show hidden files off) skipped and never counted; bad names refused" \
+    "[1.5] files_ref.py: the folder's limit, its hidden names or its refusals differ from the model (see the FILESREF limit line)"
+f11_ref pathbar "[1.5] files_ref.py: 600 path bars (Home, '/', Trash, This PC; 0 to 400 cells): the parts, their cells, their jump targets and the '...' clip equal the model" \
+    "[1.5] files_ref.py: files_pathbar differs from the model (see the FILESREF pathbar line)"
+f11_ref history "[1.5] files_ref.py: 2,000 history moves (go, Back, Forward, Up; folders removed and back): the entries, the position, the greyed buttons and the entries skipped equal the model (64 entries at most)" \
+    "[1.5] files_ref.py: the history differs from the model (see the FILESREF history line)"
+f11_ref walk "[1.5] files_ref.py: 100 recursive deletes and copies of generated trees (links, chains 63 to 66 folders deep, paths past 4,096 bytes, failing calls): the result, the items done, the links skipped and the tree left equal the model; no link followed; Paste's target checks equal the model" \
+    "[1.5] files_ref.py: the recursive steps or the target checks differ from the model (see the FILESREF walk line)"
+f11_ref clip "[1.5] files_ref.py: the clipboard (64 paths, cut and copy, up to 4,096 bytes each) and the names for Paste and Restore (' 2' to ' 999', ' (restored)', the base cut to fit 255 bytes) equal the model" \
+    "[1.5] files_ref.py: the clipboard or the names differ from the model (see the FILESREF clip line)"
+F11_LINKED=$(nm --defined-only "$OUT/madire.elf" 2>/dev/null | awk '$2 ~ /^[Tt]$/ { print $3 }' |
+             grep -cxE 'files_folder_add|files_walk_step|trash_info_parse|trash_restore_check')
+# shellcheck disable=SC2086
+echo "      text: $(size $F11_OBJS 2>/dev/null | awk 'NR > 1 { printf "%s %s bytes; ", $6, $1 }')in madire.elf: $F11_LINKED of 4 public calls (report only: text)"
+if [ "$F11_LINKED" -eq 4 ]; then
+    pass "[1.5] files_core.c and trash_core.c are linked into madire.elf (files_folder_add, files_walk_step, trash_info_parse, trash_restore_check)"
+else
+    fail "[1.5] files_core.c or trash_core.c is not linked into madire.elf ($F11_LINKED of 4 calls found)"
+fi
+echo "      [1.5] the Files and Trash cores (static): $(( $(date +%s) - F11_T0 )) s (report only)"

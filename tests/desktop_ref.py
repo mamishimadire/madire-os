@@ -1905,7 +1905,7 @@ def list_draw(scr, tok, lv):
             if ic is not None:
                 icon(scr, ic, cell[0] + (cw - ip) // 2, cell[1] + px(8, s), ip, tok["text"])
             if name is not None:
-                cut = fit(f, shown_name(name), px(88, s), LIST_TEXT_MAX)
+                cut = fit(f, shown_name(name), px(96, s) - 4 * px(2, s), LIST_TEXT_MAX)
                 text(scr, f, cell[0] + (cw - len(cut) * fw) // 2, cell[1] + px(64, s), cut, tok["text"])
         scr.clip = keep
     scrollbar_draw(scr, tok, lv.sb_rect(), lv.lines(), lv.page(), lv.top, lv.sb, s)

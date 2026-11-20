@@ -150,7 +150,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c kernel/fs/mount_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core repro isorepro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core filesdump repro isorepro padkernel clean
 
 all: $(KERNEL)
 
@@ -403,6 +403,25 @@ $(BUILD)/unit/test_blk_core_save: kernel/storage/blk_core_save.c
 $(BUILD)/unit/test_ext2_vfs_rw: $(EXT2_SRCS) $(EXT2_WRITE_SRCS) kernel/fs/ext2_vfs.c kernel/fs/ext2_vfs_rw.c
 # 1.5 stage 6: the ACPI tables' suite includes their pure core.
 $(BUILD)/unit/test_acpi_core: kernel/power/acpi_core.c kernel/power/acpi_core.h
+# 1.5 stage 11: the Files and Trash cores' suites include their pure cores
+# (and the fake filesystem, tests/files_fakefs.h). The host tool filesdump
+# runs the same cores for tests/files_ref.py (part static), built plainly and
+# with AddressSanitizer and UndefinedBehaviorSanitizer; test_files_core needs
+# both, so make unit (and the Kali trial) compiles them too.
+FILES_SRCS := kernel/files/files_core.c kernel/files/trash_core.c
+FILES_DEPS := $(FILES_SRCS) kernel/files/files_core.h kernel/files/trash_core.h tests/files_fakefs.h
+FILESDUMP := $(BUILD)/filesdump
+FILESDUMP_ASAN := $(BUILD)/filesdump-asan
+$(FILESDUMP): tests/filesdump.c $(FILES_DEPS)
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/filesdump.c $(FILES_SRCS) -o $@
+$(FILESDUMP_ASAN): tests/filesdump.c $(FILES_DEPS)
+	@mkdir -p $(dir $@)
+	gcc -m64 -std=gnu11 -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
+	    -Wall -Wextra -I. tests/filesdump.c $(FILES_SRCS) -o $@
+filesdump: $(FILESDUMP) $(FILESDUMP_ASAN)
+$(BUILD)/unit/test_files_core: $(FILES_DEPS) | $(FILESDUMP) $(FILESDUMP_ASAN)
+$(BUILD)/unit/test_trash_core: kernel/files/trash_core.c kernel/files/trash_core.h
 
 toolkit: $(TOOLKIT_OBJS)
 
