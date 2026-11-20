@@ -330,6 +330,12 @@ void ui_menus_pointer(struct ui_menus *m, int32_t x, int32_t y, bool down, bool 
     menus_update_m(m);
 }
 
+void ui_menus_close(struct ui_menus *m)
+{
+    menus_close(m, UI_WHY_WINDOWS);
+    menus_update_m(m);
+}
+
 enum ui_menus_route ui_menus_key(struct ui_menus *m, enum ui_menus_key k, bool pressed)
 {
     enum ui_menus_route route = UI_MENUS_TAKEN;

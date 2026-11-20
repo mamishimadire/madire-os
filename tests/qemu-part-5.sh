@@ -1277,3 +1277,180 @@ else
     fail "[1.5] window resize: the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$R9_OUT" | tr '\n' ' ')"
 fi
 echo "      [1.5] window resize (part 5): $(( $(date +%s) - R9_T0 )) s (report only)"
+
+section "[1.5] Snapping and the window shortcuts: snap to the top and to the halves, dragging away, the Super key's shortcuts, the Super key opening the menu on its release, Alt+F4 (test=desktop desktopabout, 1024x768x32; stage 9b)"
+# docs/plans/1.5.md, C4 and item (6) with its S9b rules; ui_window.h and
+# deskkeys_core.h (1.5 stage 9b). Two boots of a test ISO (test=desktop
+# desktopabout desktoplog mouselog: About open at the start, (336, 175)
+# 352x377); tests/qmp_desktop.py follows every packet and key with
+# tests/desktop_ref.py's model (its DeskKeys, Menus and WM) and compares the
+# screens with its rendering (the Console window's grid from vga_shadow);
+# keys are sent one event at a time (kseq: QMP input-send-event; Pause gives
+# E1 1D 45 E1 9D C5 and no release). Boot A: (1) About's title bar dragged
+# to the screen's top edge: maximised, no drag line; (2) dragged away from
+# the top: restored at its size under the pointer, (193, 127), then dragged
+# on to (266, 150); (3) dragged to the left edge: the left half; (4)
+# Super+Right on the left half restores it, Super+Right again: the right
+# half; Super+Left restores it; (5) Super+Up maximises, Super+Down
+# restores, Super+Down again minimises; (6) Super+Pause restores About; (7)
+# the Console window (opened by a key): dragged to the top and to the left
+# edge it only moves (it cannot maximise and is not resizable), Super+Up
+# does nothing, Super+Down minimises it. Boot B: (1) the Super key held: no
+# menu; released alone: the M menu; held while the mouse clicks: no menu;
+# (2) Super+D minimises About and the Console window, again restores both;
+# (3) Super+D, Super+Pause (About restored), Super+D: a fresh set (About
+# alone), Super+D restores it; (4) Super+M minimises both, Super+Shift+M
+# restores both; (5) with Alt held, F4 closes About, F4 hides the Console
+# window, F4 with no window focused does nothing (no line, no window
+# opened); Super+Pause opens About, then F4 while Alt+Tab is switching is
+# ignored and Esc cancels. Every value below was worked out from the rules.
+R9B_T0=$(date +%s)
+R9B_A=$OUT/serial-window-snap.log
+R9B_B=$OUT/serial-window-shortcuts.log
+desktop_iso "winsnap" "test=desktop desktopabout desktoplog mouselog" ""
+R9B_SHV=$(nm "$OUT/madire.elf" | awk '$3 == "vga_shadow" { print $1 }')
+R9B_SHP=$(printf '0x%x' $(( 0x${R9B_SHV:-0} - 0xffffffff80000000 )))
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$R9B_A" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        to:title drag:-100,-400 wshot to:title drag:200,150 wshot to:title drag:-1000,0 wshot \
+        "kseq:meta_l:down,right,meta_l:up" "kseq:meta_l:down,right,meta_l:up" wshot "kseq:meta_l:down,left,meta_l:up" \
+        "kseq:meta_l:down,up,meta_l:up" "kseq:meta_l:down,down,meta_l:up" "kseq:meta_l:down,down,meta_l:up" wshot \
+        "kseq:meta_l:down,pause,meta_l:up" wshot \
+        to:desktop click "type:x" to:title drag:0,-400 to:title drag:-1000,0 \
+        "kseq:meta_l:down,up,meta_l:up" "kseq:meta_l:down,down,meta_l:up" wshot \
+        --about --shadow "$R9B_SHP"
+else : > "$R9B_A"; fi
+R9B_AOUT=$DT_OUT
+DT_OUT=""
+if [ -n "$DT_ISO" ]; then
+    DT_UNTIL="" desktop_boot "$R9B_B" "$DT_ISO" 1024x768 ready rel:-1000,-1000 \
+        "kseq:meta_l:down" wshot "kseq:meta_l:up" wshot "type:{esc}" "kseq:meta_l:down" to:desktop click \
+        "kseq:meta_l:up" wshot \
+        "type:x" "kseq:meta_l:down,d,meta_l:up" wshot "kseq:meta_l:down,d,meta_l:up" wshot \
+        "kseq:meta_l:down,d,meta_l:up" "kseq:meta_l:down,pause,meta_l:up" "kseq:meta_l:down,d,meta_l:up" \
+        "kseq:meta_l:down,d,meta_l:up" \
+        to:task@Console click "kseq:meta_l:down,m,meta_l:up" wshot "kseq:meta_l:down,shift:down,m,shift:up,meta_l:up" wshot \
+        "kseq:meta_l:down,pause,meta_l:up" "kseq:alt:down,f4,f4,f4,alt:up" wshot \
+        "kseq:meta_l:down,pause,meta_l:up" "kseq:alt:down,tab,f4,esc,alt:up" \
+        --about --shadow "$R9B_SHP"
+else : > "$R9B_B"; fi
+R9B_BOUT=$DT_OUT
+grep -E "^desktop: (maximise|unmaximise|snap|unsnap|drag|shortcut|minimise [A-Z]|restore|close|open|switch|menu M (opened|closed))" "$R9B_A" "$R9B_B" |
+    head -n 60 | sed 's/^/      /'
+grep -E "^(WSCREEN|DRAG|EVENTS|MENUS|PACKETS|qmp_desktop)" <<< "$R9B_AOUT" | sed 's/^/      boot A: /'
+grep -E "^(WSCREEN|EVENTS|MENUS|PACKETS|qmp_desktop)" <<< "$R9B_BOUT" | sed 's/^/      boot B: /'
+# r9b_ws <n> <qmp_desktop output>: screen n equals the reference.
+r9b_ws() { grep -qE "^WSCREEN $1 size=1024x768 differ=0 " <<< "$2"; }
+# r9b_order <log> <line>...: the lines, each exactly, in this order (later
+# ones after earlier ones; other lines may come between).
+r9b_order() {
+    local log=$1
+    shift
+    awk -v want="$(printf '%s\n' "$@")" 'BEGIN { n = split(want, w, "\n"); if (w[n] == "") n--; k = 1 }
+         k <= n && $0 == w[k] { k++ } END { exit !(k > n) }' "$log"
+}
+if grep -qxF "DRAG 1 asked (236, -16) got (0, 0) 1024x728 bar 728 left -976" <<< "$R9B_AOUT" &&
+   r9b_order "$R9B_A" "desktop: maximise About to (0, 0) 1024x728" "desktop: unmaximise About to (193, 127) 352x377" &&
+   [ "$(grep -c "^desktop: drag About to " "$R9B_A")" -eq 1 ] && r9b_ws 1 "$R9B_AOUT"; then
+    pass "[1.5] window snapping: About's title bar dragged to the screen's top edge maximises it (0, 0) 1024x728, with no drag line (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window snapping: snap to the top: $(grep -E '^(DRAG 1 |WSCREEN 1 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ') (see ${R9B_A##*/})"
+fi
+if grep -qxF "DRAG 2 asked (200, 150) got (266, 150) 352x377 bar 728 left -304" <<< "$R9B_AOUT" &&
+   r9b_order "$R9B_A" "desktop: unmaximise About to (193, 127) 352x377" "desktop: drag About to (266, 150) 352x377" &&
+   r9b_ws 2 "$R9B_AOUT"; then
+    pass "[1.5] window snapping: dragging the maximised About away (more than 4 dp) restores it at its size under the pointer, (193, 127), and the drag goes on to (266, 150) (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window snapping: dragging away: $(grep -E '^(DRAG 2 |WSCREEN 2 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if grep -qxF "DRAG 3 asked (-100, 150) got (0, 0) 512x728 bar 728 left -464" <<< "$R9B_AOUT" &&
+   grep -qxF "desktop: snap About to the left half (0, 0) 512x728" "$R9B_A" && r9b_ws 3 "$R9B_AOUT"; then
+    pass "[1.5] window snapping: About dragged to the screen's left edge fills the left half (0, 0) 512x728 (logged as predicted); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window snapping: the left half: $(grep -E '^(DRAG 3 |WSCREEN 3 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_A" "desktop: snap About to the left half (0, 0) 512x728" "desktop: shortcut Super+Right" \
+       "desktop: unsnap About to (266, 150) 352x377" "desktop: shortcut Super+Right" \
+       "desktop: snap About to the right half (512, 0) 512x728" "desktop: shortcut Super+Left" \
+       "desktop: unsnap About to (266, 150) 352x377" && r9b_ws 4 "$R9B_AOUT"; then
+    pass "[1.5] window shortcuts: Super+Right on the left half restores About (266, 150), Super+Right again fills the right half (512, 0) 512x728 (the screen pixel for pixel), Super+Left restores it (logged in order)"
+else
+    fail "[1.5] window shortcuts: Super+Left and Super+Right: $(grep -E '^(WSCREEN 4 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_A" "desktop: shortcut Super+Left" "desktop: shortcut Super+Up" "desktop: maximise About to (0, 0) 1024x728" \
+       "desktop: shortcut Super+Down" "desktop: unmaximise About to (266, 150) 352x377" "desktop: shortcut Super+Down" \
+       "desktop: minimise About" && r9b_ws 5 "$R9B_AOUT"; then
+    pass "[1.5] window shortcuts: Super+Up maximises About, Super+Down restores it to (266, 150), Super+Down again minimises it (logged in order; the screen without it pixel for pixel)"
+else
+    fail "[1.5] window shortcuts: Super+Up and Super+Down: $(grep -E '^(WSCREEN 5 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_A" "desktop: minimise About" "desktop: shortcut Super+Pause" "desktop: restore About" &&
+   r9b_ws 6 "$R9B_AOUT"; then
+    pass "[1.5] window shortcuts: Super+Pause (E1 1D 45 E1 9D C5 with the Super key held) restores the minimised About and focuses it (logged in order); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window shortcuts: Super+Pause: $(grep -E '^(WSCREEN 6 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_A" "desktop: open Console at (191, 147) 642x433" "desktop: drag Console to (191, 0) 642x433" \
+       "desktop: drag Console to (-100, 0) 642x433" "desktop: shortcut Super+Up: nothing to do" \
+       "desktop: shortcut Super+Down" "desktop: minimise Console" &&
+   ! grep -qE "^desktop: (maximise|snap) Console " "$R9B_A" && r9b_ws 7 "$R9B_AOUT"; then
+    pass "[1.5] window snapping: the Console window dragged to the top and to the left edge only moves (no maximise or snap line: it cannot maximise and is not resizable); Super+Up does nothing on it, Super+Down minimises it (logged in order); the screen equals the reference pixel for pixel"
+else
+    fail "[1.5] window snapping: the Console window: $(grep -E '^(DRAG [45] |WSCREEN 7 |qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9B_AOUT" &&
+   grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9B_AOUT" &&
+   grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$R9B_AOUT" &&
+   ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|events not logged|MISMATCH|key event was lost" "$R9B_A"; then
+    pass "[1.5] window snapping and shortcuts (boot A): every window line (snap, unsnap, maximise, unmaximise, drag, shortcut, minimise, restore, open, focus, the buttons' states) and every menu line as the model predicts, in order; every packet exact; no panic, FAILED line, drop or lost key"
+else
+    fail "[1.5] window snapping and shortcuts (boot A): the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$R9B_AOUT" | tr '\n' ' ')"
+fi
+if r9b_ws 1 "$R9B_BOUT" && r9b_ws 2 "$R9B_BOUT" && r9b_ws 3 "$R9B_BOUT" &&
+   [ "$(grep -cE "^desktop: menu M opened by the Windows key at \([0-9]+, [0-9]+\) [0-9]+x[0-9]+, About selected$" "$R9B_B")" -eq 1 ] &&
+   grep -qxF "desktop: menu M closed (Esc)" "$R9B_B"; then
+    pass "[1.5] the Super key: held, no menu (the screen pixel for pixel); released alone, the M menu opens with About selected (pixel for pixel); held while the mouse clicks, no menu when it is released (one menu line in the boot; the screen pixel for pixel)"
+else
+    fail "[1.5] the Super key: the menu on its release: $(grep -E '^(WSCREEN [123] |qmp_desktop)' <<< "$R9B_BOUT" | tr '\n' ' ') (see ${R9B_B##*/})"
+fi
+if r9b_order "$R9B_B" "desktop: open Console at (191, 147) 642x433" "desktop: shortcut Super+D: 2 windows minimised" \
+       "desktop: minimise About" "desktop: minimise Console" "desktop: shortcut Super+D: 2 windows restored" \
+       "desktop: restore About" "desktop: restore Console" "desktop: focus Console" &&
+   r9b_ws 4 "$R9B_BOUT" && r9b_ws 5 "$R9B_BOUT"; then
+    pass "[1.5] window shortcuts: Super+D minimises About and the Console window (the empty desktop pixel for pixel) and Super+D again restores both in their order, the Console window focused as before (pixel for pixel; logged in order)"
+else
+    fail "[1.5] window shortcuts: Super+D: $(grep -E '^(WSCREEN [45] |qmp_desktop)' <<< "$R9B_BOUT" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_B" "desktop: shortcut Super+D: 2 windows restored" "desktop: shortcut Super+D: 2 windows minimised" \
+       "desktop: shortcut Super+Pause" "desktop: restore About" "desktop: shortcut Super+D: 1 window minimised" \
+       "desktop: shortcut Super+D: 1 window restored" "desktop: restore About"; then
+    pass "[1.5] window shortcuts: a window restored between two Super+D presses (Super+Pause) starts a fresh set: the next Super+D minimises About alone and the one after restores About alone (logged in order)"
+else
+    fail "[1.5] window shortcuts: Super+D's fresh set: $(grep -E '^desktop: shortcut ' "$R9B_B" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_B" "desktop: shortcut Super+M: 2 windows minimised" "desktop: shortcut Super+Shift+M: 2 windows restored" \
+       "desktop: restore About" "desktop: restore Console" && r9b_ws 6 "$R9B_BOUT" && r9b_ws 7 "$R9B_BOUT"; then
+    pass "[1.5] window shortcuts: Super+M minimises both windows (pixel for pixel) and Super+Shift+M restores both (pixel for pixel; logged in order)"
+else
+    fail "[1.5] window shortcuts: Super+M and Super+Shift+M: $(grep -E '^(WSCREEN [67] |qmp_desktop)' <<< "$R9B_BOUT" | tr '\n' ' ')"
+fi
+if r9b_order "$R9B_B" "desktop: shortcut Alt+F4" "desktop: close About (Alt+F4)" "desktop: shortcut Alt+F4" \
+       "desktop: close Console (Alt+F4)" "desktop: focus none" "desktop: shortcut Super+Pause" \
+       "desktop: switch: About marked (Alt+Tab)" "desktop: switch: cancelled (Esc)" &&
+   [ "$(grep -c "^desktop: shortcut Alt+F4$" "$R9B_B")" -eq 2 ] && [ "$(grep -c "(Alt+F4)$" "$R9B_B")" -eq 2 ] &&
+   [ "$(grep -cxF "Desktop: a key opened the Console window (the key is not typed)" "$R9B_B")" -eq 1 ] &&
+   r9b_ws 8 "$R9B_BOUT"; then
+    pass "[1.5] window shortcuts: with Alt held, F4 closes About, F4 hides the Console window, and F4 with no window focused does nothing (two Alt+F4 lines; no window opened; the empty desktop pixel for pixel); F4 while Alt+Tab is switching is ignored and Esc cancels"
+else
+    fail "[1.5] window shortcuts: Alt+F4: $(grep -E '(Alt\+F4|^desktop: switch)' "$R9B_B" | tr '\n' ' ') $(grep -E '^(WSCREEN 8 |qmp_desktop)' <<< "$R9B_BOUT" | tr '\n' ' ')"
+fi
+if grep -qE "^EVENTS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9B_BOUT" &&
+   grep -qE "^MENUS predicted=([0-9]+) logged=\1 same=yes$" <<< "$R9B_BOUT" &&
+   grep -qE "^PACKETS sent=([0-9]+) exact=\1$" <<< "$R9B_BOUT" &&
+   ! grep -qE "PANIC|FAILED|events dropped|bytes dropped|events not logged|MISMATCH|key event was lost" "$R9B_B"; then
+    pass "[1.5] window shortcuts (boot B): every window line (shortcut, minimise, restore, raise, focus, close, open, switch, the buttons' states) and every menu line as the model predicts, in order; every packet exact; no panic, FAILED line, drop or lost key"
+else
+    fail "[1.5] window shortcuts (boot B): the lines: $(grep -E '^(EVENTS|MENUS|PACKETS|qmp_desktop)' <<< "$R9B_BOUT" | tr '\n' ' ')"
+fi
+echo "      [1.5] window snapping and shortcuts (part 5): $(( $(date +%s) - R9B_T0 )) s (report only)"

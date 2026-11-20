@@ -10,6 +10,7 @@
 #include "kernel/arch/x86/reset.h"
 #include "kernel/display/compositor.h"
 #include "kernel/display/desktop_core.h"
+#include "kernel/display/deskkeys_core.h"
 #include "kernel/display/display.h"
 #include "kernel/display/fbcon.h"
 #include "kernel/display/fbcon_core.h"
@@ -107,6 +108,9 @@ static bool desk_console_wanted;
  * the idle loop (desktop_take_wheel); the boot's first notch logged once. */
 static int32_t desk_wheel_kept;
 static bool desk_wheel_seen;
+
+/* 1.5 stage 9b: the Super key and the window shortcuts (deskkeys_core.h). */
+static struct deskkeys desk_keys;
 
 /* 1.3 stage 7b (report only, desktoplog): during a drag, the damage before
  * and after ui_damage_merge_overlaps (rectangles and pixels), and for each
@@ -491,6 +495,28 @@ static void desk_log_menus(void)
     ui_menus_clear_events(&desk_menus);
 }
 
+/* 1.5 stage 9b: a shortcut's line (ui_wm_shortcut's event). */
+static void desk_log_shortcut(const struct ui_wm_event *e)
+{
+    static const char *const names[] = {
+        [UI_SC_UP] = "Super+Up", [UI_SC_DOWN] = "Super+Down", [UI_SC_LEFT] = "Super+Left",
+        [UI_SC_RIGHT] = "Super+Right", [UI_SC_SHOW_DESKTOP] = "Super+D", [UI_SC_MINIMISE_ALL] = "Super+M",
+        [UI_SC_RESTORE_ALL] = "Super+Shift+M", [UI_SC_ABOUT] = "Super+Pause", [UI_SC_CLOSE] = "Alt+F4",
+    };
+    const char *n = (uint32_t)e->sc < sizeof(names) / sizeof(names[0]) && names[e->sc] ? names[e->sc] : "?";
+    const char *wins = e->count == 1 ? "window" : "windows";
+    if (e->sc == UI_SC_SHOW_DESKTOP)
+        kserialf("desktop: shortcut %s: %u %s %s\n", n, e->count, wins, e->restored ? "restored" : "minimised");
+    else if (e->sc == UI_SC_MINIMISE_ALL)
+        kserialf("desktop: shortcut %s: %u %s minimised\n", n, e->count, wins);
+    else if (e->sc == UI_SC_RESTORE_ALL)
+        kserialf("desktop: shortcut %s: %u %s restored\n", n, e->count, wins);
+    else if (e->sc == UI_SC_ABOUT || e->count)
+        kserialf("desktop: shortcut %s\n", n);
+    else
+        kserialf("desktop: shortcut %s: nothing to do\n", n);
+}
+
 static void log_events(void)
 {
     desk_log_menus();
@@ -562,6 +588,20 @@ static void log_events(void)
             break;
         case UI_EV_RESIZE:                  /* 1.5 stage 9 */
             kserialf("desktop: resize %s to (%d, %d) %dx%d\n", name, e->r.x, e->r.y, e->r.w, e->r.h);
+            break;
+        /* 1.5 stage 9b */
+        case UI_EV_SNAP:
+            kserialf("desktop: snap %s to the %s half (%d, %d) %dx%d\n", name,
+                     e->count == UI_SNAP_LEFT ? "left" : "right", e->r.x, e->r.y, e->r.w, e->r.h);
+            break;
+        case UI_EV_UNSNAP:
+            kserialf("desktop: unsnap %s to (%d, %d) %dx%d\n", name, e->r.x, e->r.y, e->r.w, e->r.h);
+            break;
+        case UI_EV_CLOSE_KEY:
+            kserialf("desktop: close %s (Alt+F4)\n", name);
+            break;
+        case UI_EV_SHORTCUT:
+            desk_log_shortcut(e);
             break;
         }
     }
@@ -910,6 +950,7 @@ static bool desk_begin(const struct fb_info *fi, const struct fbcon_layout *cl)
      * before the clock. */
     ui_wm_set_taskbar(&wm, lay.m_cell.x + lay.m_cell.w + ui_px(4, scale), lay.clock_box.x - ui_px(16, scale));
     ui_menus_init(&desk_menus, &wm, &about_win.w, &console_win.w, lay.m_cell, &fonts);
+    deskkeys_init(&desk_keys, keyboard_dropped());     /* 1.5 stage 9b */
     size_t menu_need = ui_menu_scratch(scale, fi->width, fi->height);
     if (menu_need > UI_ABOUT_SCRATCH)
         klogf("Desktop: the M menu's wordmark needs %u coverage entries (%u kept): not drawn whole\n",
@@ -956,6 +997,8 @@ void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool ri
 {
     if (!showing)
         return;
+    if (left_down || right_down || middle_down)
+        deskkeys_pointer(&desk_keys);   /* 1.5 stage 9b: with Super held, the menu stays shut */
     ui_wm_set_now(&wm, timer_ticks());  /* 1.5 stage 8: the double click's clock */
     ui_menus_pointer(&desk_menus, x, y, left_down, left_up, right_down);   /* 1.3 stage 5 */
     /* 1.5 stage 8: a middle press on a taskbar button closes its window
@@ -1030,9 +1073,59 @@ static enum ui_menus_key desk_key_of(uint8_t keycode)
     }
 }
 
-enum desktop_key_route desktop_key(uint8_t keycode, bool pressed, uint8_t flags)
+/* 1.5 stage 9b: the window manager's shortcut for each action (deskkeys_core.h). */
+static enum ui_wm_shortcut desk_shortcut_of(enum deskkeys_action a)
+{
+    switch (a) {
+    case DK_UP:
+        return UI_SC_UP;
+    case DK_DOWN:
+        return UI_SC_DOWN;
+    case DK_LEFT:
+        return UI_SC_LEFT;
+    case DK_RIGHT:
+        return UI_SC_RIGHT;
+    case DK_SHOW_DESKTOP:
+        return UI_SC_SHOW_DESKTOP;
+    case DK_MINIMISE_ALL:
+        return UI_SC_MINIMISE_ALL;
+    case DK_RESTORE_ALL:
+        return UI_SC_RESTORE_ALL;
+    case DK_CLOSE:
+        return UI_SC_CLOSE;
+    default:
+        return UI_SC_ABOUT;
+    }
+}
+
+/* 1.5 stage 9b: the Super key and the window shortcuts, before Alt+Tab and
+ * the menus (desktop.h). True if the key was taken here. */
+static bool desk_keys_first(uint8_t keycode, char ascii, bool pressed, uint8_t flags)
+{
+    struct deskkeys_ctx kc = { desk_menus.menu_open, desk_menus.dlg_open, wm.switching, wm.focus != 0 };
+    enum deskkeys_action a = deskkeys_key(&desk_keys, keycode, ascii, pressed, flags, &kc, keyboard_dropped());
+    if (deskkeys_take_reset(&desk_keys))
+        klogf("Desktop: a key event was lost: the Super key state cleared\n");
+    if (a == DK_PASS)
+        return false;
+    if (a == DK_MENU) {
+        ui_menus_key(&desk_menus, UI_MKEY_WINDOWS, true);   /* as the Super key's press did before */
+    } else if (a != DK_TAKEN) {
+        if (desk_menus.menu_open)
+            ui_menus_close(&desk_menus);
+        ui_wm_shortcut(&wm, desk_shortcut_of(a));
+        if (a == DK_ABOUT && ui_wm_open(&wm, &about_win.w))
+            desk_about_values();
+    }
+    log_events();
+    return true;
+}
+
+enum desktop_key_route desktop_key(uint8_t keycode, char ascii, bool pressed, uint8_t flags)
 {
     if (!showing)
+        return DESKTOP_KEY_TAKEN;
+    if (desk_keys_first(keycode, ascii, pressed, flags))
         return DESKTOP_KEY_TAKEN;
     enum desktop_key_route out = DESKTOP_KEY_TAKEN;
     /* 1.5 stage 8: Alt+Tab and Shift+Alt+Tab, before the menus and the

@@ -139,6 +139,13 @@ void ui_wm_init(struct ui_wm *m, int32_t width, int32_t height, int32_t bar_y, u
     m->press_y = 0;
     m->resize = 0;                      /* 1.5 stage 9 */
     m->resize_edges = 0;
+    m->dragged_away = false;            /* 1.5 stage 9b */
+    m->shown_n = 0;
+    m->shown_focus = 0;
+    m->shown_valid = false;
+    m->changes = 0;
+    m->shown_changes = 0;
+    m->minall_n = 0;
 }
 
 void ui_wm_clear_events(struct ui_wm *m)
@@ -146,18 +153,24 @@ void ui_wm_clear_events(struct ui_wm *m)
     m->n_ev = 0;
 }
 
-/* An event with a state (1.5 stage 8: the button states' events). */
-static void event_state(struct ui_wm *m, enum ui_wm_event_kind kind, struct ui_window *w, enum ui_button_state st)
+/* An event with a state (1.5 stage 8: the button states' events); 1.5
+ * stage 9b: the event kept (or none: the list full). */
+static struct ui_wm_event *event_state(struct ui_wm *m, enum ui_wm_event_kind kind, struct ui_window *w,
+                                       enum ui_button_state st)
 {
     if (m->n_ev >= UI_WM_EVENTS) {
         m->lost_ev++;
-        return;
+        return 0;
     }
     struct ui_wm_event *e = &m->ev[m->n_ev++];
     e->kind = kind;
     e->w = w;
     e->r = w ? w->r : (struct rect){ 0, 0, 0, 0 };
     e->state = st;
+    e->sc = UI_SC_UP;
+    e->count = 0;
+    e->restored = false;
+    return e;
 }
 
 static void event(struct ui_wm *m, enum ui_wm_event_kind kind, struct ui_window *w)
@@ -398,7 +411,9 @@ bool ui_wm_open(struct ui_wm *m, struct ui_window *w)
         w->task_st = UI_BUTTON_NORMAL;
         w->minimised = false;
         w->maximised = false;
+        w->snapped = UI_SNAP_NONE;          /* 1.5 stage 9b */
         w->dirty = true;
+        m->changes++;
         m->order[m->n] = w;
         m->mru[m->n] = w;
         m->z[m->n++] = w;
@@ -426,6 +441,7 @@ static void close_window(struct ui_wm *m, struct ui_window *w, enum ui_wm_event_
     win_list_remove(m->order, m->n, w);     /* 1.5 stage 8 */
     win_list_remove(m->mru, m->n, w);
     m->n--;
+    m->changes++;                           /* 1.5 stage 9b */
     w->open = false;
     w->close = UI_BUTTON_NORMAL;
     if (m->pressed == w)
@@ -461,6 +477,7 @@ void ui_wm_minimise(struct ui_wm *m, struct ui_window *w)
     if (!w->open || w->minimised)
         return;
     w->minimised = true;
+    m->changes++;                           /* 1.5 stage 9b */
     if (m->drag == w)
         m->drag = 0;
     if (m->resize == w)                     /* 1.5 stage 9 */
@@ -490,6 +507,7 @@ void ui_wm_activate(struct ui_wm *m, struct ui_window *w)
     if (w->minimised) {
         w->minimised = false;
         w->dirty = true;
+        m->changes++;                       /* 1.5 stage 9b */
         damage(m, w->r);
         task_damage(m);
         event(m, UI_EV_RESTORE, w);
@@ -508,11 +526,14 @@ void ui_wm_toggle_maximise(struct ui_wm *m, struct ui_window *w)
         w->maximised = false;
         w->r = w->normal_r;
     } else {
-        w->normal_r = w->r;
+        if (!w->snapped)                    /* 1.5 stage 9b: a snapped window keeps its kept rectangle */
+            w->normal_r = w->r;
+        w->snapped = UI_SNAP_NONE;
         w->maximised = true;
         w->r = (struct rect){ 0, 0, m->width, m->bar_y };
     }
     w->dirty = true;
+    m->changes++;                           /* 1.5 stage 9b */
     damage(m, w->r);
     event(m, w->maximised ? UI_EV_MAXIMISE : UI_EV_UNMAXIMISE, w);
 }
@@ -561,7 +582,112 @@ static void press(struct ui_wm *m)
         m->grab_x = m->x;
         m->grab_y = m->y;
         m->grab_r = w->r;
+        m->dragged_away = false;            /* 1.5 stage 9b */
     }
+}
+
+/* ---- 1.5 stage 9b: snapping ---- */
+
+int32_t ui_window_snap_zone(uint32_t s)
+{
+    return ui_px(4, s);
+}
+
+struct rect ui_wm_half_rect(const struct ui_wm *m, uint32_t side)
+{
+    int32_t half = m->width / 2;
+    if (side == UI_SNAP_LEFT)
+        return (struct rect){ 0, 0, half, m->bar_y };
+    return (struct rect){ half, 0, m->width - half, m->bar_y };
+}
+
+/* w may fill half `side`: resizable, and its minimum fits the half. */
+static bool win_half_fits(const struct ui_wm *m, const struct ui_window *w, uint32_t side)
+{
+    struct rect h = ui_wm_half_rect(m, side);
+    return w->resizable && h.w >= w->min_w && h.h >= w->min_h;
+}
+
+/* w takes rectangle r as snapped half `side` (UI_SNAP_NONE: as itself again). */
+static void win_place(struct ui_wm *m, struct ui_window *w, struct rect r, uint32_t side)
+{
+    damage(m, w->r);
+    w->r = r;
+    w->snapped = side;
+    w->dirty = true;
+    damage(m, w->r);
+    m->changes++;
+}
+
+bool ui_wm_snap(struct ui_wm *m, struct ui_window *w, uint32_t side)
+{
+    if (!w->open || w->minimised)
+        return false;
+    if (side == UI_SNAP_NONE || (w->snapped && w->snapped != side)) {
+        if (!w->snapped)
+            return false;
+        win_place(m, w, w->normal_r, UI_SNAP_NONE);
+        event(m, UI_EV_UNSNAP, w);
+        return true;
+    }
+    if (w->snapped == side || !win_half_fits(m, w, side))
+        return false;
+    if (!w->maximised)
+        w->normal_r = w->r;
+    w->maximised = false;
+    win_place(m, w, ui_wm_half_rect(m, side), side);
+    struct ui_wm_event *e = event_state(m, UI_EV_SNAP, w, UI_BUTTON_NORMAL);
+    if (e)
+        e->count = side;
+    return true;
+}
+
+/* A drag ended with the pointer in a snap zone above the taskbar: the top
+ * maximises a window that can maximise, the left or right edge snaps a
+ * window whose minimum fits that half; the rectangle the drag began with is
+ * kept. True if it snapped. */
+static bool win_snap_release(struct ui_wm *m, struct ui_window *w)
+{
+    int32_t z = ui_window_snap_zone(m->scale);
+    if (m->y >= m->bar_y)
+        return false;
+    if (m->y < z) {
+        if (!(w->buttons & UI_WIN_MAXIMISE))
+            return false;
+        w->normal_r = m->grab_r;
+        w->maximised = true;
+        win_place(m, w, (struct rect){ 0, 0, m->width, m->bar_y }, UI_SNAP_NONE);
+        event(m, UI_EV_MAXIMISE, w);
+        return true;
+    }
+    uint32_t side = m->x < z ? UI_SNAP_LEFT : (int64_t)m->x >= (int64_t)m->width - z ? UI_SNAP_RIGHT : UI_SNAP_NONE;
+    if (side == UI_SNAP_NONE || !win_half_fits(m, w, side))
+        return false;
+    w->normal_r = m->grab_r;
+    win_place(m, w, ui_wm_half_rect(m, side), side);
+    struct ui_wm_event *e = event_state(m, UI_EV_SNAP, w, UI_BUTTON_NORMAL);
+    if (e)
+        e->count = side;
+    return true;
+}
+
+/* A title-bar drag of a maximised or snapped window moved more than 4 dp:
+ * restored at its kept size under the pointer, and the drag goes on. */
+static void win_drag_away(struct ui_wm *m, struct ui_window *w, int32_t x, int32_t y)
+{
+    struct rect r = w->r, n = w->normal_r;
+    int64_t ox = (int64_t)m->grab_x - r.x, oy = (int64_t)m->grab_y - r.y;
+    int64_t nx = (int64_t)x - (r.w > 0 ? ox * n.w / r.w : 0), ny = (int64_t)y - oy;
+    struct rect to = ui_wm_clamp(m, (struct rect){ win_clamp(nx, INT32_MIN, INT32_MAX),
+                                                   win_clamp(ny, INT32_MIN, INT32_MAX), n.w, n.h });
+    bool was_max = w->maximised;
+    w->maximised = false;
+    win_place(m, w, to, UI_SNAP_NONE);
+    event(m, was_max ? UI_EV_UNMAXIMISE : UI_EV_UNSNAP, w);
+    m->grab_x = x;
+    m->grab_y = y;
+    m->grab_r = to;
+    m->dragged_away = true;
 }
 
 /* 1.5 stage 9: a resize ends (the release, or the menus taking the pointer):
@@ -583,8 +709,12 @@ static void release(struct ui_wm *m)
     if (m->drag) {
         struct ui_window *w = m->drag;
         m->drag = 0;
-        if (w->r.x != m->grab_r.x || w->r.y != m->grab_r.y) {
-            event(m, UI_EV_DRAG, w);
+        /* 1.5 stage 9b: a drag that moved (or dragged the window away)
+         * may end in a snap zone: snapped, no drag event. */
+        bool moved = w->r.x != m->grab_r.x || w->r.y != m->grab_r.y || m->dragged_away;
+        if (moved) {
+            if (!win_snap_release(m, w))
+                event(m, UI_EV_DRAG, w);
         } else {                            /* 1.5 stage 8: a click on the title bar */
             m->click_w = w;
             m->click_at = m->now;
@@ -623,7 +753,14 @@ void ui_wm_pointer(struct ui_wm *m, int32_t x, int32_t y, bool down, bool up)
 {
     m->x = x;
     m->y = y;
-    if (m->drag && !m->drag->maximised) {   /* 1.5 stage 8: a maximised window stays */
+    /* 1.5 stage 9b: a maximised or snapped window stays until the pointer
+     * is more than 4 dp from the press, then it is dragged away. */
+    if (m->drag && (m->drag->maximised || m->drag->snapped)) {
+        int64_t z = ui_window_snap_zone(m->scale), dx = (int64_t)x - m->grab_x, dy = (int64_t)y - m->grab_y;
+        if (dx > z || dx < -z || dy > z || dy < -z)
+            win_drag_away(m, m->drag, x, y);
+    }
+    if (m->drag && !m->drag->maximised && !m->drag->snapped) {     /* 1.5 stage 8: a maximised window stays */
         struct ui_window *w = m->drag;
         struct rect r = m->grab_r;
         r.x = win_clamp((int64_t)r.x + x - m->grab_x, INT32_MIN, INT32_MAX);
@@ -851,8 +988,8 @@ int32_t ui_window_band(uint32_t s)
 
 uint32_t ui_window_edges(const struct ui_window *w, struct rect r, uint32_t s, int32_t x, int32_t y)
 {
-    if (!w->resizable || w->maximised || w->minimised || !ui_rect_contains(r, x, y))
-        return 0;
+    if (!w->resizable || w->maximised || w->minimised || w->snapped || !ui_rect_contains(r, x, y))
+        return 0;                           /* 1.5 stage 9b: no band while snapped */
     int64_t b = ui_window_band(s);
     uint32_t e = 0;
     if ((int64_t)x < (int64_t)r.x + b)
@@ -904,4 +1041,115 @@ struct rect ui_wm_resize_rect(const struct ui_wm *m, const struct ui_window *w, 
     else if (edges & UI_EDGE_BOTTOM)
         bottom = win_clamp64(bottom + dy, top + minh, win_min64(top + maxh, win_max64(m->bar_y, bottom)));
     return (struct rect){ (int32_t)left, (int32_t)top, (int32_t)(right - left), (int32_t)(bottom - top) };
+}
+
+/* ---- 1.5 stage 9b: the window shortcuts ---- */
+
+/* The shown windows with a minimise button, bottom to top, into set;
+ * each minimised. Returns how many. */
+static uint32_t win_minimise_shown(struct ui_wm *m, struct ui_window **set)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < m->n; i++)
+        if (!m->z[i]->minimised && (m->z[i]->buttons & UI_WIN_MINIMISE))
+            set[n++] = m->z[i];
+    for (uint32_t k = 0; k < n; k++)
+        ui_wm_minimise(m, set[k]);
+    return n;
+}
+
+/* The windows of set still open and minimised restored (raised and
+ * focused), in their order. Returns how many. */
+static uint32_t win_restore_set(struct ui_wm *m, struct ui_window **set, uint32_t n)
+{
+    uint32_t done = 0;
+    for (uint32_t k = 0; k < n; k++)
+        if (set[k]->open && set[k]->minimised) {
+            ui_wm_activate(m, set[k]);
+            done++;
+        }
+    return done;
+}
+
+/* Super+D: the kept set restored if nothing else changed since it was
+ * kept, else every shown window minimised and kept. */
+static uint32_t win_show_desktop(struct ui_wm *m, bool *restored)
+{
+    if (m->shown_valid && m->shown_changes == m->changes) {
+        uint32_t n = win_restore_set(m, m->shown_set, m->shown_n);
+        struct ui_window *f = m->shown_focus;
+        if (f && f->open && !f->minimised)
+            ui_wm_activate(m, f);
+        else if (!f)
+            set_focus(m, 0);
+        m->shown_valid = false;
+        *restored = true;
+        return n;
+    }
+    struct ui_window *f = m->focus;
+    uint32_t n = win_minimise_shown(m, m->shown_set);
+    m->shown_n = n;
+    m->shown_focus = f;
+    m->shown_valid = n > 0;
+    m->shown_changes = m->changes;
+    *restored = false;
+    return n;
+}
+
+uint32_t ui_wm_shortcut(struct ui_wm *m, enum ui_wm_shortcut sc)
+{
+    struct ui_window *f = m->focus;
+    struct ui_wm_event *e = event_state(m, UI_EV_SHORTCUT, f, UI_BUTTON_NORMAL);
+    uint32_t n = 0;
+    bool restored = false;
+    switch (sc) {
+    case UI_SC_UP:
+        if (f && (f->buttons & UI_WIN_MAXIMISE) && !f->maximised) {
+            ui_wm_toggle_maximise(m, f);
+            n = 1;
+        }
+        break;
+    case UI_SC_DOWN:
+        if (f && f->maximised) {
+            ui_wm_toggle_maximise(m, f);
+            n = 1;
+        } else if (f && f->snapped) {
+            n = ui_wm_snap(m, f, UI_SNAP_NONE) ? 1 : 0;
+        } else if (f && (f->buttons & UI_WIN_MINIMISE)) {
+            ui_wm_minimise(m, f);
+            n = 1;
+        }
+        break;
+    case UI_SC_LEFT:
+    case UI_SC_RIGHT:
+        if (f)
+            n = ui_wm_snap(m, f, sc == UI_SC_LEFT ? UI_SNAP_LEFT : UI_SNAP_RIGHT) ? 1 : 0;
+        break;
+    case UI_SC_SHOW_DESKTOP:
+        n = win_show_desktop(m, &restored);
+        break;
+    case UI_SC_MINIMISE_ALL:
+        n = win_minimise_shown(m, m->minall_set);
+        m->minall_n = n;
+        break;
+    case UI_SC_RESTORE_ALL:
+        n = win_restore_set(m, m->minall_set, m->minall_n);
+        m->minall_n = 0;
+        break;
+    case UI_SC_CLOSE:
+        if (f) {
+            close_window(m, f, UI_EV_CLOSE_KEY);
+            n = 1;
+        }
+        break;
+    case UI_SC_ABOUT:
+        break;
+    }
+    if (e) {
+        e->sc = sc;
+        e->count = n;
+        e->restored = restored;
+    }
+    update_close_states(m);
+    return n;
 }

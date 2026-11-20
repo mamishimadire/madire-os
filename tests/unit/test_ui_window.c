@@ -17,7 +17,12 @@
  * resizable, maximised or minimised), the resize (capture, 1:1, the
  * minimum, the event, maximise and restore, cancel), extreme pointer
  * values for every edge and corner, and a resized window on a larger
- * surface equal to the window painted directly. Fonts are made
+ * surface equal to the window painted directly. 1.5 stage 9b: snapping (the
+ * 4 dp zones above the taskbar, the halves, the kept rectangle, no snap for
+ * a click, without the maximise button, when not resizable or when the
+ * minimum does not fit), dragging away from a maximised or snapped window
+ * (with extreme pointer values), and the shortcuts (Super+Up, Down, Left,
+ * Right, Pause, Alt+F4, Super+D with its reset, Super+M and Shift+M). Fonts are made
  * here (a fixed bit pattern), so the suite needs no generated font. The
  * toolkit's modules are included directly; surface_core.c,
  * wallpaper_core.c and coverage_core.c are linked (the Makefile). */
@@ -426,12 +431,14 @@ static void test_min_max_restore(void)
     ui_wm_pointer(&m, 630, 190, false, true);
     CHECK(a.maximised && same_rect(a.r, 0, 0, 1024, 728) && same_rect(a.normal_r, 336, 175, 352, 377));
     CHECK(count(&m, UI_EV_MAXIMISE) == 1);
-    /* A maximised window is not dragged; the press and release make a click. */
+    /* A maximised window stays while the pointer moves at most 4 dp from the
+     * press (1.5 stage 9b: further, it is dragged away and restored); the
+     * press and release make a click. */
     ui_wm_pointer(&m, 500, 10, true, false);
-    ui_wm_pointer(&m, 600, 100, false, false);
+    ui_wm_pointer(&m, 504, 14, false, false);
     CHECK(same_rect(a.r, 0, 0, 1024, 728));
     ui_wm_clear_events(&m);
-    ui_wm_pointer(&m, 600, 100, false, true);
+    ui_wm_pointer(&m, 504, 14, false, true);
     CHECK(count(&m, UI_EV_DRAG) == 0 && m.click_w == &a);
     /* Restore (the maximise button's place at the right end). */
     CHECK(ui_wm_hit(&m, 970, 10, &at) == UI_HIT_MAXIMISE && at == &a);
@@ -864,6 +871,247 @@ static void test_resize_surface_equals_direct(void)
     }
 }
 
+/* ---- 1.5 stage 9b: snapping and the window shortcuts ---- */
+
+static struct ui_wm_event *find_event(struct ui_wm *m, enum ui_wm_event_kind k)
+{
+    for (uint32_t i = 0; i < m->n_ev; i++)
+        if (m->ev[i].kind == k)
+            return &m->ev[i];
+    return 0;
+}
+
+/* A title-bar drag ending in a snap zone; dragging away; the zones' limits. */
+static void test_snap_drag(void)
+{
+    CHECK_EQ(ui_window_snap_zone(4), 4);
+    CHECK_EQ(ui_window_snap_zone(5), 5);
+    CHECK_EQ(ui_window_snap_zone(6), 6);
+    CHECK_EQ(ui_window_snap_zone(8), 8);
+    struct ui_wm m = wm_1024();
+    struct ui_window a = resizable_win("A"), *at;
+    ui_wm_open(&m, &a);                             /* (336, 175) */
+    CHECK(same_rect(ui_wm_half_rect(&m, UI_SNAP_LEFT), 0, 0, 512, 728));
+    CHECK(same_rect(ui_wm_half_rect(&m, UI_SNAP_RIGHT), 512, 0, 512, 728));
+    /* To the top edge (the pointer 2 px down): maximised; the start kept; no drag event. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 400, 190, true, false);
+    ui_wm_pointer(&m, 400, 2, false, false);
+    CHECK(same_rect(a.r, 336, 0, 352, 377));        /* during the drag: clamped as before */
+    ui_wm_pointer(&m, 400, 2, false, true);
+    CHECK(a.maximised && same_rect(a.r, 0, 0, 1024, 728) && same_rect(a.normal_r, 336, 175, 352, 377));
+    CHECK(count(&m, UI_EV_MAXIMISE) == 1 && count(&m, UI_EV_DRAG) == 0);
+    /* Dragged away: 4 dp is not enough; 10 px restores it under the pointer
+     * (x 500 - 500 * 352 / 1024 = 329, y 20 - 10), and the drag goes on. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 500, 10, true, false);
+    ui_wm_pointer(&m, 504, 6, false, false);
+    CHECK(a.maximised && count(&m, UI_EV_UNMAXIMISE) == 0);
+    ui_wm_pointer(&m, 500, 20, false, false);
+    CHECK(!a.maximised && same_rect(a.r, 329, 10, 352, 377) && count(&m, UI_EV_UNMAXIMISE) == 1);
+    ui_wm_pointer(&m, 560, 120, false, false);
+    CHECK(same_rect(a.r, 389, 110, 352, 377));
+    ui_wm_pointer(&m, 560, 120, false, true);
+    CHECK(count(&m, UI_EV_DRAG) == 1 && same_rect(find_event(&m, UI_EV_DRAG)->r, 389, 110, 352, 377));
+    /* To the left edge: the left half; the start kept; no band while snapped. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 420, 125, true, false);
+    ui_wm_pointer(&m, 2, 300, false, false);
+    ui_wm_pointer(&m, 2, 300, false, true);
+    CHECK(a.snapped == UI_SNAP_LEFT && !a.maximised && same_rect(a.r, 0, 0, 512, 728));
+    CHECK(same_rect(a.normal_r, 389, 110, 352, 377) && count(&m, UI_EV_SNAP) == 1 && count(&m, UI_EV_DRAG) == 0);
+    CHECK_EQ(find_event(&m, UI_EV_SNAP)->count, UI_SNAP_LEFT);
+    CHECK(ui_window_edges(&a, a.r, 4, 0, 300) == 0 && ui_wm_hit(&m, 0, 300, &at) == UI_HIT_BODY);
+    /* Dragged away from the half (256 - 256 * 352 / 512 = 80): unsnapped, a drag event on the release. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 256, 10, true, false);
+    ui_wm_pointer(&m, 256, 30, false, false);
+    ui_wm_pointer(&m, 256, 30, false, true);
+    CHECK(!a.snapped && same_rect(a.r, 80, 20, 352, 377));
+    CHECK(count(&m, UI_EV_UNSNAP) == 1 && count(&m, UI_EV_DRAG) == 1);
+    /* To the right edge (x 1021 >= 1024 - 4): the right half. */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 100, 30, true, false);
+    ui_wm_pointer(&m, 1021, 300, false, false);
+    ui_wm_pointer(&m, 1021, 300, false, true);
+    CHECK(a.snapped == UI_SNAP_RIGHT && same_rect(a.r, 512, 0, 512, 728) && same_rect(a.normal_r, 80, 20, 352, 377));
+    CHECK_EQ(find_event(&m, UI_EV_SNAP)->count, UI_SNAP_RIGHT);
+    /* At the right edge but over the taskbar: no snap, a drag (clamped). */
+    CHECK(ui_wm_snap(&m, &a, UI_SNAP_NONE) && same_rect(a.r, 80, 20, 352, 377));
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 100, 30, true, false);
+    ui_wm_pointer(&m, 1023, 767, false, false);
+    ui_wm_pointer(&m, 1023, 767, false, true);
+    CHECK(!a.snapped && !a.maximised && same_rect(a.r, 976, 351, 352, 377) && count(&m, UI_EV_DRAG) == 1);
+    /* No maximise button: the top zone only drags; not resizable: no half. */
+    struct ui_window b = win("B", 352, 377, false);
+    b.buttons = UI_WIN_MINIMISE;
+    ui_wm_open(&m, &b);                             /* (336, 175) */
+    ui_wm_clear_events(&m);
+    ui_wm_pointer(&m, 400, 190, true, false);
+    ui_wm_pointer(&m, 400, 2, false, false);
+    ui_wm_pointer(&m, 400, 2, false, true);
+    CHECK(!b.maximised && b.r.y == 0 && count(&m, UI_EV_DRAG) == 1 && count(&m, UI_EV_MAXIMISE) == 0);
+    ui_wm_pointer(&m, 400, 10, true, false);
+    ui_wm_pointer(&m, 1, 300, false, false);
+    ui_wm_pointer(&m, 1, 300, false, true);
+    CHECK(!b.snapped && same_rect(b.r, -63, 290, 352, 377));
+    /* A minimum wider than the half (600 > 512): no snap. */
+    struct ui_window c = resizable_win("C");
+    c.min_w = 600;
+    ui_wm_open(&m, &c);                             /* (336, 175): free again */
+    CHECK(same_rect(c.r, 336, 175, 352, 377));
+    ui_wm_pointer(&m, 400, 190, true, false);
+    ui_wm_pointer(&m, 1, 300, false, false);
+    ui_wm_pointer(&m, 1, 300, false, true);
+    CHECK(!c.snapped && count(&m, UI_EV_SNAP) == 0);
+    /* A click (no move) in the top zone does not snap. */
+    struct ui_window d = win("D", 352, 377, false);
+    d.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    ui_wm_open(&m, &d);                             /* C was dragged to (-63, 285): (336, 175) free */
+    CHECK(same_rect(c.r, -63, 285, 352, 377) && same_rect(d.r, 336, 175, 352, 377));
+    ui_wm_pointer(&m, 400, 190, true, false);
+    ui_wm_pointer(&m, 400, 11, false, false);
+    ui_wm_pointer(&m, 400, 11, false, true);        /* y 11: outside the zone */
+    CHECK(!d.maximised && same_rect(d.r, 336, 0, 352, 377));
+    ui_wm_set_now(&m, 1000);
+    click(&m, 400, 2);
+    CHECK(!d.maximised && m.click_w == &d);
+    /* Extreme pointer values while dragging away: the clamp holds. */
+    ui_wm_toggle_maximise(&m, &d);
+    ui_wm_set_now(&m, 2000);
+    ui_wm_pointer(&m, 500, 10, true, false);
+    ui_wm_pointer(&m, INT32_MAX, INT32_MAX, false, false);
+    CHECK(!d.maximised && same_rect(d.r, 976, 351, 352, 377));
+    ui_wm_pointer(&m, INT32_MAX, INT32_MAX, false, true);       /* below the taskbar: no snap */
+    CHECK(!d.maximised && !d.snapped && same_rect(d.r, 976, 351, 352, 377));
+    ui_wm_toggle_maximise(&m, &d);
+    ui_wm_set_now(&m, 3000);
+    ui_wm_pointer(&m, 500, 10, true, false);
+    ui_wm_pointer(&m, INT32_MIN, INT32_MIN, false, false);
+    CHECK(!d.maximised && same_rect(d.r, 48 - 352, 0, 352, 377));
+    ui_wm_pointer(&m, INT32_MIN, INT32_MIN, false, true);       /* above the top: the top zone */
+    CHECK(d.maximised && same_rect(d.normal_r, 48 - 352, 0, 352, 377));
+}
+
+/* Super+Up, Down, Left, Right, Pause and Alt+F4 on the focused window. */
+static void test_shortcut_window(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window c = win("C", 642, 433, false), a = resizable_win("A");
+    c.buttons = UI_WIN_MINIMISE;
+    ui_wm_open(&m, &c);                             /* (191, 147) */
+    ui_wm_open(&m, &a);                             /* (336, 175), focused */
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_UP), 1);
+    CHECK(a.maximised && m.ev[0].kind == UI_EV_SHORTCUT && m.ev[0].sc == UI_SC_UP && m.ev[0].count == 1);
+    CHECK(m.ev[1].kind == UI_EV_MAXIMISE);
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_UP), 0);      /* already maximised */
+    CHECK(m.ev[0].kind == UI_EV_SHORTCUT && m.ev[0].count == 0);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_DOWN), 1);    /* restored */
+    CHECK(!a.maximised && same_rect(a.r, 336, 175, 352, 377));
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_DOWN), 1);    /* minimised; the focus to C */
+    CHECK(a.minimised && m.focus == &c);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_UP), 0);      /* C: no maximise */
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_LEFT), 0);    /* C: not resizable */
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_RIGHT), 0);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_DOWN), 1);
+    CHECK(c.minimised && m.focus == 0);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_DOWN), 0);    /* no window focused */
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_CLOSE), 0);
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_ABOUT), 0);
+    CHECK(m.n_ev == 1 && m.ev[0].sc == UI_SC_ABOUT);
+    /* Left and right halves; the other half restores; Up from a half keeps
+     * the rectangle kept before the snap; Down restores it. */
+    ui_wm_activate(&m, &a);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_LEFT), 1);
+    CHECK(a.snapped == UI_SNAP_LEFT && same_rect(a.r, 0, 0, 512, 728) && same_rect(a.normal_r, 336, 175, 352, 377));
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_LEFT), 0);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_RIGHT), 1);
+    CHECK(!a.snapped && same_rect(a.r, 336, 175, 352, 377));
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_RIGHT), 1);
+    CHECK(a.snapped == UI_SNAP_RIGHT && same_rect(a.r, 512, 0, 512, 728));
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_UP), 1);
+    CHECK(a.maximised && !a.snapped && same_rect(a.normal_r, 336, 175, 352, 377));
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_DOWN), 1);
+    CHECK(!a.maximised && same_rect(a.r, 336, 175, 352, 377));
+    /* A half from maximised keeps the rectangle too; Down unsnaps. */
+    ui_wm_shortcut(&m, UI_SC_UP);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_LEFT), 1);
+    CHECK(!a.maximised && a.snapped == UI_SNAP_LEFT && same_rect(a.normal_r, 336, 175, 352, 377));
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_DOWN), 1);
+    CHECK(!a.snapped && same_rect(a.r, 336, 175, 352, 377));
+    /* Alt+F4 closes the focused window. */
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_CLOSE), 1);
+    CHECK(!a.open && count(&m, UI_EV_CLOSE_KEY) == 1 && m.focus == 0 && count(&m, UI_EV_UNFOCUS) == 1);
+    CHECK(m.ev[0].kind == UI_EV_SHORTCUT && m.ev[0].sc == UI_SC_CLOSE && m.ev[0].count == 1);
+}
+
+/* Super+D (and its reset), Super+M and Super+Shift+M. */
+static void test_shortcut_desktop(void)
+{
+    struct ui_wm m = wm_1024();
+    struct ui_window c = win("C", 100, 100, true), a = resizable_win("A"), b = win("B", 100, 100, false);
+    c.buttons = UI_WIN_MINIMISE;
+    b.buttons = UI_WIN_MINIMISE;
+    ui_wm_open(&m, &c);
+    ui_wm_open(&m, &a);                             /* z: C, A; A focused */
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 2);
+    CHECK(a.minimised && c.minimised && m.focus == 0 && m.shown_valid);
+    CHECK(m.ev[0].kind == UI_EV_SHORTCUT && m.ev[0].count == 2 && !m.ev[0].restored);
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 2);   /* back as they were */
+    CHECK(!a.minimised && !c.minimised && m.z[0] == &c && m.z[1] == &a && m.focus == &a);
+    CHECK(m.ev[0].restored && !m.shown_valid);
+    /* Something else restores a window in between: the next Super+D starts again. */
+    ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP);
+    ui_wm_activate(&m, &c);
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 1);   /* C, the one shown, minimised */
+    CHECK(!m.ev[0].restored && c.minimised && a.minimised);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 1);   /* C back; A stays minimised */
+    CHECK(!c.minimised && a.minimised && m.focus == &c);
+    /* A window opened in between: the same. */
+    ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP);
+    ui_wm_open(&m, &b);
+    ui_wm_clear_events(&m);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 1);
+    CHECK(b.minimised && !m.ev[0].restored);
+    /* No window focused when it was kept: none focused after. */
+    ui_wm_activate(&m, &a);
+    ui_wm_activate(&m, &c);
+    ui_wm_activate(&m, &b);
+    click(&m, 5, 5);
+    CHECK(m.focus == 0);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 3);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 3);
+    CHECK(!a.minimised && !b.minimised && !c.minimised && m.focus == 0);
+    /* Nothing shown: nothing kept. */
+    ui_wm_minimise(&m, &a);
+    ui_wm_minimise(&m, &b);
+    ui_wm_minimise(&m, &c);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_SHOW_DESKTOP), 0);
+    CHECK(!m.shown_valid);
+    /* Super+M and Super+Shift+M. */
+    ui_wm_activate(&m, &a);
+    ui_wm_activate(&m, &c);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_MINIMISE_ALL), 2);
+    CHECK(a.minimised && c.minimised && m.minall_n == 2);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_RESTORE_ALL), 2);
+    CHECK(!a.minimised && !c.minimised && b.minimised && m.focus == &c && m.minall_n == 0);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_RESTORE_ALL), 0);
+    /* A kept window closed in between is skipped. */
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_MINIMISE_ALL), 2);
+    ui_wm_activate(&m, &c);
+    CHECK(ui_wm_esc(&m) && !c.open);
+    CHECK_EQ(ui_wm_shortcut(&m, UI_SC_RESTORE_ALL), 1);
+    CHECK(!a.minimised && m.focus == &a);
+}
+
 int main(void)
 {
     printf("test_ui_window\n");
@@ -883,5 +1131,8 @@ int main(void)
     RUN(test_resize_drag);
     RUN(test_resize_extremes);
     RUN(test_resize_surface_equals_direct);
+    RUN(test_snap_drag);
+    RUN(test_shortcut_window);
+    RUN(test_shortcut_desktop);
     return unit_report("test_ui_window");
 }

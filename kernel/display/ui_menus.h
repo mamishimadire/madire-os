@@ -150,4 +150,8 @@ enum ui_menu_action ui_menus_take_done(struct ui_menus *m);
 /* Empties the event list. */
 void ui_menus_clear_events(struct ui_menus *m);
 
+/* 1.5 stage 9b: a Super key shortcut closes an open menu first (the
+ * reason UI_WHY_WINDOWS); nothing if no menu is open. */
+void ui_menus_close(struct ui_menus *m);
+
 #endif

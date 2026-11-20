@@ -65,7 +65,8 @@
  *     the focus passes to the top window that is not minimised (or none);
  *   - maximise: the window fills the area above the taskbar, (0, 0, W,
  *     bar); restore (unmaximise) puts back the rectangle it had. A
- *     maximised window is not dragged. Its client is painted in its own
+ *     maximised window is not dragged (1.5 stage 9b: unless dragged away,
+ *     below). Its client is painted in its own
  *     size (w x h), centred across the window, from its top;
  *   - a double click on the title bar of a window that can maximise
  *     toggles maximise: a press there within UI_WM_DCLICK_TICKS of the
@@ -118,6 +119,38 @@
  *     opens again at its own size (w x h; sizes are not saved). Its client
  *     is painted in its own size, centred across the window, from its top
  *     (as a maximised window's).
+ *
+ * 1.5 stage 9b (docs/plans/1.5.md, C4 and item (6)): snapping and the
+ * window shortcuts.
+ *   - snapping: when a title-bar drag ends with the pointer above the
+ *     taskbar and within ui_window_snap_zone(s) = 4 dp of the screen's top
+ *     edge, a window that can maximise is maximised; within 4 dp of the
+ *     left or right edge, a resizable window whose minimum fits fills that
+ *     half, (0, 0, W / 2, bar) or (W / 2, 0, W - W / 2, bar) (UI_EV_SNAP).
+ *     The rectangle it had when the drag began is kept (normal_r) for the
+ *     restore, and the drag logs no UI_EV_DRAG then. A snapped window has
+ *     no grab band;
+ *   - dragging away: a title-bar press on a maximised or snapped window,
+ *     then a move of more than 4 dp from the press, restores it
+ *     (UI_EV_UNMAXIMISE or UI_EV_UNSNAP) at its kept size under the
+ *     pointer (the pointer's place across the title bar in proportion, its
+ *     offset down from the top kept; clamped), and the drag goes on from
+ *     there (UI_EV_DRAG on the release);
+ *   - ui_wm_shortcut (deskkeys_core.h maps the keys): each logs one
+ *     UI_EV_SHORTCUT first, then acts on the focused window: Super+Up
+ *     maximises (if it can; a snapped window keeps its kept rectangle);
+ *     Super+Down restores a maximised or snapped window, else minimises
+ *     (if it has the button); Super+Left and Super+Right snap a resizable
+ *     window to that half (on the other half: restored); Alt+F4 closes it
+ *     (UI_EV_CLOSE_KEY); Super+D minimises every shown window and keeps
+ *     them, and the next Super+D restores them in their order with the
+ *     focus as it was, unless a window was opened, closed, restored,
+ *     minimised, maximised, restored from maximised, snapped or unsnapped
+ *     in between by anything else (the set is dropped and the press starts
+ *     again); Super+M minimises every shown window and keeps them;
+ *     Super+Shift+M restores the kept ones still open and minimised, in
+ *     their order, and forgets them; Super+Pause only logs (the desktop
+ *     opens About). The count of windows changed goes in the event.
  */
 
 #include <stdbool.h>
@@ -141,6 +174,17 @@
 #define UI_EDGE_TOP    0x4u
 #define UI_EDGE_BOTTOM 0x8u
 
+/* 1.5 stage 9b: a window's snapped half (ui_window.snapped). */
+#define UI_SNAP_NONE  0u
+#define UI_SNAP_LEFT  1u
+#define UI_SNAP_RIGHT 2u
+
+/* 1.5 stage 9b: the shortcuts ui_wm_shortcut carries out (deskkeys_core.h). */
+enum ui_wm_shortcut {
+    UI_SC_UP, UI_SC_DOWN, UI_SC_LEFT, UI_SC_RIGHT, UI_SC_SHOW_DESKTOP, UI_SC_MINIMISE_ALL, UI_SC_RESTORE_ALL,
+    UI_SC_ABOUT, UI_SC_CLOSE
+};
+
 struct ui_window {
     /* Set by the window's owner. */
     const char *name;           /* in the log: "About" */
@@ -163,6 +207,7 @@ struct ui_window {
     struct rect normal_r;       /* the rectangle before maximise */
     enum ui_button_state min_st, max_st;    /* the minimise and maximise buttons' states */
     enum ui_button_state task_st;           /* its taskbar button's state */
+    uint32_t snapped;           /* 1.5 stage 9b: UI_SNAP_* (normal_r kept as for maximise) */
 };
 
 enum ui_hit {
@@ -177,7 +222,8 @@ enum ui_wm_event_kind {
     /* 1.5 stage 8 */
     UI_EV_MINIMISE, UI_EV_RESTORE, UI_EV_MAXIMISE, UI_EV_UNMAXIMISE, UI_EV_CLOSE_MIDDLE, UI_EV_MIN_STATE,
     UI_EV_MAX_STATE, UI_EV_TASK_STATE, UI_EV_SWITCH_SELECT, UI_EV_SWITCH_CHOSEN, UI_EV_SWITCH_CANCEL,
-    UI_EV_RESIZE                /* 1.5 stage 9 */
+    UI_EV_RESIZE,               /* 1.5 stage 9 */
+    UI_EV_SNAP, UI_EV_UNSNAP, UI_EV_SHORTCUT, UI_EV_CLOSE_KEY     /* 1.5 stage 9b */
 };
 
 struct ui_wm_event {
@@ -185,6 +231,9 @@ struct ui_wm_event {
     struct ui_window *w;        /* none for UI_EV_UNFOCUS */
     struct rect r;              /* OPEN, DRAG: the window's rectangle */
     enum ui_button_state state; /* CLOSE_STATE */
+    enum ui_wm_shortcut sc;     /* 1.5 stage 9b: SHORTCUT: which one */
+    uint32_t count;             /* SHORTCUT: the windows it changed; SNAP: the half */
+    bool restored;              /* SHORTCUT Super+D: it restored (else minimised) */
 };
 
 struct ui_wm {
@@ -221,6 +270,17 @@ struct ui_wm {
      * edges that move; the grab in grab_x, grab_y, grab_r. */
     struct ui_window *resize;
     uint32_t resize_edges;
+    /* 1.5 stage 9b: the drag of a maximised or snapped window was dragged
+     * away (restored); Super+D's and Super+M's kept windows; the changes
+     * since Super+D kept its set. */
+    bool dragged_away;
+    struct ui_window *shown_set[UI_WINDOWS_MAX];
+    uint32_t shown_n;
+    struct ui_window *shown_focus;
+    bool shown_valid;
+    uint32_t changes, shown_changes;
+    struct ui_window *minall_set[UI_WINDOWS_MAX];
+    uint32_t minall_n;
 };
 
 /* Pixels of the frame: the title bar (32 dp), the edge (1 dp), the corner
@@ -343,5 +403,20 @@ uint32_t ui_window_edges(const struct ui_window *w, struct rect r, uint32_t s, i
  * (dx, dy) since the press, moving `edges` (the rules above). */
 struct rect ui_wm_resize_rect(const struct ui_wm *m, const struct ui_window *w, struct rect g, uint32_t edges,
                               int64_t dx, int64_t dy);
+
+/* ---- 1.5 stage 9b ---- */
+
+/* The snap zone and the drag-away distance in pixels: 4 dp. */
+int32_t ui_window_snap_zone(uint32_t s);
+
+/* The rectangle of half `side` (UI_SNAP_LEFT or UI_SNAP_RIGHT). */
+struct rect ui_wm_half_rect(const struct ui_wm *m, uint32_t side);
+
+/* Snaps w to half `side` (a resizable window whose minimum fits; on the
+ * other half, or with side UI_SNAP_NONE: restored). False if nothing changed. */
+bool ui_wm_snap(struct ui_wm *m, struct ui_window *w, uint32_t side);
+
+/* Carries out shortcut sc (the rules above); returns the windows it changed. */
+uint32_t ui_wm_shortcut(struct ui_wm *m, enum ui_wm_shortcut sc);
 
 #endif

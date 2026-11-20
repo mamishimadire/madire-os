@@ -184,7 +184,13 @@ enum desktop_key_route { DESKTOP_KEY_TAKEN, DESKTOP_KEY_OPENED, DESKTOP_KEY_CONS
  * with Alt held (no Ctrl) is Alt+Tab (with Shift: back): the taskbar's
  * ring moves (ui_window.h); while a window is marked, the Tab's release is
  * taken, Alt's release chooses it and Esc cancels. None of these keys
- * reaches the console; plain Tab does, as before. */
-enum desktop_key_route desktop_key(uint8_t keycode, bool pressed, uint8_t flags);
+ * reaches the console; plain Tab does, as before. 1.5 stage 9b: `ascii`,
+ * the event's character; before everything else the Super key and the
+ * window shortcuts (deskkeys_core.h): the Super key opens the M menu on
+ * its release when no other key or mouse button came while it was held;
+ * Super+Up, Down, Left, Right, D, M, Shift+M, Pause and Alt+F4 act on the
+ * windows (ui_window.h's ui_wm_shortcut; Super+Pause opens About), an open
+ * menu closed first; none of these keys reaches the console. */
+enum desktop_key_route desktop_key(uint8_t keycode, char ascii, bool pressed, uint8_t flags);
 
 #endif

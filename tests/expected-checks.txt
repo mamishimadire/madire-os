@@ -402,5 +402,17 @@
 # suite). Changed, not added (the owner's approval, before the commit): the
 # [1.3] window-surface check of desktop_about_case in parts 2 and 3 (About's
 # surface is the screen's width by the area above the taskbar).
-1.5 91
-unit-suites 110
+# Stage 9b: 14 more (C4 snapping, item (6) shortcuts and its S9b rules), all
+# in part 5, two boots: boot A 8 (snap to the top; dragging away; the left
+# half; Super+Right and Super+Left; Super+Up and Super+Down; Super+Pause;
+# the Console window neither snaps nor maximises; every line and packet as
+# the model predicts); boot B 6 (the Super key opens the menu on its
+# release, alone, not after a click; Super+D and again; Super+D's fresh set;
+# Super+M and Super+Shift+M; Alt+F4 with and without a focused window and
+# during Alt+Tab; every line and packet as the model predicts). 1 unit
+# suite (deskkeys); new cases in ui_window. Changed, not added (the owner's
+# approval, before the commit): ui_window's test_min_max_restore (a
+# maximised window stays while the pointer moves at most 4 dp; further, it
+# is dragged away).
+1.5 105
+unit-suites 111

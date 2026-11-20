@@ -1036,6 +1036,10 @@ def console_window(scr, tok, s, r, active, close, grid, extra=None):
 WINDOW_BUTTONS = {"About": {"min", "max"}, "Console": {"min"}}     # 1.5 stage 8 (desktop.c)
 WINDOW_RESIZABLE = {"About"}     # 1.5 stage 9 (desktop.c): its own size the smallest
 EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, EDGE_BOTTOM = 1, 2, 4, 8           # ui_window.h's UI_EDGE_*
+SNAP_LEFT, SNAP_RIGHT = 1, 2                                        # 1.5 stage 9b: UI_SNAP_*
+SHORTCUT_NAMES = {"up": "Super+Up", "down": "Super+Down", "left": "Super+Left", "right": "Super+Right",
+                  "show_desktop": "Super+D", "minimise_all": "Super+M", "restore_all": "Super+Shift+M",
+                  "about": "Super+Pause", "close": "Alt+F4"}
 WINDOW_LOOK = {"About": ("about", ABOUT_TITLE), "Console": ("console", CONSOLE_TITLE)}
 
 
@@ -1058,6 +1062,9 @@ class WM:
         self.order, self.mru = [], []           # 1.5 stage 8: the taskbar's order; most recently focused first
         self.x, self.y = w // 2, h // 2
         self.resize, self.resize_edges = None, 0    # 1.5 stage 9: the window being resized, its moving edges
+        # 1.5 stage 9b: a drag dragged away; the changes counted for Super+D;
+        # its kept set ({"set", "focus", "changes"} or None) and Super+M's.
+        self.dragged_away, self.changes, self.shown, self.minall = False, 0, None, []
         self.left, self.drag, self.pressed = False, None, None
         self.pressed_part, self.task_pressed, self.click_w = "close", None, None
         self.switching, self.switch_i, self.target = False, 0, None
@@ -1113,7 +1120,8 @@ class WM:
         the rectangle) holds (x, y); 0 when not resizable, maximised or
         minimised, or outside."""
         r = win["r"]
-        if not win.get("resizable") or win["maximised"] or win["minimised"] or not self.inside(r, x, y):
+        if (not win.get("resizable") or win["maximised"] or win["minimised"] or win.get("snapped")
+                or not self.inside(r, x, y)):           # 1.5 stage 9b: no band while snapped
             return 0
         b, e = px(8, self.s), 0
         if x < r[0] + b:
@@ -1206,8 +1214,10 @@ class WM:
         win = {"name": name, "w": w, "h": h, "esc": esc, "close": "normal", "min": "normal", "max": "normal",
                "task": "normal", "buttons": set(buttons or ()), "minimised": False, "maximised": False,
                "normal": None, "look": look or WINDOW_LOOK.get(name),
-               "resizable": name in WINDOW_RESIZABLE, "min_size": (w, h)}   # 1.5 stage 9
+               "resizable": name in WINDOW_RESIZABLE, "min_size": (w, h),   # 1.5 stage 9
+               "snapped": 0}                                                # 1.5 stage 9b
         win["r"] = self.place(w, h)
+        self.changes += 1
         self.z.append(win)
         self.order.append(win)
         self.mru.append(win)
@@ -1223,6 +1233,7 @@ class WM:
         self.z.remove(win)
         self.order.remove(win)
         self.mru.remove(win)
+        self.changes += 1                               # 1.5 stage 9b
         if self.pressed is win:
             self.pressed = None
         if self.drag is win:
@@ -1248,6 +1259,7 @@ class WM:
         if win["minimised"]:
             return
         win["minimised"] = True
+        self.changes += 1                               # 1.5 stage 9b
         if self.drag is win:
             self.drag = None
         if self.resize is win:                          # 1.5 stage 9
@@ -1269,6 +1281,7 @@ class WM:
         """ui_wm_activate: restored (if minimised), raised, focused."""
         if win["minimised"]:
             win["minimised"] = False
+            self.changes += 1                           # 1.5 stage 9b
             self.ev("restore %s" % win["name"])
         self.raise_(win)
         self.set_focus(win)
@@ -1280,16 +1293,169 @@ class WM:
         if win["maximised"]:
             win["maximised"], win["r"] = False, win["normal"]
         else:
-            win["normal"], win["maximised"], win["r"] = win["r"], True, (0, 0, self.w, self.bar)
+            if not win.get("snapped"):                  # 1.5 stage 9b: a snapped window keeps its kept rectangle
+                win["normal"] = win["r"]
+            win["snapped"], win["maximised"], win["r"] = 0, True, (0, 0, self.w, self.bar)
+        self.changes += 1
         self.ev("%s %s to (%d, %d) %dx%d" % (("maximise" if win["maximised"] else "unmaximise", win["name"])
                                               + tuple(win["r"])))
+
+    # ---- 1.5 stage 9b: snapping and the window shortcuts (ui_window.h) ----
+
+    def half_rect(self, side):
+        half = self.w // 2
+        return (0, 0, half, self.bar) if side == SNAP_LEFT else (half, 0, self.w - half, self.bar)
+
+    def half_fits(self, win, side):
+        h = self.half_rect(side)
+        return bool(win.get("resizable")) and h[2] >= win["min_size"][0] and h[3] >= win["min_size"][1]
+
+    def place_win(self, win, r, side):
+        win["r"], win["snapped"] = tuple(r), side
+        self.changes += 1
+
+    def snap_line(self, win):
+        self.ev("snap %s to the %s half (%d, %d) %dx%d" % (
+            (win["name"], "left" if win["snapped"] == SNAP_LEFT else "right") + tuple(win["r"])))
+
+    def snap(self, win, side):
+        """ui_wm_snap: True if it changed."""
+        if win not in self.z or win["minimised"]:
+            return False
+        if side == 0 or (win["snapped"] and win["snapped"] != side):
+            if not win["snapped"]:
+                return False
+            self.place_win(win, win["normal"], 0)
+            self.ev("unsnap %s to (%d, %d) %dx%d" % ((win["name"],) + tuple(win["r"])))
+            return True
+        if win["snapped"] == side or not self.half_fits(win, side):
+            return False
+        if not win["maximised"]:
+            win["normal"] = win["r"]
+        win["maximised"] = False
+        self.place_win(win, self.half_rect(side), side)
+        self.snap_line(win)
+        return True
+
+    def snap_release(self, win, x, y):
+        """win_snap_release: a moved drag ended at (x, y)."""
+        z = px(4, self.s)
+        if y >= self.bar:
+            return False
+        if y < z:
+            if "max" not in win["buttons"]:
+                return False
+            win["normal"], win["maximised"] = self.grab[2], True
+            self.place_win(win, (0, 0, self.w, self.bar), 0)
+            self.ev("maximise %s to (%d, %d) %dx%d" % ((win["name"],) + tuple(win["r"])))
+            return True
+        side = SNAP_LEFT if x < z else SNAP_RIGHT if x >= self.w - z else 0
+        if not side or not self.half_fits(win, side):
+            return False
+        win["normal"] = self.grab[2]
+        self.place_win(win, self.half_rect(side), side)
+        self.snap_line(win)
+        return True
+
+    def drag_away(self, win, x, y):
+        """win_drag_away: restored at its kept size under the pointer."""
+        r, n = win["r"], win["normal"]
+        gx, gy, _ = self.grab
+        ox, oy = gx - r[0], gy - r[1]
+        nx = x - (ox * n[2] // r[2] if r[2] > 0 else 0)
+        to = self.clamp((nx, y - oy, n[2], n[3]))
+        was_max = win["maximised"]
+        win["maximised"] = False
+        self.place_win(win, to, 0)
+        self.ev("%s %s to (%d, %d) %dx%d" % (("unmaximise" if was_max else "unsnap", win["name"]) + tuple(to)))
+        self.grab, self.dragged_away = (x, y, tuple(to)), True
+
+    def minimise_shown(self):
+        out = [w for w in self.z if not w["minimised"] and "min" in w["buttons"]]
+        for w in out:
+            self.minimise(w)
+        return out
+
+    def restore_set(self, wins):
+        done = 0
+        for w in wins:
+            if w in self.z and w["minimised"]:
+                self.activate(w)
+                done += 1
+        return done
+
+    def shortcut(self, sc):
+        """ui_wm_shortcut (sc: up, down, left, right, show_desktop,
+        minimise_all, restore_all, about, close): its line first, then the
+        windows' lines; returns the windows it changed."""
+        f = self.focus
+        at = len(self.events)
+        self.events.append(None)
+        n, restored = 0, False
+        if sc == "up":
+            if f and "max" in f["buttons"] and not f["maximised"]:
+                self.toggle_max(f)
+                n = 1
+        elif sc == "down":
+            if f and f["maximised"]:
+                self.toggle_max(f)
+                n = 1
+            elif f and f["snapped"]:
+                n = 1 if self.snap(f, 0) else 0
+            elif f and "min" in f["buttons"]:
+                self.minimise(f)
+                n = 1
+        elif sc in ("left", "right"):
+            if f:
+                n = 1 if self.snap(f, SNAP_LEFT if sc == "left" else SNAP_RIGHT) else 0
+        elif sc == "show_desktop":
+            if self.shown and self.shown["changes"] == self.changes:
+                n, kept = self.restore_set(self.shown["set"]), self.shown["focus"]
+                if kept is not None and kept in self.z and not kept["minimised"]:
+                    self.activate(kept)
+                elif kept is None:
+                    self.set_focus(None)
+                self.shown, restored = None, True
+            else:
+                kept = f
+                wins = self.minimise_shown()
+                n = len(wins)
+                self.shown = {"set": wins, "focus": kept, "changes": self.changes} if wins else None
+        elif sc == "minimise_all":
+            self.minall = self.minimise_shown()
+            n = len(self.minall)
+        elif sc == "restore_all":
+            n = self.restore_set(self.minall)
+            self.minall = []
+        elif sc == "close":
+            if f:
+                self.close(f, "Alt+F4")
+                n = 1
+        name, wins = SHORTCUT_NAMES[sc], "window" if n == 1 else "windows"
+        if sc == "show_desktop":
+            line = "shortcut %s: %d %s %s" % (name, n, wins, "restored" if restored else "minimised")
+        elif sc == "minimise_all":
+            line = "shortcut %s: %d %s minimised" % (name, n, wins)
+        elif sc == "restore_all":
+            line = "shortcut %s: %d %s restored" % (name, n, wins)
+        elif sc == "about" or n:
+            line = "shortcut %s" % name
+        else:
+            line = "shortcut %s: nothing to do" % name
+        self.events[at] = "desktop: " + line
+        self.states()
+        return n
 
     def pointer(self, x, y, down=False, up=False, double=False):
         """One packet; `double`: a press the test sends right after a
         click on the same title bar (the kernel's double click, within
         UI_WM_DCLICK_TICKS: tests/qmp_desktop.py keeps other clicks apart)."""
         self.x, self.y = x, y
-        if self.drag and not self.drag["maximised"]:
+        if self.drag and (self.drag["maximised"] or self.drag["snapped"]):     # 1.5 stage 9b: dragged away
+            z, (gx, gy, _) = px(4, self.s), self.grab
+            if abs(x - gx) > z or abs(y - gy) > z:
+                self.drag_away(self.drag, x, y)
+        if self.drag and not self.drag["maximised"] and not self.drag["snapped"]:
             win, (gx, gy, gr) = self.drag, self.grab
             win["r"] = self.clamp((gr[0] + x - gx, gr[1] + y - gy, gr[2], gr[3]))
         if self.resize:                                 # 1.5 stage 9
@@ -1316,13 +1482,16 @@ class WM:
                     self.toggle_max(win)
                 elif part == "title":
                     self.drag, self.grab = win, (x, y, win["r"])
+                    self.dragged_away = False           # 1.5 stage 9b
         if up and self.left:
             self.left = False
             self.resize_end()                           # 1.5 stage 9
             if self.drag:
                 win, self.drag = self.drag, None
-                if win["r"][:2] != self.grab[2][:2]:
-                    self.ev("drag %s to (%d, %d) %dx%d" % ((win["name"],) + win["r"]))
+                # 1.5 stage 9b: a drag that moved may end in a snap zone (no drag line then).
+                if tuple(win["r"][:2]) != tuple(self.grab[2][:2]) or self.dragged_away:
+                    if not self.snap_release(win, x, y):
+                        self.ev("drag %s to (%d, %d) %dx%d" % ((win["name"],) + tuple(win["r"])))
                 else:
                     self.click_w = win
             if self.pressed:
@@ -1720,13 +1889,74 @@ KEYS = {"up": "up", "down": "down", "ret": "enter", "kp_enter": "enter", "tab": 
         "meta_l": "windows", "meta_r": "windows"}
 
 
+class DeskKeys:
+    """1.5 stage 9b: kernel/display/deskkeys_core.h written again: the Super
+    key (opens the M menu on its release, alone) and the window shortcuts.
+    key() takes a qcode and the modifiers held (qmp_desktop.py's mods);
+    QEMU sends Pause only when it is pressed, so its release is no event."""
+
+    SUPER = {"meta_l": 1, "meta_r": 2}
+    WITH_SUPER = {"up": "up", "down": "down", "left": "left", "right": "right", "pause": "about",
+                  "d": "show_desktop"}
+
+    def __init__(self):
+        self.held, self.other = 0, False
+
+    def pointer(self):
+        if self.held:
+            self.other = True
+
+    def lost(self):
+        """A key event dropped (the kernel's keyboard_dropped() moved)."""
+        self.held, self.other = 0, False
+
+    def key(self, qcode, pressed, mods, menu_open, dlg_open, switching, focused):
+        """"pass", "taken", "none" (no kernel event: Pause's release),
+        "menu" or a shortcut name for WM.shortcut."""
+        if qcode == "pause" and not pressed:
+            return "none"
+        bit = self.SUPER.get(qcode)
+        if bit:
+            if pressed:
+                if self.held & bit:
+                    return "taken"
+                if not self.held:
+                    self.other = False
+                self.held |= bit
+                return "taken"
+            if not self.held & bit:
+                return "taken"
+            self.held &= ~bit
+            if self.held:
+                return "taken"
+            alone, self.other = not self.other, False
+            return "menu" if alone and not dlg_open else "taken"
+        if self.held:
+            if not pressed:
+                return "pass"
+            self.other = True
+            if dlg_open:
+                return "taken"
+            if qcode == "m":
+                return "restore_all" if mods & {"shift", "shift_r"} else "minimise_all"
+            return self.WITH_SUPER.get(qcode, "taken")
+        if qcode == "f4" and pressed and mods & {"alt", "alt_r"} and not mods & {"ctrl", "ctrl_r"}:
+            if switching or menu_open or dlg_open or not focused:
+                return "taken"
+            return "close"
+        return "pass"
+
+
 class Menus:
     """ui_menus.h's rules written again: the pointer and the keys on the
     menus and the dialog, before the window manager (WM); each change kept
-    as the kernel's desktoplog line would say it, in the kernel's order."""
+    as the kernel's desktoplog line would say it, in the kernel's order.
+    1.5 stage 9b: it holds the Super key's state (dk, DeskKeys), which
+    every mouse button press reaches first (desktop_pointer)."""
 
     def __init__(self, wm):
         self.wm = wm
+        self.dk = DeskKeys()
         bar = px(40, wm.s)
         self.m_cell = (0, wm.h - bar, bar, bar)
         self.menu, self.dlg = None, None
@@ -1871,6 +2101,8 @@ class Menus:
 
     def pointer(self, x, y, down=False, up=False, right=False, double=False):
         self.x, self.y = x, y
+        if down or right:
+            self.dk.pointer()                           # 1.5 stage 9b
         if self.dlg:
             at = dialog_hit(self.dlg, x, y)
             if down and not self.left:
@@ -1925,8 +2157,16 @@ class Menus:
     def middle(self, x, y):
         """1.5 stage 8 (desktop_pointer): the middle button pressed, after
         the packet's pointer() call; nothing with a menu or the dialog open."""
+        self.dk.pointer()                               # 1.5 stage 9b
         if not self.menu and not self.dlg:
             self.wm.middle(x, y)
+
+    def close(self):
+        """1.5 stage 9b (ui_menus_close): a Super key shortcut closes an open
+        menu first."""
+        if self.menu:
+            self.close_menu("windows")
+        self.update_m()
 
     def key(self, qcode, pressed=True):
         """One key event (its qcode); "wm" if the window manager takes it."""

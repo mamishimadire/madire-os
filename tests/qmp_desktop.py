@@ -249,8 +249,9 @@ def screen(qmp, serial, dump, n, pointer_at):
 # ---- 1.3 stage 4a: the windows ----
 
 # 1.5 stage 9: resize lines too.
+# 1.5 stage 9b: snap, unsnap and shortcut lines too.
 WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close|minimise|restore|maximise|unmaximise|switch:|taskbar|"
-                       r"resize) ")
+                       r"resize|snap|unsnap|shortcut) ")
 MENU_EVENT = re.compile(r"^desktop: (menu|dialog|M button)[ :]")      # 1.3 stage 5
 ABOUT_VALUE = re.compile(r"^desktop: about (Version|Boot loader|Display|Memory|Mode): (.*)$")
 
@@ -368,12 +369,28 @@ class Windows:
         raise ValueError("unknown place %r" % where)
 
     def key(self, qcode, pressed):
-        """One key event: 1.5 stage 8: Alt+Tab first (desktop_key: with no
-        menu or dialog open); the menus (1.3 stage 5), then the window
-        manager."""
+        """One key event: 1.5 stage 9b: the Super key and the window
+        shortcuts first; 1.5 stage 8: Alt+Tab (desktop_key: with no menu or
+        dialog open); the menus (1.3 stage 5), then the window manager."""
         mods = self.mods
         if qcode in ("alt", "alt_r", "shift", "shift_r", "ctrl", "ctrl_r"):
             (mods.add if pressed else mods.discard)(qcode)
+        # 1.5 stage 9b: the Super key and the window shortcuts first
+        # (desktop.c's desk_keys_first, deskkeys_core.h).
+        a = self.menus.dk.key(qcode, pressed, mods, bool(self.menus.menu), bool(self.menus.dlg),
+                              self.wm.switching, self.wm.focus is not None)
+        if a == "none":
+            return "taken"
+        if a != "pass":
+            if a == "menu":
+                self.menus.key(qcode, True)             # the Super key's press, as before 9b
+            elif a != "taken":
+                if self.menus.menu:
+                    self.menus.close()
+                self.wm.shortcut(a)
+                if a == "about":
+                    self.menus.wm_open("About")
+            return "taken"
         if not self.menus.menu and not self.menus.dlg:
             alt = bool(mods & {"alt", "alt_r"}) and not mods & {"ctrl", "ctrl_r"}
             if qcode == "tab" and pressed and alt:
