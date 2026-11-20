@@ -3538,3 +3538,62 @@ else
     fail "[1.5] contrast: a colour pair the title-bar or taskbar buttons draw is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its bar or pointer (see the CONTRAST lines)"
 fi
 echo "      [1.5] the window buttons (static): $(( $(date +%s) - W8_T0 )) s (report only)"
+
+# ---- 1.5 stage 10: the text field, the list and grid views, the scroll bar ----
+
+section "[1.5] The text field, the list and grid views and the scroll bar against tests/desktop_ref.py, and their contrast check (stage 10)"
+# docs/plans/1.5.md, C5 and the change in S10; kernel/display/
+# ui_textfield.h and ui_list.h; the Design Guide, section 13. The host tool
+# (build/desktopdump) draws textfield (eight fields on a surface.window
+# panel: unfocused and focused, empty, the cursor in the middle, a long
+# name scrolled to its end and shown from its start, bytes outside
+# printable ASCII shown as '?', a narrow field), list (20 items scrolled,
+# a range selected, the ring on an item not selected, names, sizes and
+# dates cut with "...", the thumb; 3 items, the first selected with the
+# ring, no thumb), grid (14 items, two selected, the ring; the same
+# scrolled a line, the thumb on hover) and scrollbar (eight scroll bars:
+# the top, the middle on hover, the end dragged, the least thumb, half, one
+# line more, two with no thumb). desktop_ref.py draws them from
+# ui_textfield.h's and ui_list.h's rules. Five modes, both pixel formats,
+# every scale but 125 %. The colour pairs they draw are checked against
+# the Design Guide's section 12 table as in 1.3 stage 4a (their own pairs
+# file; the selected rows' and cells' fills carried by their accent bar).
+W10_T0=$(date +%s)
+PAIRS10=$OUT/desktop-pairs-widgets10.txt
+rm -f "$PAIRS10"
+desktop10_static() {   # desktop10_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS10 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'PYEOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+PYEOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    if [ "$n" = same ]; then
+        pass "[1.5] the widget scene $4 at $1x$2x$(($3 * 8)) (ui_textfield.c, ui_list.c: the text field, the list and grid views, the scroll bar) equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.5] the widget scene $4 at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in textfield list grid scrollbar; do
+        # shellcheck disable=SC2086
+        desktop10_static $mode $scene
+    done
+done
+CONTRAST10=$(python3 "$DREF" --contrast "$PAIRS10" 2>&1)
+printf '%s\n' "$CONTRAST10" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST10" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST10" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 4 scenes \(grid list scrollbar textfield\)$' &&
+   printf '%s\n' "$CONTRAST10" | grep -qE '^CONTRAST carried pass carried-bar '; then
+    pass "[1.5] contrast: every colour pair the text field, the list and grid views and the scroll bar draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; the selected rows' and cells' fills carried by their passing accent bar"
+else
+    fail "[1.5] contrast: a colour pair the text field, the list, the grid or the scroll bar draws is not in the Design Guide's section 12 table, does not pass, or a selected fill lacks its bar (see the CONTRAST lines)"
+fi
+echo "      [1.5] the widgets (static): $(( $(date +%s) - W10_T0 )) s (report only)"

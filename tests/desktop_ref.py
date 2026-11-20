@@ -1726,6 +1726,281 @@ def scene_taskbuttons(scr, tok, s):
     return "six buttons %dx%d from (%d, %d)" % (r[2], r[3], r[0], r[1])
 
 
+# ---- 1.5 stage 10: the text field, the list and grid views, the scroll
+# bar (kernel/display/ui_textfield.h, ui_list.h; the Design Guide,
+# section 13) ----
+
+FIELD_MAX = 255
+LIST_TEXT_MAX = FIELD_MAX + 1
+
+
+def shown_name(b):
+    """ui_name_shown: each byte outside printable ASCII as '?'."""
+    return bytes(c if 0x20 <= c <= 0x7E else 0x3F for c in b[:LIST_TEXT_MAX - 1])
+
+
+class Field:
+    def __init__(self, text):
+        self.buf = bytes(text[:FIELD_MAX])
+        self.pos, self.first = len(self.buf), 0
+
+
+def field_cols(r, s, f):
+    room = r[2] - 2 * px(8, s)
+    return room // f[1] if room > 0 else 0
+
+
+def field_fit(t, cols):
+    k = max(cols, 1)
+    if t.pos < t.first:
+        t.first = t.pos
+    elif t.pos - t.first > k - 1:
+        t.first = t.pos - (k - 1)
+    if t.first > 0 and len(t.buf) - t.first < k - 1:
+        t.first = max(0, len(t.buf) - (k - 1))
+
+
+def field_draw(scr, tok, t, r, s, focused):
+    f = font(s, False)
+    R = px(4, s)
+    fill_round(scr, r, R, 15, tok["surface"])
+    frame_round(scr, r, R, px(2, s) if focused else px(1, s), 15, tok["accent"] if focused else tok["text.muted"])
+    cols = field_cols(r, s, f)
+    tx, ty = r[0] + px(8, s), r[1] + (r[3] - f[2]) // 2
+    text(scr, f, tx, ty, shown_name(t.buf[t.first:t.first + cols]), tok["text"])
+    if focused:
+        keep = scr.clip
+        scr.clip = meet(keep, inflate(r, -px(2, s)))
+        if scr.clip is not None:
+            fill(scr, (tx + (t.pos - t.first) * f[1], ty, px(2, s), f[2]), tok["text"])
+        scr.clip = keep
+
+
+def scrollbar_thumb(sb, lines, page, top, s):
+    pad = px(4, s)
+    L = sb[3] - 2 * pad
+    if page == 0 or lines <= page or L <= 0:
+        return None
+    maxtop = lines - page
+    T = min(max(L * page // lines, px(24, s)), L)
+    off = (L - T) * min(top, maxtop) // maxtop
+    w = px(8, s)
+    return (sb[0] + (sb[2] - w) // 2, sb[1] + pad + off, w, T)
+
+
+def scrollbar_draw(scr, tok, sb, lines, page, top, state, s):
+    th = scrollbar_thumb(sb, lines, page, top, s)
+    if th:
+        fill_round(scr, th, px(4, s), 15, tok["text.muted"] if state == "normal" else tok["text"])
+
+
+class ListView:
+    """struct ui_list: items are [name, size, type, modified, icon, selected]."""
+
+    def __init__(self, view, items, titles, r, s):
+        self.view, self.items, self.titles, self.r, self.s = view, items, titles, r, s
+        self.top = self.cursor = self.anchor = 0
+        self.ring, self.sb = False, "normal"
+
+    def body(self):
+        s, r = self.s, self.r
+        hd = px(28, s) if self.view == "list" else 0
+        return (r[0], r[1] + hd, max(r[2] - px(24, s), 0), max(r[3] - hd, 0))
+
+    def sb_rect(self):
+        b, w = self.body(), px(24, self.s)
+        return (self.r[0] + self.r[2] - w, b[1], w, b[3])
+
+    def columns(self):
+        return 1 if self.view == "list" else max(1, self.body()[2] // px(96, self.s))
+
+    def lines(self):
+        c = self.columns()
+        return (len(self.items) + c - 1) // c
+
+    def page(self):
+        step, h = px(28 if self.view == "list" else 88, self.s), self.body()[3]
+        return h // step if step > 0 and h > 0 else 0
+
+    def item_rect(self, i):
+        s, b, cols = self.s, self.body(), self.columns()
+        line = i // cols - self.top
+        if self.view == "list":
+            rh = px(28, s)
+            return (b[0], b[1] + line * rh, b[2], rh)
+        cw, ch = px(96, s), px(88, s)
+        return (b[0] + (i % cols) * cw, b[1] + line * ch, cw, ch)
+
+
+def list_text(scr, f, x, y, room, t, c, right):
+    if t is None:
+        return
+    cut = fit(f, shown_name(t), max(room, 0), LIST_TEXT_MAX)
+    text(scr, f, x - len(cut) * f[1] if right else x, y, cut, c)
+
+
+def list_marks(scr, tok, lv, i, r):
+    s = lv.s
+    g, in4, grid = px(2, s), px(4, s), lv.view == "grid"
+    shape = inflate(r, -g) if grid else r
+    if lv.items[i][5]:
+        if grid:
+            fill_round(scr, shape, in4, 15, tok["surface.active"])
+            bar = (shape[0] + in4, shape[1] + shape[3] - in4, shape[2] - 2 * in4, g)
+        else:
+            fill(scr, r, tok["surface.active"])
+            bar = (r[0], r[1] + in4, g, r[3] - 2 * in4)
+        fill(scr, bar, tok["accent"])
+    if lv.ring and i == lv.cursor:
+        ring = shape if grid else (r[0] + g, r[1], r[2] - 2 * g, r[3])
+        frame_round(scr, ring, in4, g, 15, tok["accent"])
+
+
+def list_draw(scr, tok, lv):
+    s, r, b = lv.s, lv.r, lv.body()
+    f = font(s, False)
+    fw, fh = f[1], f[2]
+    fill(scr, r, tok["surface.window"])
+    keep = scr.clip
+    body = meet(keep, b)
+    n = len(lv.items)
+    if lv.view == "list":
+        hd, rh, d8 = px(28, s), px(28, s), px(8, s)
+        xm = b[0] + b[2] - px(144, s)
+        xt = xm - px(112, s)
+        xs = xt - px(80, s)
+        hy = r[1] + (hd - fh) // 2
+        if lv.titles:
+            t = lv.titles
+            text(scr, f, r[0] + px(36, s), hy, t[0], tok["text.muted"])
+            text(scr, f, xs + px(80, s) - d8 - len(t[1]) * fw, hy, t[1], tok["text.muted"])
+            text(scr, f, xt + d8, hy, t[2], tok["text.muted"])
+            text(scr, f, xm + d8, hy, t[3], tok["text.muted"])
+        fill(scr, (r[0], r[1] + hd - px(1, s), b[2], px(1, s)), tok["border"])
+        if body is not None:
+            scr.clip = body
+            for i in range(lv.top, n):
+                row = lv.item_rect(i)
+                if row[1] >= b[1] + b[3]:
+                    break
+                name, size, typ, mod, ic, _ = lv.items[i]
+                ty, ip = row[1] + (rh - fh) // 2, px(16, s)
+                list_marks(scr, tok, lv, i, row)
+                if ic is not None:
+                    icon(scr, ic, r[0] + px(12, s), row[1] + (rh - ip) // 2, ip, tok["text"])
+                list_text(scr, f, r[0] + px(36, s), ty, xs - r[0] - px(44, s), name, tok["text"], False)
+                list_text(scr, f, xs + px(80, s) - d8, ty, px(80, s) - px(16, s), size, tok["text.muted"], True)
+                list_text(scr, f, xt + d8, ty, px(112, s) - px(16, s), typ, tok["text.muted"], False)
+                list_text(scr, f, xm + d8, ty, px(144, s) - px(16, s), mod, tok["text.muted"], False)
+            scr.clip = keep
+    elif body is not None:
+        scr.clip = body
+        cols, cw, ip = lv.columns(), px(96, s), px(48, s)
+        for i in range(lv.top * cols, n):
+            cell = lv.item_rect(i)
+            if cell[1] >= b[1] + b[3]:
+                break
+            name, ic = lv.items[i][0], lv.items[i][4]
+            list_marks(scr, tok, lv, i, cell)
+            if ic is not None:
+                icon(scr, ic, cell[0] + (cw - ip) // 2, cell[1] + px(8, s), ip, tok["text"])
+            if name is not None:
+                cut = fit(f, shown_name(name), px(88, s), LIST_TEXT_MAX)
+                text(scr, f, cell[0] + (cw - len(cut) * fw) // 2, cell[1] + px(64, s), cut, tok["text"])
+        scr.clip = keep
+    scrollbar_draw(scr, tok, lv.sb_rect(), lv.lines(), lv.page(), lv.top, lv.sb, s)
+
+
+# The scenes' items (tests/desktopdump.c builds the same).
+LIST_TITLES = (b"Name", b"Size", b"Type", b"Modified")
+LIST_LONG = b"A very long file name that cannot fit in the name column at all.txt"
+LIST_ODD = b"caf\xe9 \x01menu.txt"
+LIST_ICONS = ("console", "about", "calculator", "restart")
+FIELD_LONG = b"A long name that does not fit its field at all, so it scrolls.txt"
+
+
+def scene_items(n, selected):
+    out = []
+    for i in range(n):
+        name = LIST_LONG if i == 4 else LIST_ODD if i == 5 else b"Folder %d" % (i + 1) if i < 4 else \
+            b"file-%02d.txt" % i
+        size = None if i < 4 else b"123456789 KiB" if i == 7 else b"%d KiB" % (3 * i + 1)
+        typ = b"Folder" if i < 4 else b"Text file"
+        mod = b"2026-11-%02d 14:%02d" % (i + 1, 3 * i)
+        out.append([name, size, typ, mod, None if i == 2 else LIST_ICONS[i % 4], i in selected])
+    return out
+
+
+def scene_textfield(scr, tok, s):
+    """tests/desktopdump.c's textfield scene: eight fields on a
+    surface.window panel (unfocused and focused, empty, the cursor in the
+    middle, a long name scrolled to its end and shown from its start,
+    bytes outside printable ASCII, a narrow field)."""
+    W, H = scr.w, scr.h
+    d = lambda n: px(n, s)  # noqa: E731
+    fill(scr, (d(16), d(16), W - 2 * d(16), H - 2 * d(16)), tok["surface.window"])
+    fl = Flow(W, d(32), d(16))
+    fl.y = d(32)
+    cases = [(b"New Folder", None, 240, False), (b"New Folder", None, 240, True), (b"", None, 240, True),
+             (b"report-2026.txt", 6, 240, True), (FIELD_LONG, None, 240, True), (FIELD_LONG, 0, 240, True),
+             (b"caf\xe9 \x01name.txt", None, 240, False), (b"abcdef", 1, 40, True)]
+    f = font(s, False)
+    for t_, pos, w_dp, focused in cases:
+        r = fl.place(d(w_dp), d(32))
+        t = Field(t_)
+        if pos is not None:
+            t.pos = pos
+        field_fit(t, field_cols(r, s, f))
+        field_draw(scr, tok, t, r, s, focused)
+    return "8 fields, bottom %d" % fl.bottom()
+
+
+def scene_list(scr, tok, s):
+    """tests/desktopdump.c's list scene: a list of 20 items scrolled to the
+    fourth, items 4 and 5 selected, the ring on item 6, the thumb; below
+    it, a list of 3 (no thumb), the first selected with the ring."""
+    d = lambda n: px(n, s)  # noqa: E731
+    a = ListView("list", scene_items(20, (4, 5)), LIST_TITLES, (d(16), d(16), d(600), d(266)), s)
+    a.top, a.cursor, a.anchor, a.ring = 3, 6, 4, True
+    list_draw(scr, tok, a)
+    b = ListView("list", scene_items(3, (0,)), LIST_TITLES, (d(16), d(16) + d(266) + d(16), d(600), d(140)), s)
+    b.ring = True
+    list_draw(scr, tok, b)
+    return "page %d of %d lines; page %d of %d" % (a.page(), a.lines(), b.page(), b.lines())
+
+
+def scene_grid(scr, tok, s):
+    """tests/desktopdump.c's grid scene: 14 items, 1 and 2 selected, the
+    ring on 7; below, the same scrolled one line, 8 selected with the
+    ring, the thumb on hover."""
+    d = lambda n: px(n, s)  # noqa: E731
+    a = ListView("grid", scene_items(14, (1, 2)), None, (d(16), d(16), d(504), d(216)), s)
+    a.cursor, a.ring = 7, True
+    list_draw(scr, tok, a)
+    b = ListView("grid", scene_items(14, (8,)), None, (d(16), d(16) + d(216) + d(16), d(504), d(216)), s)
+    b.top, b.cursor, b.anchor, b.ring, b.sb = 1, 8, 8, True, "hover"
+    list_draw(scr, tok, b)
+    return "%d columns, page %d of %d lines" % (a.columns(), a.page(), a.lines())
+
+
+SCROLL_CASES = [(100, 10, 0, "normal"), (100, 10, 45, "hover"), (100, 10, 90, "drag"), (1000, 10, 500, "normal"),
+                (20, 10, 10, "normal"), (11, 10, 1, "hover"), (10, 10, 0, "normal"), (3, 10, 0, "normal")]
+
+
+def scene_scrollbar(scr, tok, s):
+    """tests/desktopdump.c's scrollbar scene: eight scroll bars (24 dp x
+    160 dp on surface.window): the top, the middle (hover), the end
+    (dragged), the least thumb, half, one line more (hover), all fitting
+    (no thumb) twice."""
+    d = lambda n: px(n, s)  # noqa: E731
+    fl = Flow(scr.w, d(16), d(16))
+    for lines, page, top, state in SCROLL_CASES:
+        r = fl.place(d(24), d(160))
+        fill(scr, r, tok["surface.window"])
+        scrollbar_draw(scr, tok, r, lines, page, top, state, s)
+    return "8 scroll bars, bottom %d" % fl.bottom()
+
+
 # ---- The menus, the M button and the Restart dialog (1.3 stage 5) ----
 
 # kernel/display/ui_menu.h: size in dp, a header, the rows' tops and the
@@ -2403,7 +2678,9 @@ SCENES = {"prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, 
           "chrome": lambda scr, tok, s: scene_chrome(scr, tok, s, "normal"),
           "chrome_hover": lambda scr, tok, s: scene_chrome(scr, tok, s, "hover"),
           "chrome_max": lambda scr, tok, s: scene_chrome(scr, tok, s, "max"),
-          "taskbuttons": scene_taskbuttons}
+          "taskbuttons": scene_taskbuttons,
+          # 1.5 stage 10
+          "textfield": scene_textfield, "list": scene_list, "grid": scene_grid, "scrollbar": scene_scrollbar}
 SCENES.update({name: (lambda scr, tok, s, n=name: scene_menus(scr, tok, s, n)) for name in MENU_SCENES})
 
 

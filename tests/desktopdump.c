@@ -61,6 +61,14 @@
  * a maximised window) and taskbuttons (the taskbar's window buttons in
  * each state, the Alt+Tab ring); see scene_chrome and scene_taskbuttons.
  *
+ * 1.5 stage 10: textfield, list, grid and scrollbar (kernel/display/
+ * ui_textfield.h, ui_list.h): eight text fields on a surface.window panel;
+ * two lists (20 items scrolled, a range selected, the ring on an item not
+ * selected, the thumb; 3 items, the first selected with the ring); two
+ * grids (14 items; the second scrolled a line, the thumb on hover); eight
+ * scroll bars in their states; see scene_textfield and the three after it
+ * (tests/desktop_ref.py builds the same items).
+ *
  * 1.3 stage 5: the menus, the M button and the Restart dialog
  * (kernel/display/ui_menu.h, ui_dialog.h, desktop_core.h), each on bg.deep
  * with the taskbar (the clock 09:41) and its M button: mbutton_hover,
@@ -95,8 +103,10 @@
 #include "kernel/display/ui_draw.h"
 #include "kernel/display/ui_font.h"
 #include "kernel/display/ui_icon.h"
+#include "kernel/display/ui_list.h"
 #include "kernel/display/ui_menu.h"
 #include "kernel/display/ui_rect.h"
+#include "kernel/display/ui_textfield.h"
 #include "kernel/display/ui_trace.h"
 #include "kernel/display/ui_widget.h"
 #include "kernel/display/ui_window.h"
@@ -778,6 +788,158 @@ static int scene_menus(struct surface *s, const struct fbcon_layout *cl, const c
     return whole ? 0 : 1;
 }
 
+/* ---- 1.5 stage 10: the text field, the list and grid views, the scroll bar ---- */
+
+static const char *const dump_titles[4] = { "Name", "Size", "Type", "Modified" };
+static const char dump_long[] = "A very long file name that cannot fit in the name column at all.txt";
+static const char dump_odd[] = "caf\xe9 \x01menu.txt";
+static char dump_names[20][32], dump_sizes[20][32], dump_mods[20][48];   /* room for any uint32_t */
+
+/* desktop_ref.py's scene_items: n items, those in sel selected. */
+static void dump_items(struct ui_list_item *it, uint32_t n, const uint32_t *sel, int nsel)
+{
+    static const int icons[4] = { UI_ICON_CONSOLE, UI_ICON_ABOUT, UI_ICON_CALCULATOR, UI_ICON_RESTART };
+    for (uint32_t i = 0; i < n; i++) {
+        if (i == 4) {
+            it[i].name = dump_long;
+        } else if (i == 5) {
+            it[i].name = dump_odd;
+        } else {
+            if (i < 4)
+                snprintf(dump_names[i], sizeof(dump_names[i]), "Folder %u", i + 1);
+            else
+                snprintf(dump_names[i], sizeof(dump_names[i]), "file-%02u.txt", i);
+            it[i].name = dump_names[i];
+        }
+        if (i < 4) {
+            it[i].size = 0;
+        } else if (i == 7) {
+            it[i].size = "123456789 KiB";
+        } else {
+            snprintf(dump_sizes[i], sizeof(dump_sizes[i]), "%u KiB", 3 * i + 1);
+            it[i].size = dump_sizes[i];
+        }
+        it[i].type = i < 4 ? "Folder" : "Text file";
+        snprintf(dump_mods[i], sizeof(dump_mods[i]), "2026-11-%02u 14:%02u", i + 1, 3 * i);
+        it[i].modified = dump_mods[i];
+        it[i].icon = i == 2 ? UI_ICON_NONE : icons[i % 4];
+        it[i].selected = false;
+        for (int k = 0; k < nsel; k++)
+            if (sel[k] == i)
+                it[i].selected = true;
+    }
+}
+
+static int scene_textfield(struct ui_canvas *c, int32_t W, int32_t H)
+{
+    static const struct {
+        const char *text;
+        int pos;                /* -1: the end */
+        int32_t w_dp;
+        bool focused;
+    } cases[8] = {
+        { "New Folder", -1, 240, false },
+        { "New Folder", -1, 240, true },
+        { "", -1, 240, true },
+        { "report-2026.txt", 6, 240, true },
+        { "A long name that does not fit its field at all, so it scrolls.txt", -1, 240, true },
+        { "A long name that does not fit its field at all, so it scrolls.txt", 0, 240, true },
+        { "caf\xe9 \x01name.txt", -1, 240, false },
+        { "abcdef", 1, 40, true },
+    };
+    static struct ui_textfield t;
+    struct ui_fonts f;
+    struct flow fl;
+    if (!ui_fonts_for_scale(S, &f))
+        return 1;
+    ui_fill(c, (struct rect){ d(16), d(16), W - 2 * d(16), H - 2 * d(16) }, UI_SURFACE_WINDOW);
+    flow_init(&fl, W, d(32), d(16));
+    fl.y = d(32);
+    for (int i = 0; i < 8; i++) {
+        struct rect r = flow_place(&fl, d(cases[i].w_dp), d(32));
+        ui_textfield_set(&t, cases[i].text);
+        if (cases[i].pos >= 0)
+            t.pos = (uint16_t)cases[i].pos;
+        ui_textfield_fit(&t, ui_textfield_cols(r, S, f.regular));
+        ui_textfield_draw(c, &t, r, S, &f, cases[i].focused);
+    }
+    printf("SCENE textfield: scale %u %%, 8 fields, bottom %d\n", S * 25, flow_bottom(&fl));
+    return 0;
+}
+
+static int scene_list(struct ui_canvas *c)
+{
+    static struct ui_list_item a_items[20], b_items[3];
+    static const uint32_t a_sel[2] = { 4, 5 }, b_sel[1] = { 0 };
+    struct ui_fonts f;
+    struct ui_list a, b;
+    if (!ui_fonts_for_scale(S, &f))
+        return 1;
+    dump_items(a_items, 20, a_sel, 2);
+    ui_list_init(&a, UI_LIST_DETAILS, a_items, 20, dump_titles, (struct rect){ d(16), d(16), d(600), d(266) }, S);
+    a.top = 3;
+    a.cursor = 6;
+    a.anchor = 4;
+    a.ring = true;
+    ui_list_draw(c, &a, &f);
+    dump_items(b_items, 3, b_sel, 1);
+    ui_list_init(&b, UI_LIST_DETAILS, b_items, 3, dump_titles,
+                 (struct rect){ d(16), d(16) + d(266) + d(16), d(600), d(140) }, S);
+    b.ring = true;
+    ui_list_draw(c, &b, &f);
+    printf("SCENE list: scale %u %%, page %u of %u lines; page %u of %u\n", S * 25, ui_list_page(&a),
+           ui_list_lines(&a), ui_list_page(&b), ui_list_lines(&b));
+    return 0;
+}
+
+static int scene_grid(struct ui_canvas *c)
+{
+    static struct ui_list_item a_items[14], b_items[14];
+    static const uint32_t a_sel[2] = { 1, 2 }, b_sel[1] = { 8 };
+    struct ui_fonts f;
+    struct ui_list a, b;
+    if (!ui_fonts_for_scale(S, &f))
+        return 1;
+    dump_items(a_items, 14, a_sel, 2);
+    ui_list_init(&a, UI_LIST_GRID, a_items, 14, 0, (struct rect){ d(16), d(16), d(504), d(216) }, S);
+    a.cursor = 7;
+    a.ring = true;
+    ui_list_draw(c, &a, &f);
+    dump_items(b_items, 14, b_sel, 1);
+    ui_list_init(&b, UI_LIST_GRID, b_items, 14, 0, (struct rect){ d(16), d(16) + d(216) + d(16), d(504), d(216) },
+                 S);
+    b.top = 1;
+    b.cursor = 8;
+    b.anchor = 8;
+    b.ring = true;
+    b.sb = UI_SB_HOVER;
+    ui_list_draw(c, &b, &f);
+    printf("SCENE grid: scale %u %%, %u columns, page %u of %u lines\n", S * 25, ui_list_columns(&a),
+           ui_list_page(&a), ui_list_lines(&a));
+    return 0;
+}
+
+static int scene_scrollbar(struct ui_canvas *c, int32_t W)
+{
+    static const struct {
+        uint32_t lines, page, top;
+        enum ui_sb_state st;
+    } cases[8] = {
+        { 100, 10, 0, UI_SB_NORMAL }, { 100, 10, 45, UI_SB_HOVER }, { 100, 10, 90, UI_SB_DRAG },
+        { 1000, 10, 500, UI_SB_NORMAL }, { 20, 10, 10, UI_SB_NORMAL }, { 11, 10, 1, UI_SB_HOVER },
+        { 10, 10, 0, UI_SB_NORMAL }, { 3, 10, 0, UI_SB_NORMAL },
+    };
+    struct flow fl;
+    flow_init(&fl, W, d(16), d(16));
+    for (int i = 0; i < 8; i++) {
+        struct rect r = flow_place(&fl, d(24), d(160));
+        ui_fill(c, r, UI_SURFACE_WINDOW);
+        ui_scrollbar_draw(c, r, cases[i].lines, cases[i].page, cases[i].top, cases[i].st, S);
+    }
+    printf("SCENE scrollbar: scale %u %%, 8 scroll bars, bottom %d\n", S * 25, flow_bottom(&fl));
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -848,6 +1010,14 @@ int main(int argc, char **argv)
         rc = scene_chrome(&s, &cl, 2);
     } else if (strcmp(argv[4], "taskbuttons") == 0) {
         rc = scene_taskbuttons(&s, &cl);
+    } else if (strcmp(argv[4], "textfield") == 0) {               /* 1.5 stage 10 */
+        rc = scene_textfield(&c, (int32_t)w, (int32_t)h);
+    } else if (strcmp(argv[4], "list") == 0) {
+        rc = scene_list(&c);
+    } else if (strcmp(argv[4], "grid") == 0) {
+        rc = scene_grid(&c);
+    } else if (strcmp(argv[4], "scrollbar") == 0) {
+        rc = scene_scrollbar(&c, (int32_t)w);
     } else if (strncmp(argv[4], "mbutton_", 8) == 0 || strncmp(argv[4], "menu_", 5) == 0 ||
                strncmp(argv[4], "dialog", 6) == 0) {          /* 1.3 stage 5 */
         rc = scene_menus(&s, &cl, argv[4]);

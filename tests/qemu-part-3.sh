@@ -4,7 +4,8 @@
 # moved unchanged from the single script. 1.3 stage 8: the real ISO's
 # session shows the Console window (its screen after clear with the clock
 # read from the kernel; the stack's peak after the desktop), and the
-# splash-to-desktop handover at 800x600x24 comes at the end.
+# splash-to-desktop handover at 800x600x24 comes at the end. 1.5 stage 10:
+# the menus at 800x600x24 (1.3 stage 5) moved unchanged to part 5 (A3).
 
 fixture_normal_boot     # 0.12: tests/qemu-lib.sh (the normal boot is read below)
 # Logs of part 1 that this part reads: the most-modules check reads the 32M
@@ -905,11 +906,6 @@ desktop_about_case 800 800x600x24 100 "windows at 800x600x24" "resolution: 800x6
 section "[1.3] The Console window at 800x600x24: a key opens it, commands, Shift+PgUp, hide and show, focus, desktopnosurface (stage 4b)"
 # desktop_console_case (tests/qemu-lib.sh): 7 checks, two boots.
 desktop_console_case 800 800x600x24 100 "Console window at 800x600x24" "resolution: 800x600x24"
-
-section "[1.3] The menus at 800x600x24: the M button and menu, the right-click menu, the Restart dialog, the Windows key, no mouse (stage 5)"
-# desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
-# ending with Restart; the decision 20 key session; test=mousefail=4).
-desktop_menu_case 800 800x600x24 100 "menus at 800x600x24" "resolution: 800x600x24"
 
 # ---- 1.3 stage 7b: the console keys (decision 16; docs/commands.md) ----
 

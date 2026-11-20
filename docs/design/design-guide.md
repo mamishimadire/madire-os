@@ -167,11 +167,12 @@ Every text and icon colour against each background it appears on. Ratios are WCA
 
 | Foreground | Background | Where | Ratio | Rule | Result |
 |---|---|---|---|---|---|
-| `text` | `surface.window` | window titles (active), About values, dialog text | 17.70:1 | T | pass |
-| `text` | `surface` | menu labels, the M menu's wordmark, the Calculator's display | 16.99:1 | T | pass |
+| `text` | `surface.window` | window titles (active), About values, dialog text; list names and grid labels (1.5 stage 10) | 17.70:1 | T | pass |
+| `text` | `surface` | menu labels, the M menu's wordmark, the Calculator's display; a text field's text (1.5 stage 10) | 16.99:1 | T | pass |
 | `text` | `surface.bar` | the clock | 17.98:1 | T | pass |
-| `text` | `surface.active` | a selected menu row's label, the Cancel button, Calculator key labels | 14.66:1 | T | pass |
-| `text.muted` | `surface.window` | inactive window titles, About labels, the About footer (the tagline) | 6.57:1 | T | pass |
+| `text` | `surface.active` | a selected menu row's label, the Cancel button, Calculator key labels; a selected list row's name, a selected grid cell's label (1.5 stage 10) | 14.66:1 | T | pass |
+| `text.muted` | `surface.window` | inactive window titles, About labels, the About footer (the tagline); the list's column titles and its Size, Type and Modified texts (1.5 stage 10) | 6.57:1 | T | pass |
+| `text.muted` | `surface.active` | the list's Size, Type and Modified texts on a selected row (1.5 stage 10) | 5.45:1 | T | pass |
 | `text.muted` | `surface` | (reserved: secondary menu text; none in 1.3) | 6.31:1 | T | pass |
 | `text.on.accent` | `accent` | the Restart button's label, the `=` key, a pressed Calculator key | 5.10:1 | T | pass |
 | `text` | `bg.deep` / `bg.low` / `bg.base` | the splash's wordmark on the wallpaper (its darkest to brightest flat areas; the desktop has no text on the wallpaper since 1.3 stage 3b) | 17.48 / 15.99 / 14.56:1 | L | pass |
@@ -190,9 +191,10 @@ Every text and icon colour against each background it appears on. Ratios are WCA
 
 | Foreground | Background | Where | Ratio | Rule | Result |
 |---|---|---|---|---|---|
-| `text` | `surface.window` | title-bar icons, the close icon | 17.70:1 | N | pass |
-| `text` | `surface` | menu row icons | 16.99:1 | N | pass |
-| `text` | `surface.active` | a selected row's icon, Calculator operator icons | 14.66:1 | N | pass |
+| `text` | `surface.window` | title-bar icons, the close icon; list and grid icons, the scroll bar's thumb on hover or dragged (1.5 stage 10) | 17.70:1 | N | pass |
+| `text.muted` | `surface.window` | a text field's edge, the scroll bar's thumb (1.5 stage 10) | 6.57:1 | N | pass |
+| `text` | `surface` | menu row icons; a focused text field's cursor, against the field's fill (1.5 stage 10) | 16.99:1 | N | pass |
+| `text` | `surface.active` | a selected row's icon, Calculator operator icons; a selected list row's or grid cell's icon (1.5 stage 10) | 14.66:1 | N | pass |
 | `text` | `surface.bar` | the taskbar window buttons' icons (1.5 stage 8) | 17.98:1 | N | pass |
 | `text` | `surface.hover` | a minimise or maximise icon on hover (1.5 stage 8) | 10.41:1 | N | pass |
 | `text` | `accent.pressed` | a minimise or maximise icon while pressed (1.5 stage 8) | 5.03:1 | N | pass |
@@ -200,9 +202,9 @@ Every text and icon colour against each background it appears on. Ratios are WCA
 | `text` | `danger.pressed` | the close icon while pressed | 4.92:1 | N | pass |
 | `text.on.accent` | `accent` | a pressed Calculator key's operator icon | 5.10:1 | N | pass |
 | `accent` | `surface.bar` | the M in the M button | 5.25:1 | N | pass |
-| `accent` | `surface.active` | the M in the M button while hovered, pressed or open; the selection bars on a selected row and on the open M button | 4.28:1 | N | pass |
+| `accent` | `surface.active` | the M in the M button while hovered, pressed or open; the selection bars on a selected row and on the open M button; the bar and the ring on a selected list row or grid cell (1.5 stage 10) | 4.28:1 | N | pass |
 | `accent` | `surface` | the M in the M menu's header; the menu focus ring; the selection bar beside a row | 4.96:1 | N | pass |
-| `accent` | `surface.window` | the focus ring on dialog buttons and Calculator keys | 5.17:1 | N | pass |
+| `accent` | `surface.window` | the focus ring on dialog buttons and Calculator keys; a focused text field's edge, the ring on a focused list row or grid cell (1.5 stage 10) | 5.17:1 | N | pass |
 | `danger` | `surface.window` | the close button's hover fill (a state) | 5.33:1 | N | pass |
 | `danger.pressed` | `surface.window` | the close button's pressed fill (a state) | 3.60:1 | N | pass |
 | `accent.hover` | `surface.window` | the Restart button's hover fill (a state) | 7.23:1 | N | pass |
@@ -210,7 +212,17 @@ Every text and icon colour against each background it appears on. Ratios are WCA
 | `surface.hover` | `surface.window` | the Cancel button's hover fill | 1.70:1 | N | **fail alone**: hover is shown by the pointer over the button (as the M button's hover); no action depends on it |
 | `accent.deep` | `surface` / `surface.window` / `surface.bar` / `surface.active` | (the M's gradient deep end) | 1.83 / 1.91 / 1.94 / 1.58:1 | N | **fail**: so the M inside a control is `accent`, not the gradient (section 5) |
 | `accent.light` | the same four surfaces | (the gradient's light end) | 13.23 / 13.78 / 14.00 / 11.42:1 | – | for the record |
-| `surface.active` | `surface` / `surface.bar` / `surface.window` | the selected-row and M-cell fills alone | 1.16 / 1.23 / 1.21:1 | N | **fail alone**: a selected row and the pressed or open M button also carry their `accent` bar (sections 9, 10), which passes; the M button's hover is shown by the pointer over it |
+| `surface.active` | `surface` / `surface.bar` / `surface.window` | the selected-row and M-cell fills alone; a selected list row's or grid cell's fill (1.5 stage 10) | 1.16 / 1.23 / 1.21:1 | N | **fail alone**: a selected row and the pressed or open M button also carry their `accent` bar (sections 9, 10), which passes, and so do a selected list row and grid cell (section 13); the M button's hover is shown by the pointer over it |
 | `border` | `surface.active` | (a pressed key one step lighter: the draft) | 1.08:1 | N | **fail**: a pressed key fills with `accent` instead (section 8) |
 
 **Not under a rule:** the logo in its gradient where it is not a control (the splash, the desktop, the About window: a logo, identified by the wordmark beside it); the one-pixel edges of windows, panels and the taskbar's top line, and the surfaces against the wallpaper (`surface.window`, `surface` and `surface.bar` on the wallpaper 1.12–1.22:1, `border.window` on `bg.base` 1.15:1): these edges are decorative, and each window, menu and the taskbar is identified by its title text, labels and controls, which pass above; dividers (decorative). **The active window** is told from the others by its title's colour (`text` against `text.muted`, both passing on `surface.window`) and by being on top. **The console's grid** keeps 1.2's VGA palette (its own colours, unchanged) and is outside this table.
+
+## 13. Text fields, lists, grids and scroll bars (1.5 stage 10)
+
+The toolkit's widgets for the Files app (docs/plans/1.5.md, C5; `kernel/display/ui_textfield.h`, `kernel/display/ui_list.h`). Every size is in dp at the screen's scale; the font is the console font, regular. *Chosen, not sampled* (the mockup shows none of them).
+
+- **The text field:** 32 dp high, 4 dp corners, filled with `surface`; a 1 dp edge in `text.muted`, or, while it has the focus, a 2 dp edge in `accent`. The text in `text`, 8 dp from the left, centred vertically; the field scrolls sideways so the cursor stays visible. The cursor (only while focused): 2 dp wide, the font's height, in `text`, no blinking. It holds up to 255 bytes; a byte outside printable ASCII is shown as `?` and kept as it is. **Keys:** printable characters insert; Backspace, Delete, Left, Right, Home and End edit and move; Enter accepts, Esc cancels; Tab moves the focus out of the field; every key with Ctrl or Alt held is taken by the field and does nothing (so Ctrl+A while renaming never selects all items); the desktop's own keys (Alt+Tab, Alt+F4, the Super key) still come first. A click places the cursor. No text selection in 1.5.
+- **The list:** the window's `surface.window`; a header 28 dp high with the column titles in `text.muted` (Name 36 dp from the left; Size right-aligned; Type and Modified 8 dp into their columns) and a 1 dp divider in `border` under it; the columns from the right: Modified 144 dp, Type 112 dp, Size 80 dp, Name the rest. Rows 28 dp high: the item's icon (16 dp) in `text` 12 dp from the left, the name in `text` at 36 dp, the other columns in `text.muted` (Size right-aligned 8 dp before its column's end); a text too long for its place is cut and ends with `...`. **A selected row** is filled with `surface.active` and marked by a 2 dp `accent` bar along its left edge, 4 dp in from its top and bottom (as a menu row, section 9: the fill alone is too faint, section 12). **The focused row**, once the keyboard has moved the focus, has a 2 dp `accent` ring of radius 4 dp from 2 dp after the row's left end to 2 dp before its right end.
+- **The grid:** cells 96 × 88 dp from the top left, as many per line as fit; the icon (48 dp) in `text`, centred across, 8 dp from the cell's top; the name in `text`, centred, 64 dp from the top, cut with `...` to 88 dp. **A selected cell:** the cell less 2 dp on every side filled with `surface.active` (4 dp corners), with a 2 dp `accent` bar 4 dp above that shape's bottom, 4 dp in from its sides. **The focused cell:** a 2 dp `accent` ring of radius 4 dp on that shape.
+- **Selection and keys (both views):** a click selects one item, Ctrl+click toggles one, Shift+click selects the range from the last item clicked; a double click (the second press within 500 ms, within 4 dp, on the same item) or Enter opens; Up, Down, Home, End, Page Up and Page Down (and Left and Right in the grid) move the focus and select the focused item, with Shift the range; the wheel scrolls 3 rows (list) or one line of cells (grid) a notch.
+- **The scroll bar:** a column 24 dp wide at the view's right (the targets' minimum, section 4), the whole column the target; only when the items do not all fit, a thumb 8 dp wide, centred in the column, with rounded ends (4 dp), in `text.muted`, in `text` on hover and while dragged; no track fill, no arrows. Its track is the column less 4 dp at the top and the bottom; the thumb's length is the track's share of the lines shown, at least 24 dp. A click above or below the thumb moves one page; dragging the thumb scrolls.

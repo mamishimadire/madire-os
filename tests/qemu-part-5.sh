@@ -11,7 +11,9 @@
 # unchanged from part 1 for its headroom (A3), the unexpected IRQ (0.4),
 # the uptime heartbeat (0.12 stage 4) and the console keys (1.1 stage 8),
 # before the 1.5 sections, and
-# the ext2 tables' boots (1.5 stage 5, the last section). Each
+# the ext2 tables' boots (1.5 stage 5, the last section); in 1.5 stage 10,
+# moved unchanged from part 3 for its headroom (A3), the menus at
+# 800x600x24 (1.3 stage 5), after the console keys. Each
 # section boots or builds what it reads itself (no file or variable from
 # another part).
 
@@ -561,6 +563,13 @@ expect_next "$LOG" "[1.1] console keys boot: the session ran to its end" \
     '^madire> echo end-of-conskeys-test$' '^end-of-conskeys-test$'
 reject "$LOG" 'PANIC|events dropped|Keyboard lights: not acknowledged' \
     "[1.1] console keys boot: no panic, nothing dropped, no light failure"
+
+# ---- 1.3 stage 5: the menus at 800x600x24 (moved unchanged from part 3 in 1.5 stage 10, A3) ----
+
+section "[1.3] The menus at 800x600x24: the M button and menu, the right-click menu, the Restart dialog, the Windows key, no mouse (stage 5)"
+# desktop_menu_case (tests/qemu-lib.sh): 18 checks, three boots (the mouse,
+# ending with Restart; the decision 20 key session; test=mousefail=4).
+desktop_menu_case 800 800x600x24 100 "menus at 800x600x24" "resolution: 800x600x24"
 
 # ---- 1.5 stage 4: the per-disk I/O lock ----
 
