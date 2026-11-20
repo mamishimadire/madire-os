@@ -154,6 +154,7 @@ static void test_draw_marks(void)
         v.enabled[k] = true;
     v.enabled[UF_BACK] = false;
     v.chosen[UF_LIST] = true;
+    v.chosen[UF_HIDDEN] = true;                     /* Show hidden files ticked */
     v.hover = UF_NEWFILE;
     v.pressed = UF_OPEN;
     v.place = 0;
@@ -174,7 +175,13 @@ static void test_draw_marks(void)
     CHECK_EQ(at(671, 64), UI_BORDER);               /* its edge */
     CHECK_EQ(at(247, 120), UI_SURFACE_HOVER);       /* New File on hover */
     CHECK_EQ(at(333, 120), UI_ACCENT_PRESSED);      /* Open pressed */
-    CHECK_EQ(at(547, 114), UI_ACCENT);              /* Show hidden files on: the box (539, 112) filled */
+    /* Show hidden files ticked: the box (539, 112) 16 x 16 (corners 3)
+     * filled accent; the tick (6, 12) (10, 16) (18, 8) dp at 16 px is
+     * (543, 120) (545.7, 122.7) (551, 117.3), radius 0.67 px: pixel
+     * (544, 121)'s centre lies on it, coverage full. */
+    CHECK_EQ(at(547, 114), UI_ACCENT);
+    CHECK_EQ(at(547, 112), UI_ACCENT);
+    CHECK_EQ(at(544, 121), UI_TEXT_ON_ACCENT);
     CHECK_EQ(at(700, 120), UI_SURFACE_WINDOW);      /* the checkbox control: no resting fill */
     CHECK_EQ(at(80, 377), UI_BORDER);               /* the sidebar's divider above Trash */
     CHECK_EQ(at(300, 140), UI_BORDER);              /* above the body */
@@ -185,6 +192,15 @@ static void test_draw_marks(void)
     CHECK_EQ(at(100, 197), UI_SURFACE);             /* Desktop */
     CHECK_EQ(at(95, 110), UI_SURFACE);              /* the tooltip under Up */
     CHECK_EQ(at(97, 100), UI_BORDER_PANEL);         /* its frame's top */
+    /* Show hidden files unticked: the box's 2 px text.muted frame (rows
+     * 112-113), the window colour inside, no tick. */
+    v.chosen[UF_HIDDEN] = false;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(547, 112), UI_TEXT_MUTED);
+    CHECK_EQ(at(547, 113), UI_TEXT_MUTED);
+    CHECK_EQ(at(547, 114), UI_SURFACE_WINDOW);
+    CHECK_EQ(at(544, 121), UI_SURFACE_WINDOW);
     /* No memory: only the message (no pixels with this font). */
     v.mode = UI_FILES_NOMEM;
     setup();
