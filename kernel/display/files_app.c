@@ -421,7 +421,12 @@ static int fa_fs_rmdir(void *ctx, const char *path)
 }
 
 /* One chunk of file src at offset into dst (made, empty and exclusively,
- * at offset 0): the bytes copied, 0 at src's end, or an error. */
+ * at offset 0): the bytes copied, 0 at src's end, or an error. A short
+ * write is not an error: its count is returned and the walk asks for the
+ * rest at the next offset; a write that moves nothing is a full disk
+ * (-FS_ENOSPC, as ext2_disk_retry's last answer), every other failure
+ * keeps its own error (1.5 stage 13, the owner's rule after run
+ * 44874459260). */
 static int64_t fa_fs_copy_chunk(void *ctx, const char *src, const char *dst, uint64_t offset)
 {
     (void)ctx;
@@ -454,8 +459,12 @@ static int64_t fa_fs_copy_chunk(void *ctx, const char *src, const char *dst, uin
                 int64_t put = vfs_write(v, d, offset, fa_m->chunk, (uint64_t)got);
                 if (put < 0)
                     r = (int)put;
-                else if (put != got)
+                else if (put == 0)
+                    r = -FS_ENOSPC;     /* no progress: full */
+                else if (put > got)
                     r = -FS_EIO;
+                else
+                    got = put;          /* a short write: the rest from offset + put */
             }
         }
         fd_vfs_release();

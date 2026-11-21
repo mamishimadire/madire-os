@@ -14,8 +14,12 @@
  * Menu key opens the item menu at the focused item, by the keyboard; in the
  * Trash view a right press on its item opens the Trash item menu, on empty
  * space the Trash space menu; each time the menu is really open in the
- * desktop's menus (ui_menus) with the greyed rows Files asked for. The
- * toolkit's modules are included directly; surface_core.c, wallpaper_core.c
+ * desktop's menus (ui_menus) with the greyed rows Files asked for. And a
+ * copy's writes (after run 44874459260): a short write then the rest; a
+ * write that moves nothing (0 or ENOSPC) is "the disk is full" with the
+ * partial file removed; a real I/O error is "a disk error occurred" (the
+ * filesystem's write wrapped, fw_write). The toolkit's modules are
+ * included directly; surface_core.c, wallpaper_core.c
  * and coverage_core.c are linked (the Makefile). */
 #include <stdarg.h>
 #include <stdint.h>
@@ -63,6 +67,7 @@ static struct vfs fw_vfs;
 static struct paging_stats fw_pstats;
 static uint32_t fw_frames;
 static int fw_holds;
+static bool fw_disk;                    /* Disk mode's wording ("the disk is full") */
 
 struct vfs *vfs_root(void)
 {
@@ -105,12 +110,12 @@ bool ext2_disk_retry(int *r, uint32_t *tries)
 
 bool ext2_disk_mounted(void)
 {
-    return false;
+    return fw_disk;
 }
 
 bool ext2_disk_rw(void)
 {
-    return false;
+    return fw_disk;
 }
 
 bool ext2_disk_df(struct ext2_disk_dfinfo *out)
@@ -231,6 +236,30 @@ static int64_t fw_clock(void)
     return 1795236000;
 }
 
+/* The filesystem's write as a disk can answer it (the copy cases): at most
+ * fw_wmax bytes a write (a short write; 0 no limit); after fw_wleft
+ * writes, nothing moves (0, or -FS_ENOSPC with fw_wnospc; -1 never);
+ * -FS_EIO for every write with fw_weio. Otherwise the RAM filesystem's. */
+static struct vfs_ops fw_ops;
+static uint64_t fw_wmax;
+static int fw_wleft = -1;
+static bool fw_wnospc, fw_weio;
+static int fw_writes;
+
+static int64_t fw_write(void *fs, struct vnode *file, uint64_t off, const void *buf, uint64_t len)
+{
+    fw_writes++;
+    if (fw_weio)
+        return -FS_EIO;
+    if (fw_wleft == 0)
+        return fw_wnospc ? -FS_ENOSPC : 0;
+    if (fw_wleft > 0)
+        fw_wleft--;
+    if (fw_wmax && len > fw_wmax)
+        len = fw_wmax;
+    return ramfs_ops.write(fs, file, off, buf, len);
+}
+
 static void fw_dir(const char *path)
 {
     CHECK_EQ(vfs_create(&fw_vfs, fw_vfs.root, path, VNODE_DIR, 0755, NULL), 0);
@@ -316,7 +345,9 @@ static void fw_setup(void)
      * .local holding the Trash with one item and its info file. */
     CHECK_EQ(ramfs_init(&fw_fs, &fw_mem, RAMFS_MAX_NODES), 0);
     ramfs_set_pages(&fw_fs, &fw_source, FW_POOL);
-    vfs_mount(&fw_vfs, &ramfs_ops, &fw_fs, &fw_fs.root->vn, fw_clock);
+    fw_ops = ramfs_ops;
+    fw_ops.write = fw_write;
+    vfs_mount(&fw_vfs, &fw_ops, &fw_fs, &fw_fs.root->vn, fw_clock);
     fw_dir("/home");
     fw_dir("/home/user");
     fw_dir("/home/user/Documents");
@@ -482,11 +513,113 @@ static void test_trash_menus(void)
     fw_close();
 }
 
+/* A left click (press and release) at (x, y) in Files. */
+static void fw_click(int32_t x, int32_t y)
+{
+    files_app_pointer(&fw_files_win, x, y, true, false, 0, ++fw_now);
+    files_app_pointer(&fw_files_win, x, y, false, true, 0, ++fw_now);
+}
+
+/* A sidebar place pressed (0 Home, 2 Documents), its folder read. */
+static void fw_place(int32_t k)
+{
+    struct ui_files_layout lay = fw_layout();
+    struct rect pr = ui_files_place_rect(&lay, 4, k);
+    fw_click(pr.x + pr.w / 2, pr.y + pr.h / 2);
+    fw_settle();
+}
+
+/* Ctrl and a letter, as the keyboard hands it on. */
+static void fw_ctrl(char c)
+{
+    struct key_event e = { KEY_CHAR, c, KEY_PRESSED | KEY_CTRL, 0 };
+    CHECK(files_app_key(&fw_files_win, &e));
+}
+
+/* The bytes of file path (at most n - 1, NUL-terminated), or -1. */
+static int64_t fw_cat(const char *path, char *out, uint64_t n)
+{
+    struct vnode *f = NULL;
+    if (vfs_lookup(&fw_vfs, fw_vfs.root, path, &f) != 0)
+        return -1;
+    int64_t got = vfs_read(&fw_vfs, f, 0, out, n - 1);
+    out[got > 0 ? got : 0] = '\0';
+    return got;
+}
+
+/* A paste of the clipboard into the folder shown, with the writes as set
+ * up; its job finished. */
+static void fw_paste(void)
+{
+    fw_writes = 0;
+    fw_ctrl('v');
+    fw_settle();
+}
+
+/* 1.5 stage 13 (the owner's rule after run 44874459260): a copy's short
+ * write is not an error (the rest is written); a write that moves nothing
+ * (0 or ENOSPC) is "the disk is full" and the partial file is removed; a
+ * real I/O error stays "a disk error occurred" (Disk mode's wording, the
+ * folder under /home). */
+static void test_copy_writes(void)
+{
+    char buf[64];
+    struct vnode *n = NULL;
+    fw_disk = true;
+    fw_place(0);                                /* Home: Documents, a.txt */
+    CHECK(!fa_m->view.trash);
+    CHECK_EQ(fa_m->folder.n, 2);
+    struct rect ir = ui_list_item_rect(&fa_m->list, 1);
+    fw_click(ir.x + 40, ir.y + ir.h / 2);
+    CHECK(fa_m->list.items[1].selected);
+    fw_ctrl('c');                               /* a.txt ("alpha\n", 6 bytes) copied */
+    fw_place(2);                                /* Documents, empty */
+    CHECK_EQ(fa_m->folder.n, 0);
+    /* Short writes of 2 bytes, then success: the whole file. */
+    fw_wmax = 2;
+    fw_paste();
+    CHECK_EQ(fw_writes, 3);
+    CHECK(!fa_m->view.status_error);
+    CHECK_EQ(fw_cat("/home/user/Documents/a.txt", buf, sizeof buf), 6);
+    CHECK(strcmp(buf, "alpha\n") == 0);
+    CHECK_EQ(fa_m->folder.n, 1);
+    /* A short write, then a write that moves nothing (0): the disk is full,
+     * 'a 2.txt' removed. */
+    fw_wleft = 1;
+    fw_paste();
+    CHECK_EQ(fw_writes, 2);
+    CHECK(fa_m->view.status_error);
+    CHECK(strcmp(fa_m->status, "Can't paste 'a.txt': the disk is full.") == 0);
+    CHECK(vfs_lookup(&fw_vfs, fw_vfs.root, "/home/user/Documents/a 2.txt", &n) == -FS_ENOENT);
+    CHECK_EQ(fa_m->folder.n, 1);
+    /* The same with -FS_ENOSPC for the write that moves nothing. */
+    fw_wleft = 1;
+    fw_wnospc = true;
+    fw_paste();
+    CHECK_EQ(fw_writes, 2);
+    CHECK(strcmp(fa_m->status, "Can't paste 'a.txt': the disk is full.") == 0);
+    CHECK(vfs_lookup(&fw_vfs, fw_vfs.root, "/home/user/Documents/a 2.txt", &n) == -FS_ENOENT);
+    CHECK_EQ(fa_m->folder.n, 1);
+    /* A real I/O error: a disk error, nothing left. */
+    fw_wleft = -1;
+    fw_wnospc = false;
+    fw_weio = true;
+    fw_paste();
+    CHECK(fa_m->view.status_error);
+    CHECK(strcmp(fa_m->status, "Can't paste 'a.txt': a disk error occurred.") == 0);
+    CHECK(vfs_lookup(&fw_vfs, fw_vfs.root, "/home/user/Documents/a 2.txt", &n) == -FS_ENOENT);
+    CHECK_EQ(fa_m->folder.n, 1);
+    fw_weio = false;
+    fw_wmax = 0;
+    fw_disk = false;
+}
+
 int main(void)
 {
     printf("test_ui_fileswire\n");
     RUN(test_env_copied);
     RUN(test_files_menus);
     RUN(test_trash_menus);
+    RUN(test_copy_writes);
     return unit_report("test_ui_fileswire");
 }
