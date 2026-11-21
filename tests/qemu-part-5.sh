@@ -1999,6 +1999,14 @@ fi
 F13_SETUP2="type:mkdir $F13_DOC/Box{ret}{wait:1}echo gamma > $F13_DOC/Box/c.txt{ret}{wait:1}echo alpha > $F13_DOC/a.txt{ret}{wait:1}"
 F13_TR="Files: the Trash's info files read"
 F13_TF=/home/user/.local/share/Trash/files
+# Files' own state line once a question is shown (mode=ask): the driver
+# judges Esc (files_esc_closes) and finds the question's buttons from the
+# lines read before it acts, and "Files: asks ..." comes before this line
+# (full run 44882570155, boot E2: lines 1515 and 1521), so a key or click
+# after a question waits for it.
+F13_ASK_E2="files: state mode=ask view=list bar=live place=7 en=0000000000000000000011 chosen=0000100000000000000000 hover=- pressed=- tip=- top=0 cursor=0 ring=0 sb=0 rename=0 reading=0 sel=- trash=1 app=0 job=0 askfocus=0 askring=0 askst=00"
+F13_ASK_E3="files: state mode=ask view=list bar=live place=2 en=0000000000000000000011 chosen=0000100000000000000000 hover=- pressed=- tip=- top=0 cursor=2 ring=0 sb=0 rename=0 reading=0 sel=2 trash=0 app=0 job=0 askfocus=0 askring=1 askst=00"
+F13_ASK_F="files: state mode=ask view=list bar=none place=7 en=0000000000000000000011 chosen=0000100000000000000000 hover=- pressed=- tip=- top=0 cursor=0 ring=0 sb=0 rename=0 reading=0 sel=- trash=1 app=0 job=0 askfocus=0 askring=0 askst=00"
 DT_OUT=""
 if [ -n "$DT_ISO" ]; then
     DT_UNTIL="" desktop_boot "$F13_E2" "$DT_ISO" 1024x768 ready rel:-1000,-1000 "type:x" "$F13_SETUP2" \
@@ -2038,8 +2046,10 @@ if [ -n "$DT_ISO" ]; then
         to:fplace@7 click "wait:$F13_TR: 1 items, 0 without a known original location" \
         "wait:Files: read $F13_TF: 1 entries in 1 holds of at most 16, 1 shown" fsync \
         "to:fbtn@Empty Trash" click "wait:Files: asks 'Empty the Trash? 1 item will be deleted permanently.' (Empty Trash, Cancel)" \
+        "wait:$F13_ASK_E2" \
         "kseq:esc" "wait:Files: the question answered: Cancel" fsync \
         "to:fbtn@Empty Trash" click "wait:Files: asks 'Empty the Trash? 1 item will be deleted permanently.' (Empty Trash, Cancel)" \
+        "wait:$F13_ASK_E2" \
         "to:fbtn@Ask OK" click "wait:Files: the Trash emptied: 1 items deleted" fsync
 else : > "$F13_E2"; fi
 F13_O2=$DT_OUT
@@ -2114,6 +2124,7 @@ if [ -n "$DT_ISO" ]; then
         "wait:Files: read /tmp: 0 entries in 1 holds of at most 16, 0 shown" fsync \
         to:fplace@2 click "wait:Files: read $F13_DOC: 3 entries in 1 holds of at most 16, 3 shown" \
         to:fitem@2 click "kseq:shift:down,delete,shift:up" "wait:Files: asks 'Delete 'a.txt' permanently?' (Delete, Cancel)" \
+        "wait:$F13_ASK_E3" \
         "kseq:esc" "wait:Files: the question answered: Cancel" \
         "kseq:shift:down,delete,shift:up" "wait:Files: asks 'Delete 'a.txt' permanently?' (Delete, Cancel)" \
         "kseq:tab" fsync "kseq:ret" "wait:Files: 'a.txt' deleted permanently" \
@@ -2241,6 +2252,7 @@ if [ -n "$DT_ISO" ] && [ "$F13_FOK" -eq 1 ]; then
         to:fplace@7 click "wait:Files: the Trash's info files read: 3 items, 1 without a known original location" \
         "wait:Files: read $F13_TF: 3 entries in 1 holds of at most 16, 3 shown" \
         "to:fbtn@Empty Trash" click "wait:Files: asks 'Empty the Trash? 3 items will be deleted permanently.' (Empty Trash, Cancel)" \
+        "wait:$F13_ASK_F" \
         "to:fbtn@Ask OK" click "wait:Files: the Trash emptied: 3 items deleted" fsync \
         to:task@Console click "type:sync{ret}{wait:4}"
 else : > "$F13_F"; fi
