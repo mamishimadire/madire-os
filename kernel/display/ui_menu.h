@@ -51,6 +51,28 @@
  * The keyboard: Down selects the next row (the first when none is
  * selected), Up the one before (the last when none is); both wrap around,
  * and turn the focus ring on.
+ *
+ * 1.5 stage 13 (docs/plans/1.5.md, note (13)): the Files menus, 264 dp
+ * wide, no header, rows and dividers as above:
+ *   - Files item (287 dp): Open, Cut, Copy, Paste, Rename, Move to Trash,
+ *     Properties from 4, 49, 85, 121, 166, 202, 247 dp; dividers at 44,
+ *     161, 242;
+ *   - Files space (170 dp): New Folder, New File, Paste, Show hidden files
+ *     from 4, 40, 85, 130; dividers at 80, 125;
+ *   - Trash item (134 dp): Restore, Delete permanently, Properties from 4,
+ *     49, 94; dividers at 44, 89;
+ *   - Trash space (125 dp): Restore all, Empty Trash, Show hidden files
+ *     from 4, 40, 85; divider at 80.
+ * A menu's greyed rows (the greyed bits, row k bit k): icon and label in
+ * `text.muted`; never selected (the pointer over one selects nothing, the
+ * keyboard skips it; with every row greyed the keyboard selects none) and
+ * never chosen. A row's key hint (ui_menu_hint; null for none) in the
+ * regular font in `text.muted`, its right end 16 dp before the panel's
+ * right, at the label's y. A ticked row (the ticked bits) shows the check
+ * icon in its icon's place (in `text`, or `text.muted` if greyed). The M
+ * and desktop menus have no greyed rows, ticks or hints (drawn as before).
+ * Placement of the Files menus: as the desktop menu's, by their own size
+ * (ui_menu_place_kind).
  */
 
 #include <stdbool.h>
@@ -59,10 +81,16 @@
 #include "kernel/display/ui_draw.h"
 #include "kernel/display/ui_font.h"
 
-#define UI_MENU_ROWS_MAX 3
+#define UI_MENU_ROWS_MAX 7          /* 1.5 stage 13: 3 -> 7 (the Files item menu) */
 
-enum ui_menu_kind { UI_MENU_M, UI_MENU_DESKTOP };
-enum ui_menu_action { UI_MENU_NONE, UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_POWER };
+enum ui_menu_kind { UI_MENU_M, UI_MENU_DESKTOP, UI_MENU_FILES_ITEM, UI_MENU_FILES_SPACE, UI_MENU_TRASH_ITEM,
+                    UI_MENU_TRASH_SPACE, UI_MENU_KINDS };
+enum ui_menu_action { UI_MENU_NONE, UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_POWER,
+                      /* 1.5 stage 13: the Files menus' rows (files_app_menu) */
+                      UI_MENU_F_OPEN, UI_MENU_F_CUT, UI_MENU_F_COPY, UI_MENU_F_PASTE, UI_MENU_F_RENAME,
+                      UI_MENU_F_TRASH, UI_MENU_F_PROPERTIES, UI_MENU_F_NEW_FOLDER, UI_MENU_F_NEW_FILE,
+                      UI_MENU_F_HIDDEN, UI_MENU_F_RESTORE, UI_MENU_F_DELETE, UI_MENU_F_RESTORE_ALL,
+                      UI_MENU_F_EMPTY };
 
 /* The M button's states (the Design Guide, section 10; desktop_core.h draws them). */
 enum ui_m_state { UI_M_NORMAL, UI_M_HOVER, UI_M_PRESSED, UI_M_OPEN };
@@ -73,6 +101,7 @@ struct ui_menu {
     struct rect r;
     int sel;                    /* the selected row, -1 for none */
     bool ring;                  /* the focus ring on the selected row */
+    uint8_t greyed, ticked;     /* 1.5 stage 13: row k is bit k */
 };
 
 /* The menu's rows, and each row's label, icon and action. */
@@ -80,6 +109,10 @@ int ui_menu_rows(enum ui_menu_kind k);
 const char *ui_menu_label(enum ui_menu_kind k, int row);
 int ui_menu_icon(enum ui_menu_kind k, int row);
 enum ui_menu_action ui_menu_action(enum ui_menu_kind k, int row);
+/* 1.5 stage 13: a row's key hint (null for none). */
+const char *ui_menu_hint(enum ui_menu_kind k, int row);
+/* 1.5 stage 13: row `row` exists and is not greyed. */
+bool ui_menu_row_live(const struct ui_menu *m, int row);
 
 /* The menu's size at scale s. */
 void ui_menu_size(enum ui_menu_kind k, uint32_t s, int32_t *w, int32_t *h);
@@ -91,7 +124,11 @@ struct rect ui_menu_place_m(uint32_t s, int32_t bar_y);
  * `width` wide, the taskbar's top at bar_y. */
 struct rect ui_menu_place_at(uint32_t s, int32_t width, int32_t bar_y, int32_t x, int32_t y);
 
-/* A menu of kind k at r, no row selected, the ring off. */
+/* 1.5 stage 13: the same placement for a menu of kind k (its own size). */
+struct rect ui_menu_place_kind(enum ui_menu_kind k, uint32_t s, int32_t width, int32_t bar_y, int32_t x, int32_t y);
+
+/* A menu of kind k at r, no row selected, the ring off, nothing greyed or
+ * ticked. */
 void ui_menu_init(struct ui_menu *m, enum ui_menu_kind k, uint32_t s, struct rect r);
 
 /* Row `row`'s rectangle (empty for no such row). */
@@ -101,7 +138,8 @@ struct rect ui_menu_row_rect(const struct ui_menu *m, int row);
 int ui_menu_row_at(const struct ui_menu *m, int32_t x, int32_t y);
 
 /* The row the keyboard selects from the selection now: dir > 0 Down,
- * else Up (the rules above). */
+ * else Up (the rules above; 1.5 stage 13: greyed rows skipped, -1 if every
+ * row is greyed). */
 int ui_menu_next(const struct ui_menu *m, int dir);
 
 /* The 16-bit entries the M menu's wordmark needs at scale s on a screen of

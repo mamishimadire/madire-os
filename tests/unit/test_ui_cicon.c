@@ -106,9 +106,9 @@ static void test_stroke2(void)
     }
     CHECK_EQ(next_poly, icon_polys2_count);
     CHECK_EQ(next_point, icon_points2_count);
-    CHECK_EQ(icon_points2_count, 177);      /* T4: counted from the table by hand */
-    CHECK_EQ(icon_polys2_count, 51);
-    CHECK_EQ(ICON_S12_COUNT, 16);
+    CHECK_EQ(icon_points2_count, 242);      /* T4: counted from the table by hand (1.5 stage 13: 177 + 65) */
+    CHECK_EQ(icon_polys2_count, 63);        /* 51 + cut 4, copy 2, paste 4, restore 2 */
+    CHECK_EQ(ICON_S12_COUNT, 20);           /* 16 + cut, copy, paste, restore */
     CHECK_EQ(UI_SICON_END - UI_SICON_FIRST, ICON_S12_COUNT);
     CHECK(UI_SICON_FIRST >= UI_ICON_COUNT && UI_SICON_END <= UI_CICON_FIRST);
     CHECK_EQ(UI_ICON_COUNT, ICON_STROKED + 1);

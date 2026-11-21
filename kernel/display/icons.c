@@ -51,6 +51,16 @@
  *               notes (circles of radius 2.5 in 45-degree steps); videos: a
  *               play triangle; trash: a lid, a handle, a bin and two slots;
  *               This PC: a laptop (5, 5)-(19, 15) on its base
+ * 1.5 stage 13, the second table (Cut, Copy, Paste, Restore):
+ *   cut         scissors: rings at (7, 17) and (17, 17), radius 3 (45-degree
+ *               steps); blades (9, 15)-(17, 5) and (15, 15)-(7, 5)
+ *   copy        two pages: the back (9, 7) (9, 3) (19, 3) (19, 15) (15, 15)
+ *               and the front (5, 7)-(15, 21)
+ *   paste       a clipboard (9, 5) (6, 5) (6, 21) (18, 21) (18, 5) (15, 5),
+ *               its clip (9, 3)-(15, 7) and two lines (9, y)-(15, y), y 12, 16
+ *   restore     an arrow back: the head (9, 5) (5, 9) (9, 13); the path
+ *               (5, 9), a half circle at (15, 14), radius 5, from the top
+ *               clockwise to the bottom (15-degree steps), then (8, 19)
  * A circle's point at a degrees clockwise from the top is
  * (cx + r sin a, cy - r cos a), rounded to the nearest unit.
  */
@@ -156,6 +166,16 @@ const int16_t icon_points2[][2] = {
     { 72, 56 }, { 72, 32 }, { 120, 32 }, { 120, 56 }, { 48, 56 }, { 56, 160 }, { 136, 160 }, { 144, 56 },
     { 80, 80 }, { 80, 136 }, { 112, 80 }, { 112, 136 }, { 40, 40 }, { 152, 40 }, { 152, 120 }, { 40, 120 },
     { 40, 40 }, { 24, 152 }, { 168, 152 }, { 40, 120 }, { 24, 152 }, { 152, 120 }, { 168, 152 },
+    /* 1.5 stage 13: cut, copy, paste, restore */
+    { 56, 112 }, { 73, 119 }, { 80, 136 }, { 73, 153 }, { 56, 160 }, { 39, 153 }, { 32, 136 }, { 39, 119 },
+    { 56, 112 }, { 136, 112 }, { 153, 119 }, { 160, 136 }, { 153, 153 }, { 136, 160 }, { 119, 153 }, { 112, 136 },
+    { 119, 119 }, { 136, 112 }, { 72, 120 }, { 136, 40 }, { 120, 120 }, { 56, 40 }, { 72, 56 }, { 72, 24 },
+    { 152, 24 }, { 152, 120 }, { 120, 120 }, { 40, 56 }, { 120, 56 }, { 120, 168 }, { 40, 168 }, { 40, 56 },
+    { 72, 40 }, { 48, 40 }, { 48, 168 }, { 144, 168 }, { 144, 40 }, { 120, 40 }, { 72, 24 }, { 120, 24 },
+    { 120, 56 }, { 72, 56 }, { 72, 24 }, { 72, 96 }, { 120, 96 }, { 72, 128 }, { 120, 128 }, { 72, 40 },
+    { 40, 72 }, { 72, 104 }, { 40, 72 }, { 120, 72 }, { 130, 73 }, { 140, 77 }, { 148, 84 }, { 155, 92 },
+    { 159, 102 }, { 160, 112 }, { 159, 122 }, { 155, 132 }, { 148, 140 }, { 140, 147 }, { 130, 151 }, { 120, 152 },
+    { 64, 152 },
 };
 
 const struct icon_poly icon_polys2[] = {
@@ -210,6 +230,18 @@ const struct icon_poly icon_polys2[] = {
     { 171, 2 },
     { 173, 2 },
     { 175, 2 },
+    { 177, 9 },   /* cut (1.5 stage 13) */
+    { 186, 9 },
+    { 195, 2 },
+    { 197, 2 },
+    { 199, 5 },   /* copy */
+    { 204, 5 },
+    { 209, 6 },   /* paste */
+    { 215, 5 },
+    { 220, 2 },
+    { 222, 2 },
+    { 224, 3 },   /* restore */
+    { 227, 15 },
 };
 
 const struct icon_def icon_defs2[ICON_S12_COUNT] = {
@@ -229,6 +261,10 @@ const struct icon_def icon_defs2[ICON_S12_COUNT] = {
     [ICON_PLACE_VIDEOS] = { 41, 1 },
     [ICON_PLACE_TRASH] = { 42, 5 },
     [ICON_PLACE_THISPC] = { 47, 4 },
+    [ICON_CUT] = { 51, 4 },
+    [ICON_COPY] = { 55, 2 },
+    [ICON_PASTE] = { 57, 4 },
+    [ICON_RESTORE] = { 61, 2 },
 };
 
 const uint32_t icon_points2_count = sizeof(icon_points2) / sizeof(icon_points2[0]);

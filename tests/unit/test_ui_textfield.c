@@ -271,6 +271,137 @@ static void tf_draw(void)
     CHECK_EQ(at(28 + 24, 28), UI_SURFACE);
 }
 
+/* ---- 1.5 stage 13 (D1): the whole name selected ---- */
+
+static void tf_select_all_set(void)
+{
+    struct ui_textfield t;
+    ui_textfield_set(&t, "New Folder");
+    CHECK(!t.sel);                                      /* set selects nothing (S10 unchanged) */
+    ui_textfield_select_all(&t);
+    CHECK(t.sel);
+    CHECK_EQ(t.pos, 10);
+    ui_textfield_set(&t, "x");
+    CHECK(!t.sel);                                      /* set clears it */
+    ui_textfield_set(&t, "");
+    ui_textfield_select_all(&t);
+    CHECK(!t.sel);                                      /* an empty field: nothing to select */
+}
+
+static void tf_select_typed_replaces(void)
+{
+    struct ui_textfield t;
+    ui_textfield_set(&t, "New Folder");
+    ui_textfield_select_all(&t);
+    CHECK_EQ(type(&t, "W"), UI_TF_CHANGED);
+    CHECK(strcmp(t.buf, "W") == 0);
+    CHECK_EQ(t.len, 1);
+    CHECK_EQ(t.pos, 1);
+    CHECK(!t.sel);
+    CHECK_EQ(type(&t, "ork"), UI_TF_CHANGED);
+    CHECK(strcmp(t.buf, "Work") == 0);
+    /* A space replaces it too; so does a character into a full field. */
+    static char full[UI_TEXTFIELD_MAX + 2];
+    memset(full, 'a', UI_TEXTFIELD_MAX);
+    full[UI_TEXTFIELD_MAX] = 0;
+    ui_textfield_set(&t, full);
+    CHECK_EQ(type(&t, "b"), UI_TF_REFUSED);             /* full, nothing selected */
+    ui_textfield_select_all(&t);
+    CHECK_EQ(type(&t, " "), UI_TF_CHANGED);
+    CHECK(strcmp(t.buf, " ") == 0);
+}
+
+static void tf_select_delete(void)
+{
+    struct ui_textfield t;
+    ui_textfield_set(&t, "plan.md");
+    ui_textfield_select_all(&t);
+    CHECK_EQ(press(&t, KEY_BACKSPACE, 0), UI_TF_CHANGED);
+    CHECK_EQ(t.len, 0);
+    CHECK_EQ(t.pos, 0);
+    CHECK(t.buf[0] == 0 && !t.sel);
+    CHECK_EQ(press(&t, KEY_BACKSPACE, 0), UI_TF_NONE);  /* then as before: nothing left */
+    ui_textfield_set(&t, "plan.md");
+    ui_textfield_select_all(&t);
+    CHECK_EQ(press(&t, KEY_DELETE, 0), UI_TF_CHANGED);
+    CHECK(t.len == 0 && t.buf[0] == 0 && !t.sel);
+}
+
+static void tf_select_moves(void)
+{
+    struct ui_textfield t;
+    ui_textfield_set(&t, "abc");
+    ui_textfield_select_all(&t);
+    CHECK_EQ(press(&t, KEY_LEFT, 0), UI_TF_CHANGED);   /* to the start */
+    CHECK(t.pos == 0 && !t.sel && strcmp(t.buf, "abc") == 0);
+    ui_textfield_select_all(&t);
+    CHECK_EQ(press(&t, KEY_RIGHT, 0), UI_TF_CHANGED);  /* to the end: the cursor stays, the selection goes */
+    CHECK(t.pos == 3 && !t.sel);
+    ui_textfield_select_all(&t);
+    CHECK_EQ(press(&t, KEY_HOME, 0), UI_TF_CHANGED);
+    CHECK(t.pos == 0 && !t.sel);
+    ui_textfield_select_all(&t);
+    CHECK_EQ(press(&t, KEY_END, 0), UI_TF_CHANGED);
+    CHECK(t.pos == 3 && !t.sel);
+    CHECK_EQ(type(&t, "d"), UI_TF_CHANGED);             /* then typed at the cursor */
+    CHECK(strcmp(t.buf, "abcd") == 0);
+}
+
+static void tf_select_click(void)
+{
+    struct ui_textfield t;
+    ui_textfield_set(&t, "abcdef");
+    ui_textfield_select_all(&t);
+    ui_textfield_click(&t, (struct rect){ 20, 20, 200, 32 }, 4, &corner, 20 + 8 + 2 * 8);
+    CHECK(t.pos == 2 && !t.sel);
+}
+
+static void tf_select_kept(void)
+{
+    struct ui_textfield t;
+    ui_textfield_set(&t, "name");
+    ui_textfield_select_all(&t);
+    struct key_event e = key(KEY_CHAR, 'a', KEY_CTRL);
+    CHECK_EQ(ui_textfield_key(&t, &e), UI_TF_NONE);     /* Ctrl or Alt: consumed, kept (S10 D2) */
+    e = key(KEY_LEFT, 0, KEY_ALT);
+    CHECK_EQ(ui_textfield_key(&t, &e), UI_TF_NONE);
+    CHECK(t.sel && strcmp(t.buf, "name") == 0);
+    CHECK_EQ(press(&t, KEY_TAB, 0), UI_TF_PASS);
+    CHECK_EQ(press(&t, KEY_ENTER, 0), UI_TF_SUBMIT);
+    CHECK_EQ(press(&t, KEY_ESC, 0), UI_TF_CANCEL);
+    CHECK(t.sel && strcmp(t.buf, "name") == 0);
+    e = (struct key_event){ KEY_CHAR, 'x', 0, 0 };      /* a release does nothing */
+    CHECK_EQ(ui_textfield_key(&t, &e), UI_TF_NONE);
+    CHECK(t.sel);
+}
+
+static void tf_select_draw(void)
+{
+    struct ui_textfield t;
+    struct rect r = { 20, 20, 200, 32 };
+    for (int g = 0; g < 256; g++)
+        corner_bits[g * 16] = 0x80;
+    ui_textfield_set(&t, "ab");
+    ui_textfield_select_all(&t);
+    setup();
+    ui_textfield_draw(&cv, &t, r, 4, &fonts, true);
+    CHECK_EQ(at(120, 20), UI_ACCENT);                   /* the focused edge as before */
+    CHECK_EQ(at(28, 28), UI_TEXT_ON_ACCENT);            /* 'a' on the box */
+    CHECK_EQ(at(29, 28), UI_ACCENT);                    /* the box: from (28, 28), 2 x 8 wide, 16 high */
+    CHECK_EQ(at(36, 28), UI_TEXT_ON_ACCENT);            /* 'b' */
+    CHECK_EQ(at(43, 43), UI_ACCENT);
+    CHECK_EQ(at(44, 28), UI_SURFACE);                   /* no cursor while selected */
+    CHECK_EQ(at(45, 35), UI_SURFACE);
+    CHECK_EQ(at(28, 44), UI_SURFACE);
+    CHECK_EQ(at(27, 28), UI_SURFACE);
+    /* An empty field selects nothing: the cursor as before. */
+    ui_textfield_set(&t, "");
+    ui_textfield_select_all(&t);
+    setup();
+    ui_textfield_draw(&cv, &t, r, 4, &fonts, true);
+    CHECK_EQ(at(28, 28), UI_TEXT);
+}
+
 static int taken_n;
 static const char *taken[4];
 
@@ -368,6 +499,13 @@ int main(void)
     RUN(tf_fit);
     RUN(tf_click);
     RUN(tf_draw);
+    RUN(tf_select_all_set);         /* 1.5 stage 13 (D1) */
+    RUN(tf_select_typed_replaces);
+    RUN(tf_select_delete);
+    RUN(tf_select_moves);
+    RUN(tf_select_click);
+    RUN(tf_select_kept);
+    RUN(tf_select_draw);
     RUN(name_rules);
     RUN(name_defaults);
     return unit_report("test_ui_textfield");

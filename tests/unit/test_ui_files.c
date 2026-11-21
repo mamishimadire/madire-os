@@ -27,6 +27,7 @@
 #include "kernel/display/cicons.c"
 #include "kernel/display/ui_cicon.c"
 #include "kernel/display/ui_about.c"
+#include "kernel/display/ui_widget.c"         /* 1.5 stage 13: the question panel's buttons */
 #include "kernel/display/ui_textfield.c"
 #include "kernel/display/ui_list.c"
 #include "kernel/display/ui_files.c"
@@ -80,8 +81,8 @@ static void test_layout(void)
     CHECK(same_rect(l.cmd, 1, 100, 718, 40));
     CHECK(same_rect(l.button[UF_NEWFOLDER], 9, 104, 128, 32));
     CHECK(same_rect(l.button[UF_NEWFILE], 141, 104, 112, 32));
-    CHECK(same_rect(l.button[UF_OPEN], 257, 104, 80, 32));
-    CHECK(same_rect(l.button[UF_RENAME], 341, 104, 96, 32));
+    CHECK(same_rect(l.button[UF_OPEN], 265, 104, 32, 32));          /* 1.5 stage 13: squares, d(12) on */
+    CHECK(same_rect(l.button[UF_RENAME], 301, 104, 32, 32));
     CHECK(same_rect(l.button[UF_HIDDEN], 527, 104, 184, 32));
     CHECK(same_rect(l.status, 1, 451, 718, 28));
     CHECK(same_rect(l.body, 1, 141, 718, 309));
@@ -174,7 +175,7 @@ static void test_draw_marks(void)
     CHECK_EQ(at(705, 80), UI_SURFACE);              /* Grid resting */
     CHECK_EQ(at(671, 64), UI_BORDER);               /* its edge */
     CHECK_EQ(at(247, 120), UI_SURFACE_HOVER);       /* New File on hover */
-    CHECK_EQ(at(333, 120), UI_ACCENT_PRESSED);      /* Open pressed */
+    CHECK_EQ(at(292, 120), UI_ACCENT_PRESSED);      /* Open pressed (1.5 stage 13: its square at 265, the icon to 288) */
     /* Show hidden files ticked: the box (539, 112) 16 x 16 (corners 3)
      * filled accent; the tick (6, 12) (10, 16) (18, 8) dp at 16 px is
      * (543, 120) (545.7, 122.7) (551, 117.3), radius 0.67 px: pixel
@@ -396,9 +397,120 @@ static void test_esc(void)
     CHECK_EQ(ui_files_esc(&v), UF_ESC_CLOSE_WINDOW);
 }
 
+/* ---- 1.5 stage 13 (Q1, Q2, Q4, D2-D5) ---- */
+
+static void test_layout_s13(void)
+{
+    struct ui_files_layout l;
+    ui_files_layout((struct rect){ 0, 0, 720, 480 }, 4, &blank, true, &l);
+    /* The folder row: six squares from d(12) after New File (ends 253). */
+    CHECK(same_rect(l.button[UF_CUT], 337, 104, 32, 32));
+    CHECK(same_rect(l.button[UF_COPY], 373, 104, 32, 32));
+    CHECK(same_rect(l.button[UF_PASTE], 409, 104, 32, 32));
+    CHECK(same_rect(l.button[UF_TRASH], 445, 104, 32, 32));
+    CHECK(l.button[UF_TRASH].x + 32 < l.button[UF_HIDDEN].x);        /* clear of Show hidden files */
+    /* The Trash row: Restore (7 cells), Restore all and Empty Trash (11). */
+    CHECK(same_rect(l.button[UF_RESTORE], 9, 104, 104, 32));
+    CHECK(same_rect(l.button[UF_RESTORE_ALL], 117, 104, 136, 32));
+    CHECK(same_rect(l.button[UF_EMPTY], 257, 104, 136, 32));
+    CHECK(same_rect(l.button[UF_TDELETE], 405, 104, 32, 32));
+    /* The question panel's buttons in the content (170, 141). */
+    CHECK(same_rect(l.button[UF_ASK_CANCEL], 194, 229, 96, 32));
+    CHECK(same_rect(l.button[UF_ASK_OK], 298, 229, 128, 32));
+    CHECK(ui_files_square(UF_BACK) && ui_files_square(UF_OPEN) && ui_files_square(UF_TRASH));
+    CHECK(ui_files_square(UF_TDELETE) && !ui_files_square(UF_NEWFOLDER) && !ui_files_square(UF_RESTORE));
+    CHECK(!ui_files_square(UF_HIDDEN) && !ui_files_square(UF_ASK_OK));
+    CHECK(strcmp(ui_files_tip_texts[UF_TRASH], "Move to Trash (Delete)") == 0);
+    CHECK(strcmp(ui_files_tip_texts[UF_TDELETE], "Delete permanently (Delete)") == 0);
+    CHECK(strcmp(ui_files_tip_texts[UF_PASTE], "Paste (Ctrl+V)") == 0);
+}
+
+static void test_hit_s13(void)
+{
+    struct ui_files_layout l;
+    struct ui_files_view v;
+    memset(&v, 0, sizeof(v));
+    ui_files_layout((struct rect){ 0, 0, 720, 480 }, 4, &blank, true, &l);
+    v.mode = UI_FILES_LIST;
+    int32_t i = 0;
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 350, 110, &i), UF_CUT);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 460, 110, &i), UF_TRASH);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 20, 110, &i), UF_NEWFOLDER);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 300, 240, &i), UF_CONTENT);    /* no question: the content */
+    v.trash = true;                                     /* the Trash view's own row */
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 20, 110, &i), UF_RESTORE);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 130, 110, &i), UF_RESTORE_ALL);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 350, 110, &i), UF_EMPTY);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 420, 110, &i), UF_TDELETE);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 460, 110, &i), UF_NONE);       /* no Move to Trash there */
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 560, 110, &i), UF_HIDDEN);
+    v.trash = false;
+    v.mode = UI_FILES_ASK;
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 200, 240, &i), UF_ASK_CANCEL);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 300, 240, &i), UF_ASK_OK);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 600, 300, &i), UF_PANEL);
+    v.mode = UI_FILES_LIST;                             /* the question's buttons only while asking */
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 200, 240, &i), UF_CONTENT);
+}
+
+static void test_esc_ask(void)
+{
+    struct ui_files_view v;
+    memset(&v, 0, sizeof(v));
+    v.mode = UI_FILES_ASK;
+    CHECK_EQ(ui_files_esc(&v), UF_ESC_CANCEL_ASK);
+}
+
+static void test_draw_s13(void)
+{
+    struct ui_files_view v;
+    struct files_pathbar pb;
+    memset(&v, 0, sizeof(v));
+    files_pathbar(FILES_VIEW_TRASH, "", 0, 56, &pb);
+    v.mode = UI_FILES_ASK;
+    v.bar = UI_FILES_BAR_LIVE;
+    v.trash = true;
+    v.pb = &pb;
+    v.place = 7;
+    v.status = "3 items, 1.0 MiB free";
+    v.ask_line1 = "Empty the Trash?";
+    v.ask_line2 = "3 items will be deleted permanently.";
+    v.ask_label = "Empty Trash";
+    v.ask_focus = 0;
+    v.ask_ring = true;
+    for (int k = 0; k < UF_BUTTONS; k++)
+        v.enabled[k] = true;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(60, 120), UI_SURFACE);                  /* Restore resting: (9, 104) 104 x 32 */
+    CHECK_EQ(at(330, 108), UI_SURFACE);                 /* Empty Trash's fill */
+    CHECK_EQ(at(470, 120), UI_SURFACE_WINDOW);          /* no Move to Trash square in the Trash */
+    CHECK_EQ(at(100, 400), UI_SURFACE_ACTIVE);          /* Trash the current place */
+    CHECK_EQ(at(1, 400), UI_ACCENT);
+    CHECK_EQ(at(220, 245), UI_SURFACE_ACTIVE);          /* Cancel: ui_style_cancel */
+    CHECK_EQ(at(410, 245), UI_ACCENT);                  /* the action: ui_style_restart */
+    v.ask_state[1] = UI_BUTTON_HOVER;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(410, 245), UI_ACCENT_HOVER);
+    /* The folder view draws its squares; the info panel's line follows
+     * panel_has_app (with the '?' font, the line's '.' draws nothing, so
+     * the panel is compared through its Close button only: unchanged). */
+    v.trash = false;
+    v.mode = UI_FILES_LIST;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(470, 108), UI_SURFACE);                 /* Move to Trash's fill */
+    CHECK_EQ(at(60, 120), UI_SURFACE);                  /* New Folder there now */
+}
+
 int main(void)
 {
     printf("test_ui_files\n");
+    RUN(test_layout_s13);           /* 1.5 stage 13 */
+    RUN(test_hit_s13);
+    RUN(test_esc_ask);
+    RUN(test_draw_s13);
     RUN(test_esc);
     RUN(test_layout);
     RUN(test_hit);

@@ -2811,7 +2811,7 @@ rm -rf "$E10_EXP" && cp -a "$E8_TREE" "$E10_EXP" && (
     printf 'first line\nsecond line\n' > work/one.txt && cat big.txt big.txt > work/big2.txt &&
     printf 'inner\n' > work/sub/inner.txt && mv notes.txt work/notes-moved.txt && mv z-last.txt last.txt &&
     rm m-middle.txt && rmdir empty && printf 'after sync\n' > work/late.txt && rm docs/b.txt &&
-    mkdir -p user/Desktop user/Documents user/Downloads user/Pictures user/Music user/Videos user/Trash
+    mkdir -p user/Desktop user/Documents user/Downloads user/Pictures user/Music user/Videos
 ) || E10_OK=0
 # 1.4 stage 12 (changed, the owner's decision): boot A, a normal boot, makes
 # the home folders at the mount (D18; in the expected tree above) and the
@@ -3756,3 +3756,137 @@ else
     fail "[1.5] contrast: a colour pair the Files window's icons or the Files window draws is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its mark (see the CONTRAST lines)"
 fi
 echo "      [1.5] the Files window's scenes (static): $(( $(date +%s) - W12_T0 )) s (report only)"
+
+section "[1.5] The Trash view, the question panel, the selected rename field and the Files menus against tests/desktop_ref.py, their contrast check, and 1.4's visible Trash at the mount (stage 13)"
+# docs/plans/1.5.md, C6, C6b, note (13) and the S13 decisions D1-D5 and
+# Q1-Q9; ui_files.h, ui_menu.h, ui_textfield.h and ui_list.h's 1.5 stage 13
+# rules. The host tool (build/desktopdump) draws files_trash (the Files
+# window in the Trash view: its command row Restore, Restore all on hover,
+# Empty Trash and the Delete permanently square, the three columns Name,
+# Original location and Deleted, an item whose original location and date
+# are unknown, one item selected, Trash the current place), files_ask (the
+# question "Empty the Trash?" over it: Cancel focused with the ring, Empty
+# Trash on hover), files_rename_sel (the folder view's six squares, the
+# rename field with the whole name selected, Paste on hover with its
+# tooltip), files_menu_item (the item's menu above the window: Paste greyed,
+# Cut selected, the key hints) and files_menu_space (the empty space's menu:
+# Show hidden files ticked, New Folder selected by the keyboard with the
+# ring); desktop_ref.py draws them from the same rules. Five modes, both
+# pixel formats, every scale but 125 %; the colour pairs checked against
+# the Design Guide's section 12 table as in stage 12 (their own pairs
+# file). Then two -kernel boots (no test= option, as 1.4 stage 12's home
+# boots) of marked disks written as 1.4 left them: /home/user with its
+# seven folders, Trash empty (A) or holding old.txt (B). A: the empty Trash
+# removed and saved at the mount (its home: line), then the six folders
+# found; debugfs lists exactly those six under /user; e2fsck -fn clean. B:
+# Trash kept as a normal folder (its line) with old.txt unchanged; the six
+# folders found; e2fsck -fn clean.
+W13_T0=$(date +%s)
+PAIRS13=$OUT/desktop-pairs-files13.txt
+rm -f "$PAIRS13"
+desktop13_static() {   # desktop13_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS13 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'PYEOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+PYEOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    local what
+    case $4 in
+        files_trash) what="the Trash view (its command row, the three columns, an unknown original location and date, Trash the current place)" ;;
+        files_ask) what="the question panel over the Trash view (Cancel focused with the ring, Empty Trash on hover)" ;;
+        files_rename_sel) what="the folder view's six squares, the rename field with the whole name selected, Paste's tooltip" ;;
+        files_menu_item) what="the item's right-click menu (Paste greyed, Cut selected, the key hints)" ;;
+        *) what="the empty space's right-click menu (Show hidden files ticked, New Folder selected by the keyboard)" ;;
+    esac
+    if [ "$n" = same ]; then
+        pass "[1.5] the Files scene $4 at $1x$2x$(($3 * 8)): $what equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.5] the $4 scene at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in files_trash files_ask files_rename_sel files_menu_item files_menu_space; do
+        # shellcheck disable=SC2086
+        desktop13_static $mode $scene
+    done
+done
+CONTRAST13=$(python3 "$DREF" --contrast "$PAIRS13" 2>&1)
+printf '%s\n' "$CONTRAST13" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST13" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST13" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 5 scenes \(files_ask files_menu_item files_menu_space files_rename_sel files_trash\)$' &&
+   printf '%s\n' "$CONTRAST13" | grep -qE '^CONTRAST carried pass carried-bar ' &&
+   printf '%s\n' "$CONTRAST13" | grep -qE '^CONTRAST carried pass carried-pointer '; then
+    pass "[1.5] contrast: every colour pair the Trash view, the question panel, the selected rename field and the Files menus draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; the selected fills carried by their accent marks, the hover fills by the pointer"
+else
+    fail "[1.5] contrast: a colour pair of the S13 Files scenes is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its mark (see the CONTRAST lines)"
+fi
+echo "      [1.5] the S13 Files scenes (static): $(( $(date +%s) - W13_T0 )) s (report only)"
+T13_W=$OUT/old-trash
+rm -rf "${T13_W:?}" && mkdir -p "$T13_W/a/user" "$T13_W/b/user"
+T13_OK=1
+for t in a b; do
+    for d in Desktop Documents Downloads Pictures Music Videos Trash; do mkdir -p "$T13_W/$t/user/$d"; done
+done
+printf 'kept by 1.4\n' > "$T13_W/b/user/Trash/old.txt"
+T13_OLD=$(sha256sum < "$T13_W/b/user/Trash/old.txt" | cut -d' ' -f1)
+for t in a b; do
+    disk_mkfs "$T13_W/fs-$t.img" 4096 1024 256 256 "$T13_W/$t" > "$T13_W/mkfs-$t.txt" 2>&1 &&
+        disk_image mbr "$T13_W/fs-$t.img" "$T13_W/disk-$t.img" > /dev/null 2>&1 || T13_OK=0
+done
+t13_boot() {   # t13_boot <a|b>: the boot and its /user listing ("name mode" per entry, sorted)
+    local log=$OUT/serial-oldtrash-$1.log
+    boot_until "$log" 60 "$PCI_READY" -m 128M -kernel "$KERNEL" \
+        -drive file="$T13_W/disk-$1.img",if=none,id=t13-disk,format=raw -device ich9-ahci,id=t13-ahci,addr=0x5 \
+        -device ide-hd,drive=t13-disk,bus=t13-ahci.0
+    grep -E '^home: ' "$log" | sed "s/^/      $1: /"
+    disk_image extract "$T13_W/disk-$1.img" "$T13_W/part-$1.img" > /dev/null 2>&1
+}
+t13_user() {   # t13_user <a|b>: the folders under /user, sorted by name, one per line
+    disk_debugfs "$T13_W/part-$1.img" "ls -p /user" |
+        awk -F/ 'NF >= 7 && $6 != "." && $6 != ".." && $3 ~ /^0?40/ { print $6 }' | LC_ALL=C sort
+}
+t13_fsck() {   # t13_fsck <a|b>: e2fsck -fn reports nothing
+    local out rc extra
+    out=$(disk_fsck "$T13_W/part-$1.img"); rc=$?
+    extra=$(grep -vE '^(e2fsck [0-9]+\.[0-9]+.*|Pass [1-5]: .*|madire-test: [0-9]+/[0-9]+ files \(.*\), [0-9]+/[0-9]+ blocks|)$' <<< "$out")
+    echo "      $1: e2fsck -fn exit $rc${extra:+: $extra}"
+    [ "$rc" -eq 0 ] && [ -z "$extra" ]
+}
+T13_SIX=$(printf '%s\n' Desktop Documents Downloads Music Pictures Videos)
+t13_boot a
+T13_UA=$(t13_user a)
+echo "      a: /user holds $(tr '\n' ' ' <<< "$T13_UA")"
+T13_LA=$OUT/serial-oldtrash-a.log
+if [ "$T13_OK" -eq 1 ] && [ -s "$T13_LA" ] && grep -qxF "$PCI_READY" "$T13_LA" && ! grep -qE 'PANIC|FAILED' "$T13_LA" &&
+   [ "$(grep -c '^home: ' "$T13_LA")" -eq 2 ] &&
+   grep -qE '^home: the empty /home/user/Trash of 1\.4 removed \(the Trash is now /home/user/\.local/share/Trash\); saved: [1-9][0-9]* saves, [1-9][0-9]* writes$' "$T13_LA" &&
+   grep -qxF "home: /home/user and its 6 folders are already there; nothing made (D18: never recreated)" "$T13_LA" &&
+   [ "$T13_UA" = "$T13_SIX" ] && t13_fsck a; then
+    pass "[1.5] 1.4's visible Trash: an empty /home/user/Trash is removed at the first read-write mount and saved (its home: line), the six home folders found (nothing made); debugfs lists exactly those six under /user; e2fsck -fn reports nothing"
+else
+    fail "[1.5] 1.4's empty Trash at the mount: $(grep -E '^home: ' "$T13_LA" | tr '\n' ' ')/user: $(tr '\n' ' ' <<< "$T13_UA")"
+fi
+t13_boot b
+T13_UB=$(t13_user b)
+echo "      b: /user holds $(tr '\n' ' ' <<< "$T13_UB")"
+T13_LB=$OUT/serial-oldtrash-b.log
+T13_GOT=$(disk_debugfs "$T13_W/part-b.img" "cat /user/Trash/old.txt" | sha256sum | cut -d' ' -f1)
+if [ "$T13_OK" -eq 1 ] && [ -s "$T13_LB" ] && grep -qxF "$PCI_READY" "$T13_LB" && ! grep -qE 'PANIC|FAILED' "$T13_LB" &&
+   [ "$(grep -c '^home: ' "$T13_LB")" -eq 2 ] &&
+   grep -qxF "home: /home/user/Trash of 1.4 kept as a normal folder (it is not empty)" "$T13_LB" &&
+   grep -qxF "home: /home/user and its 6 folders are already there; nothing made (D18: never recreated)" "$T13_LB" &&
+   [ "$T13_UB" = "$(printf '%s\n' Desktop Documents Downloads Music Pictures Trash Videos)" ] &&
+   [ "$T13_GOT" = "$T13_OLD" ] && t13_fsck b; then
+    pass "[1.5] 1.4's visible Trash: a /home/user/Trash that holds a file stays as a normal folder (its home: line), the file unchanged (debugfs's SHA-256), the six home folders found; e2fsck -fn reports nothing"
+else
+    fail "[1.5] 1.4's non-empty Trash at the mount: $(grep -E '^home: ' "$T13_LB" | tr '\n' ' ')/user: $(tr '\n' ' ' <<< "$T13_UB")"
+fi
+echo "      [1.5] the S13 static section: $(( $(date +%s) - W13_T0 )) s (report only)"

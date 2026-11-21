@@ -2196,7 +2196,7 @@ if (Want "storage") {
              "^mount: the mount held the VFS lock [0-9]+ us \([0-9]+ ticks\) ",
              "^mount: changes are kept in memory .*; automatic save every 5 s: on$",
              "^Storage: AHCI [0-9a-f]{2}:[0-9a-f]{2}\.[0-7], port 0 disk VBOX HARDDISK [0-9.]+ [MG]iB, MBR, 1 partition, writes would be ALLOWED on partition 1; ext2 'madire-test' mounted read-write on /home \(Disk mode\)$",
-             "^home: 8 folders made, 0 already there \(/home/user with Desktop, Documents, Downloads, Pictures, Music, Videos and Trash\); saved: ",
+             "^home: 7 folders made, 0 already there \(/home/user with Desktop, Documents, Downloads, Pictures, Music and Videos\); saved: ",
              "^System ready\.", "^Desktop: shown on ",
              "^Disk mode: files in /home are saved on the disk\.$",
              "^Files elsewhere \(such as /tmp\) are lost when the computer restarts\.$")
@@ -2275,7 +2275,7 @@ if (Want "storage") {
                                      "^ext2: port 0 partition 1: revision 1, 1024-byte blocks, 65536 blocks \([0-9]+ free\), 4096 inodes \([0-9]+ free\), [0-9]+ groups, 256-byte inodes, label 'madire-test'; features .*; state 0x1 \(clean, error bit not set\)$",
                                      "^mount: ext2 'madire-test' \(port 0, partition 1\) on /home as filesystem 1, read-write; ",
                                      "^Storage: AHCI .*, writes would be ALLOWED on partition 1; ext2 'madire-test' mounted read-write on /home \(Disk mode\)$",
-                                     "^home: /home/user and its 7 folders are already there; nothing made \(D18: never recreated\)$",
+                                     "^home: /home/user and its 6 folders are already there; nothing made \(D18: never recreated\)$",
                                      "^System ready\.", "^Desktop: shown on ",
                                      "^Disk mode: files in /home are saved on the disk\.$")
                             $until = (Get-Date).AddSeconds(150)

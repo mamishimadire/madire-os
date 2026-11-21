@@ -426,6 +426,10 @@ $(BUILD)/unit/test_files_core: $(FILES_DEPS) | $(FILESDUMP) $(FILESDUMP_ASAN)
 $(BUILD)/unit/test_trash_core: kernel/files/trash_core.c kernel/files/trash_core.h
 # 1.5 stage 12: the Files window's suite includes the Files core (the path bar).
 $(BUILD)/unit/test_ui_files: kernel/files/files_core.c kernel/files/files_core.h
+# 1.5 stage 13: the Files actions' suite includes their pure core and the
+# Files and Trash cores it calls.
+$(BUILD)/unit/test_files_ops: kernel/files/files_ops.c kernel/files/files_ops.h $(FILES_SRCS) \
+                              kernel/files/files_core.h kernel/files/trash_core.h
 
 toolkit: $(TOOLKIT_OBJS)
 

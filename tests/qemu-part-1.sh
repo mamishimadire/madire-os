@@ -2429,8 +2429,9 @@ section "[1.4] The home folders (D18): made once on a read-write mount, never re
 # 1). -kernel boots at -m 128M with no test= option (a test= boot makes no
 # home folders, as D8's automatic save), the disk on ich9-ahci: (1) a
 # fresh marked disk: /home/user with Desktop, Documents, Downloads,
-# Pictures, Music, Videos and Trash made and saved at the mount ("home:"
-# line); debugfs lists exactly those under /user and e2fsck -fn reports
+# Pictures, Music and Videos made and saved at the mount ("home:" line;
+# 1.5 stage 13: six folders, the Trash is .local/share/Trash, made by
+# Files when first needed); debugfs lists exactly those under /user and e2fsck -fn reports
 # nothing. (2) The same image again: nothing made (its line), the folders'
 # inode numbers unchanged. (3) A marked disk with an unknown RO_COMPAT flag
 # (mounted read-only): no home: line, the image unchanged. (4) No disk
@@ -2439,7 +2440,7 @@ H12_W=$OUT/home-folders
 rm -rf "${H12_W:?}" && mkdir -p "$H12_W"
 H12_OK=1
 H12_READY="System ready. Press any key to open the console."
-H12_NAMES="Desktop Documents Downloads Pictures Music Videos Trash"
+H12_NAMES="Desktop Documents Downloads Pictures Music Videos"
 disk_mkfs "$H12_W/fs.img" 4096 1024 256 256 "" > "$H12_W/mkfs.txt" 2>&1 &&
     disk_image mbr "$H12_W/fs.img" "$H12_W/disk.img" > /dev/null 2>&1 || H12_OK=0
 python3 -I -B "$(dirname "$0")/ext2_view.py" set "$H12_W/fs.img" "$H12_W/ro-fs.img" $((1024 + 100)) 4 0x8 or > /dev/null 2>&1 &&
@@ -2474,10 +2475,10 @@ H12_WANT=$(for n in $H12_NAMES; do echo "$n"; done | LC_ALL=C sort | tr '\n' ' '
 H12_GOT=$(awk '$3 ~ /^0?40/ { print $1 }' <<< "$H12_U1" | tr '\n' ' ')
 if [ "$H12_OK" -eq 1 ] && h12_health "$OUT/serial-home-first.log" &&
    [ "$(grep -c '^home: ' "$OUT/serial-home-first.log")" -eq 1 ] &&
-   grep -qE '^home: 8 folders made, 0 already there \(/home/user with Desktop, Documents, Downloads, Pictures, Music, Videos and Trash\); saved: [1-9][0-9]* saves, [1-9][0-9]* writes; ' "$OUT/serial-home-first.log" &&
-   [ -n "$H12_ROOT1" ] && [ "$H12_GOT" = "$H12_WANT" ] && [ "$(grep -c . <<< "$H12_U1")" -eq 7 ] &&
+   grep -qE '^home: 7 folders made, 0 already there \(/home/user with Desktop, Documents, Downloads, Pictures, Music and Videos\); saved: [1-9][0-9]* saves, [1-9][0-9]* writes; ' "$OUT/serial-home-first.log" &&
+   [ -n "$H12_ROOT1" ] && [ "$H12_GOT" = "$H12_WANT" ] && [ "$(grep -c . <<< "$H12_U1")" -eq 6 ] &&
    [ "$H12_FRC" -eq 0 ] && [ -z "$H12_FX" ]; then
-    pass "[1.4] home folders, the first read-write mount: /home/user and its 7 folders (Desktop, Documents, Downloads, Pictures, Music, Videos, Trash) made and saved at the mount (one home: line); debugfs lists exactly those 7 folders under /user, e2fsck -fn reports nothing"
+    pass "[1.4] home folders, the first read-write mount: /home/user and its 6 folders (Desktop, Documents, Downloads, Pictures, Music, Videos) made and saved at the mount (one home: line); debugfs lists exactly those 6 folders under /user, e2fsck -fn reports nothing"
 else
     fail "[1.4] home folders, the first read-write mount: the home: line, the folders on the disk or e2fsck -fn not as expected (see serial-home-first.log)"
 fi
@@ -2487,9 +2488,9 @@ H12_U2=$(h12_user "$H12_W/disk.img")
 H12_ROOT2=$(disk_debugfs "$H12_W/part.img" "ls -p /" | awk -F/ '$6 == "user" { print $2, $3 }')
 if [ "$H12_OK" -eq 1 ] && h12_health "$OUT/serial-home-second.log" &&
    [ "$(grep -c '^home: ' "$OUT/serial-home-second.log")" -eq 1 ] &&
-   grep -qxF "home: /home/user and its 7 folders are already there; nothing made (D18: never recreated)" "$OUT/serial-home-second.log" &&
+   grep -qxF "home: /home/user and its 6 folders are already there; nothing made (D18: never recreated)" "$OUT/serial-home-second.log" &&
    [ -n "$H12_U1" ] && [ "$H12_U1" = "$H12_U2" ] && [ "$H12_ROOT1" = "$H12_ROOT2" ]; then
-    pass "[1.4] home folders, the second mount of the same disk: nothing made (its home: line), /user and its 7 folders keep their inode numbers (never recreated)"
+    pass "[1.4] home folders, the second mount of the same disk: nothing made (its home: line), /user and its 6 folders keep their inode numbers (never recreated)"
 else
     fail "[1.4] home folders, the second mount: folders made again, or their inode numbers changed (see serial-home-second.log)"
 fi

@@ -24,22 +24,66 @@ const char *const ui_files_button_labels[UF_BUTTONS] = {
     [UF_NONE] = "", [UF_BACK] = "Back", [UF_FORWARD] = "Forward", [UF_UP] = "Up", [UF_LIST] = "List",
     [UF_GRID] = "Grid", [UF_NEWFOLDER] = "New Folder", [UF_NEWFILE] = "New File", [UF_OPEN] = "Open",
     [UF_RENAME] = "Rename", [UF_HIDDEN] = "Show hidden files", [UF_CLOSE] = "Close",
+    /* 1.5 stage 13 (the squares' names are their tooltips' first words) */
+    [UF_CUT] = "Cut", [UF_COPY] = "Copy", [UF_PASTE] = "Paste", [UF_TRASH] = "Move to Trash",
+    [UF_RESTORE] = "Restore", [UF_RESTORE_ALL] = "Restore all", [UF_EMPTY] = "Empty Trash",
+    [UF_TDELETE] = "Delete permanently", [UF_ASK_CANCEL] = "Cancel", [UF_ASK_OK] = "Ask OK",
 };
 
 const int ui_files_button_icons[UF_BUTTONS] = {
     [UF_NONE] = UI_ICON_NONE, [UF_BACK] = UI_ICON_BACK, [UF_FORWARD] = UI_ICON_FORWARD, [UF_UP] = UI_ICON_UP,
     [UF_LIST] = UI_ICON_LIST, [UF_GRID] = UI_ICON_GRID, [UF_NEWFOLDER] = UI_ICON_NEW_FOLDER,
     [UF_NEWFILE] = UI_ICON_NEW_FILE, [UF_OPEN] = UI_ICON_OPEN, [UF_RENAME] = UI_ICON_RENAME,
-    [UF_HIDDEN] = UI_ICON_NONE, [UF_CLOSE] = UI_ICON_NONE,
+    [UF_HIDDEN] = UI_ICON_NONE, [UF_CLOSE] = UI_ICON_NONE, [UF_CUT] = UI_ICON_CUT, [UF_COPY] = UI_ICON_COPY,
+    [UF_PASTE] = UI_ICON_PASTE, [UF_TRASH] = UI_ICON_PLACE_TRASH, [UF_RESTORE] = UI_ICON_RESTORE,
+    [UF_RESTORE_ALL] = UI_ICON_RESTORE, [UF_EMPTY] = UI_ICON_PLACE_TRASH, [UF_TDELETE] = UI_ICON_PLACE_TRASH,
+    [UF_ASK_CANCEL] = UI_ICON_NONE, [UF_ASK_OK] = UI_ICON_NONE,
 };
 
 const char *const ui_files_panel_labels[4] = { "Name", "Size", "Type", "Modified" };
 
 const char *const ui_files_tip_texts[UF_BUTTONS] = {
     [UF_NONE] = "", [UF_BACK] = "Back (Alt+Left)", [UF_FORWARD] = "Forward (Alt+Right)", [UF_UP] = "Up (Alt+Up)",
-    [UF_LIST] = "", [UF_GRID] = "", [UF_NEWFOLDER] = "", [UF_NEWFILE] = "", [UF_OPEN] = "", [UF_RENAME] = "",
-    [UF_HIDDEN] = "", [UF_CLOSE] = "",
+    [UF_LIST] = "", [UF_GRID] = "", [UF_NEWFOLDER] = "", [UF_NEWFILE] = "", [UF_OPEN] = "Open (Enter)",
+    [UF_RENAME] = "Rename (F2)", [UF_HIDDEN] = "", [UF_CLOSE] = "", [UF_CUT] = "Cut (Ctrl+X)",
+    [UF_COPY] = "Copy (Ctrl+C)", [UF_PASTE] = "Paste (Ctrl+V)", [UF_TRASH] = "Move to Trash (Delete)",
+    [UF_RESTORE] = "", [UF_RESTORE_ALL] = "", [UF_EMPTY] = "", [UF_TDELETE] = "Delete permanently (Delete)",
+    [UF_ASK_CANCEL] = "", [UF_ASK_OK] = "",
 };
+
+bool ui_files_square(enum ui_files_part p)
+{
+    return (p >= UF_BACK && p <= UF_UP) || p == UF_OPEN || p == UF_RENAME || (p >= UF_CUT && p <= UF_TRASH) ||
+           p == UF_TDELETE;
+}
+
+/* 1.5 stage 13: the buttons a view shows and hits (the toolbar's, its
+ * command row's: the folder's or the Trash's; the question's). */
+static bool files_shown(const struct ui_files_view *v, int part)
+{
+    switch (part) {
+    case UF_NEWFOLDER:
+    case UF_NEWFILE:
+    case UF_OPEN:
+    case UF_RENAME:
+    case UF_CUT:
+    case UF_COPY:
+    case UF_PASTE:
+    case UF_TRASH:
+        return !v->trash;
+    case UF_RESTORE:
+    case UF_RESTORE_ALL:
+    case UF_EMPTY:
+    case UF_TDELETE:
+        return v->trash;
+    case UF_CLOSE:
+    case UF_ASK_CANCEL:
+    case UF_ASK_OK:
+        return false;                   /* the content's own (panel, question) */
+    default:
+        return part > UF_NONE && part < UF_BUTTONS;
+    }
+}
 
 /* The colour under (x, y) before a mark is drawn there, for the trace
  * (ui_trace.h); nothing outside the surface. */
@@ -63,6 +107,8 @@ enum ui_files_esc ui_files_esc(const struct ui_files_view *v)
         return UF_ESC_CANCEL_RENAME;
     if (v->mode == UI_FILES_PANEL)
         return UF_ESC_CLOSE_PANEL;
+    if (v->mode == UI_FILES_ASK)
+        return UF_ESC_CANCEL_ASK;       /* 1.5 stage 13 */
     return UF_ESC_CLOSE_WINDOW;
 }
 
@@ -116,12 +162,27 @@ void ui_files_layout(struct rect r, uint32_t s, const struct font *f, bool bar, 
     out->path = (struct rect){ px0, y + d4, px1 > px0 ? px1 - px0 : 0, d32 };
     y += d40;
     out->cmd = (struct rect){ x0, y, iw, d40 };
+    /* 1.5 stage 13: New Folder and New File, then six squares d(12) on. */
     int32_t bx = x0 + d8;
-    for (int i = UF_NEWFOLDER; i <= UF_RENAME; i++) {
+    for (int i = UF_NEWFOLDER; i <= UF_NEWFILE; i++) {
         int32_t w = files_button_w(f, i, s);
         out->button[i] = (struct rect){ bx, y + d4, w, d32 };
         bx += w + d4;
     }
+    static const int files_squares[6] = { UF_OPEN, UF_RENAME, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH };
+    bx += d8;
+    for (int k = 0; k < 6; k++) {
+        out->button[files_squares[k]] = (struct rect){ bx, y + d4, d32, d32 };
+        bx += d32 + d4;
+    }
+    /* The Trash view's row: Restore, Restore all, Empty Trash, then the square. */
+    bx = x0 + d8;
+    for (int i = UF_RESTORE; i <= UF_EMPTY; i++) {
+        int32_t w = files_button_w(f, i, s);
+        out->button[i] = (struct rect){ bx, y + d4, w, d32 };
+        bx += w + d4;
+    }
+    out->button[UF_TDELETE] = (struct rect){ bx + d8, y + d4, d32, d32 };
     int32_t hw = files_button_w(f, UF_HIDDEN, s);
     out->button[UF_HIDDEN] = (struct rect){ x1 - d8 - hw, y + d4, hw, d32 };
     y += d40;
@@ -137,6 +198,10 @@ void ui_files_layout(struct rect r, uint32_t s, const struct font *f, bool bar, 
     out->panel_close = (struct rect){ c.x + ui_px(96, s), msg_y + d28 + d8,
                                       ui_text_width(f, ui_files_button_labels[UF_CLOSE]) + 2 * ui_px(12, s), d32 };
     out->button[UF_CLOSE] = out->panel_close;
+    /* 1.5 stage 13: the question panel's buttons. */
+    int32_t ay = c.y + ui_px(88, s), ax = c.x + ui_px(24, s);
+    out->button[UF_ASK_CANCEL] = (struct rect){ ax, ay, ui_px(96, s), d32 };
+    out->button[UF_ASK_OK] = (struct rect){ ax + ui_px(96, s) + d8, ay, ui_px(128, s), d32 };
 }
 
 uint32_t ui_files_path_cells(const struct ui_files_layout *lay, uint32_t s, const struct font *f)
@@ -170,8 +235,8 @@ enum ui_files_part ui_files_hit(const struct ui_files_layout *lay, const struct 
     *index = -1;
     if (v->mode == UI_FILES_NOMEM)
         return UF_NONE;
-    for (int i = UF_BACK; i <= UF_HIDDEN; i++)
-        if (ui_rect_contains(lay->button[i], x, y))
+    for (int i = UF_BACK; i < UF_BUTTONS; i++)            /* 1.5 stage 13: the view's own buttons */
+        if (files_shown(v, i) && ui_rect_contains(lay->button[i], x, y))
             return (enum ui_files_part)i;
     if (ui_rect_contains(lay->path, x, y)) {
         int32_t tx = lay->path.x + ui_px(32, s);
@@ -196,6 +261,11 @@ enum ui_files_part ui_files_hit(const struct ui_files_layout *lay, const struct 
     if (ui_rect_contains(lay->content, x, y)) {
         if (v->mode == UI_FILES_PANEL)
             return ui_rect_contains(lay->panel_close, x, y) ? UF_CLOSE : UF_PANEL;
+        if (v->mode == UI_FILES_ASK) {      /* 1.5 stage 13: the question panel */
+            if (ui_rect_contains(lay->button[UF_ASK_CANCEL], x, y))
+                return UF_ASK_CANCEL;
+            return ui_rect_contains(lay->button[UF_ASK_OK], x, y) ? UF_ASK_OK : UF_PANEL;
+        }
         return UF_CONTENT;
     }
     if (ui_rect_contains(lay->bar, x, y))
@@ -239,7 +309,7 @@ static void files_button(const struct ui_canvas *c, const struct ui_files_view *
     }
     uint32_t fg = on ? UI_TEXT : UI_TEXT_MUTED;
     int32_t ip = ui_px(16, s), iy = b.y + (b.h - ip) / 2, ty = b.y + (b.h - (int32_t)f->height) / 2;
-    if (part >= UF_BACK && part <= UF_UP) {
+    if (ui_files_square((enum ui_files_part)part)) {        /* 1.5 stage 13: every square */
         ui_icon_draw(c, ui_files_button_icons[part], b.x + (b.w - ip) / 2, iy, ip, fg);
         return;
     }
@@ -278,7 +348,7 @@ static void files_text(const struct ui_canvas *c, const struct font *f, int32_t 
 }
 
 static void files_path(const struct ui_canvas *c, const struct ui_files_layout *lay,
-                       const struct files_pathbar *pb, uint32_t s, const struct font *f)
+                       const struct files_pathbar *pb, uint32_t s, const struct font *f, bool trash)
 {
     struct rect p = lay->path;
     if (ui_rect_empty(p))
@@ -286,7 +356,9 @@ static void files_path(const struct ui_canvas *c, const struct ui_files_layout *
     ui_fill_round(c, p, ui_px(4, s), UI_CORNERS_ALL, UI_SURFACE);
     struct ui_canvas in = { c->s, ui_rect_intersect(c->clip, p) };
     int32_t ip = ui_px(16, s);
-    ui_icon_draw(&in, UI_ICON_PLACE_HOME, p.x + ui_px(8, s), p.y + (p.h - ip) / 2, ip, UI_ACCENT);
+    /* 1.5 stage 13: the Trash view shows the trash place's icon. */
+    ui_icon_draw(&in, trash ? UI_ICON_PLACE_TRASH : UI_ICON_PLACE_HOME, p.x + ui_px(8, s), p.y + (p.h - ip) / 2, ip,
+                 UI_ACCENT);
     if (!pb)
         return;
     int32_t tx = p.x + ui_px(32, s), ty = p.y + (p.h - (int32_t)f->height) / 2, fw = (int32_t)f->width;
@@ -329,7 +401,7 @@ static void files_side(const struct ui_canvas *c, const struct ui_files_layout *
             files_trace(&in, UI_TRACE_STATE, UI_ACCENT, (int64_t)bar.x, (int64_t)bar.y + bar.h / 2);
             ui_fill(&in, bar, UI_ACCENT);
         }
-        bool later = k >= 7;
+        bool later = k >= 8;                /* 1.5 stage 13: Trash is a place now; This PC in S14 */
         ui_icon_draw(&in, ui_files_place_icons[k], it.x + d12, it.y + (it.h - ip) / 2, ip,
                      later ? UI_TEXT_MUTED : UI_ACCENT);
         ui_text(&in, f, it.x + ui_px(36, s), it.y + (it.h - (int32_t)f->height) / 2, ui_files_place_names[k],
@@ -354,8 +426,27 @@ static void files_panel(const struct ui_canvas *c, const struct ui_files_layout 
         files_text(&in, f, vx, ty, room, v->panel_values[k], UI_TEXT);
     }
     int32_t my = cr.y + d24 + 4 * d28 + ui_px(8, s);
-    ui_text(&in, f, lx, my + (d28 - fh) / 2, UI_FILES_NOAPP_TEXT, UI_TEXT);
+    if (!v->panel_has_app)                  /* 1.5 stage 13: Properties of a folder or a text file */
+        ui_text(&in, f, lx, my + (d28 - fh) / 2, UI_FILES_NOAPP_TEXT, UI_TEXT);
     files_button(&in, v, lay->panel_close, UF_CLOSE, s, f);
+}
+
+/* 1.5 stage 13: the question panel (the rules in ui_files.h). */
+static void files_ask(const struct ui_canvas *c, const struct ui_files_layout *lay, const struct ui_files_view *v,
+                      uint32_t s, const struct ui_fonts *fs)
+{
+    struct rect cr = lay->content;
+    struct ui_canvas in = { c->s, ui_rect_intersect(c->clip, cr) };
+    if (ui_rect_empty(in.clip))
+        return;
+    const struct font *f = fs->regular;
+    int32_t room = cr.w - ui_px(48, s);
+    files_text(&in, f, cr.x + ui_px(24, s), cr.y + ui_px(24, s), room, v->ask_line1, UI_TEXT);
+    files_text(&in, f, cr.x + ui_px(24, s), cr.y + ui_px(44, s), room, v->ask_line2, UI_TEXT);
+    struct ui_button cancel = { lay->button[UF_ASK_CANCEL], "Cancel", UI_ICON_NONE, 0 };
+    struct ui_button ok = { lay->button[UF_ASK_OK], v->ask_label ? v->ask_label : "", UI_ICON_NONE, 0 };
+    ui_button_draw(&in, &cancel, &ui_style_cancel, v->ask_state[0], v->ask_ring && v->ask_focus == 0, s, fs);
+    ui_button_draw(&in, &ok, &ui_style_restart, v->ask_state[1], v->ask_ring && v->ask_focus == 1, s, fs);
 }
 
 void ui_files_draw(const struct ui_canvas *c, struct rect r, uint32_t s, const struct ui_fonts *f,
@@ -382,15 +473,18 @@ void ui_files_draw(const struct ui_canvas *c, struct rect r, uint32_t s, const s
     }
     for (int i = UF_BACK; i <= UF_UP; i++)
         files_button(&cv, v, lay.button[i], i, s, fr);
-    files_path(&cv, &lay, v->pb, s, fr);
-    for (int i = UF_LIST; i <= UF_HIDDEN; i++)
-        files_button(&cv, v, lay.button[i], i, s, fr);
+    files_path(&cv, &lay, v->pb, s, fr, v->trash);
+    for (int i = UF_LIST; i < UF_BUTTONS; i++)            /* 1.5 stage 13: the view's command row */
+        if (files_shown(v, i) && i != UF_BACK && i != UF_FORWARD && i != UF_UP)
+            files_button(&cv, v, lay.button[i], i, s, fr);
     ui_fill(&cv, (struct rect){ lay.x0, lay.cmd.y + lay.cmd.h, lay.iw, E }, UI_BORDER);
     ui_fill(&cv, (struct rect){ lay.side.x + lay.side.w, lay.body.y, E, lay.body.h }, UI_BORDER);
     ui_fill(&cv, (struct rect){ lay.x0, lay.status.y - E, lay.iw, E }, UI_BORDER);
     files_side(&cv, &lay, v, s, fr);
     if (v->mode == UI_FILES_PANEL) {
         files_panel(&cv, &lay, v, s, fr);
+    } else if (v->mode == UI_FILES_ASK) {
+        files_ask(&cv, &lay, v, s, f);
     } else if (v->list) {
         struct ui_canvas lc = { c->s, ui_rect_intersect(cv.clip, lay.content) };
         if (!ui_rect_empty(lc.clip)) {
@@ -405,7 +499,7 @@ void ui_files_draw(const struct ui_canvas *c, struct rect r, uint32_t s, const s
     struct ui_canvas sc = { c->s, ui_rect_intersect(cv.clip, lay.status) };
     files_text(&sc, fr, lay.status.x + ui_px(12, s), lay.status.y + (lay.status.h - fh) / 2,
                lay.status.w - ui_px(24, s), v->status, v->status_error ? UI_DANGER : UI_TEXT_MUTED);
-    if (v->tip >= UF_BACK && v->tip <= UF_UP) {
+    if (ui_files_square(v->tip) && files_shown(v, v->tip)) {     /* 1.5 stage 13: every square */
         struct rect b = lay.button[v->tip];
         const char *name = ui_files_tip_texts[v->tip];
         struct rect box = { b.x, b.y + b.h + ui_px(4, s), ui_text_width(fr, name) + 2 * ui_px(8, s), ui_px(24, s) };

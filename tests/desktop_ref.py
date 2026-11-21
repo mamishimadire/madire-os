@@ -380,10 +380,16 @@ ICONS.update({
     "place_trash": [[(4, 7), (20, 7)], [(9, 7), (9, 4), (15, 4), (15, 7)], [(6, 7), (7, 20), (17, 20), (18, 7)],
                     [(10, 10), (10, 17)], [(14, 10), (14, 17)]],
     "place_thispc": [box(5, 5, 19, 15), [(3, 19), (21, 19)], [(5, 15), (3, 19)], [(19, 15), (21, 19)]],
+    # 1.5 stage 13: Cut, Copy, Paste and Restore (icons.c's second table).
+    "cut": [arc(7, 17, 3, 0, 360, 45), arc(17, 17, 3, 0, 360, 45), [(9, 15), (17, 5)], [(15, 15), (7, 5)]],
+    "copy": [[(9, 7), (9, 3), (19, 3), (19, 15), (15, 15)], box(5, 7, 15, 21)],
+    "paste": [[(9, 5), (6, 5), (6, 21), (18, 21), (18, 5), (15, 5)], box(9, 3, 15, 7), [(9, 12), (15, 12)],
+              [(9, 16), (15, 16)]],
+    "restore": [[(9, 5), (5, 9), (9, 13)], [(5, 9)] + arc(15, 14, 5, 0, 180, 15) + [(8, 19)]],
 })
 S12_ICON_ORDER = ["new_folder", "new_file", "open", "rename", "list", "grid", "check", "place_home", "place_desktop",
                   "place_documents", "place_downloads", "place_pictures", "place_music", "place_videos",
-                  "place_trash", "place_thispc"]
+                  "place_trash", "place_thispc", "cut", "copy", "paste", "restore"]
 ICON_ORDER = ["M", "console", "about", "restart", "calculator", "close", "plus", "minus", "times", "divide",
               "backspace", "chevron", "minimise", "maximise", "unmaximise", "power", "back", "forward", "up"]
 
@@ -2052,6 +2058,7 @@ class Field:
     def __init__(self, text):
         self.buf = bytes(text[:FIELD_MAX])
         self.pos, self.first = len(self.buf), 0
+        self.sel = False                # 1.5 stage 13: the whole text selected
 
 
 def field_cols(r, s, f):
@@ -2076,7 +2083,17 @@ def field_draw(scr, tok, t, r, s, focused):
     frame_round(scr, r, R, px(2, s) if focused else px(1, s), 15, tok["accent"] if focused else tok["text.muted"])
     cols = field_cols(r, s, f)
     tx, ty = r[0] + px(8, s), r[1] + (r[3] - f[2]) // 2
-    text(scr, f, tx, ty, shown_name(t.buf[t.first:t.first + cols]), tok["text"])
+    shown = shown_name(t.buf[t.first:t.first + max(cols, 0)])
+    if getattr(t, "sel", False) and shown:
+        # 1.5 stage 13: the selected bytes on accent, in text.on.accent; no cursor.
+        keep = scr.clip
+        scr.clip = meet(keep, inflate(r, -px(2, s)))
+        if scr.clip is not None:
+            fill(scr, (tx, ty, len(shown) * f[1], f[2]), tok["accent"])
+        scr.clip = keep
+        text(scr, f, tx, ty, shown, tok["text.on.accent"])
+        return
+    text(scr, f, tx, ty, shown, tok["text"])
     if focused:
         keep = scr.clip
         scr.clip = meet(keep, inflate(r, -px(2, s)))
@@ -2110,6 +2127,7 @@ class ListView:
         self.view, self.items, self.titles, self.r, self.s = view, items, titles, r, s
         self.top = self.cursor = self.anchor = 0
         self.ring, self.sb = False, "normal"
+        self.wide = False               # 1.5 stage 13: three columns (the Trash view)
 
     def body(self):
         s, r = self.s, self.r
@@ -2179,11 +2197,13 @@ def list_draw(scr, tok, lv):
         xt = xm - px(112, s)
         xs = xt - px(80, s)
         hy = r[1] + (hd - fh) // 2
+        x3, room3 = (xs, px(192, s) - px(16, s)) if lv.wide else (xt, px(112, s) - px(16, s))   # 1.5 stage 13
         if lv.titles:
             t = lv.titles
             text(scr, f, r[0] + px(36, s), hy, t[0], tok["text.muted"])
-            text(scr, f, xs + px(80, s) - d8 - len(t[1]) * fw, hy, t[1], tok["text.muted"])
-            text(scr, f, xt + d8, hy, t[2], tok["text.muted"])
+            if not lv.wide:
+                text(scr, f, xs + px(80, s) - d8 - len(t[1]) * fw, hy, t[1], tok["text.muted"])
+            text(scr, f, x3 + d8, hy, t[2], tok["text.muted"])
             text(scr, f, xm + d8, hy, t[3], tok["text.muted"])
         fill(scr, (r[0], r[1] + hd - px(1, s), b[2], px(1, s)), tok["border"])
         if body is not None:
@@ -2198,8 +2218,9 @@ def list_draw(scr, tok, lv):
                 if ic is not None:
                     icon(scr, ic, r[0] + px(12, s), row[1] + (rh - ip) // 2, ip, tok["text"])
                 list_text(scr, f, r[0] + px(36, s), ty, xs - r[0] - px(44, s), name, tok["text"], False)
-                list_text(scr, f, xs + px(80, s) - d8, ty, px(80, s) - px(16, s), size, tok["text.muted"], True)
-                list_text(scr, f, xt + d8, ty, px(112, s) - px(16, s), typ, tok["text.muted"], False)
+                if not lv.wide:
+                    list_text(scr, f, xs + px(80, s) - d8, ty, px(80, s) - px(16, s), size, tok["text.muted"], True)
+                list_text(scr, f, x3 + d8, ty, room3, typ, tok["text.muted"], False)
                 list_text(scr, f, xm + d8, ty, px(144, s) - px(16, s), mod, tok["text.muted"], False)
             scr.clip = keep
     elif body is not None:
@@ -2319,16 +2340,40 @@ FILES_PLACES = [b"Home", b"Desktop", b"Documents", b"Downloads", b"Pictures", b"
 FILES_PLACE_ICONS = ["place_home", "place_desktop", "place_documents", "place_downloads", "place_pictures",
                      "place_music", "place_videos", "place_trash", "place_thispc"]
 # The parts (ui_files.h's enum ui_files_part), the buttons first.
+# 1.5 stage 13: the buttons from UF_CUT on (after UF_CLOSE).
 UF_NONE, UF_BACK, UF_FORWARD, UF_UP, UF_LIST, UF_GRID, UF_NEWFOLDER, UF_NEWFILE, UF_OPEN, UF_RENAME, UF_HIDDEN, \
-    UF_CLOSE = range(12)
-UF_BUTTONS = 12
+    UF_CLOSE, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH, UF_RESTORE, UF_RESTORE_ALL, UF_EMPTY, UF_TDELETE, UF_ASK_CANCEL, \
+    UF_ASK_OK = range(22)
+UF_BUTTONS = 22
 FILES_BUTTONS = [b"", b"Back", b"Forward", b"Up", b"List", b"Grid", b"New Folder", b"New File", b"Open", b"Rename",
-                 b"Show hidden files", b"Close"]
+                 b"Show hidden files", b"Close", b"Cut", b"Copy", b"Paste", b"Move to Trash", b"Restore",
+                 b"Restore all", b"Empty Trash", b"Delete permanently", b"Cancel", b"Ask OK"]
 FILES_BUTTON_ICONS = [None, "back", "forward", "up", "list", "grid", "new_folder", "new_file", "open", "rename",
-                      None, None]
+                      None, None, "cut", "copy", "paste", "place_trash", "restore", "restore", "place_trash",
+                      "place_trash", None, None]
 FILES_PART_NAMES = {b.decode(): i for i, b in enumerate(FILES_BUTTONS) if b}
 FILES_PANEL_LABELS = [b"Name", b"Size", b"Type", b"Modified"]
-FILES_TIPS = {UF_BACK: b"Back (Alt+Left)", UF_FORWARD: b"Forward (Alt+Right)", UF_UP: b"Up (Alt+Up)"}
+FILES_TIPS = {UF_BACK: b"Back (Alt+Left)", UF_FORWARD: b"Forward (Alt+Right)", UF_UP: b"Up (Alt+Up)",
+              UF_OPEN: b"Open (Enter)", UF_RENAME: b"Rename (F2)", UF_CUT: b"Cut (Ctrl+X)", UF_COPY: b"Copy (Ctrl+C)",
+              UF_PASTE: b"Paste (Ctrl+V)", UF_TRASH: b"Move to Trash (Delete)",
+              UF_TDELETE: b"Delete permanently (Delete)"}
+TRASH_TITLES = [b"Name", b"", b"Original location", b"Deleted"]     # 1.5 stage 13 (Q4)
+
+
+def files_square(p):
+    """ui_files_square (1.5 stage 13)."""
+    return UF_BACK <= p <= UF_UP or p in (UF_OPEN, UF_RENAME, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH, UF_TDELETE)
+
+
+def files_shown(v, part):
+    """1.5 stage 13: the buttons view v shows and hits."""
+    if part in (UF_NEWFOLDER, UF_NEWFILE, UF_OPEN, UF_RENAME, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH):
+        return not v.get("trash")
+    if part in (UF_RESTORE, UF_RESTORE_ALL, UF_EMPTY, UF_TDELETE):
+        return bool(v.get("trash"))
+    if part in (UF_CLOSE, UF_ASK_CANCEL, UF_ASK_OK):
+        return False
+    return UF_NONE < part < UF_BUTTONS
 FILES_LIVE = b"Live mode: files are kept in memory only and are lost at restart."
 FILES_RO = b"/home is read-only: changes can't be saved."
 FILES_NOMEM = b"Not enough memory to open Files."
@@ -2366,10 +2411,20 @@ def files_layout(r, s, bar):
     y += d(40)
     L["cmd"] = (x0, y, iw, d(40))
     bx = x0 + d(8)
-    for i in range(UF_NEWFOLDER, UF_RENAME + 1):
+    for i in (UF_NEWFOLDER, UF_NEWFILE):
         w = files_button_w(f, i, s)
         b[i] = (bx, y + d(4), w, d(32))
         bx += w + d(4)
+    bx += d(8)                          # 1.5 stage 13: six squares d(12) after New File
+    for i in (UF_OPEN, UF_RENAME, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH):
+        b[i] = (bx, y + d(4), d(32), d(32))
+        bx += d(32) + d(4)
+    bx = x0 + d(8)                      # the Trash view's row
+    for i in (UF_RESTORE, UF_RESTORE_ALL, UF_EMPTY):
+        w = files_button_w(f, i, s)
+        b[i] = (bx, y + d(4), w, d(32))
+        bx += w + d(4)
+    b[UF_TDELETE] = (bx + d(8), y + d(4), d(32), d(32))
     hw = files_button_w(f, UF_HIDDEN, s)
     b[UF_HIDDEN] = (x1 - d(8) - hw, y + d(4), hw, d(32))
     y += d(40)
@@ -2385,6 +2440,9 @@ def files_layout(r, s, bar):
     my = c[1] + d(24) + 4 * d(28) + d(8)
     b[UF_CLOSE] = (c[0] + d(96), my + d(28) + d(8), len(FILES_BUTTONS[UF_CLOSE]) * f[1] + 2 * d(12), d(32))
     L["panel_close"] = b[UF_CLOSE]
+    ay, ax = c[1] + d(88), c[0] + d(24)     # 1.5 stage 13: the question panel's buttons
+    b[UF_ASK_CANCEL] = (ax, ay, d(96), d(32))
+    b[UF_ASK_OK] = (ax + d(96) + d(8), ay, d(128), d(32))
     return L
 
 
@@ -2415,8 +2473,8 @@ def files_hit(L, v, s, x, y):
         return r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
     if v["mode"] == "nomem":
         return None, -1
-    for i in range(UF_BACK, UF_HIDDEN + 1):
-        if inside(L["button"][i]):
+    for i in range(UF_BACK, UF_BUTTONS):
+        if files_shown(v, i) and inside(L["button"][i]):
             return i, -1
     if inside(L["path"]):
         tx, fw = L["path"][0] + px(32, s), font(s, False)[1]
@@ -2435,6 +2493,11 @@ def files_hit(L, v, s, x, y):
     if inside(L["content"]):
         if v["mode"] == "panel":
             return (UF_CLOSE, -1) if inside(L["panel_close"]) else ("panel", -1)
+        if v["mode"] == "ask":
+            for i in (UF_ASK_CANCEL, UF_ASK_OK):
+                if inside(L["button"][i]):
+                    return i, -1
+            return "panel", -1
         return "content", -1
     if inside(L["bar"]):
         return "bar", -1
@@ -2464,7 +2527,7 @@ def files_button(scr, tok, v, b, part, s, f):
     fg = tok["text" if on else "text.muted"]
     ip = d(16)
     iy, ty = b[1] + (b[3] - ip) // 2, b[1] + (b[3] - f[2]) // 2
-    if UF_BACK <= part <= UF_UP:
+    if files_square(part):
         icon(scr, FILES_BUTTON_ICONS[part], b[0] + (b[2] - ip) // 2, iy, ip, fg)
         return
     label = FILES_BUTTONS[part]
@@ -2532,7 +2595,8 @@ def files_draw(scr, tok, r, s, v):
         scr.clip = meet(cv, p)
         if scr.clip is not None:
             ip = d(16)
-            icon(scr, "place_home", p[0] + d(8), p[1] + (p[3] - ip) // 2, ip, tok["accent"])
+            icon(scr, "place_trash" if v.get("trash") else "place_home", p[0] + d(8), p[1] + (p[3] - ip) // 2, ip,
+                 tok["accent"])            # 1.5 stage 13: the Trash view's icon
             pb = v.get("pb")
             if pb:
                 tx, ty, fw = p[0] + d(32), p[1] + (p[3] - fh) // 2, f[1]
@@ -2543,8 +2607,9 @@ def files_draw(scr, tok, r, s, v):
                         text(scr, f, tx + (cx - 3) * fw, ty, b" > ", tok["text.muted"])
                     text(scr, f, tx + cx * fw, ty, shown_name_n(t[:255], 256), tok["text"])
         scr.clip = cv
-    for i in range(UF_LIST, UF_HIDDEN + 1):
-        files_button(scr, tok, v, L["button"][i], i, s, f)
+    for i in range(UF_LIST, UF_BUTTONS):        # 1.5 stage 13: the view's command row
+        if files_shown(v, i):
+            files_button(scr, tok, v, L["button"][i], i, s, f)
     fill(scr, (L["x0"], L["cmd"][1] + L["cmd"][3], L["iw"], E), tok["border"])
     fill(scr, (L["side"][0] + L["side"][2], L["body"][1], E, L["body"][3]), tok["border"])
     fill(scr, (L["x0"], L["status"][1] - E, L["iw"], E), tok["border"])
@@ -2562,7 +2627,7 @@ def files_draw(scr, tok, r, s, v):
                 if v["place"] == k:
                     fill(scr, it, tok["surface.active"])
                     fill(scr, (it[0], it[1] + d(4), d(2), it[3] - 2 * d(4)), tok["accent"])
-                later = k >= 7
+                later = k >= 8              # 1.5 stage 13: Trash is a place now
                 icon(scr, FILES_PLACE_ICONS[k], it[0] + d(12), it[1] + (it[3] - ip) // 2, ip,
                      tok["text.muted" if later else "accent"])
                 text(scr, f, it[0] + d(36), it[1] + (it[3] - fh) // 2, FILES_PLACES[k],
@@ -2581,8 +2646,21 @@ def files_draw(scr, tok, r, s, v):
                 text(scr, f, lx, ty, FILES_PANEL_LABELS[k], tok["text.muted"])
                 files_text(scr, f, vx, ty, room, v["panel_values"][k], tok["text"])
             my = c[1] + d(24) + 4 * d(28) + d(8)
-            text(scr, f, lx, my + (d(28) - fh) // 2, FILES_NOAPP, tok["text"])
+            if not v.get("panel_has_app"):
+                text(scr, f, lx, my + (d(28) - fh) // 2, FILES_NOAPP, tok["text"])
             files_button(scr, tok, v, L["panel_close"], UF_CLOSE, s, f)
+        scr.clip = cv
+    elif v["mode"] == "ask":                    # 1.5 stage 13: the question panel
+        scr.clip = meet(cv, c)
+        if scr.clip is not None:
+            room = c[2] - d(48)
+            files_text(scr, f, c[0] + d(24), c[1] + d(24), room, v.get("ask_line1"), tok["text"])
+            files_text(scr, f, c[0] + d(24), c[1] + d(44), room, v.get("ask_line2"), tok["text"])
+            states = v.get("ask_state", ["normal", "normal"])
+            for k, part in enumerate((UF_ASK_CANCEL, UF_ASK_OK)):
+                button(scr, tok, L["button"][part], ASK_STYLES(tok)[k], states[k],
+                       bool(v.get("ask_ring")) and v.get("ask_focus") == k, s,
+                       lab=b"Cancel" if k == 0 else (v.get("ask_label") or b""))
         scr.clip = cv
     elif v.get("list") is not None:
         scr.clip = meet(cv, c)
@@ -2603,7 +2681,7 @@ def files_draw(scr, tok, r, s, v):
                    tok["danger" if v.get("status_error") else "text.muted"])
     scr.clip = cv
     tip = v.get("tip", 0)
-    if UF_BACK <= tip <= UF_UP:
+    if files_square(tip) and files_shown(v, tip):
         b = L["button"][tip]
         name = FILES_TIPS[tip]
         box = (b[0], b[1] + b[3] + d(4), len(name) * f[1] + 2 * d(8), d(24))
@@ -2611,6 +2689,14 @@ def files_draw(scr, tok, r, s, v):
         frame_round(scr, box, d(4), E, 15, tok["border.panel"])
         text(scr, f, box[0] + d(8), box[1] + (box[3] - fh) // 2, name, tok["text"])
     scr.clip = keep
+
+
+def ASK_STYLES(t):
+    """1.5 stage 13: the question panel's buttons: ui_style_cancel and
+    ui_style_restart (the power dialog's)."""
+    return [([t["surface.active"], t["surface.hover"], t["accent.pressed"]], [t["text"]] * 3, False, 4, 15),
+            ([t["accent"], t["accent.hover"], t["accent.pressed"]], [t["text.on.accent"], t["text.on.accent"], t["text"]],
+             True, 4, 15)]
 
 
 def files_window(scr, tok, s, r, active, close, v, extra=None):
@@ -2847,6 +2933,57 @@ def scene_files(scr, tok, s):
     return "the window %dx%d, %d path cells" % (r[2], r[3], files_path_cells(files_layout(r, s, True), s))
 
 
+# 1.5 stage 13: the Trash view, the question over it, the selected rename
+# field and the two Files menus (tests/desktopdump.c's DUMP_* variants).
+FILES_S13_SCENES = ("files_trash", "files_ask", "files_rename_sel", "files_menu_item", "files_menu_space")
+SCENE_TRASH_ROWS = [    # name, Original location, Deleted, icon (tests/desktopdump.c's trows)
+    (b"Old Projects", b"Home > Documents", b"2026-11-20 09:15", "folder"),
+    (b"notes.txt", b"Home", b"2026-11-20 10:41", "textfile"),
+    (b"Project Link", b"... > Projects > 2026", b"2026-11-19 17:02", "link"),
+    (b"lost.bin", b"(unknown original location)", b"(unknown date)", "file"),
+]
+
+
+def scene_files_s13(scr, tok, s, name):
+    """tests/desktopdump.c's files_trash, files_ask, files_rename_sel,
+    files_menu_item and files_menu_space scenes: the files scene's window
+    changed as each says (the menus drawn above it at (300, 200) dp)."""
+    import files_ref
+    r = (px(16, s), px(16, s), px(FILES_W, s), px(FILES_H, s))
+    v = scene_files_view(r, s)
+    L = files_layout(r, s, True)
+    if name in ("files_trash", "files_ask"):
+        rows = [[n, None, loc, date, ic, i == 1] for i, (n, loc, date, ic) in enumerate(SCENE_TRASH_ROWS)]
+        lv = ListView("list", rows, TRASH_TITLES, L["content"], s)
+        lv.wide, lv.cursor = True, 1
+        v.update({"list": lv, "trash": True, "place": 7, "renaming": False, "pressed": 0, "tip": 0,
+                  "hover": UF_RESTORE_ALL if name == "files_trash" else 0, "status": b"4 items, 300.0 MiB free",
+                  "pb": files_ref.pathbar(files_ref.V_TRASH, b"", files_path_cells(L, s))})
+        if name == "files_ask":
+            v.update({"mode": "ask", "ask_line1": b"Empty the Trash?",
+                      "ask_line2": b"4 items will be deleted permanently.", "ask_label": b"Empty Trash",
+                      "ask_focus": 0, "ask_ring": True, "ask_state": ["normal", "hover"]})
+    else:
+        field = Field(b"Plan.md")
+        field.sel = True
+        field_fit(field, field_cols(files_field_rect(v["list"], 4), s, font(s, False)))
+        sel = name == "files_rename_sel"
+        v.update({"field": field, "renaming": sel, "hover": UF_PASTE if sel else 0, "pressed": 0,
+                  "tip": UF_PASTE if sel else 0})
+        v["chosen"][UF_HIDDEN] = name == "files_menu_space"
+    files_window(scr, tok, s, r, True, "normal", v)
+    if name in ("files_menu_item", "files_menu_space"):
+        kind = "Files item" if name == "files_menu_item" else "Files space"
+        m = menu_new(kind, s, menu_place_at(s, scr.w, scr.h - px(40, s), px(300, s), px(200, s), kind),
+                     greyed=1 << 3 if kind == "Files item" else 0, ticked=1 << 3 if kind == "Files space" else 0)
+        if kind == "Files item":
+            m["sel"] = 1
+        else:
+            m["sel"], m["ring"] = 0, True
+        menu_draw(scr, tok, m)
+    return "the window %dx%d, %d path cells" % (r[2], r[3], files_path_cells(L, s))
+
+
 # ---- The menus, the M button and the Restart dialog (1.3 stage 5) ----
 
 # kernel/display/ui_menu.h: size in dp, a header, the rows' tops and the
@@ -2858,6 +2995,26 @@ MENU_DEFS = {
     "desktop": {"w": 224, "h": 80, "header": False, "rows": [4, 40], "dividers": [],
                 "labels": [b"Open Console", b"About Madire OS"], "icons": ["console", "about"],
                 "actions": ["console", "about"]},
+    # 1.5 stage 13 (note (13)): the Files menus (ui_menu.h), with key hints.
+    "Files item": {"w": 264, "h": 287, "header": False, "rows": [4, 49, 85, 121, 166, 202, 247],
+                   "dividers": [44, 161, 242],
+                   "labels": [b"Open", b"Cut", b"Copy", b"Paste", b"Rename", b"Move to Trash", b"Properties"],
+                   "icons": ["open", "cut", "copy", "paste", "rename", "place_trash", "about"],
+                   "actions": ["f_open", "f_cut", "f_copy", "f_paste", "f_rename", "f_trash", "f_properties"],
+                   "hints": [b"Enter", b"Ctrl+X", b"Ctrl+C", b"Ctrl+V", b"F2", b"Delete", b"Alt+Enter"]},
+    "Files space": {"w": 264, "h": 170, "header": False, "rows": [4, 40, 85, 130], "dividers": [80, 125],
+                    "labels": [b"New Folder", b"New File", b"Paste", b"Show hidden files"],
+                    "icons": ["new_folder", "new_file", "paste", None],
+                    "actions": ["f_new_folder", "f_new_file", "f_paste", "f_hidden"],
+                    "hints": [None, None, b"Ctrl+V", None]},
+    "Trash item": {"w": 264, "h": 134, "header": False, "rows": [4, 49, 94], "dividers": [44, 89],
+                   "labels": [b"Restore", b"Delete permanently", b"Properties"],
+                   "icons": ["restore", "place_trash", "about"],
+                   "actions": ["f_restore", "f_delete", "f_properties"], "hints": [None, b"Delete", b"Alt+Enter"]},
+    "Trash space": {"w": 264, "h": 125, "header": False, "rows": [4, 40, 85], "dividers": [80],
+                    "labels": [b"Restore all", b"Empty Trash", b"Show hidden files"],
+                    "icons": ["restore", "place_trash", None],
+                    "actions": ["f_restore_all", "f_empty", "f_hidden"], "hints": [None, None, None]},
 }
 
 
@@ -2866,14 +3023,34 @@ def menu_place_m(s, bar):
     return (px(8, s), max(bar - px(8, s) - px(d["h"], s), 0), px(d["w"], s), px(d["h"], s))
 
 
-def menu_place_at(s, width, bar, x, y):
-    d = MENU_DEFS["desktop"]
+def menu_place_at(s, width, bar, x, y, kind="desktop"):
+    d = MENU_DEFS[kind]                 # 1.5 stage 13: ui_menu_place_kind for the Files menus
     w, h = px(d["w"], s), px(d["h"], s)
     return (max(min(x, width - w), 0), max(min(y, bar - h), 0), w, h)
 
 
-def menu_new(kind, s, r):
-    return {"kind": kind, "s": s, "r": r, "sel": -1, "ring": False}
+def menu_new(kind, s, r, greyed=0, ticked=0):
+    return {"kind": kind, "s": s, "r": r, "sel": -1, "ring": False, "greyed": greyed, "ticked": ticked}
+
+
+def files_menu_line(m, by_key):
+    """1.5 stage 13: a Files menu's "opened" line (desktop.c's), without
+    "desktop: ": the greyed and ticked rows as one 0/1 per row; by the
+    keyboard, the row selected."""
+    d = MENU_DEFS[m["kind"]]
+    n = len(d["rows"])
+    flags = lambda v: "".join("1" if (v >> k) & 1 else "0" for k in range(n))  # noqa: E731
+    tail = ""
+    if by_key:
+        tail = ", %s selected" % d["labels"][m["sel"]].decode() if m["sel"] >= 0 else ", no row selected"
+    return "menu %s opened by %s at (%d, %d) %dx%d, greyed %s ticked %s%s" % (
+        (m["kind"], WHY["keyboard" if by_key else "mouse"]) + tuple(m["r"]) + (flags(m["greyed"]), flags(m["ticked"]),
+                                                                              tail))
+
+
+def menu_live(m, row):
+    """ui_menu_row_live: the row exists and is not greyed (1.5 stage 13)."""
+    return 0 <= row < len(MENU_DEFS[m["kind"]]["rows"]) and not (m.get("greyed", 0) >> row) & 1
 
 
 def menu_row_rect(m, row):
@@ -2893,10 +3070,14 @@ def menu_row_at(m, x, y):
 
 
 def menu_next(m, d):
+    """ui_menu_next (1.5 stage 13: greyed rows skipped; -1 if all are)."""
     n = len(MENU_DEFS[m["kind"]]["rows"])
-    if not 0 <= m["sel"] < n:
-        return 0 if d > 0 else n - 1
-    return (m["sel"] + (1 if d > 0 else n - 1)) % n
+    at = m["sel"] if 0 <= m["sel"] < n else (n - 1 if d > 0 else 0)
+    for _ in range(n):
+        at = (at + (1 if d > 0 else n - 1)) % n
+        if menu_live(m, at):
+            return at
+    return -1
 
 
 def wordmark(scr, tok, pen, top, ts, r_heavy, r_light):
@@ -2941,8 +3122,16 @@ def menu_draw(scr, tok, m):
             if m["ring"]:
                 frame_round(scr, (row[0] + g, row[1], row[2] - 2 * g, row[3]), px(4, s), g, 15, tok["accent"])
         ip = px(16, s)
-        icon(scr, d["icons"][i], r[0] + px(16, s), row[1] + (row[3] - ip) // 2, ip, tok["text"])
-        text(scr, f, r[0] + px(44, s), row[1] + (row[3] - f[2]) // 2, label_text, tok["text"])
+        grey, tick = (m.get("greyed", 0) >> i) & 1, (m.get("ticked", 0) >> i) & 1     # 1.5 stage 13
+        fg = tok["text.muted" if grey else "text"]
+        ic = "check" if tick else d["icons"][i]
+        if ic:
+            icon(scr, ic, r[0] + px(16, s), row[1] + (row[3] - ip) // 2, ip, fg)
+        ty = row[1] + (row[3] - f[2]) // 2
+        text(scr, f, r[0] + px(44, s), ty, label_text, fg)
+        hint = d.get("hints", [None] * 8)[i]
+        if hint:
+            text(scr, f, r[0] + px(d["w"] - 16, s) - len(hint) * f[1], ty, hint, tok["text.muted"])
     frame_round(scr, r, R, e, 15, tok["border.panel"])
 
 
@@ -3002,8 +3191,10 @@ def dialog_draw(scr, tok, s, dlg):
     window(scr, tok, s, dlg["r"], b"Power", "power", True, dlg["close"], client)
 
 
-MENU_NAMES = {"M": "M", "desktop": "desktop"}
-WHY = {"mouse": "the mouse", "key": "the Windows key", "esc": "Esc", "outside": "a click outside",
+MENU_NAMES = {"M": "M", "desktop": "desktop", "Files item": "Files item", "Files space": "Files space",
+              "Trash item": "Trash item", "Trash space": "Trash space"}        # 1.5 stage 13
+WHY = {"keyboard": "the keyboard",      # 1.5 stage 13: a Files menu by the Menu key or Shift+F10
+       "mouse": "the mouse", "key": "the Windows key", "esc": "Esc", "outside": "a click outside",
        "windows": "the Windows key", "m": "the M button", "chosen": "a row chosen", "cancel": "Cancel",
        "close": "the close button"}
 KEYS = {"up": "up", "down": "down", "ret": "enter", "kp_enter": "enter", "tab": "tab", "esc": "esc",
@@ -3116,6 +3307,19 @@ class Menus:
         self.ev("menu %s opened by %s at (%d, %d) %dx%d%s" % ((MENU_NAMES[kind], WHY["key" if by_key else "mouse"])
                                                              + r + (", About selected" if by_key else "",)))
 
+    def open_files(self, kind, x, y, by_key, greyed, ticked):
+        """1.5 stage 13 (ui_menus_open_at): a Files menu at (x, y) with its
+        greyed and ticked rows (from the kernel's view of Files)."""
+        if self.menu or self.dlg or kind not in MENU_DEFS or kind in ("M", "desktop"):
+            return
+        s = self.wm.s
+        r = menu_place_at(s, self.wm.w, self.wm.bar, x, y, kind)
+        self.menu = menu_new(kind, s, r, greyed, ticked)
+        if by_key:
+            self.menu["sel"], self.menu["ring"] = menu_next(self.menu, 1), True
+        self.ev(files_menu_line(self.menu, by_key))
+        self.update_m()
+
     def wm_follows(self):
         self.wm.pointer(self.x, self.y)
 
@@ -3155,6 +3359,8 @@ class Menus:
         if action in ("about", "console"):
             self.wm_open("About" if action == "about" else "Console")
             self.done = action
+        elif action.startswith("f_"):
+            self.done = action          # 1.5 stage 13: a Files row (files_app_menu)
         else:
             self.dlg_open(by_key)
 
@@ -3217,7 +3423,7 @@ class Menus:
                 self.open_menu("M", False)
         elif press == "menu" and self.menu:
             row = menu_row_at(self.menu, self.x, self.y)
-            if row >= 0:
+            if row >= 0 and menu_live(self.menu, row):     # 1.5 stage 13: never a greyed row
                 self.choose(row, False)
 
     def pointer(self, x, y, down=False, up=False, right=False, double=False):
@@ -3246,6 +3452,8 @@ class Menus:
                 self.dlg_states()
         elif self.menu:
             row = menu_row_at(self.menu, x, y)
+            if row >= 0 and not menu_live(self.menu, row):
+                row = -1                                # 1.5 stage 13: a greyed row is as no row
             if row >= 0:
                 self.select(row, False)
             elif not self.menu["ring"]:
@@ -3514,6 +3722,7 @@ def contrast_check(path):
 
 
 SCENES = {"fileicons": scene_fileicons, "files": scene_files, "files_grid": scene_files_grid,  # 1.5 stage 12
+          **{n: (lambda scr, tok, s, n=n: scene_files_s13(scr, tok, s, n)) for n in FILES_S13_SCENES},  # 13
           "prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
           "taskbar": scene_taskbar, "windows": scene_windows, "windows_exposed": scene_windows,
           "windows_hover": lambda scr, tok, s: scene_windows(scr, tok, s, "hover"),

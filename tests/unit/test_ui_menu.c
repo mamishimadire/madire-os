@@ -200,9 +200,113 @@ static void test_picture(void)
     free(u.pixels);
 }
 
+/* 1.5 stage 13 (note (13)): the Files menus: sizes, rows, labels, hints,
+ * actions and icons, placement by their own size, greyed rows skipped by
+ * the keyboard (none when all are greyed), and the picture's greyed
+ * labels, hints and the tick. */
+static int count_in(struct surface *u, struct rect r, uint32_t rgb)
+{
+    int n = 0;
+    for (int32_t y = r.y; y < r.y + r.h; y++)
+        for (int32_t x = r.x; x < r.x + r.w; x++)
+            n += surface_get(u, (uint32_t)x, (uint32_t)y) == rgb;
+    return n;
+}
+
+static void test_files_menus(void)
+{
+    int32_t w = 0, h = 0;
+    ui_menu_size(UI_MENU_FILES_ITEM, 4, &w, &h);
+    CHECK(w == 264 && h == 287);
+    ui_menu_size(UI_MENU_FILES_ITEM, 8, &w, &h);
+    CHECK(w == 528 && h == 574);
+    ui_menu_size(UI_MENU_FILES_SPACE, 4, &w, &h);
+    CHECK(w == 264 && h == 170);
+    ui_menu_size(UI_MENU_TRASH_ITEM, 4, &w, &h);
+    CHECK(w == 264 && h == 134);
+    ui_menu_size(UI_MENU_TRASH_SPACE, 4, &w, &h);
+    CHECK(w == 264 && h == 125);
+    CHECK_EQ(ui_menu_rows(UI_MENU_FILES_ITEM), 7);
+    CHECK_EQ(ui_menu_rows(UI_MENU_FILES_SPACE), 4);
+    CHECK_EQ(ui_menu_rows(UI_MENU_TRASH_ITEM), 3);
+    CHECK_EQ(ui_menu_rows(UI_MENU_TRASH_SPACE), 3);
+    CHECK(strcmp(ui_menu_label(UI_MENU_FILES_ITEM, 5), "Move to Trash") == 0);
+    CHECK(strcmp(ui_menu_label(UI_MENU_FILES_ITEM, 6), "Properties") == 0);
+    CHECK(strcmp(ui_menu_hint(UI_MENU_FILES_ITEM, 6), "Alt+Enter") == 0);
+    CHECK(strcmp(ui_menu_hint(UI_MENU_FILES_ITEM, 0), "Enter") == 0);
+    CHECK(strcmp(ui_menu_hint(UI_MENU_FILES_ITEM, 3), "Ctrl+V") == 0);
+    CHECK(ui_menu_hint(UI_MENU_FILES_SPACE, 0) == 0);
+    CHECK(strcmp(ui_menu_hint(UI_MENU_FILES_SPACE, 2), "Ctrl+V") == 0);
+    CHECK(strcmp(ui_menu_label(UI_MENU_FILES_SPACE, 3), "Show hidden files") == 0);
+    CHECK(strcmp(ui_menu_label(UI_MENU_TRASH_ITEM, 1), "Delete permanently") == 0);
+    CHECK(strcmp(ui_menu_hint(UI_MENU_TRASH_ITEM, 1), "Delete") == 0);
+    CHECK(strcmp(ui_menu_label(UI_MENU_TRASH_SPACE, 0), "Restore all") == 0);
+    CHECK(ui_menu_hint(UI_MENU_M, 0) == 0 && ui_menu_hint(UI_MENU_DESKTOP, 1) == 0);     /* none before */
+    CHECK_EQ(ui_menu_action(UI_MENU_FILES_ITEM, 0), UI_MENU_F_OPEN);
+    CHECK_EQ(ui_menu_action(UI_MENU_FILES_ITEM, 5), UI_MENU_F_TRASH);
+    CHECK_EQ(ui_menu_action(UI_MENU_FILES_SPACE, 3), UI_MENU_F_HIDDEN);
+    CHECK_EQ(ui_menu_action(UI_MENU_TRASH_ITEM, 0), UI_MENU_F_RESTORE);
+    CHECK_EQ(ui_menu_action(UI_MENU_TRASH_SPACE, 1), UI_MENU_F_EMPTY);
+    CHECK_EQ(ui_menu_icon(UI_MENU_FILES_ITEM, 1), UI_ICON_CUT);
+    CHECK_EQ(ui_menu_icon(UI_MENU_FILES_SPACE, 3), UI_ICON_NONE);
+    CHECK_EQ(ui_menu_icon(UI_MENU_TRASH_ITEM, 0), UI_ICON_RESTORE);
+    /* Placement by the menu's own size; the rows. */
+    struct ui_menu m;
+    ui_menu_init(&m, UI_MENU_FILES_ITEM, 4, ui_menu_place_kind(UI_MENU_FILES_ITEM, 4, 1024, 728, 1000, 700));
+    CHECK(same_rect(m.r, 1024 - 264, 728 - 287, 264, 287));
+    CHECK(m.greyed == 0 && m.ticked == 0);
+    CHECK(same_rect(ui_menu_row_rect(&m, 5), m.r.x + 1, m.r.y + 202, 262, 36));
+    CHECK_EQ(ui_menu_row_at(&m, m.r.x + 100, m.r.y + 46), -1);        /* the divider at 44 dp */
+    /* The keyboard skips greyed rows. */
+    m.greyed = 0x77;                    /* nothing selected: only Paste */
+    CHECK_EQ(ui_menu_next(&m, 1), 3);
+    CHECK_EQ(ui_menu_next(&m, -1), 3);
+    m.sel = 3;
+    CHECK_EQ(ui_menu_next(&m, 1), 3);
+    CHECK(ui_menu_row_live(&m, 3) && !ui_menu_row_live(&m, 0) && !ui_menu_row_live(&m, 7));
+    m.greyed = 0x7F;
+    m.sel = -1;
+    CHECK_EQ(ui_menu_next(&m, 1), -1);
+    CHECK_EQ(ui_menu_next(&m, -1), -1);
+    m.greyed = 0x02;                    /* Cut greyed: Open -> Copy */
+    m.sel = 0;
+    CHECK_EQ(ui_menu_next(&m, 1), 2);
+    CHECK_EQ(ui_menu_next(&m, -1), 6);
+    /* The picture: a greyed row's label muted, a live row's in text; the
+     * hint right-aligned 16 dp before the right; the tick. */
+    struct ui_fonts f4 = fonts_for(4);
+    struct surface u = screen(800, 600, 4);
+    struct ui_canvas cu;
+    ui_canvas_init(&cu, &u);
+    ui_menu_init(&m, UI_MENU_FILES_ITEM, 4, (struct rect){ 100, 100, 264, 287 });
+    m.greyed = 1u << 3;                 /* Paste */
+    CHECK(ui_menu_draw(&cu, &m, &f4, scratch, UI_ABOUT_SCRATCH));
+    struct rect lab0 = { 144, 104 + 10, 40, 16 }, lab3 = { 144, 221 + 10, 40, 16 };
+    CHECK(count_in(&u, lab0, UI_TEXT) > 0 && count_in(&u, lab0, UI_TEXT_MUTED) == 0);
+    CHECK(count_in(&u, lab3, UI_TEXT_MUTED) > 0 && count_in(&u, lab3, UI_TEXT) == 0);
+    struct rect hint0 = { 100 + 264 - 16 - 40, 104 + 10, 40, 16 };          /* "Enter": 5 cells */
+    CHECK(count_in(&u, hint0, UI_TEXT_MUTED) > 0);
+    CHECK_EQ(count_in(&u, (struct rect){ 100 + 264 - 16, 104, 15, 36 }, UI_TEXT_MUTED), 0);
+    free(u.pixels);
+    u = screen(800, 600, 4);
+    ui_canvas_init(&cu, &u);
+    ui_menu_init(&m, UI_MENU_FILES_SPACE, 4, (struct rect){ 100, 100, 264, 170 });
+    CHECK(ui_menu_draw(&cu, &m, &f4, scratch, UI_ABOUT_SCRATCH));
+    struct rect icon3 = { 116, 230 + 10, 16, 16 };
+    CHECK_EQ(count_in(&u, icon3, UI_TEXT), 0);                              /* no icon: no tick */
+    free(u.pixels);
+    u = screen(800, 600, 4);
+    ui_canvas_init(&cu, &u);
+    m.ticked = 1u << 3;
+    CHECK(ui_menu_draw(&cu, &m, &f4, scratch, UI_ABOUT_SCRATCH));
+    CHECK(count_in(&u, icon3, UI_TEXT) > 0);                                /* the check icon */
+    free(u.pixels);
+}
+
 int main(void)
 {
     printf("test_ui_menu\n");
+    RUN(test_files_menus);          /* 1.5 stage 13 */
     RUN(test_sizes_and_rows);
     RUN(test_placement);
     RUN(test_rows_hit);

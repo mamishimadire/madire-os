@@ -67,9 +67,12 @@
 #define VM_DISPLAY_AREA       0x0000000040000000ull /* each area's size */
 /* 1.5 stage 12 (docs/plans/1.5.md, C5, the S12 approvals): one Files
  * window and one Text Viewer at once, each its own pages, both in one page
- * table (the first 2 MiB of the area), each with unmapped pages after it. */
+ * table (the first 2 MiB of the area), each with unmapped pages after it.
+ * 1.5 stage 13 (Q3): the Files window's area grows to 256 pages (the
+ * clipboard, the Trash's columns and buffers), up to VM_VIEWER_BASE; it
+ * uses fewer, so unmapped pages still follow it. */
 #define VM_FILES_BASE         0xFFFFFD00C0000000ull /* VM_FB_BASE + 3 GiB */
-#define VM_FILES_PAGES        160u                  /* 640 KiB at most */
+#define VM_FILES_PAGES        256u                  /* 1 MiB at most (1.5 stage 13: was 160) */
 #define VM_VIEWER_BASE        0xFFFFFD00C0100000ull /* VM_FILES_BASE + 1 MiB */
 #define VM_VIEWER_PAGES       32u                   /* 128 KiB at most */
 

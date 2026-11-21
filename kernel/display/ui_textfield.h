@@ -19,8 +19,19 @@
  *     by the field (UI_TF_NONE): it never reaches the caller (so Ctrl+A
  *     while renaming never selects all items). The desktop's own keys
  *     (Alt+Tab, Alt+F4, the Super key) are taken before the field.
- * No text selection, no clipboard, no blinking. The bytes are kept as
- * they are; a byte outside printable ASCII is shown as '?'.
+ * No clipboard, no blinking. The bytes are kept as they are; a byte
+ * outside printable ASCII is shown as '?'.
+ *
+ * 1.5 stage 13 (the owner's decision D1): the whole text may be selected
+ * (sel; ui_textfield_select_all; ui_textfield_set clears it). While it is:
+ *   - a printable character replaces the whole text (the field then holds
+ *     that character, the cursor after it);
+ *   - Backspace and Delete empty the field;
+ *   - Left moves the cursor to the start, Right to the end, Home and End as
+ *     always; each clears the selection (also when the cursor stays);
+ *   - a click clears it (ui_textfield_click);
+ *   - Enter, Esc, Tab and every key with Ctrl or Alt keep it.
+ * Only the whole text: no drag selection, no partial selection.
  *
  * The rules of the picture (tests/desktop_ref.py draws the same):
  *   - the field in r at scale s: a rounded rectangle of radius ui_px(4, s)
@@ -31,7 +42,12 @@
  *     on, at most ui_textfield_cols() of them;
  *   - focused, the cursor: ui_px(2, s) wide, the font's height, in `text`,
  *     at x = r.x + ui_px(8, s) + (pos - first) x font width, drawn after
- *     the text, clipped to r shrunk by ui_px(2, s).
+ *     the text, clipped to r shrunk by ui_px(2, s);
+ *   - 1.5 stage 13: with the whole text selected (and at least one byte
+ *     shown), the bytes shown sit on a box in `accent`, from the text's x,
+ *     (bytes shown) x font width wide, the font's height high, at the
+ *     text's y, clipped to r shrunk by ui_px(2, s); they are drawn in
+ *     `text.on.accent`; no cursor is drawn.
  */
 
 #include <stdbool.h>
@@ -48,6 +64,7 @@ struct ui_textfield {
     uint16_t len;
     uint16_t pos;                       /* the cursor, 0..len */
     uint16_t first;                     /* the first byte shown */
+    bool sel;                           /* 1.5 stage 13: the whole text selected */
 };
 
 enum ui_tf_result {
@@ -60,8 +77,12 @@ enum ui_tf_result {
 };
 
 /* The field holds text (its first UI_TEXTFIELD_MAX bytes), the cursor at
- * its end, shown from its start. */
+ * its end, shown from its start, nothing selected. */
 void ui_textfield_set(struct ui_textfield *t, const char *text);
+
+/* 1.5 stage 13: the whole text selected (the cursor at its end); nothing
+ * for an empty field. */
+void ui_textfield_select_all(struct ui_textfield *t);
 
 /* One key (the rules above). */
 enum ui_tf_result ui_textfield_key(struct ui_textfield *t, const struct key_event *e);
@@ -76,7 +97,7 @@ int32_t ui_textfield_cols(struct rect r, uint32_t s, const struct font *f);
 void ui_textfield_fit(struct ui_textfield *t, int32_t cols);
 
 /* A click at x in the field r: the cursor to the nearest byte boundary
- * shown (never past the end). */
+ * shown (never past the end); the selection cleared. */
 void ui_textfield_click(struct ui_textfield *t, struct rect r, uint32_t s, const struct font *f, int32_t x);
 
 /* Draws the field (the rules above). */

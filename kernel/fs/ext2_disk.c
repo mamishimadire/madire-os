@@ -862,8 +862,47 @@ static int32_t ext2_d_autosave(void *arg)
 
 /* ---- stage 12: the home folders (D18), du's KiB, df's figures ---- */
 
-static const char *const ext2_d_home_names[7] = { "Desktop", "Documents", "Downloads", "Pictures", "Music",
-                                                  "Videos", "Trash" };
+/* 1.5 stage 13 (C6, H2 item 10): six folders; the Trash is
+ * /home/user/.local/share/Trash, made by Files when first needed. */
+static const char *const ext2_d_home_names[6] = { "Desktop", "Documents", "Downloads", "Pictures", "Music",
+                                                  "Videos" };
+
+/* 1.5 stage 13 (C6): 1.4's visible /home/user/Trash at a read-write
+ * mount: removed if it is an empty folder (saved at once), kept as a
+ * normal folder if it holds anything; anything else with that name (a
+ * file, a link: never followed) is left alone. Never on a test= boot (the
+ * caller's rule). */
+static void ext2_d_old_trash(void)
+{
+    struct vfs *v = vfs_root();
+    struct vnode *n = 0;
+    uint32_t tries = 0;
+    fd_vfs_acquire();
+    int r = vfs_lookup(v, v->root, "/home/user/Trash", &n);
+    bool folder = r == 0 && n->type == VNODE_DIR && !vnode_is_link(n);
+    fd_vfs_release();
+    if (!folder)
+        return;
+    do {
+        fd_vfs_acquire();
+        r = vfs_rmdir(v, v->root, "/home/user/Trash");
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
+    if (r == -FS_ENOTEMPTY) {
+        klogf("home: /home/user/Trash of 1.4 kept as a normal folder (it is not empty)\n");
+        return;
+    }
+    if (r < 0) {
+        klogf("home: /home/user/Trash of 1.4 not removed: %s\n", fs_errno_name(r));
+        return;
+    }
+    uint32_t saves = 0;
+    uint64_t w0 = ext2_d_figs.writes;
+    enum ext2_disk_save s = ext2_d_full_save(0, &saves);
+    klogf("home: the empty /home/user/Trash of 1.4 removed (the Trash is now /home/user/.local/share/Trash); "
+          "%s: %u saves, %llu writes\n", s == EXT2_DISK_SAVED ? "saved" : "NOT saved", saves,
+          (ull)(ext2_d_figs.writes - w0));
+}
 
 /* The folder at path made if missing (again after a save when the disk
  * needs one first, R4): 1 made, 0 a folder already there (never touched),
@@ -893,12 +932,13 @@ void ext2_disk_home(void)
         return;
     char path[40];
     uint32_t made = 0, there = 0;
+    ext2_d_old_trash();                 /* 1.5 stage 13: before the folders (C6) */
     int r = ext2_d_home_dir("/home/user");
     const char *bad = "/home/user";
     if (r >= 0) {
         made += (uint32_t)r;
         there += r == 0;
-        for (uint32_t i = 0; i < 7 && r >= 0; i++) {
+        for (uint32_t i = 0; i < 6 && r >= 0; i++) {
             ksnprintf(path, sizeof(path), "/home/user/%s", ext2_d_home_names[i]);
             bad = ext2_d_home_names[i];
             r = ext2_d_home_dir(path);
@@ -912,14 +952,14 @@ void ext2_disk_home(void)
         return;
     }
     if (!made) {
-        klogf("home: /home/user and its 7 folders are already there; nothing made (D18: never recreated)\n");
+        klogf("home: /home/user and its 6 folders are already there; nothing made (D18: never recreated)\n");
         return;
     }
     uint32_t saves = 0;
     uint64_t w0 = ext2_d_figs.writes;
     enum ext2_disk_save s = ext2_d_full_save(0, &saves);
     klogf("home: %u folders made, %u already there (/home/user with Desktop, Documents, Downloads, Pictures, "
-          "Music, Videos and Trash); %s: %u saves, %llu writes; the longest VFS lock hold in a save %llu us "
+          "Music and Videos); %s: %u saves, %llu writes; the longest VFS lock hold in a save %llu us "
           "(%llu ticks) (report only, before System ready)\n", made, there, s == EXT2_DISK_SAVED ? "saved" : "NOT saved",
           saves, (ull)(ext2_d_figs.writes - w0), (ull)ext2_disk_us(ext2_d_figs.hold_cycles),
           (ull)ext2_d_figs.hold_ticks);

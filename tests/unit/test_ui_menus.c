@@ -299,6 +299,71 @@ static void test_desktop_menu(void)
     clear();
 }
 
+/* 1.5 stage 13 (note (13)): a Files menu opened at a point with greyed and
+ * ticked rows: by the keyboard the first live row is selected (none if all
+ * are greyed), the ring on; the pointer over a greyed row selects nothing
+ * and a click there chooses nothing; a live row chosen leaves its action
+ * in done; Esc and a press outside close it; never while another menu or
+ * the dialog is open; the event carries the greyed and ticked rows. */
+static void test_files_menus(void)
+{
+    setup();
+    ui_menus_open_at(&mn, UI_MENU_FILES_ITEM, 1000, 700, false, 0x77, 0);
+    CHECK(mn.menu_open && mn.menu.kind == UI_MENU_FILES_ITEM && mn.menu.sel == -1);
+    CHECK(same_rect(mn.menu.r, 1024 - 264, 728 - 287, 264, 287));
+    CHECK_EQ(mn.menu.greyed, 0x77);
+    CHECK_EQ(mn.ev[0].kind, UI_MEV_MENU_OPEN);
+    CHECK_EQ(mn.ev[0].why, UI_WHY_MOUSE);
+    CHECK_EQ(mn.ev[0].greyed, 0x77);
+    struct rect r = mn.menu.r;
+    move(r.x + 100, r.y + 20);              /* over Open, greyed: nothing selected */
+    CHECK_EQ(mn.menu.sel, -1);
+    click(r.x + 100, r.y + 20);             /* chooses nothing; the menu stays */
+    CHECK(mn.menu_open);
+    CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_NONE);
+    move(r.x + 100, r.y + 121 + 18);        /* over Paste, live */
+    CHECK_EQ(mn.menu.sel, 3);
+    click(r.x + 100, r.y + 121 + 18);
+    CHECK(!mn.menu_open);
+    CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_F_PASTE);
+    CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_CHOSEN);
+    clear();
+    /* By the keyboard: the first live row, the ring; Down skips greyed rows. */
+    ui_menus_open_at(&mn, UI_MENU_FILES_ITEM, 200, 200, true, 0x02, 0);
+    CHECK(mn.menu.sel == 0 && mn.menu.ring);
+    CHECK_EQ(mn.ev[0].why, UI_WHY_KEYBOARD);
+    CHECK_EQ(mn.ev[0].row, 0);
+    CHECK_EQ(key(UI_MKEY_DOWN), UI_MENUS_TAKEN);
+    CHECK_EQ(mn.menu.sel, 2);               /* Cut greyed */
+    CHECK_EQ(key(UI_MKEY_ENTER), UI_MENUS_TAKEN);
+    CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_F_COPY);
+    clear();
+    ui_menus_open_at(&mn, UI_MENU_TRASH_SPACE, 200, 200, true, 0x03, 0x04);
+    CHECK(mn.menu.sel == 2 && mn.menu.ticked == 0x04);
+    CHECK_EQ(mn.ev[0].ticked, 0x04);
+    CHECK_EQ(key(UI_MKEY_ESC), UI_MENUS_TAKEN);
+    CHECK(!mn.menu_open);
+    CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_ESC);
+    clear();
+    ui_menus_open_at(&mn, UI_MENU_TRASH_ITEM, 200, 200, true, 0x07, 0);
+    CHECK(mn.menu_open && mn.menu.sel == -1);           /* every row greyed */
+    CHECK_EQ(key(UI_MKEY_ENTER), UI_MENUS_TAKEN);
+    CHECK(mn.menu_open);
+    CHECK_EQ(ui_menus_take_done(&mn), UI_MENU_NONE);
+    click(10, 10);                                      /* a press outside closes it */
+    CHECK(!mn.menu_open);
+    CHECK_EQ(last_why(UI_MEV_MENU_CLOSE), UI_WHY_OUTSIDE);
+    clear();
+    /* Never over another menu, never a menu of the desktop's own kinds. */
+    right(100, 100);
+    ui_menus_open_at(&mn, UI_MENU_FILES_SPACE, 300, 300, false, 0, 0);
+    CHECK(mn.menu.kind == UI_MENU_DESKTOP);
+    key(UI_MKEY_ESC);
+    ui_menus_open_at(&mn, UI_MENU_DESKTOP, 300, 300, false, 0, 0);
+    CHECK(!mn.menu_open);
+    clear();
+}
+
 static void test_keyboard(void)
 {
     setup();
@@ -586,6 +651,7 @@ int main(void)
     RUN(test_rows_by_pointer);
     RUN(test_outside);
     RUN(test_desktop_menu);
+    RUN(test_files_menus);          /* 1.5 stage 13 */
     RUN(test_keyboard);
     RUN(test_windows_key_routing);
     RUN(test_dialog_keys);

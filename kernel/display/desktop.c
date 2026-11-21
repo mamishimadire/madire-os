@@ -452,9 +452,20 @@ static const char *const close_states[UI_BUTTON_STATES] = { "normal", "hover", "
 
 /* 1.3 stage 5: the menus' events (ui_menus.h), as "desktop: menu ...",
  * "desktop: M button: ..." and "desktop: dialog ..." lines. */
-static const char *const desk_menu_names[2] = { "M", "desktop" };
+static const char *const desk_menu_names[UI_MENU_KINDS] = { "M", "desktop", "Files item", "Files space",
+                                                            "Trash item", "Trash space" };     /* 1.5 stage 13 */
 static const char *const desk_whys[] = { "the mouse", "the Windows key", "Esc", "a click outside", "the Windows key",
-                                         "the M button", "a row chosen", "Cancel", "the close button" };
+                                         "the M button", "a row chosen", "Cancel", "the close button",
+                                         "the keyboard" };     /* 1.5 stage 13: UI_WHY_KEYBOARD */
+
+/* 1.5 stage 13: a Files menu's rows as one '0' or '1' each (row k bit k). */
+static void desk_row_flags(uint8_t bits, int rows, char out[UI_MENU_ROWS_MAX + 1])
+{
+    int k = 0;
+    for (; k < rows && k < UI_MENU_ROWS_MAX; k++)
+        out[k] = (bits >> k) & 1u ? '1' : '0';
+    out[k] = '\0';
+}
 static const char *const desk_m_states[4] = { "normal", "hover", "pressed", "open" };
 /* 1.5 stage 6: the power dialog's parts in the events' order (ui_menus.h). */
 static const char *const desk_dlg_parts[4] = { "Cancel", "Restart", "Shut down", "the close button" };
@@ -463,9 +474,21 @@ static void desk_log_menus(void)
 {
     for (uint32_t i = 0; logging && i < desk_menus.n_ev; i++) {
         const struct ui_menus_event *e = &desk_menus.ev[i];
-        const char *menu = desk_menu_names[e->menu == UI_MENU_DESKTOP];
+        const char *menu = desk_menu_names[(uint32_t)e->menu < UI_MENU_KINDS ? (uint32_t)e->menu : 0u];
         switch (e->kind) {
         case UI_MEV_MENU_OPEN:
+            if (e->menu >= UI_MENU_FILES_ITEM) {    /* 1.5 stage 13: with its greyed and ticked rows */
+                char grey[UI_MENU_ROWS_MAX + 1], tick[UI_MENU_ROWS_MAX + 1];
+                int rows = ui_menu_rows(e->menu);
+                desk_row_flags(e->greyed, rows, grey);
+                desk_row_flags(e->ticked, rows, tick);
+                kserialf("desktop: menu %s opened by %s at (%d, %d) %dx%d, greyed %s ticked %s%s%s%s\n", menu,
+                         desk_whys[e->why], e->r.x, e->r.y, e->r.w, e->r.h, grey, tick,
+                         e->why != UI_WHY_KEYBOARD ? "" : e->row >= 0 ? ", " : ", no row selected",
+                         e->why == UI_WHY_KEYBOARD && e->row >= 0 ? ui_menu_label(e->menu, e->row) : "",
+                         e->why == UI_WHY_KEYBOARD && e->row >= 0 ? " selected" : "");
+                break;
+            }
             kserialf("desktop: menu %s opened by %s at (%d, %d) %dx%d%s\n", menu, desk_whys[e->why], e->r.x, e->r.y,
                      e->r.w, e->r.h, e->why == UI_WHY_KEY ? ", About selected" : "");
             break;
@@ -870,6 +893,13 @@ static bool desk_files_open(struct ui_window *w)
     return ok;
 }
 
+/* 1.5 stage 13: a Files menu asked for by files_app (ui_menus_open_at). */
+static void desk_files_menu(enum ui_menu_kind k, int32_t x, int32_t y, bool by_key, uint8_t greyed, uint8_t ticked)
+{
+    ui_menus_open_at(&desk_menus, k, x, y, by_key, greyed, ticked);
+    log_events();
+}
+
 /* Super+E: Files opened, or activated if it is open (one Files window). */
 static void desk_open_files(void)
 {
@@ -894,14 +924,20 @@ static enum ui_menu_action desk_menu_done(void)
         desk_about_values();
     else if (a == UI_MENU_CONSOLE)
         klogf("Desktop: a menu opened the Console window\n");
+    else if (a >= UI_MENU_F_OPEN) {
+        files_app_menu(a);              /* 1.5 stage 13: a Files menu's row */
+        log_events();
+    }
     if (desk_menus.shutdown) {
         uint64_t clicked = timer_ticks();
         klogf("Desktop: Shut down chosen in the power dialog: shutting down\n");
+        files_app_stop("shutting down");    /* 1.5 stage 13: no partial copy is saved */
         (void)power_save(clicked);
         power_off();                        /* does not return */
     }
     if (desk_menus.restart) {
         klogf("Desktop: Restart chosen in the power dialog: restarting\n");
+        files_app_stop("restarting");       /* 1.5 stage 13 */
         /* 1.4 stage 10: in Disk mode /home is saved first (at most 10 s;
          * a failure is logged and the restart goes on, D9). */
         if (ext2_disk_rw())
@@ -1023,6 +1059,7 @@ static bool desk_begin(const struct fb_info *fi, const struct fbcon_layout *cl)
     desk_files_env.damage = desk_files_damage;
     desk_files_env.open = desk_files_open;
     desk_files_env.logging = logging;
+    desk_files_env.menu = desk_files_menu;      /* 1.5 stage 13 */
     files_app_setup(&desk_files_env);
     if (!ext2_disk_mounted() && (desk_default || desk_livehome))
         files_app_live_home();
@@ -1072,6 +1109,7 @@ void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool ri
     if (left_down || right_down || middle_down)
         deskkeys_pointer(&desk_keys);   /* 1.5 stage 9b: with Super held, the menu stays shut */
     ui_wm_set_now(&wm, timer_ticks());  /* 1.5 stage 8: the double click's clock */
+    bool modal = desk_menus.menu_open || desk_menus.dlg_open;      /* 1.5 stage 13: before this packet */
     ui_menus_pointer(&desk_menus, x, y, left_down, left_up, right_down);   /* 1.3 stage 5 */
     /* 1.5 stage 8: a middle press on a taskbar button closes its window
      * (nothing while a menu or the dialog is open). */
@@ -1088,6 +1126,10 @@ void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool ri
             top = 0;
         files_app_pointer(top, x, y, left_down, left_up, desk_mods, timer_ticks());
         log_events();
+        /* 1.5 stage 13: a right press in the Files window opens its menu
+         * (not the press that closed a menu: that does nothing else). */
+        if (right_down && !modal)
+            files_app_right(top, x, y);
     }
     if (desk_menu_done() == UI_MENU_CONSOLE)
         desk_console_wanted = true;

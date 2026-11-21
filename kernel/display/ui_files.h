@@ -89,6 +89,37 @@
  *     rectangle of radius d(4) with a d(1) `border.panel` frame;
  *   - no memory (UI_FILES_NOMEM): only "Not enough memory to open Files."
  *     in `text` at (x0 + d(24), r.y + d(32) + d(24)).
+ *
+ * 1.5 stage 13 (the S13 decisions Q1, Q2, Q4, D2-D5; these rules replace
+ * the ones above where they differ):
+ *   - the command row in a folder: New Folder and New File as above, then,
+ *     d(12) after New File, six d(32) squares d(4) apart, each its icon (16
+ *     dp) centred as Back's: Open, Rename, Cut, Copy, Paste (icon paste)
+ *     and Move to Trash (icon place_trash); Show hidden files as above;
+ *   - the command row in the Trash view (view->trash): Restore, Restore
+ *     all (icon restore) and Empty Trash (icon place_trash), labelled as
+ *     New Folder, from x0 + d(8), d(4) apart; d(12) after Empty Trash the
+ *     square Delete permanently (icon place_trash); Show hidden files as
+ *     above; the folder row's buttons are not drawn or hit there, nor the
+ *     Trash row's in a folder;
+ *   - the tooltip comes after the pointer rests on any square (Back,
+ *     Forward, Up and the squares above): "Open (Enter)", "Rename (F2)",
+ *     "Cut (Ctrl+X)", "Copy (Ctrl+C)", "Paste (Ctrl+V)", "Move to Trash
+ *     (Delete)", "Delete permanently (Delete)";
+ *   - the path bar in the Trash view: the trash place's icon (16 dp, in
+ *     `accent`) in the home icon's place;
+ *   - the sidebar's Trash is a place of this stage (its icon in `accent`,
+ *     its label in `text`); This PC stays `text.muted`;
+ *   - the info panel (Properties, D5): the line "No app can open this file
+ *     yet." only when view->panel_has_app is false (Close moves nowhere);
+ *   - the question panel (UI_FILES_ASK, Q2), in the content: line1 in
+ *     `text` at (c.x + d(24), c.y + d(24)) and line2 at c.y + d(44), each
+ *     cut with "..." to c.w - d(48); the buttons from c.y + d(88), d(32)
+ *     high: Cancel d(96) wide at c.x + d(24) (ui_widget.h's button in
+ *     ui_style_cancel) and the action, d(128) wide, d(8) after it
+ *     (ui_style_restart: the main action, bold, last), each in its state
+ *     (ask_state), the focused one (ask_focus: 0 Cancel, 1 the action)
+ *     with the focus ring when ask_ring is on.
  */
 
 #include <stdbool.h>
@@ -108,14 +139,20 @@
 #define UI_FILES_TIP_TICKS 50u      /* the tooltip after 500 ms at rest (100 Hz) */
 
 enum ui_files_bar { UI_FILES_BAR_NONE, UI_FILES_BAR_LIVE, UI_FILES_BAR_RO };
-enum ui_files_mode { UI_FILES_LIST, UI_FILES_PANEL, UI_FILES_NOMEM };
+enum ui_files_mode { UI_FILES_LIST, UI_FILES_PANEL, UI_FILES_NOMEM,
+                     UI_FILES_ASK };                    /* 1.5 stage 13: the question panel */
 
-/* The parts a point can hit, and the buttons' order in the view's states. */
+/* The parts a point can hit, and the buttons' order in the view's states
+ * (1.5 stage 13: the buttons from UF_CUT on added after UF_CLOSE). */
 enum ui_files_part {
     UF_NONE, UF_BACK, UF_FORWARD, UF_UP, UF_LIST, UF_GRID, UF_NEWFOLDER, UF_NEWFILE, UF_OPEN, UF_RENAME,
-    UF_HIDDEN, UF_CLOSE, UF_BUTTONS,                    /* the buttons above */
+    UF_HIDDEN, UF_CLOSE, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH, UF_RESTORE, UF_RESTORE_ALL, UF_EMPTY, UF_TDELETE,
+    UF_ASK_CANCEL, UF_ASK_OK, UF_BUTTONS,               /* the buttons above */
     UF_PATH = UF_BUTTONS, UF_PLACE, UF_CONTENT, UF_PANEL, UF_BAR, UF_STATUS
 };
+
+/* 1.5 stage 13: a square button (its icon only, a tooltip after a rest). */
+bool ui_files_square(enum ui_files_part p);
 
 extern const char *const ui_files_place_names[UI_FILES_PLACES];  /* Home ... This PC */
 extern const int ui_files_place_icons[UI_FILES_PLACES];       /* the sidebar's stroke icons */
@@ -131,7 +168,9 @@ extern const char *const ui_files_tip_texts[UF_BUTTONS];         /* Back (Alt+Le
 
 struct ui_files_layout {
     struct rect bar, toolbar, path, cmd, body, side, content, status;
-    struct rect button[UF_BUTTONS];         /* empty for UF_NONE and UF_CLOSE (the panel's, below) */
+    struct rect button[UF_BUTTONS];         /* empty for UF_NONE; UF_CLOSE the panel's (below); both command
+                                             * rows' buttons (1.5 stage 13; the view chooses one) and the
+                                             * question panel's */
     struct rect panel_close;                /* in the info panel's content */
     int32_t x0, iw;
 };
@@ -152,13 +191,21 @@ struct ui_files_view {
     const char *panel_values[4];
     const char *status;
     bool status_error;
-    enum ui_files_part tip;                 /* Back, Forward or Up, or UF_NONE */
+    enum ui_files_part tip;                 /* a square (1.5 stage 13; Back, Forward or Up in S12), or UF_NONE */
+    /* 1.5 stage 13 */
+    bool trash;                             /* the Trash view: its command row, the list's three columns */
+    bool panel_has_app;                     /* the info panel without "No app can open this file yet." */
+    const char *ask_line1, *ask_line2, *ask_label;  /* the question panel (UI_FILES_ASK) */
+    int ask_focus;                          /* 0 Cancel, 1 the action */
+    bool ask_ring;
+    enum ui_button_state ask_state[2];      /* Cancel's and the action's */
 };
 
 /* Esc in the window (the owner's condition on the Esc rule, S12): the
  * rename field cancels the rename (the window stays), else the info panel
- * closes (only the panel), else the window closes. */
-enum ui_files_esc { UF_ESC_CANCEL_RENAME, UF_ESC_CLOSE_PANEL, UF_ESC_CLOSE_WINDOW };
+ * closes (only the panel), else the window closes. 1.5 stage 13: the
+ * question panel takes Esc first (Cancel). */
+enum ui_files_esc { UF_ESC_CANCEL_RENAME, UF_ESC_CLOSE_PANEL, UF_ESC_CLOSE_WINDOW, UF_ESC_CANCEL_ASK };
 enum ui_files_esc ui_files_esc(const struct ui_files_view *v);
 
 /* The status line's count (C6b, the S12 texts): "<n> items, <free> free",

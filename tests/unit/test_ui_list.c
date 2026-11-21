@@ -396,6 +396,40 @@ static void draw_marks(void)
     CHECK_EQ(at(501, 163), UI_SURFACE_WINDOW);
 }
 
+/* 1.5 stage 13 (Q4): three columns (`wide`): no Size column, the third
+ * from the Size column's left (d(8) into it); off after ui_list_init, so
+ * every list above is drawn as before. A font of corner pixels shows each
+ * text's first cell. */
+static uint8_t corner_bits[256 * 16];
+static const struct font corner = { 8, 16, 1, corner_bits };
+static const struct ui_fonts cfonts = { &corner, &corner };
+
+static void list_wide(void)
+{
+    struct ui_list l;
+    for (int g = 0; g < 256; g++)
+        corner_bits[g * 16] = 0x80;
+    make_items(1);
+    ui_list_init(&l, UI_LIST_DETAILS, items, 1, titles, (struct rect){ 0, 0, 640, 300 }, 4);
+    CHECK(!l.wide);
+    /* The body 616 wide: Modified from 472, Type from 360, Size from 280. */
+    surface_init(&surf, buf, SW, SH, SW * 4, 4);
+    ui_canvas_init(&cv, &surf);
+    ui_list_draw(&cv, &l, &cfonts);
+    CHECK_EQ(at(344, 34), UI_TEXT_MUTED);       /* "1 KiB" right-aligned to 352: its last cell */
+    CHECK_EQ(at(368, 34), UI_TEXT_MUTED);       /* "File" at 360 + 8 */
+    CHECK_EQ(at(344, 6), UI_TEXT_MUTED);        /* the title "Size": its last cell */
+    l.wide = true;
+    ui_list_draw(&cv, &l, &cfonts);
+    CHECK_EQ(at(344, 34), UI_SURFACE_WINDOW);   /* no Size ("File" now ends at 319) */
+    CHECK_EQ(at(344, 6), UI_SURFACE_WINDOW);
+    CHECK_EQ(at(368, 34), UI_SURFACE_WINDOW);   /* nothing left at the old Type column */
+    CHECK_EQ(at(288, 34), UI_TEXT_MUTED);       /* the third column at 280 + 8 */
+    CHECK_EQ(at(312, 34), UI_TEXT_MUTED);       /* its fourth cell */
+    CHECK_EQ(at(288, 6), UI_TEXT_MUTED);        /* its title */
+    CHECK_EQ(at(480, 34), UI_TEXT_MUTED);       /* Modified as before (472 + 8) */
+}
+
 int main(void)
 {
     printf("test_ui_list\n");
@@ -407,5 +441,6 @@ int main(void)
     RUN(grid_keys);
     RUN(wheel_and_double);
     RUN(draw_marks);
+    RUN(list_wide);                 /* 1.5 stage 13 */
     return unit_report("test_ui_list");
 }

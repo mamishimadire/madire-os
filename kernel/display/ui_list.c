@@ -110,6 +110,7 @@ void ui_list_init(struct ui_list *l, enum ui_list_view v, struct ui_list_item *i
     l->anchor = 0;
     l->ring = false;
     l->sb = UI_SB_NORMAL;
+    l->wide = false;
 }
 
 struct rect ui_list_body(const struct ui_list *l)
@@ -382,10 +383,14 @@ void ui_list_draw(const struct ui_canvas *c, const struct ui_list *l, const stru
         int32_t hd = ui_px(LIST_HEADER_DP, s), rh = ui_px(LIST_ROW_DP, s), d8 = ui_px(8, s);
         int32_t xm = b.x + b.w - ui_px(144, s), xt = xm - ui_px(112, s), xs = xt - ui_px(80, s);
         int32_t hy = r.y + (hd - fh) / 2;
+        /* 1.5 stage 13: three columns: the third from the Size column's left. */
+        int32_t x3 = l->wide ? xs : xt, room3 = l->wide ? ui_px(192, s) - ui_px(16, s) : ui_px(112, s) - ui_px(16, s);
         if (l->titles) {
             ui_text(c, fr, r.x + ui_px(36, s), hy, l->titles[0], UI_TEXT_MUTED);
-            ui_text(c, fr, xs + ui_px(80, s) - d8 - ui_text_width(fr, l->titles[1]), hy, l->titles[1], UI_TEXT_MUTED);
-            ui_text(c, fr, xt + d8, hy, l->titles[2], UI_TEXT_MUTED);
+            if (!l->wide)
+                ui_text(c, fr, xs + ui_px(80, s) - d8 - ui_text_width(fr, l->titles[1]), hy, l->titles[1],
+                        UI_TEXT_MUTED);
+            ui_text(c, fr, x3 + d8, hy, l->titles[2], UI_TEXT_MUTED);
             ui_text(c, fr, xm + d8, hy, l->titles[3], UI_TEXT_MUTED);
         }
         ui_fill(c, (struct rect){ r.x, r.y + hd - ui_px(1, s), b.w, ui_px(1, s) }, UI_BORDER);
@@ -400,9 +405,10 @@ void ui_list_draw(const struct ui_canvas *c, const struct ui_list *l, const stru
                 if (it->icon != UI_ICON_NONE)
                     ui_icon_draw(&body, it->icon, r.x + ui_px(12, s), row.y + (rh - ip) / 2, ip, UI_TEXT);
                 list_text(&body, fr, r.x + ui_px(36, s), ty, xs - r.x - ui_px(44, s), it->name, UI_TEXT, false);
-                list_text(&body, fr, xs + ui_px(80, s) - d8, ty, ui_px(80, s) - ui_px(16, s), it->size,
-                          UI_TEXT_MUTED, true);
-                list_text(&body, fr, xt + d8, ty, ui_px(112, s) - ui_px(16, s), it->type, UI_TEXT_MUTED, false);
+                if (!l->wide)
+                    list_text(&body, fr, xs + ui_px(80, s) - d8, ty, ui_px(80, s) - ui_px(16, s), it->size,
+                              UI_TEXT_MUTED, true);
+                list_text(&body, fr, x3 + d8, ty, room3, it->type, UI_TEXT_MUTED, false);
                 list_text(&body, fr, xm + d8, ty, ui_px(144, s) - ui_px(16, s), it->modified, UI_TEXT_MUTED,
                           false);
             }

@@ -9,6 +9,8 @@
 #include "kernel/display/ui_textfield.h"
 #include "kernel/display/ui_viewer.h"
 #include "kernel/files/files_core.h"
+#include "kernel/files/files_ops.h"
+#include "kernel/files/trash_core.h"
 #include "kernel/fs/ext2_disk.h"
 #include "kernel/fs/fs_errno.h"
 #include "kernel/fs/ramfs_core.h"
@@ -27,6 +29,9 @@ typedef unsigned long long ull;
 #define FA_STATUS_MAX 320u
 #define FA_HOLD_ENTRIES 16u
 #define FA_CHUNK 4096u
+#define FA_LOC_MAX 48u                  /* 1.5 stage 13: an Original location text and its NUL */
+#define FA_TFILES TRASH_DIR "/files"
+#define FA_TINFO  TRASH_DIR "/info"
 
 /* The Files window's memory (at VM_FILES_BASE while it is open). */
 struct fa_mem {
@@ -50,6 +55,23 @@ struct fa_mem {
     struct ui_textfield field;
     struct ui_list_clicks clicks;
     struct ui_files_view view;
+    /* 1.5 stage 13: the clipboard (Q8: lost when the window closes), the
+     * walk (copy, delete), a file chunk, a .trashinfo file and its parse,
+     * the Trash view's columns, the action's paths, the question's texts. */
+    char clip_store[FILES_CLIP_BYTES];
+    struct files_clip clip;
+    struct files_walk walk;
+    uint8_t chunk[FA_CHUNK];
+    uint8_t info_buf[TRASH_INFO_MAX];
+    struct trash_info info;
+    char locs[FILES_MAX_ENTRIES][FA_LOC_MAX];
+    uint8_t restorable[FILES_MAX_ENTRIES];
+    char jsrc[FILES_PATH_MAX + 1];          /* the action's item */
+    char jdst[FILES_PATH_MAX + 1];          /* where it goes */
+    char jdir[FILES_PATH_MAX + 1];          /* Paste's target folder */
+    char jinfo[FILES_PATH_MAX + 1];         /* the item's info file (the Trash) */
+    char slot[TRASH_NAME_MAX + 1];
+    char ask1[FILES_OPS_LINE_MAX], ask2[FILES_OPS_LINE_MAX], ask_label[FILES_OPS_LABEL_MAX];
 };
 
 /* The Text Viewer's memory (at VM_VIEWER_BASE while it is open). */
@@ -91,6 +113,23 @@ static int32_t fa_px = -1, fa_py = -1;
 static bool fa_vreading, fa_vsb_drag;
 static uint64_t fa_voff, fa_vsize;
 static uint32_t fa_vholds;
+/* 1.5 stage 13: the action running (one step per pass), the question, the
+ * Trash view's info files being read. */
+enum fa_job { FA_JOB_NONE, FA_JOB_TRASH, FA_JOB_DELETE, FA_JOB_PASTE, FA_JOB_RESTORE, FA_JOB_EMPTY };
+enum fa_step { FA_ST_ITEM, FA_ST_DIRS, FA_ST_SLOT, FA_ST_WRITE, FA_ST_MOVE, FA_ST_WALK, FA_ST_WALK2, FA_ST_RENAME, FA_ST_INFO, FA_ST_CHECK,
+               FA_ST_PARENTS, FA_ST_RESTORE, FA_ST_UNINFO, FA_ST_ASKING, FA_ST_EFILES, FA_ST_EINFO };
+enum fa_ask { FA_ASK_NONE, FA_ASK_DELETE, FA_ASK_NOTRASH, FA_ASK_EMPTY, FA_ASK_EXISTS };
+static enum fa_job fa_job;
+static enum fa_step fa_step;
+static uint32_t fa_jnext, fa_jitem;     /* the next item to look at; the item being worked on */
+static uint32_t fa_jdone, fa_junknown, fa_jk, fa_jdirs_made;
+static uint64_t fa_joff;
+static bool fa_jmove, fa_jall, fa_jinfo_made, fa_keep_status;
+static enum fa_ask fa_ask;
+static enum ui_files_part fa_ask_press = UF_NONE;
+static bool fa_tinfo_on;                /* the Trash view's info files are being read */
+static uint32_t fa_tinfo;
+static int32_t fa_menu_item = -1;       /* the folder item a menu's Paste goes into, or -1 */
 
 static const char *const fa_place_paths[7] = {
     FILES_HOME, FILES_HOME "/Desktop", FILES_HOME "/Documents", FILES_HOME "/Downloads", FILES_HOME "/Pictures",
@@ -268,6 +307,202 @@ static int fa_rename(const char *from, const char *to)
     return r;
 }
 
+/* ---- 1.5 stage 13: the file calls of the actions (struct files_fs and
+ * the Trash's lstat; each call one hold, a change tried again after a save,
+ * ext2_disk_retry) ---- */
+
+/* The kind of path itself (a link is a link, never its target); the lock held. */
+static enum files_kind fa_kind_locked(const char *path)
+{
+    struct vnode *n = 0;
+    int r = fa_lookup_locked(path, &n);
+    if (r == -FS_ENOENT)
+        return FILES_K_NONE;
+    if (r < 0)
+        return FILES_K_ERROR;
+    return vnode_is_link(n) ? FILES_K_LINK : n->type == VNODE_DIR ? FILES_K_DIR : FILES_K_FILE;
+}
+
+static enum files_kind fa_fs_lstat(void *ctx, const char *path)
+{
+    (void)ctx;
+    fd_vfs_acquire();
+    enum files_kind k = fa_kind_locked(path);
+    fd_vfs_release();
+    return k;
+}
+
+static enum trash_kind fa_trash_lstat(void *ctx, const char *path)
+{
+    switch (fa_fs_lstat(ctx, path)) {
+    case FILES_K_NONE:
+        return TRASH_K_NONE;
+    case FILES_K_DIR:
+        return TRASH_K_DIR;
+    case FILES_K_FILE:
+        return TRASH_K_FILE;
+    case FILES_K_LINK:
+        return TRASH_K_LINK;
+    default:
+        return TRASH_K_ERROR;
+    }
+}
+
+/* The next entry of folder path from *cookie (never "." or ".."). */
+static int fa_fs_read_dir(void *ctx, const char *path, uint64_t *cookie, char *name)
+{
+    (void)ctx;
+    struct vfs *v = vfs_root();
+    struct vnode *dir = 0;
+    int out = 0;
+    fd_vfs_acquire();
+    int r = fa_lookup_locked(path, &dir);
+    if (r == 0 && dir->type != VNODE_DIR)
+        r = -FS_ENOTDIR;
+    if (r < 0) {
+        out = r;
+    } else {
+        struct vnode *e = vfs_entry_from(v, dir, *cookie);
+        while (e) {
+            size_t len = 0;
+            const char *nm = vfs_entry_name(v, e, &len);
+            *cookie = vfs_entry_pos(v, e) + 1;
+            bool dots = (len == 1 && nm[0] == '.') || (len == 2 && nm[0] == '.' && nm[1] == '.');
+            if (!dots && len >= 1 && len <= FILES_NAME_MAX) {
+                for (size_t i = 0; i < len; i++)
+                    name[i] = nm[i];
+                name[len] = '\0';
+                out = 1;
+                break;
+            }
+            e = vfs_entry_next(v, dir, e);
+        }
+        if (!e) {
+            int err = vfs_lookup_error(v, dir);
+            out = err ? err : 0;
+        }
+    }
+    fd_vfs_release();
+    return out;
+}
+
+static int fa_fs_mkdir(void *ctx, const char *path)
+{
+    (void)ctx;
+    return fa_create(path, true);
+}
+
+static int fa_fs_unlink(void *ctx, const char *path)
+{
+    (void)ctx;
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        struct vfs *v = vfs_root();
+        r = vfs_unlink(v, v->root, path);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
+    return r;
+}
+
+static int fa_fs_rmdir(void *ctx, const char *path)
+{
+    (void)ctx;
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        struct vfs *v = vfs_root();
+        r = vfs_rmdir(v, v->root, path);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
+    return r;
+}
+
+/* One chunk of file src at offset into dst (made, empty and exclusively,
+ * at offset 0): the bytes copied, 0 at src's end, or an error. */
+static int64_t fa_fs_copy_chunk(void *ctx, const char *src, const char *dst, uint64_t offset)
+{
+    (void)ctx;
+    if (!fa_m)
+        return -FS_EINVAL;
+    if (offset == 0) {
+        int c = fa_create(dst, false);
+        if (c < 0)
+            return c;
+    }
+    uint32_t tries = 0;
+    int r;
+    int64_t got = 0;
+    do {
+        struct vfs *v = vfs_root();
+        struct vnode *s = 0, *d = 0;
+        fd_vfs_acquire();
+        r = fa_lookup_locked(src, &s);
+        if (r == 0 && (s->type != VNODE_FILE || vnode_is_link(s)))
+            r = -FS_EINVAL;             /* never a folder, never a link (rule SL) */
+        if (r == 0)
+            r = fa_lookup_locked(dst, &d);
+        if (r == 0 && (d->type != VNODE_FILE || vnode_is_link(d)))
+            r = -FS_EINVAL;
+        if (r == 0) {
+            got = vfs_read(v, s, offset, fa_m->chunk, FA_CHUNK);
+            if (got < 0) {
+                r = (int)got;
+            } else if (got > 0) {
+                int64_t put = vfs_write(v, d, offset, fa_m->chunk, (uint64_t)got);
+                if (put < 0)
+                    r = (int)put;
+                else if (put != got)
+                    r = -FS_EIO;
+            }
+        }
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
+    return r < 0 ? r : got;
+}
+
+static const struct files_fs fa_fs = {
+    0, fa_fs_lstat, fa_fs_read_dir, fa_fs_mkdir, fa_fs_unlink, fa_fs_rmdir, fa_fs_copy_chunk,
+};
+
+/* files_exists_fn for files_unique_name: the name is taken (any kind). */
+static bool fa_exists(void *ctx, const char *path)
+{
+    return fa_fs_lstat(ctx, path) != FILES_K_NONE;
+}
+
+/* Renames from to `to` only if `to` is free, both in one hold (nothing can
+ * take the name between): -FS_EEXIST if it is taken. */
+static int fa_rename_free(const char *from, const char *to)
+{
+    uint32_t tries = 0;
+    int r;
+    do {
+        fd_vfs_acquire();
+        struct vfs *v = vfs_root();
+        struct vnode *n = 0;
+        r = fa_lookup_locked(to, &n);
+        if (r == 0)
+            r = -FS_EEXIST;
+        else if (r == -FS_ENOENT)
+            r = vfs_rename(v, v->root, from, v->root, to);
+        fd_vfs_release();
+    } while (ext2_disk_retry(&r, &tries));
+    return r;
+}
+
+/* The filesystem numbers of a and b's folders are the same (both found). */
+static bool fa_same_fs(const char *a, const char *b)
+{
+    struct vnode *x = 0, *y = 0;
+    fd_vfs_acquire();
+    bool same = fa_lookup_locked(a, &x) == 0 && fa_lookup_locked(b, &y) == 0 && x->fs_id == y->fs_id;
+    fd_vfs_release();
+    return same;
+}
+
 /* The free bytes where path lies (the lock held): the disk's under /home in
  * Disk mode, else the RAM filesystem's budget. */
 static uint64_t fa_free_locked(const char *path)
@@ -312,7 +547,12 @@ static void fa_error(const char *what, const char *name, int r)
     char reason[24];
     const char *why;
     if (r == -FS_ENOSPC) {
-        why = "the disk is full";
+        /* 1.5 stage 13 (Q6): a folder in memory (Live mode, or outside
+         * /home in Disk mode) is full of memory, not of disk. */
+        const char *p = fa_m->path;
+        bool home = p[0] == '/' && p[1] == 'h' && p[2] == 'o' && p[3] == 'm' && p[4] == 'e' &&
+                    (p[5] == '\0' || p[5] == '/');
+        why = ext2_disk_mounted() && home ? "the disk is full" : "there is no room left in memory";
     } else if (r == -FS_EROFS) {
         why = "/home is read-only";
     } else if (r == -FS_EIO) {
@@ -349,6 +589,37 @@ static int32_t fa_target(void)
     return (int32_t)l->cursor;
 }
 
+/* 1.5 stage 13: the real items selected (never the limit's note). */
+static uint32_t fa_nsel(void)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < fa_m->folder.n && i < fa_m->list.n; i++)
+        n += fa_m->items[i].selected;
+    return n;
+}
+
+/* 1.5 stage 13: the restorable items selected (the Trash view). */
+static uint32_t fa_nrestorable(void)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < fa_m->folder.n && i < fa_m->list.n; i++)
+        n += fa_m->items[i].selected && fa_m->restorable[i];
+    return n;
+}
+
+/* 1.5 stage 13: what the menus and the buttons see (files_ops.h). */
+static struct files_ops_state fa_ops_state(void)
+{
+    struct files_ops_state st = { fa_nsel(), 0, 0, fa_writable, !files_clip_empty(&fa_m->clip), fa_writable };
+    if (fa_m->view.trash) {
+        st.restorable = fa_nrestorable();
+        st.in_trash = fa_m->folder.n;
+    }
+    if (fa_menu_item >= 0)
+        st.paste_writable = fa_writable;        /* a folder of this folder: the same filesystem */
+    return st;
+}
+
 static void fa_update_view(void)
 {
     struct ui_files_view *v = &fa_m->view;
@@ -359,22 +630,47 @@ static void fa_update_view(void)
         p = fa_m->path;
         pl = fa_len(p);
     }
-    bool idle = !fa_reading && !v->renaming && v->mode == UI_FILES_LIST;
+    bool idle = !fa_reading && !v->renaming && v->mode == UI_FILES_LIST && fa_job == FA_JOB_NONE;
+    v->trash = hv == FILES_VIEW_TRASH;
     v->enabled[UF_BACK] = idle && files_history_can_back(&fa_m->hist);
     v->enabled[UF_FORWARD] = idle && files_history_can_forward(&fa_m->hist);
     v->enabled[UF_UP] = idle && files_history_can_up(&fa_m->hist);
     v->enabled[UF_LIST] = v->enabled[UF_GRID] = v->enabled[UF_HIDDEN] = idle;
-    v->enabled[UF_NEWFOLDER] = v->enabled[UF_NEWFILE] = idle && fa_writable;
-    v->enabled[UF_OPEN] = idle && fa_target() >= 0;
-    v->enabled[UF_RENAME] = idle && fa_writable && fa_target() >= 0;
+    v->enabled[UF_NEWFOLDER] = v->enabled[UF_NEWFILE] = idle && fa_writable && !v->trash;
+    v->enabled[UF_OPEN] = idle && fa_target() >= 0 && !v->trash;
+    v->enabled[UF_RENAME] = idle && fa_writable && fa_target() >= 0 && !v->trash;
     v->enabled[UF_CLOSE] = v->mode == UI_FILES_PANEL;
+    /* 1.5 stage 13: the menus' rules (files_ops_greyed) for the buttons too. */
+    struct files_ops_state st = fa_ops_state();
+    uint8_t gi = files_ops_greyed(FILES_OPS_MENU_ITEM, &st), gs = files_ops_greyed(FILES_OPS_MENU_SPACE, &st);
+    uint8_t gt = files_ops_greyed(FILES_OPS_MENU_TRASH_ITEM, &st);
+    uint8_t gts = files_ops_greyed(FILES_OPS_MENU_TRASH_SPACE, &st);
+    v->enabled[UF_CUT] = idle && !v->trash && !(gi & (1u << 1));
+    v->enabled[UF_COPY] = idle && !v->trash && !(gi & (1u << 2));
+    v->enabled[UF_PASTE] = idle && !v->trash && !(gs & (1u << 2));
+    v->enabled[UF_TRASH] = idle && !v->trash && !(gi & (1u << 5));
+    v->enabled[UF_RESTORE] = idle && v->trash && !(gt & (1u << 0));
+    v->enabled[UF_TDELETE] = idle && v->trash && !(gt & (1u << 1));
+    v->enabled[UF_RESTORE_ALL] = idle && v->trash && !(gts & (1u << 0));
+    v->enabled[UF_EMPTY] = idle && v->trash && !(gts & (1u << 1));
+    v->enabled[UF_ASK_CANCEL] = v->enabled[UF_ASK_OK] = v->mode == UI_FILES_ASK;
     v->chosen[UF_LIST] = fa_m->list.view == UI_LIST_DETAILS;
     v->chosen[UF_GRID] = fa_m->list.view == UI_LIST_GRID;
     v->chosen[UF_HIDDEN] = fa_m->folder.show_hidden;
     v->place = -1;
-    for (int32_t k = 0; k < 7; k++)
+    for (int32_t k = 0; k < 7 && !v->trash; k++)
         if (fa_same(fa_m->path, fa_place_paths[k]))
             v->place = k;
+    if (v->trash)
+        v->place = 7;                   /* the sidebar's Trash */
+    v->ask_line1 = fa_m->ask1;
+    v->ask_line2 = fa_m->ask2;
+    v->ask_label = fa_m->ask_label;
+    for (int k = 0; k < 2; k++) {       /* the question's buttons: pressed, on hover, or normal */
+        enum ui_files_part bp = k ? UF_ASK_OK : UF_ASK_CANCEL;
+        v->ask_state[k] = v->mode != UI_FILES_ASK ? UI_BUTTON_NORMAL : v->pressed == bp ? UI_BUTTON_PRESSED
+                          : v->hover == bp ? UI_BUTTON_HOVER : UI_BUTTON_NORMAL;
+    }
     struct ui_files_layout lay;
     ui_files_layout(fa_env.files->r, fa_env.scale, fa_env.fonts->regular, v->bar != UI_FILES_BAR_NONE, &lay);
     files_pathbar(hv, p, pl, ui_files_path_cells(&lay, fa_env.scale, fa_env.fonts->regular), &fa_m->pb);
@@ -415,8 +711,14 @@ static void fa_log_state(void)
     if (!files_history_current(&fa_m->hist, &hv, &p, &pl))
         p = fa_m->path;
     kserialf("files: path %u %s\n", (uint32_t)hv, p);
-    if (v->renaming)
-        kserialf("files: field %u %u %s\n", (uint32_t)fa_m->field.pos, (uint32_t)fa_m->field.first, fa_m->field.buf);
+    if (v->renaming)        /* 1.5 stage 13: and whether the whole name is selected */
+        kserialf("files: field %u %u %u %s\n", (uint32_t)fa_m->field.pos, (uint32_t)fa_m->field.first,
+                 fa_m->field.sel ? 1u : 0u, fa_m->field.buf);
+    if (v->mode == UI_FILES_ASK) {          /* 1.5 stage 13: the question panel */
+        kserialf("files: ask %s\n", fa_m->ask1);
+        kserialf("files: ask2 %s\n", fa_m->ask2);
+        kserialf("files: asklabel %s\n", fa_m->ask_label);
+    }
     kserialf("files: status %u %s\n", v->status_error ? 1u : 0u, fa_m->status);
     if (v->mode == UI_FILES_PANEL && l->cursor < fa_m->folder.n) {
         const struct files_entry *e = &fa_m->folder.e[l->cursor];
@@ -433,12 +735,18 @@ static void fa_log_state(void)
         }
     if (!nsel)
         fa_copy(sel, sizeof(sel), "-");
+    /* 1.5 stage 13: trash, app (the panel's has_app), job, askfocus,
+     * askring and askst (Cancel's and the action's states) at the end. */
     kserialf("files: state mode=%s view=%s bar=%s place=%d en=%s chosen=%s hover=%s pressed=%s tip=%s top=%u "
-             "cursor=%u ring=%u sb=%u rename=%u reading=%u sel=%s\n",
-             v->mode == UI_FILES_PANEL ? "panel" : "list", l->view == UI_LIST_GRID ? "grid" : "list",
+             "cursor=%u ring=%u sb=%u rename=%u reading=%u sel=%s trash=%u app=%u job=%u askfocus=%d askring=%u "
+             "askst=%u%u\n",
+             v->mode == UI_FILES_PANEL ? "panel" : v->mode == UI_FILES_ASK ? "ask" : "list",
+             l->view == UI_LIST_GRID ? "grid" : "list",
              v->bar == UI_FILES_BAR_LIVE ? "live" : v->bar == UI_FILES_BAR_RO ? "ro" : "none", v->place, en, ch,
              fa_part_name(v->hover), fa_part_name(v->pressed), fa_part_name(v->tip), l->top, l->cursor,
-             l->ring ? 1u : 0u, (uint32_t)l->sb, v->renaming ? 1u : 0u, fa_reading ? 1u : 0u, sel);
+             l->ring ? 1u : 0u, (uint32_t)l->sb, v->renaming ? 1u : 0u, fa_reading ? 1u : 0u, sel, v->trash ? 1u : 0u,
+             v->panel_has_app ? 1u : 0u, (uint32_t)fa_job, v->ask_focus, v->ask_ring ? 1u : 0u,
+             (uint32_t)v->ask_state[0], (uint32_t)v->ask_state[1]);
 }
 
 static void fa_changed(void)
@@ -464,6 +772,11 @@ static void fa_read(const char *path)
     fa_reading = true;
     fa_cookie = 0;
     fa_seen = fa_holds = 0;
+    fa_tinfo_on = false;                /* 1.5 stage 13: the Trash view follows the history */
+    enum files_view hv = FILES_VIEW_FOLDER;
+    const char *hp = 0;
+    uint32_t hl = 0;
+    fa_m->view.trash = files_history_current(&fa_m->hist, &hv, &hp, &hl) && hv == FILES_VIEW_TRASH;
 }
 
 static int fa_icon_for(uint32_t i)
@@ -486,6 +799,8 @@ static int fa_icon_for(uint32_t i)
         return UI_ICON_LINK;
     return fa_same(files_type_text(FILES_K_FILE, name, e->name_len), "Text file") ? UI_ICON_TEXTFILE : UI_ICON_FILE;
 }
+
+static void fa_read_finish(void);
 
 static void fa_read_done(void)
 {
@@ -518,7 +833,34 @@ static void fa_read_done(void)
     struct ui_files_layout lay;
     ui_files_layout(fa_env.files->r, fa_env.scale, fa_env.fonts->regular, fa_m->view.bar != UI_FILES_BAR_NONE, &lay);
     ui_list_init(&fa_m->list, lv, fa_m->items, n, ui_files_panel_labels, lay.content, fa_env.scale);
-    fa_count_status();
+    if (fa_m->view.trash) {
+        /* 1.5 stage 13 (Q4): the Trash view's three columns, filled from
+         * each item's info file (fa_tinfo_step) before the reading ends. */
+        static const char *const fa_trash_titles[4] = { "Name", "", "Original location", "Deleted" };
+        fa_m->list.wide = true;
+        fa_m->list.titles = fa_trash_titles;
+        for (uint32_t i = 0; i < f->n && i < FILES_MAX_ENTRIES; i++) {
+            fa_m->locs[i][0] = '\0';
+            fa_m->dates[i][0] = '\0';
+            fa_m->restorable[i] = 0;
+            fa_m->items[i].type = fa_m->locs[i];
+            fa_m->items[i].modified = fa_m->dates[i];
+        }
+        fa_tinfo = 0;
+        fa_tinfo_on = true;
+        return;                         /* still reading */
+    }
+    fa_read_finish();
+}
+
+/* The reading's end: the status line, the item to select, the logs. */
+static void fa_read_finish(void)
+{
+    struct files_folder *f = &fa_m->folder;
+    if (fa_keep_status)
+        fa_keep_status = false;         /* 1.5 stage 13: an action's message stays */
+    else
+        fa_count_status();
     if (fa_m->select_name[0]) {
         for (uint32_t i = 0; i < f->n; i++)
             if (fa_same(files_entry_name(f, i), fa_m->select_name)) {
@@ -527,6 +869,7 @@ static void fa_read_done(void)
                 ui_list_reveal(&fa_m->list);
                 if (fa_rename_after) {
                     ui_textfield_set(&fa_m->field, fa_m->select_name);
+                    ui_textfield_select_all(&fa_m->field);     /* 1.5 stage 13 (D1) */
                     fa_m->view.renaming = true;
                 }
                 break;
@@ -545,7 +888,104 @@ static void fa_read_done(void)
                      e->kind == FILES_K_DIR ? 'D' : e->kind == FILES_K_LINK ? 'L' : 'F', (ull)e->size,
                      (long long)e->mtime, files_entry_name(f, i));
         }
+        for (uint32_t i = 0; fa_m->list.wide && i < f->n; i++) {    /* 1.5 stage 13: the Trash's columns */
+            kserialf("files: tloc %u %s\n", i, fa_m->locs[i]);
+            kserialf("files: tdate %u %u %s\n", i, (uint32_t)fa_m->restorable[i], fa_m->dates[i]);
+        }
     }
+}
+
+/* 1.5 stage 13: one hold of the Trash view's info files: at most FA_CHUNK
+ * bytes of item fa_tinfo's info/<name>.trashinfo (refused unread over
+ * TRASH_INFO_MAX), parsed by trash_info_parse when it is whole. */
+static uint64_t fa_toff;
+
+static void fa_tinfo_step(void)
+{
+    struct files_folder *f = &fa_m->folder;
+    uint32_t i = fa_tinfo;
+    if (i >= f->n || i >= FILES_MAX_ENTRIES) {
+        uint32_t unknown = 0;
+        for (uint32_t k = 0; k < f->n && k < FILES_MAX_ENTRIES; k++)
+            unknown += !fa_m->restorable[k];
+        fa_tinfo_on = false;
+        fa_toff = 0;
+        klogf("Files: the Trash's info files read: %u items, %u without a known original location\n", f->n,
+              unknown);
+        fa_read_finish();
+        return;
+    }
+    const char *name = files_entry_name(f, i);
+    bool named = f->e[i].name_len + (uint32_t)(sizeof(TRASH_INFO_EXT) - 1u) <= TRASH_NAME_MAX &&
+                 fa_join(fa_m->jinfo, FA_TINFO, name);
+    uint32_t nl = fa_len(fa_m->jinfo);
+    if (named && nl + (uint32_t)(sizeof(TRASH_INFO_EXT) - 1u) <= FILES_PATH_MAX) {
+        for (uint32_t k = 0; TRASH_INFO_EXT[k]; k++)
+            fa_m->jinfo[nl + k] = TRASH_INFO_EXT[k];
+        fa_m->jinfo[nl + sizeof(TRASH_INFO_EXT) - 1u] = '\0';
+    } else {
+        named = false;
+    }
+    int r = -FS_ENOENT;
+    uint64_t size = 0;
+    int64_t got = 0;
+    if (named) {
+        struct vfs *v = vfs_root();
+        struct vnode *n = 0;
+        fd_vfs_acquire();
+        r = fa_lookup_locked(fa_m->jinfo, &n);
+        if (r == 0 && (n->type != VNODE_FILE || vnode_is_link(n)))
+            r = -FS_EINVAL;             /* a folder or a link is no info file (rule SL) */
+        if (r == 0) {
+            size = n->size;
+            if (size <= TRASH_INFO_MAX && fa_toff < size) {
+                uint64_t want = size - fa_toff;
+                if (want > FA_CHUNK)
+                    want = FA_CHUNK;
+                got = vfs_read(v, n, fa_toff, fa_m->info_buf + fa_toff, want);
+                if (got < 0)
+                    r = (int)got;
+            }
+        }
+        fd_vfs_release();
+    }
+    if (r == 0 && size <= TRASH_INFO_MAX && got > 0 && fa_toff + (uint64_t)got < size) {
+        fa_toff += (uint64_t)got;       /* the rest in the next hold */
+        return;
+    }
+    uint64_t have = fa_toff + (uint64_t)(got > 0 ? got : 0);
+    fa_toff = 0;
+    fa_m->info.date_ok = false;
+    enum trash_info_result pr = TI_NO_PATH;
+    if (r == 0)
+        pr = size > TRASH_INFO_MAX ? TI_FILE_TOO_LARGE
+                                   : trash_info_parse(fa_m->info_buf, (uint32_t)have, &fa_m->info);
+    fa_m->restorable[i] = pr == TI_OK;
+    if (pr == TI_OK) {
+        uint32_t cells = 0;
+        int32_t room = ui_px(192, fa_env.scale) - ui_px(16, fa_env.scale);
+        if (fa_env.fonts->regular->width > 0 && room > 0)
+            cells = (uint32_t)room / fa_env.fonts->regular->width;
+        if (cells > FA_LOC_MAX - 1u)
+            cells = FA_LOC_MAX - 1u;
+        uint32_t pl = files_ops_parent_len(fa_m->info.path, fa_m->info.path_len);
+        files_ops_location(fa_m->info.path, pl, cells, fa_m->locs[i], FA_LOC_MAX);
+    } else {
+        fa_copy(fa_m->locs[i], FA_LOC_MAX, "(unknown original location)");
+        if (r == 0 || named) {
+            char shown[FILES_NAME_MAX + 1];
+            ui_name_shown(name, shown, sizeof(shown));
+            klogf("Files: Trash item '%s': its info file %s (%s): it can't be restored\n", shown,
+                  r == 0 ? "was refused" : "is missing", r == 0 ? trash_info_reason(pr) : "not found");
+        }
+    }
+    if (fa_m->info.date_ok)
+        ksnprintf(fa_m->dates[i], FILES_DATE_TEXT, "%04u-%02u-%02u %02u:%02u", (uint32_t)fa_m->info.date.year,
+                  (uint32_t)fa_m->info.date.month, (uint32_t)fa_m->info.date.day, (uint32_t)fa_m->info.date.hour,
+                  (uint32_t)fa_m->info.date.minute);
+    else
+        fa_copy(fa_m->dates[i], FILES_DATE_TEXT, "(unknown date)");
+    fa_tinfo++;
 }
 
 static void fa_read_failed(int r)
@@ -572,7 +1012,15 @@ static void fa_read_hold(void)
     int r = fa_lookup_locked(fa_m->rpath, &dir);
     if (r == 0 && dir->type != VNODE_DIR)
         r = -FS_ENOTDIR;
-    if (r == 0) {
+    if (r == -FS_ENOENT && fa_m->view.trash) {
+        /* 1.5 stage 13: no Trash folder yet (made when first needed): the
+         * Trash is empty; /home/user decides whether it can change. */
+        struct vnode *home = 0;
+        fa_writable = fa_lookup_locked(FILES_HOME, &home) == 0 && vfs_writable(v, home) == 0;
+        fa_free_bytes = fa_free_locked(FILES_HOME);
+        r = 0;
+        done = true;
+    } else if (r == 0) {
         uint32_t count = 0;
         struct vnode *e = vfs_entry_from(v, dir, fa_cookie);
         while (e && count < FA_HOLD_ENTRIES) {
@@ -631,6 +1079,10 @@ static void fa_read_current(void)
     uint32_t pl;
     if (!files_history_current(&fa_m->hist, &hv, &p, &pl) || pl > FILES_PATH_MAX)
         return;
+    if (hv == FILES_VIEW_TRASH) {       /* 1.5 stage 13: the Trash view */
+        fa_read(FA_TFILES);
+        return;
+    }
     for (uint32_t i = 0; i < pl; i++)
         fa_m->scratch[i] = p[i];
     fa_m->scratch[pl] = '\0';
@@ -692,6 +1144,7 @@ static void fa_open_item(uint32_t i)
     fa_m->view.panel_values[1] = fa_m->panel_size;
     fa_m->view.panel_values[2] = files_type_text((enum files_kind)e->kind, name, e->name_len);
     fa_m->view.panel_values[3] = fa_m->panel_date;
+    fa_m->view.panel_has_app = false;  /* 1.5 stage 13: no app: the S12 line shown */
     fa_m->view.mode = UI_FILES_PANEL;
 }
 
@@ -724,6 +1177,7 @@ static void fa_rename_start(void)
     if (i < 0 || !fa_writable)
         return;
     ui_textfield_set(&fa_m->field, files_entry_name(&fa_m->folder, (uint32_t)i));
+    ui_textfield_select_all(&fa_m->field);      /* 1.5 stage 13 (D1): the whole name selected */
     fa_m->view.renaming = true;
 }
 
@@ -763,6 +1217,14 @@ static void fa_rename_submit(void)
     fa_read(fa_m->scratch2);
 }
 
+/* 1.5 stage 13: the actions (below). */
+static void fa_clip_set(bool cut);
+static void fa_paste(int32_t into);
+static void fa_delete(bool permanently, bool by_key);
+static void fa_restore(bool all);
+static void fa_empty(bool by_key);
+static void fa_ask_answer(bool yes);
+
 static void fa_button(enum ui_files_part part)
 {
     if (part <= UF_NONE || part >= UF_BUTTONS || !fa_m->view.enabled[part])
@@ -800,9 +1262,955 @@ static void fa_button(enum ui_files_part part)
     case UF_CLOSE:
         fa_m->view.mode = UI_FILES_LIST;
         break;
+    /* 1.5 stage 13 (the mouse: no focus ring on a question) */
+    case UF_CUT:
+    case UF_COPY:
+        fa_clip_set(part == UF_CUT);
+        break;
+    case UF_PASTE:
+        fa_paste(-1);
+        break;
+    case UF_TRASH:
+    case UF_TDELETE:
+        fa_delete(false, false);
+        break;
+    case UF_RESTORE:
+    case UF_RESTORE_ALL:
+        fa_restore(part == UF_RESTORE_ALL);
+        break;
+    case UF_EMPTY:
+        fa_empty(false);
+        break;
+    case UF_ASK_CANCEL:
+    case UF_ASK_OK:
+        fa_ask_answer(part == UF_ASK_OK);
+        break;
     default:
         break;
     }
+}
+
+/* ---- 1.5 stage 13: the actions (one bounded step per pass) ---- */
+
+static void fa_working(void)
+{
+    ksnprintf(fa_m->status, FA_STATUS_MAX, "Working... %u items done", fa_jdone);
+    fa_m->view.status_error = false;
+}
+
+/* A message about item name: "<head> '<name>'<tail>". */
+static void fa_name_msg(const char *head, const char *name, const char *tail)
+{
+    char shown[FILES_NAME_MAX + 1];
+    ui_name_shown(name, shown, sizeof(shown));
+    ksnprintf(fa_m->status, FA_STATUS_MAX, "%s '%s'%s", head, shown, tail);
+    fa_m->view.status_error = true;
+}
+
+/* The reason a failed call gives (as fa_error's), into buf. */
+static const char *fa_reason(int r, char *buf, uint32_t size)
+{
+    if (r == -FS_ENOSPC) {
+        const char *p = fa_m->path;
+        bool home = p[0] == '/' && p[1] == 'h' && p[2] == 'o' && p[3] == 'm' && p[4] == 'e' &&
+                    (p[5] == '\0' || p[5] == '/');
+        return ext2_disk_mounted() && home ? "the disk is full" : "there is no room left in memory";
+    }
+    if (r == -FS_EROFS)
+        return "/home is read-only";
+    if (r == -FS_EIO)
+        return "a disk error occurred";
+    ksnprintf(buf, size, "error %d", r < 0 ? -r : r);
+    return buf;
+}
+
+/* path (NUL-terminated) and ".trashinfo" into out; false if too long. */
+static bool fa_info_path(char *out, const char *slot)
+{
+    if (!fa_join(out, FA_TINFO, slot))
+        return false;
+    uint32_t n = fa_len(out), e = (uint32_t)sizeof(TRASH_INFO_EXT) - 1u;
+    if (n + e > FILES_PATH_MAX)
+        return false;
+    for (uint32_t k = 0; k < e; k++)
+        out[n + k] = TRASH_INFO_EXT[k];
+    out[n + e] = '\0';
+    return true;
+}
+
+static void fa_job_begin(enum fa_job j, bool all)
+{
+    fa_job = j;
+    fa_step = FA_ST_ITEM;
+    fa_jnext = fa_jitem = 0;
+    fa_jdone = fa_junknown = fa_jk = fa_jdirs_made = 0;
+    fa_joff = 0;
+    fa_jall = all;
+    fa_jinfo_made = false;
+    fa_working();
+}
+
+/* The action's end: the folder read again (an action's message kept). */
+static void fa_job_end(bool keep)
+{
+    fa_job = FA_JOB_NONE;
+    fa_step = FA_ST_ITEM;
+    fa_keep_status = keep;
+    fa_copy(fa_m->scratch2, sizeof(fa_m->scratch2), fa_m->path);
+    fa_read(fa_m->scratch2);
+}
+
+/* A partial copy and an info file not yet followed by its item removed
+ * (a failure, the window closed, Shut down); true if one was. */
+static bool fa_job_clean(void)
+{
+    bool any = false;
+    if ((fa_step == FA_ST_WALK || fa_step == FA_ST_WALK2) && fa_m->walk.copying) {
+        fa_fs_unlink(0, fa_m->walk.dst);
+        fa_m->walk.copying = false;
+        any = true;
+    }
+    if (fa_jinfo_made) {
+        fa_fs_unlink(0, fa_m->jinfo);
+        fa_jinfo_made = false;
+        any = true;
+    }
+    return any;
+}
+
+static void fa_job_fail(void)
+{
+    fa_job_clean();
+    fa_job_end(true);
+}
+
+/* The next item: selected (or every one with fa_jall), never the note. */
+static bool fa_job_next(void)
+{
+    for (uint32_t i = fa_jnext; i < fa_m->folder.n && i < fa_m->list.n; i++)
+        if (fa_jall || fa_m->items[i].selected) {
+            fa_jitem = i;
+            fa_jnext = i + 1;
+            return true;
+        }
+    return false;
+}
+
+/* A walk that ended without finishing: its message. */
+static void fa_walk_failed(enum files_walk_result w, const char *what, const char *name)
+{
+    if (w == FILES_WALK_DEEP) {
+        char deep[FILES_OPS_LINE_MAX];
+        files_ops_deep_text(fa_m->walk.done, deep);     /* plan C5: how many items were done */
+        fa_status(deep, true);
+        klogf("Files: stopped: nested too deeply (more than 64 levels) after %u items\n", fa_m->walk.done);
+    } else if (w == FILES_WALK_TOO_LONG) {
+        fa_status("This path is too long.", true);
+    } else if (w == FILES_WALK_LINK) {
+        fa_name_msg("Can't copy", name, ": it is a link, and links can't be copied yet.");
+    } else {
+        fa_error(what, name, (int)fa_m->walk.err);
+    }
+}
+
+/* One step of the walk running; true when it has finished (its result in
+ * *res). */
+static bool fa_walk_step(enum files_walk_result *res)
+{
+    *res = files_walk_step(&fa_m->walk);
+    return *res != FILES_WALK_MORE;
+}
+
+/* ---- Move to Trash (C6) ---- */
+
+static const char *const fa_trash_dirs[5] = { FILES_HOME "/.local", FILES_HOME "/.local/share", TRASH_DIR, FA_TFILES,
+                                              FA_TINFO };
+
+static void fa_step_trash(void)
+{
+    const char *name = files_entry_name(&fa_m->folder, fa_jitem);
+    char rb[24];
+    int r;
+    switch (fa_step) {
+    case FA_ST_ITEM:
+        if (!fa_job_next()) {
+            klogf("Files: %u items moved to the Trash\n", fa_jdone);
+            fa_job_end(false);
+            return;
+        }
+        if (!fa_join(fa_m->jsrc, fa_m->path, files_entry_name(&fa_m->folder, fa_jitem))) {
+            fa_status("This path is too long.", true);
+            fa_job_fail();
+            return;
+        }
+        fa_jk = 1;
+        fa_step = fa_jdirs_made >= 5 ? FA_ST_SLOT : FA_ST_DIRS;
+        return;
+    case FA_ST_DIRS:                       /* the Trash's folders, made when first needed (D3) */
+        r = fa_create(fa_trash_dirs[fa_jdirs_made], true);
+        if (r == -FS_EEXIST && !fa_is_folder(0, fa_trash_dirs[fa_jdirs_made]))
+            r = -FS_ENOTDIR;            /* something else has the name: never followed (rule SL) */
+        if (r < 0 && r != -FS_EEXIST) {
+            fa_name_msg("Can't move", name, "");
+            ksnprintf(fa_m->status + fa_len(fa_m->status), FA_STATUS_MAX - fa_len(fa_m->status),
+                      " to the Trash: %s.", fa_reason(r, rb, sizeof(rb)));
+            fa_job_fail();
+            return;
+        }
+        if (r == 0 && fa_jdirs_made == 4)
+            klogf("Files: the Trash folders made in " TRASH_DIR "\n");
+        if (++fa_jdirs_made >= 5)
+            fa_step = FA_ST_SLOT;
+        return;
+    case FA_ST_SLOT: {                     /* a free slot: no info file and no item of that name */
+        uint32_t nl = fa_m->folder.e[fa_jitem].name_len;
+        if (fa_jk > TRASH_SLOT_MAX) {
+            fa_name_msg("Can't move", name, " to the Trash: too many items with this name.");
+            fa_job_fail();
+            return;
+        }
+        if (!trash_slot_name(name, nl, fa_jk, fa_m->slot) || !fa_join(fa_m->jdst, FA_TFILES, fa_m->slot) ||
+            !fa_info_path(fa_m->jinfo, fa_m->slot)) {
+            fa_status("This path is too long.", true);
+            fa_job_fail();
+            return;
+        }
+        uint32_t tries = 0;
+        do {
+            struct vfs *v = vfs_root();
+            struct vnode *n = 0;
+            fd_vfs_acquire();
+            r = fa_lookup_locked(fa_m->jdst, &n);
+            if (r == 0)
+                r = -FS_EEXIST;
+            else if (r == -FS_ENOENT)
+                r = vfs_create(v, v->root, fa_m->jinfo, VNODE_FILE, 0600u, 0);    /* exclusively */
+            fd_vfs_release();
+        } while (ext2_disk_retry(&r, &tries));
+        if (r == -FS_EEXIST) {
+            fa_jk++;
+            return;
+        }
+        if (r < 0) {
+            fa_name_msg("Can't move", name, "");
+            ksnprintf(fa_m->status + fa_len(fa_m->status), FA_STATUS_MAX - fa_len(fa_m->status),
+                      " to the Trash: %s.", fa_reason(r, rb, sizeof(rb)));
+            fa_job_fail();
+            return;
+        }
+        fa_jinfo_made = true;
+        fa_step = FA_ST_WRITE;
+        return;
+    }
+    case FA_ST_WRITE: {                    /* [Trash Info], Path=, DeletionDate= (trash_info_build) */
+        struct trash_date d;
+        files_ops_date(vfs_now(), &d);
+        uint32_t len = trash_info_build(fa_m->jsrc, fa_len(fa_m->jsrc), &d, (char *)fa_m->info_buf, TRASH_INFO_MAX);
+        uint32_t tries = 0;
+        r = -FS_EINVAL;
+        if (len) {
+            do {
+                struct vfs *v = vfs_root();
+                struct vnode *n = 0;
+                fd_vfs_acquire();
+                r = fa_lookup_locked(fa_m->jinfo, &n);
+                int64_t put = 0;
+                if (r == 0)
+                    put = vfs_write(v, n, 0, fa_m->info_buf, len);
+                fd_vfs_release();
+                if (r == 0 && put != (int64_t)len)
+                    r = put < 0 ? (int)put : -FS_EIO;
+            } while (ext2_disk_retry(&r, &tries));
+        }
+        if (r < 0) {
+            fa_name_msg("Can't move", name, "");
+            ksnprintf(fa_m->status + fa_len(fa_m->status), FA_STATUS_MAX - fa_len(fa_m->status),
+                      " to the Trash: %s.", fa_reason(r, rb, sizeof(rb)));
+            fa_job_fail();
+            return;
+        }
+        fa_step = FA_ST_MOVE;
+        return;
+    }
+    case FA_ST_MOVE:                       /* the item into files/ (its name never replaced) */
+        r = fa_rename_free(fa_m->jsrc, fa_m->jdst);
+        if (r < 0) {
+            fa_name_msg("Can't move", name, "");
+            ksnprintf(fa_m->status + fa_len(fa_m->status), FA_STATUS_MAX - fa_len(fa_m->status),
+                      " to the Trash: %s.", fa_reason(r, rb, sizeof(rb)));
+            fa_job_fail();              /* the info file removed */
+            return;
+        }
+        fa_jinfo_made = false;
+        fa_jdone++;
+        {
+            char shown[FILES_NAME_MAX + 1], slot[FILES_NAME_MAX + 1];
+            ui_name_shown(name, shown, sizeof(shown));
+            ui_name_shown(fa_m->slot, slot, sizeof(slot));
+            klogf("Files: '%s' moved to the Trash as '%s' (info file first)\n", shown, slot);
+        }
+        fa_working();
+        fa_step = FA_ST_ITEM;
+        return;
+    default:
+        fa_job_fail();
+        return;
+    }
+}
+
+/* ---- Delete permanently (in a folder or the Trash) ---- */
+
+static void fa_step_delete(void)
+{
+    const char *name = files_entry_name(&fa_m->folder, fa_jitem);
+    enum files_walk_result w;
+    switch (fa_step) {
+    case FA_ST_ITEM:
+        if (!fa_job_next()) {
+            klogf("Files: %u items deleted permanently\n", fa_jdone);
+            fa_job_end(false);
+            return;
+        }
+        name = files_entry_name(&fa_m->folder, fa_jitem);
+        if (!fa_join(fa_m->jsrc, fa_m->view.trash ? FA_TFILES : fa_m->path, name) ||
+            (fa_m->view.trash && !fa_info_path(fa_m->jinfo, name)) ||
+            !files_walk_start(&fa_m->walk, &fa_fs, FILES_WALK_DELETE, fa_m->jsrc, fa_m->jsrc)) {
+            fa_status("This path is too long.", true);
+            fa_job_fail();
+            return;
+        }
+        fa_step = FA_ST_WALK;
+        return;
+    case FA_ST_WALK:                       /* a link removed as an entry, never followed */
+        if (!fa_walk_step(&w))
+            return;
+        if (w != FILES_WALK_DONE) {
+            fa_walk_failed(w, "Can't delete", name);
+            fa_job_fail();
+            return;
+        }
+        fa_step = fa_m->view.trash ? FA_ST_UNINFO : FA_ST_ITEM;
+        if (!fa_m->view.trash)
+            goto deleted;
+        return;
+    case FA_ST_UNINFO:
+        fa_fs_unlink(0, fa_m->jinfo);   /* none there: nothing to remove */
+        fa_step = FA_ST_ITEM;
+        goto deleted;
+    default:
+        fa_job_fail();
+        return;
+    }
+deleted:
+    fa_jdone++;
+    {
+        char shown[FILES_NAME_MAX + 1];
+        ui_name_shown(name, shown, sizeof(shown));
+        klogf("Files: '%s' deleted permanently\n", shown);
+    }
+    fa_working();
+}
+
+/* ---- Paste (copy, or move: a rename on one filesystem, else a copy and
+ * a delete; C5, rule SL) ---- */
+
+/* files_unique_name's test: the name is taken in Paste's target folder (or
+ * the folder ctx names). */
+static bool fa_taken_in(void *ctx, const char *name)
+{
+    const char *dir = ctx ? (const char *)ctx : fa_m->jdir;
+    if (!fa_join(fa_m->scratch, dir, name))
+        return true;
+    return fa_exists(0, fa_m->scratch);
+}
+
+static void fa_step_paste(void)
+{
+    uint32_t sl = fa_len(fa_m->jsrc), off = files_ops_name_off(fa_m->jsrc, sl);
+    const char *name = fa_m->jsrc + off;
+    enum files_walk_result w;
+    switch (fa_step) {
+    case FA_ST_ITEM: {
+        if (fa_jnext >= fa_m->clip.n) {
+            klogf("Files: pasted %u items into %s (%s)\n", fa_jdone, fa_m->jdir, fa_jmove ? "move" : "copy");
+            if (fa_jmove)
+                files_clip_clear(&fa_m->clip);      /* a cut is pasted once */
+            fa_job_end(fa_keep_status);
+            return;
+        }
+        uint32_t pl = 0;
+        const char *p = files_clip_path(&fa_m->clip, fa_jnext++, &pl);
+        if (!p || pl == 0 || pl > FILES_PATH_MAX)
+            return;
+        for (uint32_t i = 0; i < pl; i++)
+            fa_m->jsrc[i] = p[i];
+        fa_m->jsrc[pl] = '\0';
+        off = files_ops_name_off(fa_m->jsrc, pl);
+        name = fa_m->jsrc + off;
+        uint32_t dl = fa_len(fa_m->jdir);
+        if (files_ops_into_itself(fa_m->jsrc, pl, fa_m->jdir, dl)) {
+            fa_name_msg("Can't paste", name, " into itself.");
+            fa_job_fail();
+            return;
+        }
+        uint32_t parl = files_ops_parent_len(fa_m->jsrc, pl);
+        bool here = parl == dl;
+        for (uint32_t i = 0; here && i < dl; i++)
+            here = fa_m->jsrc[i] == fa_m->jdir[i];
+        if (here && fa_jmove)
+            return;                     /* cut and pasted where it is: nothing to do */
+        enum files_kind k = fa_fs_lstat(0, fa_m->jsrc);
+        if (k == FILES_K_NONE || k == FILES_K_ERROR) {
+            fa_error("Can't paste", name, k == FILES_K_NONE ? -FS_ENOENT : -FS_EIO);
+            fa_job_fail();
+            return;
+        }
+        char saved = fa_m->jsrc[parl];
+        fa_m->jsrc[parl] = '\0';
+        bool same = fa_same_fs(parl ? fa_m->jsrc : "/", fa_m->jdir);
+        fa_m->jsrc[parl] = saved;
+        if (fa_jmove && same) {
+            fa_jk = 1;                  /* a rename (a link moved as a link) */
+            fa_step = FA_ST_RENAME;
+            return;
+        }
+        if (k == FILES_K_LINK) {
+            fa_name_msg("Can't copy", name, ": it is a link, and links can't be copied yet.");
+            fa_job_fail();
+            return;
+        }
+        uint32_t nl = fa_len(name);
+        if (!files_unique_name(name, nl, k == FILES_K_DIR, FILES_VARIANT_NUMBER, fa_taken_in, 0, fa_m->slot)) {
+            fa_name_msg("Can't paste", name, ": too many items with this name.");
+            fa_job_fail();
+            return;
+        }
+        if (!fa_join(fa_m->jdst, fa_m->jdir, fa_m->slot) ||
+            !files_walk_start(&fa_m->walk, &fa_fs, FILES_WALK_COPY, fa_m->jsrc, fa_m->jdst)) {
+            fa_status("This path is too long.", true);
+            fa_job_fail();
+            return;
+        }
+        fa_step = FA_ST_WALK;
+        return;
+    }
+    case FA_ST_RENAME: {
+        int r = -FS_EEXIST;
+        if (fa_jk <= FILES_VARIANT_MAX) {
+            bool folder = fa_fs_lstat(0, fa_m->jsrc) == FILES_K_DIR;
+            uint32_t vl = files_name_variant(name, fa_len(name), folder, FILES_VARIANT_NUMBER, fa_jk, fa_m->slot);
+            if (vl && fa_join(fa_m->jdst, fa_m->jdir, fa_m->slot))
+                r = fa_rename_free(fa_m->jsrc, fa_m->jdst);
+        }
+        if (r == -FS_EEXIST && fa_jk < FILES_VARIANT_MAX) {
+            fa_jk++;
+            return;
+        }
+        if (r < 0) {
+            if (r == -FS_EEXIST)
+                fa_name_msg("Can't paste", name, ": too many items with this name.");
+            else
+                fa_error("Can't paste", name, r);
+            fa_job_fail();
+            return;
+        }
+        fa_jdone++;
+        fa_working();
+        fa_step = FA_ST_ITEM;
+        return;
+    }
+    case FA_ST_WALK:
+        if (!fa_walk_step(&w))
+            return;
+        if (w != FILES_WALK_DONE) {
+            fa_walk_failed(w, "Can't paste", name);
+            fa_job_fail();
+            return;
+        }
+        if (fa_m->walk.links_skipped) {
+            /* Links inside were left (rule SL): a move keeps its source. */
+            fa_name_msg("Can't copy", fa_m->walk.link_name, ": it is a link, and links can't be copied yet.");
+            fa_keep_status = true;
+            fa_jdone++;
+            fa_step = FA_ST_ITEM;
+            return;
+        }
+        if (fa_jmove) {
+            if (!files_walk_start(&fa_m->walk, &fa_fs, FILES_WALK_DELETE, fa_m->jsrc, fa_m->jsrc)) {
+                fa_status("This path is too long.", true);
+                fa_job_fail();
+                return;
+            }
+            fa_step = FA_ST_WALK2;
+            return;
+        }
+        fa_jdone++;
+        fa_working();
+        fa_step = FA_ST_ITEM;
+        return;
+    case FA_ST_WALK2:                      /* the source of a move across filesystems */
+        if (!fa_walk_step(&w))
+            return;
+        if (w != FILES_WALK_DONE) {
+            fa_walk_failed(w, "Can't delete", name);
+            fa_job_fail();
+            return;
+        }
+        fa_jdone++;
+        fa_working();
+        fa_step = FA_ST_ITEM;
+        return;
+    default:
+        fa_job_fail();
+        return;
+    }
+}
+
+/* ---- Restore (C6, rule SL) ---- */
+
+static void fa_ask_open(enum fa_ask kind, enum files_question q, const char *name, uint32_t n, const char *folder,
+                        bool by_key);
+
+static void fa_step_restore(void)
+{
+    const char *name = files_entry_name(&fa_m->folder, fa_jitem);
+    int r;
+    switch (fa_step) {
+    case FA_ST_ITEM:
+        if (!fa_job_next()) {
+            klogf("Files: %u items restored, %u without a known original location\n", fa_jdone, fa_junknown);
+            if (fa_junknown) {
+                ksnprintf(fa_m->status, FA_STATUS_MAX,
+                          "%u items can't be restored: their original location is unknown.", fa_junknown);
+                fa_m->view.status_error = true;
+            }
+            fa_job_end(fa_junknown > 0);
+            return;
+        }
+        if (!fa_m->restorable[fa_jitem]) {
+            fa_junknown++;
+            return;
+        }
+        name = files_entry_name(&fa_m->folder, fa_jitem);
+        if (!fa_join(fa_m->jsrc, FA_TFILES, name) || !fa_info_path(fa_m->jinfo, name)) {
+            fa_junknown++;
+            return;
+        }
+        fa_joff = 0;
+        fa_step = FA_ST_INFO;
+        return;
+    case FA_ST_INFO: {                     /* the info file again, through the parser only */
+        struct vfs *v = vfs_root();
+        struct vnode *n = 0;
+        uint64_t size = 0;
+        int64_t got = 0;
+        fd_vfs_acquire();
+        r = fa_lookup_locked(fa_m->jinfo, &n);
+        if (r == 0 && (n->type != VNODE_FILE || vnode_is_link(n)))
+            r = -FS_EINVAL;
+        if (r == 0) {
+            size = n->size;
+            if (size <= TRASH_INFO_MAX && fa_joff < size) {
+                uint64_t want = size - fa_joff;
+                if (want > FA_CHUNK)
+                    want = FA_CHUNK;
+                got = vfs_read(v, n, fa_joff, fa_m->info_buf + fa_joff, want);
+                if (got < 0)
+                    r = (int)got;
+            }
+        }
+        fd_vfs_release();
+        if (r == 0 && size <= TRASH_INFO_MAX && got > 0 && fa_joff + (uint64_t)got < size) {
+            fa_joff += (uint64_t)got;
+            return;
+        }
+        uint64_t have = fa_joff + (uint64_t)(got > 0 ? got : 0);
+        if (r < 0 || size > TRASH_INFO_MAX ||
+            trash_info_parse(fa_m->info_buf, (uint32_t)have, &fa_m->info) != TI_OK) {
+            fa_junknown++;
+            fa_step = FA_ST_ITEM;
+            return;
+        }
+        fa_step = FA_ST_CHECK;
+        return;
+    }
+    case FA_ST_CHECK: {                    /* every folder there a real folder, never a link */
+        uint32_t at = 0;
+        enum trash_restore tr = trash_restore_check(fa_m->info.path, fa_m->info.path_len, fa_trash_lstat, 0,
+                                                    fa_m->scratch, &at);
+        if (tr == TR_OK) {
+            fa_copy(fa_m->jdst, sizeof(fa_m->jdst), fa_m->info.path);
+            fa_step = FA_ST_RESTORE;
+        } else if (tr == TR_MAKE_PARENTS) {
+            fa_jk = at;
+            fa_step = FA_ST_PARENTS;
+        } else if (tr == TR_EXISTS) {
+            uint32_t pl = files_ops_parent_len(fa_m->info.path, fa_m->info.path_len);
+            char where[FA_LOC_MAX];
+            files_ops_location(fa_m->info.path, pl, FA_LOC_MAX - 1u, where, sizeof(where));
+            fa_step = FA_ST_ASKING;
+            fa_ask_open(FA_ASK_EXISTS, FILES_Q_EXISTS,
+                        fa_m->info.path + files_ops_name_off(fa_m->info.path, fa_m->info.path_len), 0, where, false);
+        } else if (tr == TR_PARENT_NOT_FOLDER && at <= fa_m->info.path_len) {
+            char folder[FILES_PATH_MAX + 1], shown[96];
+            for (uint32_t i = 0; i < at; i++)
+                folder[i] = fa_m->info.path[i];
+            folder[at] = '\0';
+            ui_name_shown(folder, shown, sizeof(shown));
+            fa_name_msg("Can't restore", name, "");
+            ksnprintf(fa_m->status + fa_len(fa_m->status), FA_STATUS_MAX - fa_len(fa_m->status),
+                      ": %s is not a folder.", shown);
+            fa_job_fail();
+        } else {
+            fa_error("Can't restore", name, -FS_EIO);
+            fa_job_fail();
+        }
+        return;
+    }
+    case FA_ST_PARENTS: {                  /* the next missing folder made again: path[0, fa_jk) */
+        uint32_t pl = files_ops_parent_len(fa_m->info.path, fa_m->info.path_len), j = fa_jk < pl ? fa_jk : pl;
+        char saved = fa_m->info.path[j];
+        fa_m->info.path[j] = '\0';
+        r = fa_create(fa_m->info.path, true);
+        fa_m->info.path[j] = saved;
+        if (r < 0 && r != -FS_EEXIST) {
+            fa_error("Can't restore", name, r);
+            fa_job_fail();
+            return;
+        }
+        if (j >= pl) {
+            fa_step = FA_ST_CHECK;         /* checked again (rule SL), then renamed */
+            return;
+        }
+        j++;                            /* the next folder's end */
+        while (j < pl && fa_m->info.path[j] != '/')
+            j++;
+        fa_jk = j;
+        return;
+    }
+    case FA_ST_RESTORE:
+        r = fa_rename_free(fa_m->jsrc, fa_m->jdst);
+        if (r < 0) {
+            fa_error("Can't restore", name, r);
+            fa_job_fail();
+            return;
+        }
+        fa_step = FA_ST_UNINFO;
+        return;
+    case FA_ST_UNINFO: {
+        fa_fs_unlink(0, fa_m->jinfo);
+        fa_jdone++;
+        char shown[FILES_NAME_MAX + 1], where[96];
+        uint32_t dl = fa_len(fa_m->jdst), pl = files_ops_parent_len(fa_m->jdst, dl);
+        ui_name_shown(fa_m->jdst + files_ops_name_off(fa_m->jdst, dl), shown, sizeof(shown));     /* as restored */
+        fa_m->jdst[pl] = '\0';
+        ui_name_shown(pl ? fa_m->jdst : "/", where, sizeof(where));
+        klogf("Files: '%s' restored to %s\n", shown, where);
+        fa_working();
+        fa_step = FA_ST_ITEM;
+        return;
+    }
+    default:
+        return;                         /* FA_ST_ASKING: the question's answer goes on */
+    }
+}
+
+/* ---- Empty Trash: every item, then every info file ---- */
+
+static void fa_step_empty(void)
+{
+    enum files_walk_result w;
+    uint64_t cookie = 0;
+    int r;
+    switch (fa_step) {
+    case FA_ST_ITEM:
+    case FA_ST_EFILES:
+    case FA_ST_EINFO: {
+        bool info = fa_step == FA_ST_EINFO;
+        const char *dir = info ? FA_TINFO : FA_TFILES;
+        r = fa_fs_read_dir(0, dir, &cookie, fa_m->slot);
+        if (r == -FS_ENOENT)
+            r = 0;                      /* no such folder: nothing in it */
+        if (r < 0) {
+            fa_error("Can't empty the Trash", 0, r);
+            fa_job_fail();
+            return;
+        }
+        if (r == 0) {
+            if (info) {
+                klogf("Files: the Trash emptied: %u items deleted\n", fa_jdone);
+                fa_job_end(false);
+            } else {
+                fa_step = FA_ST_EINFO;
+            }
+            return;
+        }
+        if (!fa_join(fa_m->jsrc, dir, fa_m->slot) ||
+            !files_walk_start(&fa_m->walk, &fa_fs, FILES_WALK_DELETE, fa_m->jsrc, fa_m->jsrc)) {
+            fa_status("This path is too long.", true);
+            fa_job_fail();
+            return;
+        }
+        fa_step = info ? FA_ST_WALK2 : FA_ST_WALK;
+        return;
+    }
+    case FA_ST_WALK:
+    case FA_ST_WALK2: {
+        bool info = fa_step == FA_ST_WALK2;
+        if (!fa_walk_step(&w))
+            return;
+        if (w != FILES_WALK_DONE) {
+            fa_walk_failed(w, "Can't delete", fa_m->slot);
+            fa_job_fail();
+            return;
+        }
+        if (!info) {
+            fa_jdone++;
+            fa_working();
+        }
+        fa_step = info ? FA_ST_EINFO : FA_ST_EFILES;
+        return;
+    }
+    default:
+        fa_job_fail();
+        return;
+    }
+}
+
+static void fa_job_step(void)
+{
+    uint32_t before = fa_jdone;
+    enum fa_job j = fa_job;
+    switch (fa_job) {
+    case FA_JOB_TRASH:
+        fa_step_trash();
+        break;
+    case FA_JOB_DELETE:
+        fa_step_delete();
+        break;
+    case FA_JOB_PASTE:
+        fa_step_paste();
+        break;
+    case FA_JOB_RESTORE:
+        fa_step_restore();
+        break;
+    case FA_JOB_EMPTY:
+        fa_step_empty();
+        break;
+    default:
+        return;
+    }
+    if (fa_job == j && fa_jdone != before)
+        fa_changed();                   /* "Working... <n> items done" */
+}
+
+/* ---- the question panel (Q2) ---- */
+
+static void fa_ask_open(enum fa_ask kind, enum files_question q, const char *name, uint32_t n, const char *folder,
+                        bool by_key)
+{
+    struct ui_files_view *v = &fa_m->view;
+    files_ops_question(q, name, n, folder, fa_m->ask1, fa_m->ask2, fa_m->ask_label);
+    fa_ask = kind;
+    v->mode = UI_FILES_ASK;
+    v->ask_focus = 0;                   /* Cancel focused */
+    v->ask_ring = by_key;
+    v->hover = v->pressed = UF_NONE;
+    fa_ask_press = UF_NONE;
+    klogf("Files: asks '%s%s%s' (%s, Cancel)\n", fa_m->ask1, fa_m->ask2[0] ? " " : "", fa_m->ask2, fa_m->ask_label);
+}
+
+static void fa_ask_answer(bool yes)
+{
+    struct ui_files_view *v = &fa_m->view;
+    enum fa_ask k = fa_ask;
+    fa_ask = FA_ASK_NONE;
+    v->mode = UI_FILES_LIST;
+    v->hover = v->pressed = UF_NONE;
+    klogf("Files: the question answered: %s\n", yes ? fa_m->ask_label : "Cancel");
+    switch (k) {
+    case FA_ASK_DELETE:
+    case FA_ASK_NOTRASH:
+        if (yes)
+            fa_job_begin(FA_JOB_DELETE, false);
+        else
+            fa_count_status();
+        break;
+    case FA_ASK_EMPTY:
+        if (yes)
+            fa_job_begin(FA_JOB_EMPTY, false);
+        else
+            fa_count_status();
+        break;
+    case FA_ASK_EXISTS:                 /* Restore: Keep both, or Cancel stops (Q5) */
+        if (yes) {
+            uint32_t pl = files_ops_parent_len(fa_m->info.path, fa_m->info.path_len);
+            uint32_t off = files_ops_name_off(fa_m->info.path, fa_m->info.path_len);
+            const char *nm = fa_m->info.path + off;
+            bool folder = fa_fs_lstat(0, fa_m->jsrc) == FILES_K_DIR;
+            fa_copy(fa_m->jdir, sizeof(fa_m->jdir), fa_m->info.path);
+            fa_m->jdir[pl] = '\0';
+            if (pl == 0)
+                fa_copy(fa_m->jdir, sizeof(fa_m->jdir), "/");
+            if (!files_unique_name(nm, fa_m->info.path_len - off, folder, FILES_VARIANT_RESTORED, fa_taken_in, 0,
+                                   fa_m->slot) || !fa_join(fa_m->jdst, fa_m->jdir, fa_m->slot)) {
+                fa_name_msg("Can't restore", files_entry_name(&fa_m->folder, fa_jitem),
+                            ": too many items with this name.");
+                fa_job_fail();
+                break;
+            }
+            fa_step = FA_ST_RESTORE;
+        } else {
+            klogf("Files: Restore stopped: %u items restored\n", fa_jdone);
+            fa_job_end(false);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* ---- starting the actions ---- */
+
+/* Cut or Copy: every selected item (at most 64, Q-multi-select). */
+static void fa_clip_set(bool cut)
+{
+    uint32_t n = fa_nsel();
+    if (n == 0 || fa_m->view.trash || (cut && !fa_writable))
+        return;
+    if (n > FILES_CLIP_MAX) {
+        fa_status("Only 64 items can be cut or copied at once.", true);
+        return;
+    }
+    files_clip_begin(&fa_m->clip, cut);
+    for (uint32_t i = 0; i < fa_m->folder.n && i < fa_m->list.n; i++)
+        if (fa_m->items[i].selected) {
+            if (!fa_join(fa_m->scratch, fa_m->path, files_entry_name(&fa_m->folder, i)) ||
+                files_clip_add(&fa_m->clip, fa_m->scratch, fa_len(fa_m->scratch)) != FILES_CLIP_OK) {
+                files_clip_clear(&fa_m->clip);
+                fa_status("This path is too long.", true);
+                return;
+            }
+        }
+    fa_count_status();
+    klogf("Files: %u items %s from %s\n", n, cut ? "cut" : "copied", fa_m->path);
+}
+
+/* Paste into the folder shown, or into folder item `into` (a menu's). */
+static void fa_paste(int32_t into)
+{
+    if (files_clip_empty(&fa_m->clip) || fa_m->view.trash || !fa_writable)
+        return;
+    const char *dir = fa_m->path;
+    if (into >= 0 && (uint32_t)into < fa_m->folder.n && fa_m->folder.e[into].kind == FILES_K_DIR) {
+        if (!fa_join(fa_m->scratch2, fa_m->path, files_entry_name(&fa_m->folder, (uint32_t)into))) {
+            fa_status("This path is too long.", true);
+            return;
+        }
+        dir = fa_m->scratch2;
+    }
+    fa_copy(fa_m->jdir, sizeof(fa_m->jdir), dir);
+    uint32_t at = 0;
+    enum files_target t = files_check_target(&fa_fs, fa_m->jdir, fa_m->scratch, &at);
+    if (t != FILES_TARGET_OK) {         /* rule SL: every part a real folder */
+        char folder[FILES_PATH_MAX + 1], shown[96];
+        uint32_t k = at <= fa_len(fa_m->jdir) ? at : 0;
+        for (uint32_t i = 0; i < k; i++)
+            folder[i] = fa_m->jdir[i];
+        folder[k] = '\0';
+        ui_name_shown(folder, shown, sizeof(shown));
+        ksnprintf(fa_m->status, FA_STATUS_MAX, "Can't paste here: %s is not a folder.", shown);
+        fa_m->view.status_error = true;
+        return;
+    }
+    fa_jmove = fa_m->clip.cut;
+    fa_keep_status = false;
+    fa_job_begin(FA_JOB_PASTE, false);
+}
+
+/* Delete (Move to Trash; in the Trash, Delete permanently) and Shift+Delete. */
+static void fa_delete(bool permanently, bool by_key)
+{
+    uint32_t n = fa_nsel();
+    if (n == 0 || !fa_writable)
+        return;
+    int32_t first = -1;
+    bool all_trashable = true;
+    for (uint32_t i = 0; i < fa_m->folder.n && i < fa_m->list.n; i++)
+        if (fa_m->items[i].selected) {
+            if (first < 0)
+                first = (int32_t)i;
+            if (!fa_join(fa_m->scratch, fa_m->path, files_entry_name(&fa_m->folder, i)) ||
+                !files_ops_trashable(fa_m->scratch, fa_len(fa_m->scratch)))
+                all_trashable = false;
+        }
+    const char *name = files_entry_name(&fa_m->folder, (uint32_t)first);
+    if (fa_m->view.trash || permanently)
+        fa_ask_open(FA_ASK_DELETE, n == 1 ? FILES_Q_DELETE_ONE : FILES_Q_DELETE_MANY, name, n, 0, by_key);
+    else if (!all_trashable)            /* Q7: only items under /home/user go to the Trash */
+        fa_ask_open(FA_ASK_NOTRASH, n == 1 ? FILES_Q_NOTRASH_ONE : FILES_Q_NOTRASH_MANY, name, n, 0, by_key);
+    else
+        fa_job_begin(FA_JOB_TRASH, false);
+}
+
+static void fa_empty(bool by_key)
+{
+    if (!fa_m->view.trash || !fa_writable || fa_m->folder.n == 0)
+        return;
+    fa_ask_open(FA_ASK_EMPTY, FILES_Q_EMPTY, 0, fa_m->folder.n, 0, by_key);
+}
+
+static void fa_restore(bool all)
+{
+    if (!fa_m->view.trash || !fa_writable || (!all && fa_nrestorable() == 0) || fa_m->folder.n == 0)
+        return;
+    fa_job_begin(FA_JOB_RESTORE, all);
+}
+
+/* Properties (D5): the info panel for item i, whatever it is. */
+static void fa_properties(uint32_t i)
+{
+    if (i >= fa_m->folder.n)
+        return;
+    const struct files_entry *e = &fa_m->folder.e[i];
+    const char *name = files_entry_name(&fa_m->folder, i);
+    files_size_text(e->size, fa_m->panel_size);
+    files_date_text(e->mtime, fa_m->panel_date);
+    fa_m->view.panel_icon = fa_m->items[i].icon;
+    fa_m->view.panel_values[0] = name;
+    fa_m->view.panel_values[1] = fa_m->panel_size;
+    fa_m->view.panel_values[2] = files_type_text((enum files_kind)e->kind, name, e->name_len);
+    fa_m->view.panel_values[3] = fa_m->panel_date;
+    fa_m->view.panel_has_app = !fa_m->view.trash && (e->kind == FILES_K_DIR ||
+                               (e->kind == FILES_K_FILE &&
+                                fa_same(files_type_text(FILES_K_FILE, name, e->name_len), "Text file")));
+    fa_m->view.mode = UI_FILES_PANEL;
+    fa_m->list.cursor = i;
+}
+
+/* Ctrl+A: every real item selected (never the limit's note). */
+static void fa_select_all(void)
+{
+    ui_list_select_all(&fa_m->list);
+    for (uint32_t i = fa_m->folder.n; i < fa_m->list.n; i++)
+        fa_m->items[i].selected = false;
+}
+
+/* A Files menu opened (D5): the item's or the empty space's. */
+static void fa_open_menu(bool item, int32_t x, int32_t y, bool by_key)
+{
+    struct files_ops_state st = fa_ops_state();
+    bool trash = fa_m->view.trash;
+    enum ui_menu_kind k = trash ? (item ? UI_MENU_TRASH_ITEM : UI_MENU_TRASH_SPACE)
+                                : (item ? UI_MENU_FILES_ITEM : UI_MENU_FILES_SPACE);
+    enum files_ops_menu om = trash ? (item ? FILES_OPS_MENU_TRASH_ITEM : FILES_OPS_MENU_TRASH_SPACE)
+                                   : (item ? FILES_OPS_MENU_ITEM : FILES_OPS_MENU_SPACE);
+    uint8_t ticked = 0;
+    if (!item && fa_m->folder.show_hidden)
+        ticked = (uint8_t)(1u << (trash ? 2 : 3));      /* Show hidden files */
+    fa_changed();
+    if (fa_env.menu)
+        fa_env.menu(k, x, y, by_key, files_ops_greyed(om, &st), ticked);
 }
 
 /* ---- the Text Viewer ---- */
@@ -1012,6 +2420,12 @@ void files_app_open(void)
         w->resizable = true;
         w->esc_closes = false;
         files_history_init(&fa_m->hist, fa_m->hist_store);
+        files_clip_init(&fa_m->clip, fa_m->clip_store);     /* 1.5 stage 13 (Q8) */
+        fa_job = FA_JOB_NONE;
+        fa_step = FA_ST_ITEM;
+        fa_ask = FA_ASK_NONE;
+        fa_tinfo_on = fa_keep_status = fa_jinfo_made = false;
+        fa_menu_item = -1;
         files_folder_init(&fa_m->folder, fa_m->entries, FILES_MAX_ENTRIES, fa_m->names, sizeof(fa_m->names), false);
         ui_list_init(&fa_m->list, UI_LIST_DETAILS, fa_m->items, 0, ui_files_panel_labels, (struct rect){ 0, 0, 0, 0 },
                      s);
@@ -1043,6 +2457,7 @@ void files_app_open(void)
 void files_app_closed(struct ui_window *w)
 {
     if (w == fa_env.files) {
+        files_app_stop("the window was closed");    /* 1.5 stage 13 (Q9) */
         uint32_t before = pmm_free_pages(), n = 0;
         bool had = fa_m != 0;
         fa_m = 0;                           /* no pointer into the pages left */
@@ -1071,11 +2486,117 @@ void files_app_closed(struct ui_window *w)
     }
 }
 
+void files_app_stop(const char *why)
+{
+    if (!fa_m || fa_job == FA_JOB_NONE)
+        return;
+    bool partial = fa_job_clean();
+    if (partial)
+        klogf("Files: action stopped (%s): the partial copy removed\n", why);
+    else
+        klogf("Files: action stopped (%s)\n", why);
+    fa_job = FA_JOB_NONE;
+    fa_step = FA_ST_ITEM;
+    fa_ask = FA_ASK_NONE;
+    if (fa_m->view.mode == UI_FILES_ASK)
+        fa_m->view.mode = UI_FILES_LIST;
+}
+
+void files_app_right(struct ui_window *top, int32_t x, int32_t y)
+{
+    if (!fa_m || top != fa_env.files || fa_env.files->minimised)
+        return;
+    struct ui_files_view *v = &fa_m->view;
+    if (v->mode != UI_FILES_LIST || v->renaming || fa_reading || fa_job != FA_JOB_NONE)
+        return;
+    struct ui_files_layout lay;
+    int32_t index = -1;
+    ui_files_layout(fa_env.files->r, fa_env.scale, fa_env.fonts->regular, v->bar != UI_FILES_BAR_NONE, &lay);
+    fa_m->list.r = lay.content;
+    if (ui_files_hit(&lay, v, fa_env.scale, fa_env.fonts->regular, x, y, &index) != UF_CONTENT)
+        return;
+    struct ui_list *l = &fa_m->list;
+    int32_t i = ui_list_item_at(l, x, y);
+    if (i >= (int32_t)fa_m->folder.n)
+        i = -1;                         /* the limit's note: as empty space */
+    if (ui_scrollbar_hit(ui_list_sb_rect(l), ui_list_lines(l), ui_list_page(l), l->top, fa_env.scale, x, y) !=
+        UI_SB_HIT_NONE)
+        return;
+    if (i >= 0) {
+        if (!l->items[i].selected)
+            ui_list_click(l, i, 0);     /* selected alone, unless part of the selection */
+        l->cursor = (uint32_t)i;
+        fa_menu_item = fa_m->folder.e[i].kind == FILES_K_DIR && fa_nsel() == 1 ? i : -1;
+    } else {
+        ui_list_click(l, -1, 0);        /* the selection cleared */
+        fa_menu_item = -1;
+    }
+    fa_count_status();
+    fa_open_menu(i >= 0, x, y, false);
+}
+
+void files_app_menu(enum ui_menu_action a)
+{
+    if (!fa_m || fa_m->view.mode != UI_FILES_LIST || fa_reading || fa_job != FA_JOB_NONE)
+        return;
+    fa_update_view();
+    fa_count_status();
+    switch (a) {
+    case UI_MENU_F_OPEN:
+        if (fa_target() >= 0)
+            fa_open_item((uint32_t)fa_target());
+        break;
+    case UI_MENU_F_CUT:
+    case UI_MENU_F_COPY:
+        fa_clip_set(a == UI_MENU_F_CUT);
+        break;
+    case UI_MENU_F_PASTE:
+        fa_paste(fa_menu_item);
+        break;
+    case UI_MENU_F_RENAME:
+        fa_rename_start();
+        break;
+    case UI_MENU_F_TRASH:
+    case UI_MENU_F_DELETE:
+        fa_delete(false, false);
+        break;
+    case UI_MENU_F_PROPERTIES:
+        if (fa_target() >= 0)
+            fa_properties((uint32_t)fa_target());
+        break;
+    case UI_MENU_F_NEW_FOLDER:
+    case UI_MENU_F_NEW_FILE:
+        fa_new(a == UI_MENU_F_NEW_FOLDER);
+        break;
+    case UI_MENU_F_HIDDEN:
+        fa_button(UF_HIDDEN);
+        break;
+    case UI_MENU_F_RESTORE:
+    case UI_MENU_F_RESTORE_ALL:
+        fa_restore(a == UI_MENU_F_RESTORE_ALL);
+        break;
+    case UI_MENU_F_EMPTY:
+        fa_empty(false);
+        break;
+    default:
+        break;
+    }
+    fa_menu_item = -1;
+    fa_changed();
+}
+
 void files_app_poll(uint64_t now)
 {
     if (fa_m && fa_reading) {
-        fa_read_hold();
+        if (fa_tinfo_on)
+            fa_tinfo_step();            /* 1.5 stage 13: the Trash's info files */
+        else
+            fa_read_hold();
         if (!fa_reading)
+            fa_changed();
+    } else if (fa_m && fa_job != FA_JOB_NONE && fa_step != FA_ST_ASKING) {
+        fa_job_step();                  /* 1.5 stage 13: one step of an action */
+        if (fa_m->view.mode == UI_FILES_ASK || fa_reading)
             fa_changed();
     }
     if (fa_v && fa_vreading)
@@ -1123,7 +2644,7 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
     if (x != fa_px || y != fa_py) {         /* the tooltip waits for the pointer to rest */
         fa_px = x;
         fa_py = y;
-        fa_tip_part = hover >= UF_BACK && hover <= UF_UP ? hover : UF_NONE;
+        fa_tip_part = ui_files_square(hover) ? hover : UF_NONE;    /* 1.5 stage 13: every square */
         fa_tip_since = now;
         if (v->tip != UF_NONE) {
             v->tip = UF_NONE;
@@ -1145,14 +2666,19 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
                 v->pressed = part;
                 changed = true;
             }
-        } else if (part == UF_PATH && !fa_reading && !v->renaming && v->mode == UI_FILES_LIST) {
+        } else if (part == UF_PATH && !fa_reading && !v->renaming && v->mode == UI_FILES_LIST && fa_job == FA_JOB_NONE) {
             fa_press_path = index;
-        } else if (part == UF_PLACE && index >= 0 && index < 7 && !fa_reading && !v->renaming) {
+        } else if (part == UF_PLACE && index >= 0 && index < 8 && !fa_reading && !v->renaming &&
+                   v->mode != UI_FILES_ASK && fa_job == FA_JOB_NONE) {
             fa_count_status();
-            if (!fa_same(fa_m->path, fa_place_paths[index]) || v->mode != UI_FILES_LIST)
+            if (index == 7) {           /* 1.5 stage 13: the Trash view */
+                if (!v->trash || v->mode != UI_FILES_LIST)
+                    fa_go(FILES_VIEW_TRASH, FA_TFILES);
+            } else if (!fa_same(fa_m->path, fa_place_paths[index]) || v->mode != UI_FILES_LIST || v->trash) {
                 fa_go(FILES_VIEW_FOLDER, fa_place_paths[index]);
+            }
             changed = true;
-        } else if (part == UF_CONTENT && v->mode == UI_FILES_LIST && !fa_reading) {
+        } else if (part == UF_CONTENT && v->mode == UI_FILES_LIST && !fa_reading && fa_job == FA_JOB_NONE) {
             struct ui_list *l = &fa_m->list;
             enum ui_sb_hit sh = ui_scrollbar_hit(ui_list_sb_rect(l), ui_list_lines(l), ui_list_page(l), l->top, s, x, y);
             if (sh == UI_SB_HIT_THUMB) {
@@ -1168,7 +2694,7 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
                     if (i >= (int32_t)fa_m->folder.n)
                         i = -1;
                     ui_list_click(l, i, mods);
-                    if (ui_list_double(&fa_m->clicks, now * 10u, x, y, i, s) && i >= 0) {
+                    if (ui_list_double(&fa_m->clicks, now * 10u, x, y, i, s) && i >= 0 && !v->trash) {
                         fa_count_status();
                         fa_open_item((uint32_t)i);
                     }
@@ -1274,9 +2800,24 @@ static bool fa_files_key(const struct key_event *e)
             v->mode = UI_FILES_LIST;
             fa_changed();
             return true;
+        case UF_ESC_CANCEL_ASK:         /* 1.5 stage 13: the question's Cancel */
+            fa_ask_answer(false);
+            fa_changed();
+            return true;
         default:
             return false;
         }
+    }
+    if (v->mode == UI_FILES_ASK) {      /* 1.5 stage 13: Tab moves the focus, Enter presses it */
+        if (pressed && e->keycode == KEY_TAB) {
+            v->ask_focus ^= 1;
+            v->ask_ring = true;
+            fa_changed();
+        } else if (pressed && (e->keycode == KEY_ENTER || e->keycode == KEY_KP_ENTER)) {
+            fa_ask_answer(v->ask_focus == 1);
+            fa_changed();
+        }
+        return true;
     }
     if (v->renaming) {
         enum ui_tf_result r = ui_textfield_key(&fa_m->field, e);
@@ -1306,7 +2847,7 @@ static bool fa_files_key(const struct key_event *e)
             return true;
         v->mode = UI_FILES_LIST;
     }
-    if (fa_reading)
+    if (fa_reading || fa_job != FA_JOB_NONE)    /* 1.5 stage 13: and while an action runs */
         return e->keycode != KEY_ESC;
     if (alt && (e->keycode == KEY_LEFT || e->keycode == KEY_RIGHT || e->keycode == KEY_UP)) {
         enum ui_files_part p = e->keycode == KEY_LEFT ? UF_BACK : e->keycode == KEY_RIGHT ? UF_FORWARD : UF_UP;
@@ -1330,11 +2871,63 @@ static bool fa_files_key(const struct key_event *e)
         fa_changed();
         return true;
     }
+    /* 1.5 stage 13: Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A (item (6)); Delete and
+     * Shift+Delete; Alt+Enter (Properties); the Menu key and Shift+F10. */
+    bool ctrl = (e->flags & KEY_CTRL) && !(e->flags & KEY_ALT), shift = (e->flags & KEY_SHIFT) != 0;
+    if (ctrl && e->keycode == KEY_CHAR) {
+        char c = e->ascii;
+        if (c >= 1 && c <= 26)
+            c = (char)(c + 'a' - 1);    /* a control code, as conskeys.c reads it */
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c + 'a' - 'A');
+        fa_update_view();
+        if (c == 'x' && v->enabled[UF_CUT])
+            fa_clip_set(true);
+        else if (c == 'c' && v->enabled[UF_COPY])
+            fa_clip_set(false);
+        else if (c == 'v' && v->enabled[UF_PASTE])
+            fa_paste(-1);
+        else if (c == 'a')
+            fa_select_all();
+        fa_changed();
+        return true;
+    }
+    if (e->keycode == KEY_DELETE && !(e->flags & (KEY_CTRL | KEY_ALT))) {
+        fa_update_view();
+        if (v->trash ? v->enabled[UF_TDELETE] : (v->enabled[UF_TRASH] || (shift && fa_nsel() && fa_writable)))
+            fa_delete(shift, true);
+        fa_changed();
+        return true;
+    }
+    if (alt && (e->keycode == KEY_ENTER || e->keycode == KEY_KP_ENTER)) {
+        if (fa_target() >= 0)
+            fa_properties((uint32_t)fa_target());
+        fa_changed();
+        return true;
+    }
+    if ((e->keycode == KEY_MENU && !(e->flags & (KEY_CTRL | KEY_ALT))) ||
+        (e->keycode == KEY_F10 && shift && !(e->flags & (KEY_CTRL | KEY_ALT)))) {
+        struct ui_list *l = &fa_m->list;
+        bool item = fa_target() >= 0;
+        int32_t mx, my;
+        if (item) {                     /* at the focused item: its name's left, the row's bottom */
+            struct rect ir = ui_list_item_rect(l, l->cursor);
+            mx = l->view == UI_LIST_GRID ? ir.x + ir.w / 2 : ir.x + ui_px(36, fa_env.scale);
+            my = ir.y + ir.h;
+            fa_menu_item = fa_m->folder.e[l->cursor].kind == FILES_K_DIR && fa_nsel() == 1 ? (int32_t)l->cursor : -1;
+        } else {                        /* the content's top left */
+            mx = l->r.x + ui_px(8, fa_env.scale);
+            my = l->r.y + ui_px(8, fa_env.scale);
+            fa_menu_item = -1;
+        }
+        fa_open_menu(item, mx, my, true);
+        return true;
+    }
     if (e->keycode == KEY_ESC)
         return false;
     enum ui_list_result r = ui_list_key(&fa_m->list, e);
     if (r == UI_LIST_OPEN) {
-        if (fa_m->list.cursor < fa_m->folder.n) {
+        if (fa_m->list.cursor < fa_m->folder.n && !v->trash) {     /* 1.5 stage 13: nothing opens in the Trash */
             fa_count_status();
             fa_open_item(fa_m->list.cursor);
         }

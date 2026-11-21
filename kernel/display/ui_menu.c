@@ -18,22 +18,51 @@ struct menu_def {
     bool header;
     int rows, dividers;
     int32_t row_dp[UI_MENU_ROWS_MAX];
-    int32_t div_dp[2];
+    int32_t div_dp[3];
     const char *label[UI_MENU_ROWS_MAX];
     int icon[UI_MENU_ROWS_MAX];
     enum ui_menu_action act[UI_MENU_ROWS_MAX];
+    const char *hint[UI_MENU_ROWS_MAX];     /* 1.5 stage 13 */
 };
 
-static const struct menu_def menu_defs[2] = {
+static const struct menu_def menu_defs[UI_MENU_KINDS] = {
     { 288, 182, true, 3, 2, { 61, 97, 142 }, { 56, 137 }, { "About", "Console", "Power..." },
-      { UI_ICON_ABOUT, UI_ICON_CONSOLE, UI_ICON_POWER }, { UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_POWER } },
+      { UI_ICON_ABOUT, UI_ICON_CONSOLE, UI_ICON_POWER }, { UI_MENU_ABOUT, UI_MENU_CONSOLE, UI_MENU_POWER }, { 0 } },
     { 224, 80, false, 2, 0, { 4, 40, 0 }, { 0, 0 }, { "Open Console", "About Madire OS", 0 },
-      { UI_ICON_CONSOLE, UI_ICON_ABOUT, UI_ICON_NONE }, { UI_MENU_CONSOLE, UI_MENU_ABOUT, UI_MENU_NONE } },
+      { UI_ICON_CONSOLE, UI_ICON_ABOUT, UI_ICON_NONE }, { UI_MENU_CONSOLE, UI_MENU_ABOUT, UI_MENU_NONE }, { 0 } },
+    /* 1.5 stage 13 (note (13)): the Files menus. */
+    { 264, 287, false, 7, 3, { 4, 49, 85, 121, 166, 202, 247 }, { 44, 161, 242 },
+      { "Open", "Cut", "Copy", "Paste", "Rename", "Move to Trash", "Properties" },
+      { UI_ICON_OPEN, UI_ICON_CUT, UI_ICON_COPY, UI_ICON_PASTE, UI_ICON_RENAME, UI_ICON_PLACE_TRASH, UI_ICON_ABOUT },
+      { UI_MENU_F_OPEN, UI_MENU_F_CUT, UI_MENU_F_COPY, UI_MENU_F_PASTE, UI_MENU_F_RENAME, UI_MENU_F_TRASH,
+        UI_MENU_F_PROPERTIES },
+      { "Enter", "Ctrl+X", "Ctrl+C", "Ctrl+V", "F2", "Delete", "Alt+Enter" } },
+    { 264, 170, false, 4, 2, { 4, 40, 85, 130 }, { 80, 125 },
+      { "New Folder", "New File", "Paste", "Show hidden files" },
+      { UI_ICON_NEW_FOLDER, UI_ICON_NEW_FILE, UI_ICON_PASTE, UI_ICON_NONE },
+      { UI_MENU_F_NEW_FOLDER, UI_MENU_F_NEW_FILE, UI_MENU_F_PASTE, UI_MENU_F_HIDDEN }, { 0, 0, "Ctrl+V", 0 } },
+    { 264, 134, false, 3, 2, { 4, 49, 94 }, { 44, 89 }, { "Restore", "Delete permanently", "Properties" },
+      { UI_ICON_RESTORE, UI_ICON_PLACE_TRASH, UI_ICON_ABOUT },
+      { UI_MENU_F_RESTORE, UI_MENU_F_DELETE, UI_MENU_F_PROPERTIES }, { 0, "Delete", "Alt+Enter" } },
+    { 264, 125, false, 3, 1, { 4, 40, 85 }, { 80 }, { "Restore all", "Empty Trash", "Show hidden files" },
+      { UI_ICON_RESTORE, UI_ICON_PLACE_TRASH, UI_ICON_NONE },
+      { UI_MENU_F_RESTORE_ALL, UI_MENU_F_EMPTY, UI_MENU_F_HIDDEN }, { 0 } },
 };
 
 static const struct menu_def *menu_def(enum ui_menu_kind k)
 {
-    return &menu_defs[k == UI_MENU_DESKTOP ? 1 : 0];
+    return &menu_defs[(uint32_t)k < UI_MENU_KINDS ? (uint32_t)k : 0u];
+}
+
+const char *ui_menu_hint(enum ui_menu_kind k, int row)
+{
+    const struct menu_def *d = menu_def(k);
+    return row >= 0 && row < d->rows ? d->hint[row] : 0;
+}
+
+bool ui_menu_row_live(const struct ui_menu *m, int row)
+{
+    return row >= 0 && row < menu_def(m->kind)->rows && row < 8 && !(m->greyed & (1u << row));
 }
 
 int ui_menu_rows(enum ui_menu_kind k)
@@ -75,8 +104,13 @@ struct rect ui_menu_place_m(uint32_t s, int32_t bar_y)
 
 struct rect ui_menu_place_at(uint32_t s, int32_t width, int32_t bar_y, int32_t x, int32_t y)
 {
+    return ui_menu_place_kind(UI_MENU_DESKTOP, s, width, bar_y, x, y);
+}
+
+struct rect ui_menu_place_kind(enum ui_menu_kind k, uint32_t s, int32_t width, int32_t bar_y, int32_t x, int32_t y)
+{
     int32_t w, h;
-    ui_menu_size(UI_MENU_DESKTOP, s, &w, &h);
+    ui_menu_size(k, s, &w, &h);
     if (x > width - w)
         x = width - w;
     if (y > bar_y - h)
@@ -91,6 +125,8 @@ void ui_menu_init(struct ui_menu *m, enum ui_menu_kind k, uint32_t s, struct rec
     m->r = r;
     m->sel = -1;
     m->ring = false;
+    m->greyed = 0;
+    m->ticked = 0;
 }
 
 struct rect ui_menu_row_rect(const struct ui_menu *m, int row)
@@ -115,9 +151,16 @@ int ui_menu_row_at(const struct ui_menu *m, int32_t x, int32_t y)
 int ui_menu_next(const struct ui_menu *m, int dir)
 {
     int n = menu_def(m->kind)->rows;
-    if (m->sel < 0 || m->sel >= n)
-        return dir > 0 ? 0 : n - 1;
-    return (m->sel + (dir > 0 ? 1 : n - 1)) % n;
+    int at = m->sel < 0 || m->sel >= n ? (dir > 0 ? n - 1 : 0) : m->sel;
+    /* 1.5 stage 13: the next row that is not greyed (none: -1). With no
+     * row greyed this is the row after (or before) the selection, wrapping
+     * around, and the first (or last) when none is selected, as before. */
+    for (int k = 0; k < n; k++) {
+        at = (at + (dir > 0 ? 1 : n - 1)) % n;
+        if (ui_menu_row_live(m, at))
+            return at;
+    }
+    return -1;
 }
 
 /* The M menu's wordmark as a line, the menu at r. */
@@ -195,10 +238,14 @@ bool ui_menu_draw(const struct ui_canvas *c, const struct ui_menu *m, const stru
                 ui_frame_round(c, ring, ui_px(4, s), g, UI_CORNERS_ALL, UI_ACCENT);
             }
         }
-        int32_t ip = ui_px(16, s);
-        ui_icon_draw(c, d->icon[i], r.x + ui_px(16, s), row.y + (row.h - ip) / 2, ip, UI_TEXT);
-        ui_text(c, f->regular, r.x + ui_px(44, s), row.y + (row.h - (int32_t)f->regular->height) / 2, d->label[i],
-                UI_TEXT);
+        int32_t ip = ui_px(16, s), ty = row.y + (row.h - (int32_t)f->regular->height) / 2;
+        bool grey = (m->greyed >> i) & 1u, tick = (m->ticked >> i) & 1u;      /* 1.5 stage 13 */
+        uint32_t fg = grey ? UI_TEXT_MUTED : UI_TEXT;
+        ui_icon_draw(c, tick ? UI_ICON_CHECK : d->icon[i], r.x + ui_px(16, s), row.y + (row.h - ip) / 2, ip, fg);
+        ui_text(c, f->regular, r.x + ui_px(44, s), ty, d->label[i], fg);
+        if (d->hint[i])
+            ui_text(c, f->regular, r.x + ui_px(d->w_dp - 16, s) - ui_text_width(f->regular, d->hint[i]), ty,
+                    d->hint[i], UI_TEXT_MUTED);
     }
     ui_frame_round(c, r, R, e, UI_CORNERS_ALL, UI_BORDER_PANEL);
     return whole;

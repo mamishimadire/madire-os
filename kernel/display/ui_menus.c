@@ -5,6 +5,7 @@
 #include "kernel/display/ui_menus.h"
 
 static void menus_dlg_states(struct ui_menus *m);
+static void menus_update_m(struct ui_menus *m);
 
 void ui_menus_init(struct ui_menus *m, struct ui_wm *wm, struct ui_window *about, struct ui_window *console,
                    struct rect m_cell, const struct ui_fonts *f)
@@ -58,6 +59,8 @@ static struct ui_menus_event *menus_event(struct ui_menus *m, enum ui_menus_ev_k
     e->why = UI_WHY_MOUSE;
     e->state = 0;
     e->r = m->menu.r;
+    e->greyed = m->menu.greyed;
+    e->ticked = m->menu.ticked;
     return e;
 }
 
@@ -175,7 +178,31 @@ static void menus_choose(struct ui_menus *m, int row, bool by_key)
             m->done = a;
     } else if (a == UI_MENU_POWER) {
         menus_dlg_open(m, by_key);
+    } else if (a >= UI_MENU_F_OPEN) {
+        m->done = a;                    /* 1.5 stage 13: a Files row, for the caller */
     }
+}
+
+void ui_menus_open_at(struct ui_menus *m, enum ui_menu_kind k, int32_t x, int32_t y, bool by_key, uint8_t greyed,
+                      uint8_t ticked)
+{
+    if (m->menu_open || m->dlg_open || k < UI_MENU_FILES_ITEM || k >= UI_MENU_KINDS)
+        return;
+    uint32_t s = m->wm->scale;
+    struct rect r = ui_menu_place_kind(k, s, m->wm->width, m->wm->bar_y, x, y);
+    ui_menu_init(&m->menu, k, s, r);
+    m->menu.greyed = greyed;
+    m->menu.ticked = ticked;
+    if (by_key) {
+        m->menu.sel = ui_menu_next(&m->menu, 1);
+        m->menu.ring = true;
+    }
+    m->menu_open = true;
+    menus_damage(m, r);
+    struct ui_menus_event *e = menus_event(m, UI_MEV_MENU_OPEN);
+    if (e)
+        e->why = by_key ? UI_WHY_KEYBOARD : UI_WHY_MOUSE;
+    menus_update_m(m);
 }
 
 /* A button's (or the close button's) state: pressed while the press on it
@@ -247,7 +274,7 @@ static void menus_release(struct ui_menus *m)
             menus_open(m, UI_MENU_M, false);
     } else if (p == UI_MPRESS_MENU && m->menu_open) {
         int row = ui_menu_row_at(&m->menu, m->x, m->y);
-        if (row >= 0)
+        if (row >= 0 && ui_menu_row_live(&m->menu, row))    /* 1.5 stage 13: never a greyed row */
             menus_choose(m, row, false);
     }
 }
@@ -285,6 +312,8 @@ static void menus_dlg_pointer(struct ui_menus *m, bool down, bool up)
 static void menus_menu_pointer(struct ui_menus *m, bool down, bool up, bool right)
 {
     int row = ui_menu_row_at(&m->menu, m->x, m->y);
+    if (row >= 0 && !ui_menu_row_live(&m->menu, row))
+        row = -1;                       /* 1.5 stage 13: a greyed row is as no row */
     if (row >= 0)
         menus_select(m, row, false);
     else if (!m->menu.ring)

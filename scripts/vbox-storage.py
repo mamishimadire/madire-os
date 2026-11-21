@@ -52,8 +52,9 @@ SEED_FILES = {
 }
 SEED_DIRS = ["seed"]
 
-# The home folders the first read-write mount makes (D18, C11).
-HOME = ["Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos", "Trash"]
+# The home folders the first read-write mount makes (D18, C11; 1.5 stage
+# 13: six, the Trash is .local/share/Trash, made by Files when first needed).
+HOME = ["Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"]
 
 # What the storage group's first-boot session leaves (its commands, in
 # scripts/vbox-acceptance.ps1, from /home):

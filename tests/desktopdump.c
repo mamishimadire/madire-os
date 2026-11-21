@@ -991,10 +991,20 @@ static void files_scene_paint(const struct ui_canvas *c, struct rect r, void *ct
     ui_files_draw(c, r, S, &files_scene_fonts, &files_scene_view);
 }
 
+/* 1.5 stage 13: the scenes after files and files_grid (desktop_ref.py's
+ * scene_files_s13: the same views). */
+enum { DUMP_FILES, DUMP_GRID, DUMP_TRASH, DUMP_ASK, DUMP_RENAME_SEL, DUMP_MENU_ITEM, DUMP_MENU_SPACE };
+static const char *const files_scene_names[7] = { "files", "files_grid", "files_trash", "files_ask",
+                                                  "files_rename_sel", "files_menu_item", "files_menu_space" };
+static const char *const dump_trash_titles[4] = { "Name", "", "Original location", "Deleted" };
+static uint16_t files_menu_scratch[UI_ABOUT_SCRATCH];
+
 /* The Files window at (16, 16) dp, 720 x 480 dp, active (desktop_ref.py's
- * scene_files: the same view). */
-static int scene_files(struct ui_canvas *c, bool grid)
+ * scene_files: the same view). 1.5 stage 13: `variant` (FS_*); files and
+ * files_grid as in 1.5 stage 12. */
+static int scene_files(struct ui_canvas *c, int variant)
 {
+    bool grid = variant == DUMP_GRID;
     static const struct {
         const char *name, *size, *type, *mod;
         int icon;
@@ -1050,6 +1060,57 @@ static int scene_files(struct ui_canvas *c, bool grid)
     v->panel_icon = UI_ICON_NONE;
     v->status = "7 items, 300.0 MiB free";
     v->status_error = false;
+    /* 1.5 stage 13: the Trash view (and the question over it), the
+     * selected rename field, the menus. */
+    static const struct {
+        const char *name, *loc, *date;
+        int icon;
+    } trows[4] = {
+        { "Old Projects", "Home > Documents", "2026-11-20 09:15", UI_ICON_FOLDER },
+        { "notes.txt", "Home", "2026-11-20 10:41", UI_ICON_TEXTFILE },
+        { "Project Link", "... > Projects > 2026", "2026-11-19 17:02", UI_ICON_LINK },
+        { "lost.bin", "(unknown original location)", "(unknown date)", UI_ICON_FILE },
+    };
+    if (variant == DUMP_TRASH || variant == DUMP_ASK) {
+        for (int i = 0; i < 4; i++) {
+            items[i].name = trows[i].name;
+            items[i].size = 0;
+            items[i].type = trows[i].loc;
+            items[i].modified = trows[i].date;
+            items[i].icon = trows[i].icon;
+            items[i].selected = i == 1;
+        }
+        ui_list_init(&list, UI_LIST_DETAILS, items, 4, dump_trash_titles, lay.content, S);
+        list.wide = true;
+        list.cursor = 1;
+        files_pathbar(FILES_VIEW_TRASH, "", 0, ui_files_path_cells(&lay, S, files_scene_fonts.regular), &pb);
+        v->trash = true;
+        v->place = 7;
+        v->renaming = false;
+        v->hover = variant == DUMP_TRASH ? UF_RESTORE_ALL : UF_NONE;
+        v->pressed = UF_NONE;
+        v->tip = UF_NONE;
+        v->status = "4 items, 300.0 MiB free";
+        if (variant == DUMP_ASK) {
+            v->mode = UI_FILES_ASK;
+            v->ask_line1 = "Empty the Trash?";
+            v->ask_line2 = "4 items will be deleted permanently.";
+            v->ask_label = "Empty Trash";
+            v->ask_focus = 0;
+            v->ask_ring = true;
+            v->ask_state[0] = UI_BUTTON_NORMAL;
+            v->ask_state[1] = UI_BUTTON_HOVER;
+        }
+    } else if (variant >= DUMP_RENAME_SEL) {
+        ui_textfield_set(&field, "Plan.md");
+        ui_textfield_select_all(&field);
+        ui_textfield_fit(&field, ui_textfield_cols(ui_files_field_rect(&list, 4), S, files_scene_fonts.regular));
+        v->renaming = variant == DUMP_RENAME_SEL;
+        v->hover = variant == DUMP_RENAME_SEL ? UF_PASTE : UF_NONE;
+        v->pressed = UF_NONE;
+        v->tip = variant == DUMP_RENAME_SEL ? UF_PASTE : UF_NONE;
+        v->chosen[UF_HIDDEN] = variant == DUMP_MENU_SPACE;
+    }
     w.name = "Files";
     w.title = "Files";
     w.icon = UI_ICON_FOLDER;
@@ -1060,7 +1121,27 @@ static int scene_files(struct ui_canvas *c, bool grid)
     w.grows = true;
     w.paint = files_scene_paint;
     ui_window_draw(c, &w, r, true, UI_BUTTON_NORMAL, S, &files_scene_fonts);
-    printf("SCENE %s: scale %u %%, the window %dx%d, %u path cells\n", grid ? "files_grid" : "files", S * 25, r.w,
+    if (variant == DUMP_MENU_ITEM || variant == DUMP_MENU_SPACE) {
+        /* The menu above the window (the desktop draws it last), at a
+         * point inside it: the item's with Paste greyed and Cut selected
+         * by the pointer; the empty space's with Show hidden files ticked,
+         * opened by the keyboard (New Folder selected, the ring). */
+        struct ui_menu m;
+        enum ui_menu_kind k = variant == DUMP_MENU_ITEM ? UI_MENU_FILES_ITEM : UI_MENU_FILES_SPACE;
+        int32_t W = (int32_t)c->s->width, bar = (int32_t)c->s->height - d(40);
+        ui_menu_init(&m, k, S, ui_menu_place_kind(k, S, W, bar, d(300), d(200)));
+        if (k == UI_MENU_FILES_ITEM) {
+            m.greyed = 1u << 3;
+            m.sel = 1;
+        } else {
+            m.ticked = 1u << 3;
+            m.sel = 0;
+            m.ring = true;
+        }
+        if (!ui_menu_draw(c, &m, &files_scene_fonts, files_menu_scratch, UI_ABOUT_SCRATCH))
+            return 1;
+    }
+    printf("SCENE %s: scale %u %%, the window %dx%d, %u path cells\n", files_scene_names[variant], S * 25, r.w,
            r.h, ui_files_path_cells(&lay, S, files_scene_fonts.regular));
     return 0;
 }
@@ -1145,10 +1226,15 @@ int main(int argc, char **argv)
         rc = scene_scrollbar(&c, (int32_t)w);
     } else if (strcmp(argv[4], "fileicons") == 0) {               /* 1.5 stage 12 */
         rc = scene_fileicons(&c, (int32_t)w);
-    } else if (strcmp(argv[4], "files") == 0) {
-        rc = scene_files(&c, false);
-    } else if (strcmp(argv[4], "files_grid") == 0) {
-        rc = scene_files(&c, true);
+    } else if (strncmp(argv[4], "files", 5) == 0) {                /* 1.5 stage 12; 13: the variants */
+        rc = 2;
+        for (int k = 0; k < 7; k++)
+            if (strcmp(argv[4], files_scene_names[k]) == 0)
+                rc = scene_files(&c, k);
+        if (rc == 2) {
+            fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
+            return 1;
+        }
     } else if (strncmp(argv[4], "mbutton_", 8) == 0 || strncmp(argv[4], "menu_", 5) == 0 ||
                strncmp(argv[4], "dialog", 6) == 0) {          /* 1.3 stage 5 */
         rc = scene_menus(&s, &cl, argv[4]);

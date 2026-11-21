@@ -66,6 +66,11 @@
  *     is max(d(24), floor(L x page / lines)) long (at most L), at
  *     floor((L - T) x top / (lines - page)) down the track.
  * The page is the full rows (lines of cells) the body holds.
+ * 1.5 stage 13 (the Trash view's columns, Q4): a list with `wide` set has
+ * three columns: no Size column (its title and texts not drawn) and the
+ * third column (the item's type text: the Trash's original location) from
+ * the Size column's left end, d(8) into it, its room d(192) less d(16);
+ * every other rule as above. ui_list_init leaves it off.
  */
 
 #include <stdbool.h>
@@ -119,6 +124,7 @@ struct ui_list {
     uint32_t anchor;                        /* a Shift range's start */
     bool ring;                              /* the keyboard moved the focus */
     enum ui_sb_state sb;
+    bool wide;                              /* 1.5 stage 13: three columns (the Trash view) */
 };
 
 enum ui_list_result { UI_LIST_NONE, UI_LIST_MOVED, UI_LIST_OPEN };

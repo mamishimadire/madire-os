@@ -18,10 +18,29 @@ void ui_textfield_set(struct ui_textfield *t, const char *text)
     t->len = n;
     t->pos = n;
     t->first = 0;
+    t->sel = false;
+}
+
+void ui_textfield_select_all(struct ui_textfield *t)
+{
+    t->sel = t->len > 0;
+    t->pos = t->len;
+}
+
+/* 1.5 stage 13: the selected text removed (the field empty). */
+static void tf_drop_selection(struct ui_textfield *t)
+{
+    t->len = 0;
+    t->pos = 0;
+    t->first = 0;
+    t->buf[0] = '\0';
+    t->sel = false;
 }
 
 static enum ui_tf_result tf_insert(struct ui_textfield *t, char ch)
 {
+    if (t->sel)
+        tf_drop_selection(t);
     if (t->len >= UI_TEXTFIELD_MAX)
         return UI_TF_REFUSED;
     for (uint16_t i = t->len; i > t->pos; i--)
@@ -62,6 +81,30 @@ enum ui_tf_result ui_textfield_key(struct ui_textfield *t, const struct key_even
         return UI_TF_CANCEL;
     case KEY_TAB:
         return UI_TF_PASS;
+    default:
+        break;
+    }
+    if (t->sel) {                       /* 1.5 stage 13 (D1): the whole text selected */
+        switch (e->keycode) {
+        case KEY_BACKSPACE:
+        case KEY_DELETE:
+            tf_drop_selection(t);
+            return UI_TF_CHANGED;
+        case KEY_LEFT:
+        case KEY_HOME:
+            t->sel = false;
+            t->pos = 0;
+            return UI_TF_CHANGED;
+        case KEY_RIGHT:
+        case KEY_END:
+            t->sel = false;
+            t->pos = t->len;
+            return UI_TF_CHANGED;
+        default:
+            break;
+        }
+    }
+    switch (e->keycode) {
     case KEY_BACKSPACE:
         if (t->pos == 0)
             return UI_TF_NONE;
@@ -124,6 +167,7 @@ void ui_textfield_click(struct ui_textfield *t, struct rect r, uint32_t s, const
     int64_t col = rel <= 0 || w == 0 ? 0 : (rel + w / 2) / w;
     int64_t pos = (int64_t)t->first + col;
     t->pos = (uint16_t)(pos > t->len ? t->len : pos);
+    t->sel = false;
 }
 
 void ui_textfield_draw(const struct ui_canvas *c, const struct ui_textfield *t, struct rect r, uint32_t s,
@@ -152,6 +196,17 @@ void ui_textfield_draw(const struct ui_canvas *c, const struct ui_textfield *t, 
         shown[n++] = ch >= 0x20 && ch <= 0x7E ? ch : '?';
     }
     shown[n] = '\0';
+    if (t->sel && n > 0) {
+        /* 1.5 stage 13: the selected bytes on `accent`, in text.on.accent. */
+        struct rect box = { tx, ty, (int32_t)((int64_t)n * fr->width), (int32_t)fr->height };
+        struct ui_canvas in = { c->s, ui_rect_intersect(c->clip, ui_rect_inflate(r, -ui_px(2, s))) };
+        UI_TRACE_PAIR(UI_TRACE_STATE, UI_ACCENT, UI_SURFACE);
+        UI_TRACE_PAIR(UI_TRACE_TEXT, UI_TEXT_ON_ACCENT, UI_ACCENT);
+        if (!ui_rect_empty(in.clip))
+            ui_fill(&in, box, UI_ACCENT);
+        ui_text(c, fr, tx, ty, shown, UI_TEXT_ON_ACCENT);
+        return;
+    }
     ui_text(c, fr, tx, ty, shown, UI_TEXT);
     if (focused) {
         struct rect caret = { (int32_t)((int64_t)tx + ((int64_t)t->pos - t->first) * fr->width), ty, ui_px(2, s),

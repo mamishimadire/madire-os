@@ -61,6 +61,16 @@
  * When a menu or the dialog closes, the window manager gets the pointer's
  * place with no button (ui_wm_pointer), so its close buttons follow it.
  * Each change is an event (for the log, in order) and damage.
+ *
+ * 1.5 stage 13 (note (13)): the Files menus open only through
+ * ui_menus_open_at (files_app.c asks for one through the desktop: a right
+ * press in the Files window, the Menu key or Shift+F10), at a point, with
+ * their greyed and ticked rows; by the keyboard the first row that is not
+ * greyed is selected (none if every row is greyed) and the ring is on.
+ * While one is open it follows the rules of an open menu above, except
+ * that the pointer over a greyed row selects nothing (as over no row) and
+ * a greyed row is never chosen. Choosing a row closes the menu and leaves
+ * its action (UI_MENU_F_*) in done for the caller (ui_menus_take_done).
  */
 
 #include <stdbool.h>
@@ -83,7 +93,8 @@ enum ui_menus_press { UI_MPRESS_NONE, UI_MPRESS_M, UI_MPRESS_MENU, UI_MPRESS_OUT
 
 /* How a menu opened or closed, or the dialog closed. */
 enum ui_menus_why { UI_WHY_MOUSE, UI_WHY_KEY, UI_WHY_ESC, UI_WHY_OUTSIDE, UI_WHY_WINDOWS, UI_WHY_M_BUTTON,
-                    UI_WHY_CHOSEN, UI_WHY_CANCEL, UI_WHY_CLOSE_BUTTON };
+                    UI_WHY_CHOSEN, UI_WHY_CANCEL, UI_WHY_CLOSE_BUTTON,
+                    UI_WHY_KEYBOARD };          /* 1.5 stage 13: a Files menu opened by the Menu key or Shift+F10 */
 
 enum ui_menus_ev_kind {
     UI_MEV_MENU_OPEN,           /* menu, why (mouse or key), r; with key: row 0 selected */
@@ -107,6 +118,7 @@ struct ui_menus_event {
     enum ui_menus_why why;
     int state;
     struct rect r;
+    uint8_t greyed, ticked;     /* 1.5 stage 13: the menu's, for its "opened" line */
 };
 
 struct ui_menus {
@@ -122,7 +134,7 @@ struct ui_menus {
     bool left;                  /* a left press the menus keep is held */
     enum ui_menus_press press;
     enum ui_m_state m_state;
-    enum ui_menu_action done;   /* About or Console opened, not yet taken */
+    enum ui_menu_action done;   /* About or Console opened (1.5 stage 13: or a Files row chosen), not yet taken */
     bool restart;               /* Restart pressed in the dialog */
     bool shutdown;              /* 1.5 stage 6: Shut down pressed in the dialog */
     struct ui_menus_event ev[UI_MENUS_EVENTS];
@@ -143,8 +155,16 @@ void ui_menus_pointer(struct ui_menus *m, int32_t x, int32_t y, bool down, bool 
 /* One key event (the rules above). */
 enum ui_menus_route ui_menus_key(struct ui_menus *m, enum ui_menus_key k, bool pressed);
 
+/* 1.5 stage 13: opens Files menu k (UI_MENU_FILES_ITEM ... UI_MENU_TRASH_SPACE)
+ * at (x, y) (ui_menu_place_kind), with its greyed and ticked rows, by the
+ * keyboard or the mouse (the rules above); nothing if a menu or the
+ * dialog is open or k is not a Files menu. */
+void ui_menus_open_at(struct ui_menus *m, enum ui_menu_kind k, int32_t x, int32_t y, bool by_key, uint8_t greyed,
+                      uint8_t ticked);
+
 /* The window a row opened since the last call (UI_MENU_ABOUT or
- * UI_MENU_CONSOLE), or UI_MENU_NONE; cleared. */
+ * UI_MENU_CONSOLE; 1.5 stage 13: or the Files row chosen, UI_MENU_F_*), or
+ * UI_MENU_NONE; cleared. */
 enum ui_menu_action ui_menus_take_done(struct ui_menus *m);
 
 /* Empties the event list. */

@@ -72,6 +72,12 @@ windows themselves):
                   opened a text file), titled TITLE;
     --filesnomem  the Files window opens with no memory (filesnomem);
     --viewerfile PATH  the bytes the Text Viewer shows (its first "len").
+    fmenu:mouse, fmenu:key  (1.5 stage 13) the right press or key just
+                  sent opened a Files menu: wait for the kernel's "desktop:
+                  menu (Files|Trash) (item|space) opened ..." line and open
+                  the same menu in the model (its greyed and ticked rows from
+                  the line; by the mouse at the pointer, so the model checks
+                  its place; by the keyboard at the line's place);
     wshot         a screen against the desktop with the model's windows
                   (each with its logged About values, cut as ui_about.h
                   says) and, after the first packet, the pointer: taken at
@@ -267,6 +273,15 @@ def screen(qmp, serial, dump, n, pointer_at):
 WIN_EVENT = re.compile(r"^desktop: (open|raise|focus|drag|close|minimise|restore|maximise|unmaximise|switch:|taskbar|"
                        r"resize|snap|unsnap|shortcut) ")
 MENU_EVENT = re.compile(r"^desktop: (menu|dialog|M button)[ :]")      # 1.3 stage 5
+# 1.5 stage 13: a Files menu's "opened" line (desktop.c's).
+FILES_MENU_OPEN = re.compile(r"^desktop: menu ((?:Files|Trash) (?:item|space)) opened by (the mouse|the keyboard) "
+                             r"at \((-?\d+), (-?\d+)\) (\d+)x(\d+), greyed ([01]+) ticked ([01]+)")
+
+
+def parse_state(text):
+    """1.5 stage 13: a "files: state" line's keys and values; a value may
+    hold spaces (a button's name), so it ends where the next " key=" starts."""
+    return dict(w.split("=", 1) for w in re.split(r" (?=[a-z]+=)", text) if "=" in w)
 ABOUT_VALUE = re.compile(r"^desktop: about (Version|Boot loader|Display|Memory|Mode): (.*)$")
 
 
@@ -447,11 +462,13 @@ class Windows:
         if self.lines_cut is not None:
             lines = lines[:self.lines_cut]
         st, path, status, field, panel, items, trunc = {}, (0, b""), (0, b""), None, None, [], False
+        self.ask = {}                   # 1.5 stage 13: the question's lines
+        self.trash_cols = {}            # 1.5 stage 13: item -> (location, restorable, date)
         k = len(lines) - 1
         while k >= 0 and not lines[k].startswith("files: state "):
             k -= 1
         if k >= 0:
-            st = dict(w.split("=", 1) for w in lines[k][len("files: state "):].split(" ") if "=" in w)
+            st = parse_state(lines[k][len("files: state "):])      # 1.5 stage 13: values with spaces
             j = k - 1
             while j >= 0 and lines[j].startswith("files: ") and not lines[j].startswith("files: state "):
                 ln = lines[j]
@@ -461,9 +478,15 @@ class Windows:
                 elif ln.startswith("files: status "):
                     e, _, rest = ln[len("files: status "):].partition(" ")
                     status = (int(e), rest.encode("latin-1"))
-                elif ln.startswith("files: field "):
-                    a, b, rest = ln[len("files: field "):].split(" ", 2)
-                    field = (int(a), int(b), rest.encode("latin-1"))
+                elif ln.startswith("files: field "):            # 1.5 stage 13: and its selection
+                    a, b, c, rest = (ln[len("files: field "):].split(" ", 3) + [""])[:4]
+                    field = (int(a), int(b), rest.encode("latin-1"), c == "1")
+                elif ln.startswith("files: ask "):              # 1.5 stage 13: the question
+                    self.ask.setdefault("line1", ln[len("files: ask "):].encode("latin-1"))
+                elif ln.startswith("files: ask2 "):
+                    self.ask.setdefault("line2", ln[len("files: ask2 "):].encode("latin-1"))
+                elif ln.startswith("files: asklabel "):
+                    self.ask.setdefault("label", ln[len("files: asklabel "):].encode("latin-1"))
                 elif ln.startswith("files: panel "):
                     kd, sz, mt, rest = ln[len("files: panel "):].split(" ", 3)
                     panel = (kd, int(sz), int(mt), rest.encode("latin-1"))
@@ -477,6 +500,14 @@ class Windows:
             for ln in lines[i + 1:i + 1 + n]:
                 _, _, idx, kd, sz, mt, rest = (ln.split(" ", 6) + [""])[:7]
                 items.append((kd, int(sz), int(mt), rest.encode("latin-1")))
+            for ln in lines[i + 1 + n:i + 1 + 3 * n]:          # 1.5 stage 13: the Trash's columns
+                if ln.startswith("files: tloc "):
+                    idx, _, loc = ln[len("files: tloc "):].partition(" ")
+                    self.trash_cols.setdefault(int(idx), [b"", 0, b""])[0] = loc.encode("latin-1")
+                elif ln.startswith("files: tdate "):
+                    idx, r, date = (ln[len("files: tdate "):].split(" ", 2) + [""])[:3]
+                    c = self.trash_cols.setdefault(int(idx), [b"", 0, b""])
+                    c[1], c[2] = int(r), date.encode("latin-1")
         return st, path, status, field, panel, items, trunc
 
     def files_view(self, r):
@@ -494,7 +525,14 @@ class Windows:
                    b"Pictures": "pictures", b"Music": "music", b"Videos": "videos"}
         sel = set(int(v) for v in st.get("sel", "-").split(",") if v.isdigit())
         rows = []
+        trash = st.get("trash") == "1"                  # 1.5 stage 13: the Trash view's columns
         for i, (kd, size, mtime, name) in enumerate(items):
+            if trash:
+                loc, _, date = self.trash_cols.get(i, [b"", 0, b""])
+                ic = "folder" if kd == "D" else "link" if kd == "L" else \
+                    "textfile" if files_ref.type_text(kinds[kd], name) == "Text file" else "file"
+                rows.append([name, None, loc, date, ic, i in sel])
+                continue
             typ = files_ref.type_text(kinds[kd], name)
             ic = ("folder" if not (home and name in emblems) else emblems[name]) if kd == "D" else                 "link" if kd == "L" else "textfile" if typ == "Text file" else "file"
             rows.append([name, None if kd == "D" else files_ref.size_text(size).encode(), typ.encode(),
@@ -503,22 +541,30 @@ class Windows:
             rows.append([b"Showing the first 1000 items of this folder.", None, None, None, None, len(items) in sel])
         if st.get("reading") == "1":
             rows = []
-        lv = desktop_ref.ListView(st.get("view", "list"), rows, desktop_ref.LIST_TITLES, L["content"], s)
+        lv = desktop_ref.ListView(st.get("view", "list"), rows,
+                                  desktop_ref.TRASH_TITLES if trash else desktop_ref.LIST_TITLES, L["content"], s)
+        lv.wide = trash
         lv.top, lv.cursor = int(st.get("top", 0)), int(st.get("cursor", 0))
         lv.ring = st.get("ring") == "1"
         lv.sb = {"0": "normal", "1": "hover", "2": "drag"}.get(st.get("sb", "0"), "normal")
         lv.top = min(lv.top, max(lv.lines() - lv.page(), 0))
         names = desktop_ref.FILES_PART_NAMES
         v = {"mode": st.get("mode", "list"), "bar": bar,
-             "enabled": [c == "1" for c in st.get("en", "0" * 12)],
-             "chosen": [c == "1" for c in st.get("chosen", "0" * 12)],
+             "enabled": [c == "1" for c in st.get("en", "0" * desktop_ref.UF_BUTTONS)],
+             "chosen": [c == "1" for c in st.get("chosen", "0" * desktop_ref.UF_BUTTONS)],
              "hover": names.get(st.get("hover"), 0), "pressed": names.get(st.get("pressed"), 0),
              "tip": names.get(st.get("tip"), 0), "place": int(st.get("place", -1)),
              "pb": files_ref.pathbar(pv, path, desktop_ref.files_path_cells(L, s)), "list": lv,
-             "renaming": st.get("rename") == "1", "status": status, "status_error": err == 1}
+             "renaming": st.get("rename") == "1", "status": status, "status_error": err == 1,
+             # 1.5 stage 13: the Trash view, the panel's app, the question
+             "trash": trash, "panel_has_app": st.get("app") == "1", "ask_line1": self.ask.get("line1"),
+             "ask_line2": self.ask.get("line2"), "ask_label": self.ask.get("label"),
+             "ask_focus": int(st.get("askfocus", 0)), "ask_ring": st.get("askring") == "1",
+             "ask_state": [{"0": "normal", "1": "hover", "2": "pressed"}.get(c, "normal")
+                           for c in st.get("askst", "00")[:2]]}
         if field is not None:
             f = desktop_ref.Field(field[2])
-            f.pos, f.first = field[0], field[1]
+            f.pos, f.first, f.sel = field[0], field[1], field[3]
             v["field"] = f
         if panel is not None:
             kd, size, mtime, name = panel
@@ -840,7 +886,8 @@ def drag_burst(qmp, serial, win, m, count, keys):
 # The steps main() hands to window_step (1.5 stage 8: one list each, so a
 # step window_step handles is never left out of main()'s router).
 WINDOW_STEPS = ("wshot", "press", "release", "esc", "click", "rpress", "rrelease", "mpress", "dclick", "fsync")
-WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq", "resize", "vopen")    # 1.5 stage 12: vopen
+WINDOW_PREFIXES = ("to", "rel", "drag", "key", "dragburst", "kseq", "resize", "vopen",   # 1.5 stage 12: vopen
+                   "fmenu")                                                             # 1.5 stage 13
 # 1.5 stage 9: to:edge-SIDE@NAME (ui_window.h's UI_EDGE_*; the top-right corner is the close button).
 EDGE_SIDES = {"left": 1, "right": 2, "top": 4, "bottom": 8, "topleft": 5, "bottomleft": 9, "bottomright": 10}
 
@@ -865,6 +912,17 @@ def window_step(step, qmp, serial, dump, win, m, shots):
         before = len(win.wm.events)
         win.viewer_open(step[6:].encode("latin-1"))
         wait_events(serial, win, before)
+    elif step.startswith("fmenu:"):                             # 1.5 stage 13
+        by_key = step[6:] == "key"
+        i = serial.wait(lambda l: FILES_MENU_OPEN.match(l) is not None, 20, win.sync)
+        if i is None:
+            raise RuntimeError("no Files menu opened (%s)" % step)
+        g = FILES_MENU_OPEN.match(serial.lines[i]).groups()
+        flags = lambda t: sum(1 << k for k, c in enumerate(t) if c == "1")  # noqa: E731
+        x, y = (int(g[2]), int(g[3])) if by_key else (m.x, m.y)
+        mbefore = len(win.menus.events)
+        win.menus.open_files(g[0], x, y, by_key, flags(g[6]), flags(g[7]))
+        wait_events(serial, win, len(win.wm.events), mbefore)
     elif step.startswith("to:"):
         x, y = win.target(step[3:])
         rel(m, win, serial, x - m.x, y - m.y)

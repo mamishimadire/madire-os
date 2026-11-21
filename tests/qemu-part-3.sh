@@ -1072,7 +1072,7 @@ grep -E '^(home: |Disk mode|Files elsewhere|madire> |Filesystem: |Blocks: |Inode
     sed 's/^/      console: /'
 D12_NEXT="^(console: |madire> )"
 expect_in_order "$D12_CL" "[1.4] Disk-mode console: the home folders made at the mount; the start lines say Disk mode (C10) and the shell starts in /home/user (C11)" \
-    "^home: 8 folders made, 0 already there " "^Disk mode: files in /home are saved on the disk\.$" \
+    "^home: 7 folders made, 0 already there " "^Disk mode: files in /home are saved on the disk\.$" \
     "^Files elsewhere \(such as /tmp\) are lost when the computer restarts\.$" "^madire> pwd$" "^/home/user$"
 expect_lines "$D12_CL" "[1.4] Disk-mode console: version's second line is 'Disk mode (/home is saved on the disk)'" \
     "^madire> version$" "^Madire OS v$VRE \(64-bit x86-64, Multiboot 1\)$" "^Disk mode \(/home is saved on the disk\)$" \
@@ -1082,8 +1082,8 @@ expect_lines "$D12_CL" "[1.4] Disk-mode console: df shows the RAM filesystem as 
     "^Space: " "^Filesystem: ext2 'madire-test' \(disk 0, partition 1\), mounted on /home$" \
     "^Blocks:      *[0-9]+ used of ${D12_BLOCKS:-x} \([0-9]+ free\), 1 KiB each$" \
     "^Inodes:      *[0-9]+ used of ${D12_INODES:-x} \([0-9]+ free\)$" "$D12_NEXT"
-expect_in_order "$D12_CL" "[1.4] Disk-mode console: du counts the disk's own blocks in KiB: the 7 empty home folders 0 KiB, a 6-byte file 1 KiB (one 1 KiB block)" \
-    "^madire> du$" "^0 KiB on the disk in 0 files and 7 folders$" "^madire> du note\.txt$" \
+expect_in_order "$D12_CL" "[1.4] Disk-mode console: du counts the disk's own blocks in KiB: the 6 empty home folders 0 KiB, a 6-byte file 1 KiB (one 1 KiB block)" \
+    "^madire> du$" "^0 KiB on the disk in 0 files and 6 folders$" "^madire> du note\.txt$" \
     "^1 KiB on the disk in 1 file and 0 folders$"
 expect_lines "$D12_CL" "[1.4] Disk-mode console: disk shows the disk (port 0, QEMU's model and size, AHCI 00:05.0), its partitions, the write guard's decision and the read-write mount on /home" \
     "^madire> disk$" "^Disk on port 0: QEMU HARDDISK, [0-9]+ MiB \(AHCI 00:05\.0\)$" "^  Partitions:  MBR, 1 partition$" \
