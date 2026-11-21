@@ -459,13 +459,14 @@
 # itself, the item's and the empty space's menus, the Menu key, Shift+F10,
 # Properties, 8; boot F, Disk mode: rule SL with a fast and a slow link,
 # the refused .trashinfo, the restore through a link, the full disk, the
-# info file written, Empty Trash with debugfs and e2fsck -fn, 9). 1 unit
-# suite (files_ops); new cases in ui_textfield, ui_menu, ui_menus,
-# ui_files and ui_list. Changed, not added (the owner's approval, before
+# info file written, Empty Trash with debugfs and e2fsck -fn, 9). 2 unit
+# suites (files_ops; ui_fileswire, files_app.c's hooks connected as the
+# desktop connects them, added after the first sharded run); new cases
+# in ui_textfield, ui_menu, ui_menus, ui_files and ui_list. Changed, not added (the owner's approval, before
 # the commit): part 1's two home-folder checks and part 3's two (six
 # folders), part static's write-session tree (no user/Trash), part 5's
 # Files page bound (at most 256), its read-only boot's en= flags (22
 # buttons), test_ui_files's Open, Rename and pressed-Open probes and
 # test_ui_cicon's second table's totals (242 points, 63 polylines, 20).
 1.5 240
-unit-suites 118
+unit-suites 119

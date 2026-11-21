@@ -430,6 +430,11 @@ $(BUILD)/unit/test_ui_files: kernel/files/files_core.c kernel/files/files_core.h
 # Files and Trash cores it calls.
 $(BUILD)/unit/test_files_ops: kernel/files/files_ops.c kernel/files/files_ops.h $(FILES_SRCS) \
                               kernel/files/files_core.h kernel/files/trash_core.h
+# 1.5 stage 13: the Files app's wiring suite includes files_app.c itself, the
+# cores it calls and the VFS under it (vfs_core over ramfs_core).
+$(BUILD)/unit/test_ui_fileswire: kernel/display/files_app.c kernel/files/files_ops.c kernel/files/files_ops.h \
+                                 $(FILES_SRCS) kernel/files/files_core.h kernel/files/trash_core.h \
+                                 kernel/fs/path_core.c kernel/fs/mount_core.c kernel/fs/ramfs_core.c kernel/fs/vfs_core.c
 
 toolkit: $(TOOLKIT_OBJS)
 

@@ -1923,7 +1923,8 @@ if [ -n "$DT_ISO" ]; then
         "kseq:esc" fsync \
         "kseq:ctrl:down,c,ctrl:up" "wait:Files: 1 items copied from $F13_DOC" \
         to:fitem@0 dclick "wait:Files: read $F13_DOC/Sub: 0 entries in 1 holds of at most 16, 0 shown" \
-        "kseq:ctrl:down,v,ctrl:up" "wait:Files: pasted 1 items into $F13_DOC/Sub (copy)" fsync to:desktop fsync wshot \
+        "kseq:ctrl:down,v,ctrl:up" "wait:Files: pasted 1 items into $F13_DOC/Sub (copy)" \
+        "wait:Files: read $F13_DOC/Sub: 1 entries in 1 holds of at most 16, 1 shown" fsync to:desktop fsync wshot \
         "kseq:ctrl:down,v,ctrl:up" "wait:Files: read $F13_DOC/Sub: 2 entries in 1 holds of at most 16, 2 shown" \
         "kseq:alt:down,left,alt:up" "wait:Files: read $F13_DOC: 3 entries in 1 holds of at most 16, 3 shown" \
         to:fitem@2 click "kseq:ctrl:down,x,ctrl:up" "wait:Files: 1 items cut from $F13_DOC" \
@@ -1997,6 +1998,7 @@ fi
 # E2: the Trash.
 F13_SETUP2="type:mkdir $F13_DOC/Box{ret}{wait:1}echo gamma > $F13_DOC/Box/c.txt{ret}{wait:1}echo alpha > $F13_DOC/a.txt{ret}{wait:1}"
 F13_TR="Files: the Trash's info files read"
+F13_TF=/home/user/.local/share/Trash/files
 DT_OUT=""
 if [ -n "$DT_ISO" ]; then
     DT_UNTIL="" desktop_boot "$F13_E2" "$DT_ISO" 1024x768 ready rel:-1000,-1000 "type:x" "$F13_SETUP2" \
@@ -2006,24 +2008,35 @@ if [ -n "$DT_ISO" ]; then
         to:fitem@0 click "kseq:ctrl:down" to:fitem@1 click "kseq:ctrl:up" \
         "kseq:ctrl:down,c,ctrl:up" "wait:Files: 2 items copied from $F13_DOC" \
         to:fplace@3 click "wait:Files: read /home/user/Downloads: 0 entries in 1 holds of at most 16, 0 shown" \
-        "kseq:ctrl:down,v,ctrl:up" "wait:Files: pasted 2 items into /home/user/Downloads (copy)" fsync \
+        "kseq:ctrl:down,v,ctrl:up" "wait:Files: pasted 2 items into /home/user/Downloads (copy)" \
+        "wait:Files: read /home/user/Downloads: 2 entries in 1 holds of at most 16, 2 shown" fsync \
         "kseq:ctrl:down,a,ctrl:up" "kseq:ctrl:down,x,ctrl:up" "wait:Files: 2 items cut from /home/user/Downloads" \
         to:fplace@5 click "wait:Files: read /home/user/Music: 0 entries in 1 holds of at most 16, 0 shown" \
-        "kseq:ctrl:down,v,ctrl:up" "wait:Files: pasted 2 items into /home/user/Music (move)" fsync \
-        "kseq:ctrl:down,a,ctrl:up" "kseq:delete" "wait:Files: 2 items moved to the Trash" fsync \
-        to:fplace@7 click "wait:$F13_TR: 2 items, 0 without a known original location" fsync to:desktop fsync wshot \
-        to:fitem@0 rpress rrelease fmenu:mouse to:row@Restore click "wait:Files: 'Box' restored to /home/user/Music" fsync \
+        "kseq:ctrl:down,v,ctrl:up" "wait:Files: pasted 2 items into /home/user/Music (move)" \
+        "wait:Files: read /home/user/Music: 2 entries in 1 holds of at most 16, 2 shown" fsync \
+        "kseq:ctrl:down,a,ctrl:up" "kseq:delete" "wait:Files: 2 items moved to the Trash" \
+        "wait:Files: read /home/user/Music: 0 entries in 1 holds of at most 16, 0 shown" fsync \
+        to:fplace@7 click "wait:$F13_TR: 2 items, 0 without a known original location" \
+        "wait:Files: read $F13_TF: 2 entries in 1 holds of at most 16, 2 shown" fsync to:desktop fsync wshot \
+        to:fitem@0 rpress rrelease fmenu:mouse to:row@Restore click "wait:Files: 'Box' restored to /home/user/Music" \
+        "wait:Files: read $F13_TF: 1 entries in 1 holds of at most 16, 1 shown" fsync \
         to:task@Console click "type:echo again > /home/user/Music/a.txt{ret}{wait:1}" to:min@Console click fsync \
         to:fitem@0 click "to:fbtn@Restore" click \
         "wait:Files: asks ''a.txt' already exists in Home > Music.' (Keep both, Cancel)" fsync to:desktop fsync wshot \
-        "to:fbtn@Ask OK" click "wait:Files: 'a (restored).txt' restored to /home/user/Music" fsync \
+        "to:fbtn@Ask OK" click "wait:Files: 'a (restored).txt' restored to /home/user/Music" \
+        "wait:Files: read $F13_TF: 0 entries in 1 holds of at most 16, 0 shown" fsync \
         to:fplace@5 click "wait:Files: read /home/user/Music: 3 entries in 1 holds of at most 16, 3 shown" \
-        "kseq:ctrl:down,a,ctrl:up" "kseq:delete" "wait:Files: 3 items moved to the Trash" fsync \
-        to:fplace@7 click "wait:$F13_TR: 3 items, 0 without a known original location" fsync \
-        "to:fbtn@Restore all" click "wait:Files: 3 items restored, 0 without a known original location" fsync \
+        "kseq:ctrl:down,a,ctrl:up" "kseq:delete" "wait:Files: 3 items moved to the Trash" \
+        "wait:Files: read /home/user/Music: 0 entries in 1 holds of at most 16, 0 shown" fsync \
+        to:fplace@7 click "wait:$F13_TR: 3 items, 0 without a known original location" \
+        "wait:Files: read $F13_TF: 3 entries in 1 holds of at most 16, 3 shown" fsync \
+        "to:fbtn@Restore all" click "wait:Files: 3 items restored, 0 without a known original location" \
+        "wait:Files: read $F13_TF: 0 entries in 1 holds of at most 16, 0 shown" fsync \
         to:fplace@5 click "wait:Files: read /home/user/Music: 3 entries in 1 holds of at most 16, 3 shown" \
-        to:fitem@0 click "kseq:delete" "wait:Files: 1 items moved to the Trash" fsync \
-        to:fplace@7 click "wait:$F13_TR: 1 items, 0 without a known original location" fsync \
+        to:fitem@0 click "kseq:delete" "wait:Files: 1 items moved to the Trash" \
+        "wait:Files: read /home/user/Music: 2 entries in 1 holds of at most 16, 2 shown" fsync \
+        to:fplace@7 click "wait:$F13_TR: 1 items, 0 without a known original location" \
+        "wait:Files: read $F13_TF: 1 entries in 1 holds of at most 16, 1 shown" fsync \
         "to:fbtn@Empty Trash" click "wait:Files: asks 'Empty the Trash? 1 item will be deleted permanently.' (Empty Trash, Cancel)" \
         "kseq:esc" "wait:Files: the question answered: Cancel" fsync \
         "to:fbtn@Empty Trash" click "wait:Files: asks 'Empty the Trash? 1 item will be deleted permanently.' (Empty Trash, Cancel)" \
@@ -2097,15 +2110,18 @@ if [ -n "$DT_ISO" ]; then
         "kseq:alt:down,up,alt:up" "wait:Files: read /: 2 entries in 1 holds of at most 16, 2 shown" \
         to:fitem@1 dclick "wait:Files: read /tmp: 1 entries in 1 holds of at most 16, 1 shown" \
         to:fitem@0 click "kseq:delete" "wait:Files: asks 'Delete 't.txt' permanently? It can't go to the Trash.' (Delete, Cancel)" \
-        fsync to:desktop fsync wshot "to:fbtn@Ask OK" click "wait:Files: 't.txt' deleted permanently" fsync \
+        fsync to:desktop fsync wshot "to:fbtn@Ask OK" click "wait:Files: 't.txt' deleted permanently" \
+        "wait:Files: read /tmp: 0 entries in 1 holds of at most 16, 0 shown" fsync \
         to:fplace@2 click "wait:Files: read $F13_DOC: 3 entries in 1 holds of at most 16, 3 shown" \
         to:fitem@2 click "kseq:shift:down,delete,shift:up" "wait:Files: asks 'Delete 'a.txt' permanently?' (Delete, Cancel)" \
         "kseq:esc" "wait:Files: the question answered: Cancel" \
         "kseq:shift:down,delete,shift:up" "wait:Files: asks 'Delete 'a.txt' permanently?' (Delete, Cancel)" \
-        "kseq:tab" fsync "kseq:ret" "wait:Files: 'a.txt' deleted permanently" fsync \
+        "kseq:tab" fsync "kseq:ret" "wait:Files: 'a.txt' deleted permanently" \
+        "wait:Files: read $F13_DOC: 2 entries in 1 holds of at most 16, 2 shown" fsync \
         to:fitem@1 click "kseq:ctrl:down,c,ctrl:up" "wait:Files: 1 items copied from $F13_DOC" \
         to:fitem@1 dclick "wait:Files: read $F13_DOC/Sub: 0 entries in 1 holds of at most 16, 0 shown" \
         "kseq:ctrl:down,v,ctrl:up" "wait:files: status 1 Can't paste 'Sub' into itself." \
+        "wait:Files: read $F13_DOC/Sub: 0 entries in 1 holds of at most 16, 0 shown" \
         "kseq:alt:down,left,alt:up" "wait:Files: read $F13_DOC: 2 entries in 1 holds of at most 16, 2 shown" fsync \
         to:fitem@1 rpress rrelease fmenu:mouse to:desktop fsync wshot to:row@Copy click \
         "wait:Files: 1 items copied from $F13_DOC" \
@@ -2196,11 +2212,15 @@ if [ -n "$DT_ISO" ] && [ "$F13_FOK" -eq 1 ]; then
         "kseq:meta_l:down,e,meta_l:up" "wait:Files: read /home/user: 8 entries in 1 holds of at most 16, 7 shown" \
         to:fitem@1 dclick "wait:Files: read /home/user/Docs: 4 entries in 1 holds of at most 16, 4 shown" \
         to:fitem@1 click "kseq:delete" "wait:Files: 'fast' moved to the Trash as 'fast' (info file first)" \
+        "wait:Files: read /home/user/Docs: 3 entries in 1 holds of at most 16, 3 shown" \
         to:fplace@7 click "wait:Files: the Trash's info files read: 3 items, 1 without a known original location" \
+        "wait:Files: read $F13_TF: 3 entries in 1 holds of at most 16, 3 shown" \
         to:fitem@0 click fsync \
-        to:fitem@1 click "to:fbtn@Restore" click "wait:Files: 'fast' restored to /home/user/Docs" fsync \
+        to:fitem@1 click "to:fbtn@Restore" click "wait:Files: 'fast' restored to /home/user/Docs" \
+        "wait:Files: read $F13_TF: 2 entries in 1 holds of at most 16, 2 shown" fsync \
         to:fitem@1 click "to:fbtn@Restore" click \
         "wait:files: status 1 Can't restore 'via.txt': /home/user/Docs/fast is not a folder." \
+        "wait:Files: read /home/user/.local/share/Trash/files: 2 entries in 1 holds of at most 16, 2 shown" \
         "kseq:alt:down,left,alt:up" "wait:Files: read /home/user/Docs: 4 entries in 1 holds of at most 16, 4 shown" \
         to:fitem@3 click "kseq:shift:down,delete,shift:up" "wait:Files: asks 'Delete 'slow' permanently?' (Delete, Cancel)" \
         "kseq:tab" fsync "kseq:ret" "wait:Files: 'slow' deleted permanently" \
@@ -2208,14 +2228,18 @@ if [ -n "$DT_ISO" ] && [ "$F13_FOK" -eq 1 ]; then
         to:fitem@1 click "kseq:ctrl:down,c,ctrl:up" "wait:Files: 1 items copied from /home/user/Docs" \
         to:fplace@1 click "wait:Files: read /home/user/Desktop: 0 entries in 1 holds of at most 16, 0 shown" \
         "kseq:ctrl:down,v,ctrl:up" "wait:files: status 1 Can't copy 'fast': it is a link, and links can't be copied yet." \
+        "wait:Files: read /home/user/Desktop: 0 entries in 1 holds of at most 16, 0 shown" \
         "kseq:alt:down,left,alt:up" "wait:Files: read /home/user/Docs: 3 entries in 1 holds of at most 16, 3 shown" \
         to:fitem@0 click "kseq:ctrl:down,c,ctrl:up" "wait:Files: 1 items copied from /home/user/Docs" \
         to:fplace@1 click "wait:Files: read /home/user/Desktop: 0 entries in 1 holds of at most 16, 0 shown" \
         "kseq:ctrl:down,v,ctrl:up" "wait:files: status 1 Can't paste 'big.bin': the disk is full." \
+        "wait:Files: read /home/user/Desktop: 0 entries in 1 holds of at most 16, 0 shown" \
         "kseq:alt:down,left,alt:up" "wait:Files: read /home/user/Docs: 3 entries in 1 holds of at most 16, 3 shown" \
-        to:fitem@2 click "kseq:delete" "wait:Files: 'keep.txt' moved to the Trash as 'keep.txt' (info file first)" fsync \
+        to:fitem@2 click "kseq:delete" "wait:Files: 'keep.txt' moved to the Trash as 'keep.txt' (info file first)" \
+        "wait:Files: read /home/user/Docs: 2 entries in 1 holds of at most 16, 2 shown" fsync \
         to:task@Console click "type:cat $F13_TI/keep.txt.trashinfo{ret}{wait:2}" to:min@Console click fsync \
         to:fplace@7 click "wait:Files: the Trash's info files read: 3 items, 1 without a known original location" \
+        "wait:Files: read $F13_TF: 3 entries in 1 holds of at most 16, 3 shown" \
         "to:fbtn@Empty Trash" click "wait:Files: asks 'Empty the Trash? 3 items will be deleted permanently.' (Empty Trash, Cancel)" \
         "to:fbtn@Ask OK" click "wait:Files: the Trash emptied: 3 items deleted" fsync \
         to:task@Console click "type:sync{ret}{wait:4}"

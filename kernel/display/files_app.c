@@ -2341,6 +2341,7 @@ void files_app_setup(const struct files_app_env *env)
     fa_env.damage = env->damage;
     fa_env.open = env->open;
     fa_env.logging = env->logging;
+    fa_env.menu = env->menu;            /* 1.5 stage 13: the Files menus (D5) */
     struct ui_window *w = fa_env.files;
     w->name = "Files";
     w->title = "Files";
