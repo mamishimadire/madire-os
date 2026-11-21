@@ -138,7 +138,7 @@ static void fo_questions(void)
     files_ops_question(FILES_Q_DELETE_ONE, longname, 1, 0, a, b, l);
     CHECK(strcmp(a, "Delete 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...' permanently?") == 0);
     files_ops_question(FILES_Q_DELETE_ONE, "caf\xe9\x01", 1, 0, a, b, l);
-    CHECK(strcmp(a, "Delete 'caf??' permanently?") == 0);
+    CHECK(strcmp(a, "Delete 'caf?" "?' permanently?") == 0);     /* split: no trigraph sequence */
 }
 
 static void fo_deep_text(void)
