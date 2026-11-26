@@ -1,13 +1,14 @@
 # Madire OS full regression on GitHub-hosted runners (manual trigger only).
 #
-# mode=sharded (default): six jobs in parallel, one per part of the QEMU
+# mode=sharded (default): seven jobs in parallel, one per part of the QEMU
 # tests (make test-shard SHARD=<part>; "static" also runs make unit, make
 # repro and the symbol, SSE/x87 and kernel margin checks), then the job
 # "combine" (tests/combine-shards.sh): same commit, files and kernel in
 # every job, every part run once, the part "final" over every job's serial
 # logs, the counts against tests/expected-checks.txt, the helper replay.
 # Since 1.5 stage 2 part 5's job ends successfully with "no part 5 in this
-# commit (skipped)" when the commit under test has no tests/qemu-part-5.sh.
+# commit (skipped)" when the commit under test has no tests/qemu-part-5.sh;
+# since 1.5 stage 14a part 6's job the same with tests/qemu-part-6.sh.
 # mode=full: `make unit test iso` in one job, as before; since 0.12 stage 4
 # its artifact also holds build/madire-os.iso, for the VirtualBox acceptance.
 # parts=all (default): the regression as above. parts=stress (0.12 stage
@@ -160,7 +161,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [static, "1", "2", "3", "4", "5"]
+        part: [static, "1", "2", "3", "4", "5", "6"]
     steps:
       - name: Refuse anything but a full commit SHA
         env:
@@ -175,14 +176,15 @@ jobs:
 
       # 1.5 stage 2: part 5 runs only on a commit that has it; on any other
       # commit its job builds nothing and leaves skipped.txt for the
-      # combining job. Every other part always runs.
+      # combining job. 1.5 stage 14a: part 6 the same. Every other part
+      # always runs.
       - name: Does the commit under test have this part?
         id: part
         env:
           PART: ${{ matrix.part }}
         run: |
-          if [ "$PART" = 5 ] && [ ! -f tests/qemu-part-5.sh ]; then
-            echo "no part 5 in this commit (skipped)" | tee skipped.txt
+          if { [ "$PART" = 5 ] || [ "$PART" = 6 ]; } && [ ! -f "tests/qemu-part-$PART.sh" ]; then
+            echo "no part $PART in this commit (skipped)" | tee skipped.txt
             echo "run=no" >> "$GITHUB_OUTPUT"
           else
             echo "run=yes" >> "$GITHUB_OUTPUT"
