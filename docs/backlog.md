@@ -35,12 +35,14 @@ Started in 1.5 stage 13 (2026-11-20).
 | S14 | The v1.5 pointer set: resize (four), move, I-beam, hand, busy (animated); the drag pointers move, copy and not allowed | S13 | note (11), (12)(b); note (14) adds the drag pointers |
 | S14 | Box (rubber-band) selection by dragging on empty space, in the List and Grid views | S13 | note (14); the owner, 2026-11-20 |
 | S14 | Drag and drop inside Files: selected items onto a folder (list, grid or sidebar) moves them; onto the sidebar Trash moves them to the Trash; Ctrl copies; another filesystem copies; Esc cancels; never a folder into itself; read-only targets and files refuse; name clashes get " 2"; links never followed | S13 (paste and Trash cores) | note (14) |
-| S14 | The timing decision: an A3 pure move (about 160 s from part 5 to static) or a sixth numbered part, so no part exceeds about 1,030 s | S13's measured part 5 seconds | the owner's S13 approval (2026-11-20); note (14) |
+| S14a | The timing decision, decided: a sixth numbered QEMU part (part 6, "the Files part", a seventh job) with stage 13's Files section moved into it unchanged; stages 14 and 15 add their Files sessions there (the A3 move to part static would put that job over its ceiling of about 1,100 s) | S13's measured seconds | the owner's decision Q1 of the S14 report (2026-11-26); note (14) |
 | S15 | The desktop's icons (the items of `/home/user/Desktop` and the Trash icon, empty or full) and their menus | S13, S14 | plan row S15 and C7 |
 | S15 | The M menu's Files row | S12 | plan row S15; the owner, 2026-11-20 |
-| S15 | The desktop's right-click menu: New Folder, New File, Paste (with Open Console and About Madire OS) | S13 | plan C6b and C7 |
-| S15 | Drag between the desktop and Files in both directions, and onto the desktop's Trash icon | S14 | note (14) |
-| S15 | Where the clipboard lives so the desktop's Paste works with Files closed (S13 keeps it in Files' memory) | S13 | the owner's S13 approval, Q8 |
+| S15 | The desktop's right-click menus with the full Files features: on an icon Open, Cut, Copy, Paste, Rename, Move to Trash, Properties; on the empty desktop New Folder, New File, Paste, Refresh, plus Open Console and About Madire OS | S13 | plan C6b and C7; the owner, 2026-11-26 (Properties and Refresh added) |
+| S15 | The desktop's selection and keys as in Files: Ctrl- and Shift-click, box selection, Delete, Shift+Delete, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A, Alt+Enter, the Menu key and Shift+F10 | S13, S14 | the owner, 2026-11-26 |
+| S15 | Refresh: a Refresh row in the empty-desktop menu and in Files' empty-space menu, and F5 in Files and on the desktop (the folder read again; no disk writes) | S13 | the owner, 2026-11-26 |
+| S15 | Drag between the desktop and Files in both directions, and onto the desktop's Trash icon | S14 | note (14); the owner, 2026-11-26 |
+| S15 | One clipboard shared by Files and the desktop, so the desktop's Paste works with Files closed (S13 keeps it in Files' memory) | S13 | the owner's S13 approval, Q8; the owner, 2026-11-26 |
 | S16 | The full run that uploads the ISO for S17; the VirtualBox `desktop` and `storage` groups and the Kali Trash check prepared | S15 | plan row S16 |
 | S16 | Cleanup: `tests/checks.sh` says "kernel not built (MAKE EXIT n)" when the kernel is missing | - | the owner, S12 |
 | S16 | Cleanup: the unit loop runs every suite (it stops at the first failing one today) | - | S8 notes |
@@ -70,13 +72,13 @@ None of these is in 1.5. Target "later" unless a milestone is named.
 | Item | Prerequisites | Origin |
 |---|---|---|
 | Undo | - | the owner, S12 (S18a list) |
+| Restore by drag: dragging items out of the Trash view onto a folder restores them there | - | the owner's decision Q6 of the S14 report (2026-11-26) |
 | Compress to ZIP | a ZIP writer (Madire's own, or an approved permissive library) | the owner, 2026-11-20 (note (13)) |
 | Pin to sidebar | saved settings | note (13) |
 | Copy path (Copy as path) | a text clipboard | note (13) |
 | Select none; Invert selection | - | the owner, 2026-11-20 |
 | Open Console here | the Console's start folder | note (13) |
 | Options; Folder Options: start location, the same or its own window, single or double click, file name extensions SHOWN by default (security), the full path in the title bar, hide empty drives, protected system files | saved settings | the owner, 2026-11-20 |
-| Refresh (F5) | - | the owner, 2026-11-20; plan section N |
 | Sorting by Size, Type and Modified (name only in 1.5) | - | the owner, 2026-11-20; S11 Q1 |
 | Icon sizes; Tiles, Content and compact views; item check boxes | - | the owner, 2026-11-20 |
 | A details pane and a preview pane | - | the owner, 2026-11-20; plan section N |
@@ -90,7 +92,7 @@ None of these is in 1.5. Target "later" unless a milestone is named.
 | Typed names outside printable ASCII | keyboard layouts | plan section N; risk 57 |
 | Watching folders for changes made elsewhere; saved desktop icon positions | - | plan section N |
 | Per-volume `.Trash-$uid` folders; the `directorysizes` cache | more disks | plan section N |
-| View, Sort by and Refresh on the desktop; the taskbar's own menu | - | plan section N (the owner's screenshots) |
+| View and Sort by on the desktop (Refresh moved to S15, the owner, 2026-11-26); the taskbar's own menu | - | plan section N (the owner's screenshots) |
 
 ## 4. The Console
 

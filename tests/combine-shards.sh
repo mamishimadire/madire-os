@@ -30,7 +30,8 @@ summary=$dir/combine-summary.txt
 main() {
     echo "== Jobs"
     # 1.5 stage 2: the workflow's part-5 job skips a commit that has no
-    # tests/qemu-part-5.sh (its artifact holds only skipped.txt, no build).
+    # tests/qemu-part-5.sh (its artifact holds only skipped.txt, no build);
+    # since 1.5 stage 14a part 6's job the same with tests/qemu-part-6.sh.
     # A skip is accepted only when this commit has no such part file.
     for f in "$dir"/shard-*/skipped.txt; do
         [ -f "$f" ] || continue
@@ -63,7 +64,8 @@ main() {
             # 1.5 stage 1 (plan C9): required (before 1.5: reported only).
             # 1.5 stage 2: n counts the jobs that built an ISO (a skipped
             # job builds nothing and has no hashes.txt); every part of this
-            # commit must have built one (6 with part 5).
+            # commit must have built one (6 with part 5; 7 with part 6,
+            # since 1.5 stage 14a).
             if [ "$n" -eq "$(wc -w <<< "$shards")" ] && [ "$(wc -l <<< "$sums")" -eq 1 ]; then echo "ISO_IDENTICAL_IN_ALL_JOBS=yes ($n builds, $sums)"
             else
                 echo "ISO_IDENTICAL_IN_ALL_JOBS=no ($(wc -l <<< "$sums") different in $n builds; required since 1.5)"
