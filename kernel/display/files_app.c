@@ -3,6 +3,7 @@
  * files_app.h.
  */
 #include "kernel/display/files_app.h"
+#include "kernel/display/pointer_core.h"   /* 1.5 stage 14b: the pointer Files asks for */
 #include "kernel/display/ui_files.h"
 #include "kernel/display/ui_icon.h"
 #include "kernel/display/ui_list.h"
@@ -23,6 +24,7 @@
 #include "kernel/memory/pte.h"
 #include "kernel/memory/vm_layout.h"
 #include "kernel/proc/fd.h"
+#include "kernel/storage/ahci.h"            /* 1.5 stage 14b: This PC's CD drive */
 
 typedef unsigned long long ull;
 
@@ -72,6 +74,10 @@ struct fa_mem {
     char jinfo[FILES_PATH_MAX + 1];         /* the item's info file (the Trash) */
     char slot[TRASH_NAME_MAX + 1];
     char ask1[FILES_OPS_LINE_MAX], ask2[FILES_OPS_LINE_MAX], ask_label[FILES_OPS_LABEL_MAX];
+    /* 1.5 stage 14b: box selection's starting selection (one flag per
+     * item), a drag's target folder. */
+    uint8_t band_base[FILES_MAX_ENTRIES + 1];
+    char drop_path[FILES_PATH_MAX + 1];
 };
 
 /* The Text Viewer's memory (at VM_VIEWER_BASE while it is open). */
@@ -130,6 +136,40 @@ static enum ui_files_part fa_ask_press = UF_NONE;
 static bool fa_tinfo_on;                /* the Trash view's info files are being read */
 static uint32_t fa_tinfo;
 static int32_t fa_menu_item = -1;       /* the folder item a menu's Paste goes into, or -1 */
+/* 1.5 stage 14b (notes (14), (15)): This PC's cards; a left press in the
+ * content that is not yet a drag or a band (a press on an item already
+ * selected leaves the selection until the release); box selection (its
+ * anchor and point in content pixels); drag and drop (what a release
+ * would do, the badge's place); the time of the last automatic scroll and
+ * of the readings' starts (the busy pointer); a drop runs the Paste job
+ * over the selection (fa_jdrag). */
+#define FA_BUSY_TICKS 20u               /* a reading shows the busy pointer after 200 ms */
+#define FA_AUTO_TICKS 10u               /* the band or a drag scrolls a line every 100 ms at an edge */
+static struct ui_files_card fa_cards[UI_FILES_CARDS];
+static char fa_card_names[UI_FILES_CARDS][64];
+static char fa_card_figs[UI_FILES_CARDS][FILES_USAGE_TEXT];
+static const char *fa_card_open[UI_FILES_CARDS];
+static uint32_t fa_ncards;
+enum fa_press { FA_PRESS_NONE, FA_PRESS_ITEM, FA_PRESS_SPACE };
+static enum fa_press fa_press;
+static int32_t fa_press_x, fa_press_y, fa_press_i;
+static int64_t fa_press_cy;
+static uint8_t fa_press_mods;
+static bool fa_press_defer;
+static bool fa_band, fa_band_add;
+static int32_t fa_band_ax, fa_band_bx;
+static int64_t fa_band_ay, fa_band_by;
+static bool fa_drag, fa_drag_ctrl, fa_jdrag;
+static uint32_t fa_drag_n;
+static enum files_drop fa_drop;
+static enum files_drop_why fa_drop_why;
+static enum files_drop_target fa_drop_kind;
+static int32_t fa_drop_item = -1, fa_drop_place = -1;
+static bool fa_drop_same, fa_drop_writable;
+static struct rect fa_badge_r;
+static char fa_badge_text[FILES_NAME_MAX + 1];
+static int fa_badge_icon = UI_ICON_NONE;
+static uint64_t fa_now, fa_auto_at, fa_read_t0, fa_vread_t0;
 
 static const char *const fa_place_paths[7] = {
     FILES_HOME, FILES_HOME "/Desktop", FILES_HOME "/Documents", FILES_HOME "/Downloads", FILES_HOME "/Pictures",
@@ -641,6 +681,7 @@ static void fa_update_view(void)
     }
     bool idle = !fa_reading && !v->renaming && v->mode == UI_FILES_LIST && fa_job == FA_JOB_NONE;
     v->trash = hv == FILES_VIEW_TRASH;
+    v->thispc = hv == FILES_VIEW_THISPC;    /* 1.5 stage 14b */
     v->enabled[UF_BACK] = idle && files_history_can_back(&fa_m->hist);
     v->enabled[UF_FORWARD] = idle && files_history_can_forward(&fa_m->hist);
     v->enabled[UF_UP] = idle && files_history_can_up(&fa_m->hist);
@@ -672,6 +713,17 @@ static void fa_update_view(void)
             v->place = k;
     if (v->trash)
         v->place = 7;                   /* the sidebar's Trash */
+    if (v->thispc) {                    /* 1.5 stage 14b: This PC: Open a card that opens */
+        v->place = 8;
+        v->enabled[UF_OPEN] = idle && v->card_sel >= 0 && v->card_sel < (int32_t)fa_ncards &&
+                              fa_card_open[v->card_sel] != 0;
+        v->enabled[UF_LIST] = v->enabled[UF_GRID] = false;
+    }
+    v->cards = fa_cards;
+    v->ncards = fa_ncards;
+    v->drop_on = fa_drag && fa_drop != FILES_DROP_NO && fa_drop_place >= 0;
+    v->drop_place = fa_drop_place;
+    fa_m->list.drop = fa_drag && (fa_drop == FILES_DROP_MOVE || fa_drop == FILES_DROP_COPY) ? fa_drop_item : -1;
     v->ask_line1 = fa_m->ask1;
     v->ask_line2 = fa_m->ask2;
     v->ask_label = fa_m->ask_label;
@@ -689,6 +741,9 @@ static void fa_update_view(void)
     v->status = fa_m->status;
     /* The list's rectangle follows the window (moved, resized, maximised). */
     fa_m->list.r = lay.content;
+    v->band_on = fa_band;               /* 1.5 stage 14b: the band, in the list placed above */
+    if (fa_band)
+        v->band = ui_list_band_rect(&fa_m->list, fa_band_ax, fa_band_ay, fa_band_bx, fa_band_by);
 }
 
 static const char *fa_part_name(enum ui_files_part p)
@@ -734,6 +789,21 @@ static void fa_log_state(void)
         kserialf("files: panel %c %llu %lld %s\n", e->kind == FILES_K_DIR ? 'D' : e->kind == FILES_K_LINK ? 'L' : 'F',
                  (ull)e->size, (long long)e->mtime, files_entry_name(&fa_m->folder, l->cursor));
     }
+    /* 1.5 stage 14b: This PC's cards, the band and the drop target, only
+     * while they are shown. */
+    if (v->thispc) {
+        kserialf("files: pc %u %d %d\n", fa_ncards, v->card_sel, v->card_hover);
+        for (uint32_t c = 0; c < fa_ncards && c < UI_FILES_CARDS; c++) {
+            const struct ui_files_card *cd = &fa_cards[c];
+            kserialf("files: card %u %s bar=%u ro=%u used=%llu total=%llu %s\n", c,
+                     cd->icon == UI_ICON_MEMORY ? "memory" : cd->icon == UI_ICON_CD ? "cd" : "disk",
+                     cd->bar ? 1u : 0u, cd->ro ? 1u : 0u, (ull)cd->used, (ull)cd->total, cd->name);
+        }
+    }
+    if (v->band_on)
+        kserialf("files: band %d %d %d %d\n", v->band.x, v->band.y, v->band.w, v->band.h);
+    if (l->drop >= 0 || v->drop_on)
+        kserialf("files: drop %d %d\n", l->drop, v->drop_on ? v->drop_place : -1);
     char sel[96];
     uint32_t k = 0, nsel = 0;
     for (uint32_t i = 0; i < l->n; i++)
@@ -779,6 +849,9 @@ static void fa_read(const char *path)
     fa_m->view.mode = UI_FILES_LIST;
     fa_m->view.renaming = false;
     fa_reading = true;
+    fa_read_t0 = fa_now;                /* 1.5 stage 14b: the busy pointer after FA_BUSY_TICKS */
+    fa_press = FA_PRESS_NONE;
+    fa_band = false;
     fa_cookie = 0;
     fa_seen = fa_holds = 0;
     fa_tinfo_on = false;                /* 1.5 stage 13: the Trash view follows the history */
@@ -1069,6 +1142,102 @@ static void fa_read_hold(void)
         fa_read_done();
 }
 
+/* ---- 1.5 stage 14b: This PC (plan C5, note (15), Q2-Q4) ---- */
+
+/* Card k, field by field (no struct copy: the kernel has no memcpy). */
+static void fa_card_set(uint32_t k, int icon, bool bar, bool ro, uint64_t used, uint64_t total)
+{
+    struct ui_files_card *c = &fa_cards[k];
+    c->name = fa_card_names[k];
+    c->figures = fa_card_figs[k];
+    c->icon = icon;
+    c->bar = bar;
+    c->ro = ro;
+    c->used = used;
+    c->total = total;
+}
+
+/* The cards from the filesystems' figures (one hold): the memory (the RAM
+ * filesystem's budget: /, /tmp, and in Live mode /home), the disk on
+ * /home (or "No disk in use" in Live mode), the CD drive only when the
+ * AHCI scan found an ATAPI device. */
+static void fa_pc_read(void)
+{
+    fd_vfs_acquire();
+    const struct ramfs *fs = vfs_ramfs();
+    uint64_t budget = (uint64_t)fs->budget_pages * VM_PAGE_SIZE;
+    uint64_t ram_used = (uint64_t)(fs->data_pages < fs->budget_pages ? fs->data_pages : fs->budget_pages) *
+                        VM_PAGE_SIZE;
+    bool disk = ext2_disk_mounted(), rw = ext2_disk_rw();
+    struct ext2_disk_dfinfo df;
+    bool dfok = disk && ext2_disk_df(&df);
+    fd_vfs_release();
+    uint32_t n = 0;
+    fa_copy(fa_card_names[n], sizeof(fa_card_names[n]), disk ? "Memory: /, /tmp" : "Memory (Live): /, /tmp");
+    files_usage_text(ram_used, budget, fa_card_figs[n]);
+    fa_card_set(n, UI_ICON_MEMORY, true, false, ram_used, budget);
+    fa_card_open[n++] = "/";
+    if (disk) {
+        ksnprintf(fa_card_names[n], sizeof(fa_card_names[n]), "Disk %u '%s': /home%s", dfok ? df.port : 0u,
+                  dfok ? df.label : "", rw ? "" : " (read-only)");
+        uint64_t total = dfok ? df.blocks * df.block_size : 0;
+        uint64_t used = dfok && df.blocks >= df.blocks_free ? (df.blocks - df.blocks_free) * df.block_size : 0;
+        files_usage_text(used, total, fa_card_figs[n]);
+        fa_card_set(n, UI_ICON_DISK, dfok, !rw, used, total);
+        fa_card_open[n++] = "/home";
+    } else {
+        fa_copy(fa_card_names[n], sizeof(fa_card_names[n]), "No disk in use");
+        fa_card_figs[n][0] = '\0';
+        fa_card_set(n, UI_ICON_DISK, false, false, 0, 0);
+        fa_card_open[n++] = 0;
+    }
+    if (ahci_has_atapi()) {
+        fa_copy(fa_card_names[n], sizeof(fa_card_names[n]), "CD drive: not used");
+        fa_card_figs[n][0] = '\0';
+        fa_card_set(n, UI_ICON_CD, false, false, 0, 0);
+        fa_card_open[n++] = 0;
+    }
+    fa_ncards = n;
+}
+
+/* The This PC view (the history's current entry): its cards read, no
+ * folder, nothing writable, no card selected. */
+static void fa_pc_show(void)
+{
+    struct ui_files_view *v = &fa_m->view;
+    fa_reading = false;
+    fa_tinfo_on = false;
+    fa_press = FA_PRESS_NONE;
+    fa_band = false;
+    files_folder_init(&fa_m->folder, fa_m->entries, FILES_MAX_ENTRIES, fa_m->names, sizeof(fa_m->names),
+                      fa_m->folder.show_hidden);
+    ui_list_init(&fa_m->list, fa_m->list.view, fa_m->items, 0, ui_files_panel_labels, fa_m->list.r, fa_env.scale);
+    v->mode = UI_FILES_LIST;
+    v->renaming = false;
+    v->trash = false;
+    v->thispc = true;
+    v->card_sel = v->card_hover = -1;
+    fa_writable = false;
+    fa_m->path[0] = '\0';
+    fa_m->status[0] = '\0';
+    v->status_error = false;
+    fa_pc_read();
+    klogf("Files: This PC: %u storage areas\n", fa_ncards);
+}
+
+/* Opens card k's root (the memory "/", the disk "/home"); nothing for a
+ * card without one. */
+static void fa_go(enum files_view view, const char *path);
+
+static void fa_pc_open(int32_t k)
+{
+    if (k < 0 || k >= (int32_t)fa_ncards || !fa_card_open[k])
+        return;
+    klogf("Files: This PC: '%s' opened at %s\n", fa_cards[k].name, fa_card_open[k]);
+    fa_count_status();
+    fa_go(FILES_VIEW_FOLDER, fa_card_open[k]);
+}
+
 /* ---- actions ---- */
 
 static void fa_go(enum files_view view, const char *path)
@@ -1077,7 +1246,10 @@ static void fa_go(enum files_view view, const char *path)
         fa_status("This path is too long.", true);
         return;
     }
-    fa_read(path);
+    if (view == FILES_VIEW_THISPC)      /* 1.5 stage 14b */
+        fa_pc_show();
+    else
+        fa_read(path);
 }
 
 /* The current history entry read again (after Back, Forward or Up). */
@@ -1090,6 +1262,10 @@ static void fa_read_current(void)
         return;
     if (hv == FILES_VIEW_TRASH) {       /* 1.5 stage 13: the Trash view */
         fa_read(FA_TFILES);
+        return;
+    }
+    if (hv == FILES_VIEW_THISPC) {      /* 1.5 stage 14b: This PC */
+        fa_pc_show();
         return;
     }
     for (uint32_t i = 0; i < pl; i++)
@@ -1262,7 +1438,9 @@ static void fa_button(enum ui_files_part part)
         fa_new(part == UF_NEWFOLDER);
         break;
     case UF_OPEN:
-        if (fa_target() >= 0)
+        if (fa_m->view.thispc)          /* 1.5 stage 14b: the card selected */
+            fa_pc_open(fa_m->view.card_sel);
+        else if (fa_target() >= 0)
             fa_open_item((uint32_t)fa_target());
         break;
     case UF_RENAME:
@@ -1356,6 +1534,7 @@ static void fa_job_begin(enum fa_job j, bool all)
     fa_joff = 0;
     fa_jall = all;
     fa_jinfo_made = false;
+    fa_jdrag = false;                   /* 1.5 stage 14b: a drop sets it after this */
     fa_working();
 }
 
@@ -1364,6 +1543,7 @@ static void fa_job_end(bool keep)
 {
     fa_job = FA_JOB_NONE;
     fa_step = FA_ST_ITEM;
+    fa_jdrag = false;                   /* 1.5 stage 14b */
     fa_keep_status = keep;
     fa_copy(fa_m->scratch2, sizeof(fa_m->scratch2), fa_m->path);
     fa_read(fa_m->scratch2);
@@ -1640,20 +1820,32 @@ static void fa_step_paste(void)
     enum files_walk_result w;
     switch (fa_step) {
     case FA_ST_ITEM: {
-        if (fa_jnext >= fa_m->clip.n) {
-            klogf("Files: pasted %u items into %s (%s)\n", fa_jdone, fa_m->jdir, fa_jmove ? "move" : "copy");
-            if (fa_jmove)
+        /* 1.5 stage 14b: a drop takes the selected items of the folder
+         * shown (fa_job_next), a paste the clipboard's paths. */
+        if (fa_jdrag ? !fa_job_next() : fa_jnext >= fa_m->clip.n) {
+            klogf("Files: %s %u items into %s (%s)\n", fa_jdrag ? "dropped" : "pasted", fa_jdone, fa_m->jdir,
+                  fa_jmove ? "move" : "copy");
+            if (fa_jmove && !fa_jdrag)
                 files_clip_clear(&fa_m->clip);      /* a cut is pasted once */
             fa_job_end(fa_keep_status);
             return;
         }
         uint32_t pl = 0;
-        const char *p = files_clip_path(&fa_m->clip, fa_jnext++, &pl);
-        if (!p || pl == 0 || pl > FILES_PATH_MAX)
-            return;
-        for (uint32_t i = 0; i < pl; i++)
-            fa_m->jsrc[i] = p[i];
-        fa_m->jsrc[pl] = '\0';
+        if (fa_jdrag) {
+            if (!fa_join(fa_m->jsrc, fa_m->path, files_entry_name(&fa_m->folder, fa_jitem))) {
+                fa_status("This path is too long.", true);
+                fa_job_fail();
+                return;
+            }
+            pl = fa_len(fa_m->jsrc);
+        } else {
+            const char *p = files_clip_path(&fa_m->clip, fa_jnext++, &pl);
+            if (!p || pl == 0 || pl > FILES_PATH_MAX)
+                return;
+            for (uint32_t i = 0; i < pl; i++)
+                fa_m->jsrc[i] = p[i];
+            fa_m->jsrc[pl] = '\0';
+        }
         off = files_ops_name_off(fa_m->jsrc, pl);
         name = fa_m->jsrc + off;
         uint32_t dl = fa_len(fa_m->jdir);
@@ -2105,6 +2297,25 @@ static void fa_clip_set(bool cut)
     klogf("Files: %u items %s from %s\n", n, cut ? "cut" : "copied", fa_m->path);
 }
 
+/* Paste's (and since 1.5 stage 14b a drop's) target folder fa_m->jdir
+ * checked by rule SL: every part a real folder; else the message. */
+static bool fa_jdir_ok(void)
+{
+    uint32_t at = 0;
+    enum files_target t = files_check_target(&fa_fs, fa_m->jdir, fa_m->scratch, &at);
+    if (t == FILES_TARGET_OK)
+        return true;
+    char folder[FILES_PATH_MAX + 1], shown[96];
+    uint32_t k = at <= fa_len(fa_m->jdir) ? at : 0;
+    for (uint32_t i = 0; i < k; i++)
+        folder[i] = fa_m->jdir[i];
+    folder[k] = '\0';
+    ui_name_shown(folder, shown, sizeof(shown));
+    ksnprintf(fa_m->status, FA_STATUS_MAX, "Can't paste here: %s is not a folder.", shown);
+    fa_m->view.status_error = true;
+    return false;
+}
+
 /* Paste into the folder shown, or into folder item `into` (a menu's). */
 static void fa_paste(int32_t into)
 {
@@ -2119,19 +2330,8 @@ static void fa_paste(int32_t into)
         dir = fa_m->scratch2;
     }
     fa_copy(fa_m->jdir, sizeof(fa_m->jdir), dir);
-    uint32_t at = 0;
-    enum files_target t = files_check_target(&fa_fs, fa_m->jdir, fa_m->scratch, &at);
-    if (t != FILES_TARGET_OK) {         /* rule SL: every part a real folder */
-        char folder[FILES_PATH_MAX + 1], shown[96];
-        uint32_t k = at <= fa_len(fa_m->jdir) ? at : 0;
-        for (uint32_t i = 0; i < k; i++)
-            folder[i] = fa_m->jdir[i];
-        folder[k] = '\0';
-        ui_name_shown(folder, shown, sizeof(shown));
-        ksnprintf(fa_m->status, FA_STATUS_MAX, "Can't paste here: %s is not a folder.", shown);
-        fa_m->view.status_error = true;
+    if (!fa_jdir_ok())
         return;
-    }
     fa_jmove = fa_m->clip.cut;
     fa_keep_status = false;
     fa_job_begin(FA_JOB_PASTE, false);
@@ -2262,6 +2462,7 @@ static void fa_open_viewer(const char *path, const char *name, uint64_t size)
     fa_v->v.sb = UI_SB_NORMAL;
     fa_v->v.cut = size > UI_VIEWER_MAX;
     fa_vreading = true;
+    fa_vread_t0 = fa_now;               /* 1.5 stage 14b: the busy pointer after FA_BUSY_TICKS */
     fa_voff = 0;
     fa_vsize = size;
     fa_vholds = 0;
@@ -2449,6 +2650,11 @@ void files_app_open(void)
         fa_press_path = -1;
         fa_sb_drag = false;
         fa_tip_part = UF_NONE;
+        fa_press = FA_PRESS_NONE;       /* 1.5 stage 14b: no press, band or drag yet */
+        fa_band = fa_drag = fa_jdrag = false;
+        fa_badge_r = (struct rect){ 0, 0, 0, 0 };
+        fa_drop_item = fa_drop_place = -1;
+        fa_m->view.card_sel = fa_m->view.card_hover = -1;
         const char *start = fa_is_folder(0, FILES_HOME) ? FILES_HOME : "/home";
         klogf("Files: opened at %s: %u pages of free RAM at 0x%016llx, zeroed; %u page tables added (free pages %u "
               "-> %u)\n", start, FA_PAGES, (ull)VM_FILES_BASE, tables, before, pmm_free_pages());
@@ -2468,6 +2674,11 @@ void files_app_closed(struct ui_window *w)
 {
     if (w == fa_env.files) {
         files_app_stop("the window was closed");    /* 1.5 stage 13 (Q9) */
+        if (fa_m)
+            fa_gesture_cancel("the window was closed");     /* 1.5 stage 14b */
+        fa_press = FA_PRESS_NONE;
+        fa_band = fa_drag = false;
+        fa_badge_r = (struct rect){ 0, 0, 0, 0 };
         uint32_t before = pmm_free_pages(), n = 0;
         bool had = fa_m != 0;
         fa_m = 0;                           /* no pointer into the pages left */
@@ -2508,6 +2719,7 @@ void files_app_stop(const char *why)
     fa_job = FA_JOB_NONE;
     fa_step = FA_ST_ITEM;
     fa_ask = FA_ASK_NONE;
+    fa_jdrag = false;                   /* 1.5 stage 14b */
     if (fa_m->view.mode == UI_FILES_ASK)
         fa_m->view.mode = UI_FILES_LIST;
 }
@@ -2518,6 +2730,8 @@ void files_app_right(struct ui_window *top, int32_t x, int32_t y)
         return;
     struct ui_files_view *v = &fa_m->view;
     if (v->mode != UI_FILES_LIST || v->renaming || fa_reading || fa_job != FA_JOB_NONE)
+        return;
+    if (v->thispc || fa_drag || fa_band)    /* 1.5 stage 14b: no menu in This PC or during a drag */
         return;
     struct ui_files_layout lay;
     int32_t index = -1;
@@ -2597,6 +2811,8 @@ void files_app_menu(enum ui_menu_action a)
 
 void files_app_poll(uint64_t now)
 {
+    fa_now = now;                       /* 1.5 stage 14b: the readings' start times */
+    fa_auto_scroll(now);                /* 1.5 stage 14b: the band or a drag at an edge */
     if (fa_m && fa_reading) {
         if (fa_tinfo_on)
             fa_tinfo_step();            /* 1.5 stage 13: the Trash's info files */
@@ -2618,6 +2834,331 @@ void files_app_poll(uint64_t now)
     }
 }
 
+/* ---- 1.5 stage 14b: box selection, drag and drop (notes (14), (15)) ---- */
+
+static uint8_t fa_mods;                 /* Shift and Ctrl now (the pointer's packets and the keys) */
+static bool fa_drag_on;                 /* the pointer over the Files window at the last move */
+
+/* The i-th selected item's name (files_ops_drop's names). */
+static const char *fa_drag_name(void *ctx, uint32_t i, uint32_t *len)
+{
+    (void)ctx;
+    uint32_t k = 0;
+    for (uint32_t j = 0; j < fa_m->folder.n && j < fa_m->list.n; j++)
+        if (fa_m->items[j].selected && k++ == i) {
+            *len = fa_m->folder.e[j].name_len;
+            return files_entry_name(&fa_m->folder, j);
+        }
+    *len = 0;
+    return 0;
+}
+
+/* The drag's target folder (fa_m->drop_path), in one hold: a real folder
+ * (rule SL: a link is not one), on the folder shown's filesystem or not,
+ * able to change or not. False if it is not a folder (no target). */
+static bool fa_drop_fs(void)
+{
+    struct vnode *a = 0, *b = 0;
+    fd_vfs_acquire();
+    bool ok = fa_lookup_locked(fa_m->path, &a) == 0 && fa_lookup_locked(fa_m->drop_path, &b) == 0 &&
+              b->type == VNODE_DIR && !vnode_is_link(b);
+    if (ok) {
+        fa_drop_same = a->fs_id == b->fs_id;
+        fa_drop_writable = vfs_writable(vfs_root(), b) == 0;
+    }
+    fd_vfs_release();
+    return ok;
+}
+
+/* What a release at (x, y) would do (files_ops_drop); logged when it
+ * changes; true if it changed. `on`: the pointer is over the Files window. */
+static bool fa_drag_target(bool on, int32_t x, int32_t y)
+{
+    struct ui_files_view *v = &fa_m->view;
+    enum files_drop_target t = FILES_DT_NONE;
+    int32_t item = -1, place = -1;
+    bool path = false;
+    fa_drag_on = on;
+    if (on) {
+        struct ui_files_layout lay;
+        int32_t index = -1;
+        ui_files_layout(fa_env.files->r, fa_env.scale, fa_env.fonts->regular, v->bar != UI_FILES_BAR_NONE, &lay);
+        fa_m->list.r = lay.content;
+        enum ui_files_part part = ui_files_hit(&lay, v, fa_env.scale, fa_env.fonts->regular, x, y, &index);
+        if (part == UF_CONTENT && !v->thispc && v->mode == UI_FILES_LIST) {
+            int32_t i = ui_list_item_at(&fa_m->list, x, y);
+            if (i >= 0 && i < (int32_t)fa_m->folder.n) {
+                item = i;
+                path = fa_m->folder.e[i].kind == FILES_K_DIR &&
+                       fa_join(fa_m->drop_path, fa_m->path, files_entry_name(&fa_m->folder, (uint32_t)i));
+                t = path ? FILES_DT_FOLDER : FILES_DT_FILE;
+            }
+        } else if (part == UF_PLACE && index >= 0 && index < UI_FILES_PLACES) {
+            place = index;
+            if (index < 7) {
+                path = fa_copy(fa_m->drop_path, sizeof(fa_m->drop_path), fa_place_paths[index]);
+                t = path ? FILES_DT_FOLDER : FILES_DT_NONE;
+            } else if (index == 7) {
+                t = FILES_DT_TRASH;
+            }
+        }
+    }
+    bool moved = t != fa_drop_kind || item != fa_drop_item || place != fa_drop_place;
+    if (moved) {
+        fa_drop_kind = t;
+        fa_drop_item = item;
+        fa_drop_place = place;
+        if (path && !fa_drop_fs())
+            fa_drop_kind = FILES_DT_NONE;   /* not a real folder: no target */
+    }
+    struct files_drop_in in = { fa_drop_kind, fa_m->path, fa_len(fa_m->path), fa_m->drop_path,
+                                fa_len(fa_m->drop_path), fa_drag_n, fa_drag_name, 0, fa_drag_ctrl, fa_drop_same,
+                                fa_writable, fa_drop_writable, v->trash };
+    enum files_drop_why why = FILES_DW_OK;
+    enum files_drop d = files_ops_drop(&in, &why);
+    if (!moved && d == fa_drop && why == fa_drop_why)
+        return false;
+    fa_drop = d;
+    fa_drop_why = why;
+    if (fa_env.logging) {
+        const char *what = fa_drop_kind == FILES_DT_FOLDER ? fa_m->drop_path : fa_drop_kind == FILES_DT_TRASH ? "Trash"
+                           : fa_drop_kind == FILES_DT_FILE ? files_entry_name(&fa_m->folder, (uint32_t)item) : "-";
+        kserialf("files: drag over %s %s%s%s%s\n", what, files_ops_drop_word(d), why != FILES_DW_OK ? " (" : "",
+                 why != FILES_DW_OK ? files_ops_drop_why_word(why) : "", why != FILES_DW_OK ? ")" : "");
+    }
+    return true;
+}
+
+/* The badge (the item's icon and name, or "<n> items") below and right of
+ * the pointer; its rectangle, empty without a drag. */
+static struct rect fa_badge_rect(void)
+{
+    if (!fa_m || !fa_drag || fa_px < 0)
+        return (struct rect){ 0, 0, 0, 0 };
+    return ui_files_badge_rect(fa_px, fa_py, fa_env.scale, fa_env.fonts->regular, fa_badge_text);
+}
+
+/* The badge follows the pointer: the old place and the new one redrawn. */
+static void fa_badge_move(void)
+{
+    struct rect n = fa_badge_rect();
+    if (n.x == fa_badge_r.x && n.y == fa_badge_r.y && n.w == fa_badge_r.w && n.h == fa_badge_r.h)
+        return;
+    if (!ui_rect_empty(fa_badge_r))
+        fa_env.damage(fa_badge_r);
+    fa_badge_r = n;
+    if (!ui_rect_empty(n))
+        fa_env.damage(n);
+}
+
+void files_app_badge_paint(const struct ui_canvas *c)
+{
+    if (!fa_m || !fa_drag || ui_rect_empty(fa_badge_r))
+        return;
+    ui_files_badge_draw(c, fa_badge_r, fa_env.scale, fa_env.fonts->regular, fa_badge_icon, fa_badge_text);
+}
+
+static void fa_drag_stop(void)
+{
+    fa_drag = false;
+    if (!ui_rect_empty(fa_badge_r))
+        fa_env.damage(fa_badge_r);
+    fa_badge_r = (struct rect){ 0, 0, 0, 0 };
+    fa_drop = FILES_DROP_NO;
+    fa_drop_why = FILES_DW_NOWHERE;
+    fa_drop_kind = FILES_DT_NONE;
+    fa_drop_item = fa_drop_place = -1;
+}
+
+/* A press on an item moved past the threshold: the selection is dragged
+ * (at most FILES_DRAG_MAX items). */
+static void fa_drag_start(bool on, int32_t x, int32_t y)
+{
+    uint32_t n = fa_nsel();
+    if (n == 0)
+        return;
+    if (n > FILES_DRAG_MAX) {
+        fa_status("Only 64 items can be dragged at once.", true);
+        klogf("Files: drag refused: %u items selected (at most %u)\n", n, FILES_DRAG_MAX);
+        if (fa_env.logging)
+            kserialf("files: drag refused %u\n", n);
+        return;
+    }
+    fa_drag = true;
+    fa_drag_n = n;
+    fa_drag_ctrl = (fa_mods & KEY_CTRL) != 0;
+    fa_drop = FILES_DROP_NO;
+    fa_drop_why = FILES_DW_NOWHERE;
+    fa_drop_kind = FILES_DT_NONE;
+    fa_drop_item = fa_drop_place = -2;  /* the first target always computed */
+    int32_t first = -1;
+    for (uint32_t i = 0; i < fa_m->folder.n && i < fa_m->list.n && first < 0; i++)
+        if (fa_m->items[i].selected)
+            first = (int32_t)i;
+    fa_badge_icon = fa_m->items[first].icon;
+    if (n == 1)
+        fa_copy(fa_badge_text, sizeof(fa_badge_text), files_entry_name(&fa_m->folder, (uint32_t)first));
+    else
+        ksnprintf(fa_badge_text, sizeof(fa_badge_text), "%u items", n);
+    klogf("Files: dragging %u item%s from %s\n", n, n == 1 ? "" : "s", fa_m->path);
+    if (fa_env.logging)
+        kserialf("files: drag start %u %s\n", n, fa_badge_text);
+    fa_drag_target(on, x, y);
+    fa_badge_move();
+}
+
+/* The release: the drop (the Paste job over the selection, or the Delete
+ * key's Move to Trash), or nothing (logged with why). */
+static void fa_drop_go(void)
+{
+    enum files_drop d = fa_drop;
+    enum files_drop_why why = fa_drop_why;
+    uint32_t n = fa_drag_n;
+    fa_drag_stop();
+    if (d == FILES_DROP_NO) {
+        klogf("Files: drop refused (%s): nothing changed\n", files_ops_drop_why_word(why));
+        if (fa_env.logging)
+            kserialf("files: drop no (%s)\n", files_ops_drop_why_word(why));
+        return;
+    }
+    if (d == FILES_DROP_TRASH) {
+        klogf("Files: %u item%s dropped on the Trash\n", n, n == 1 ? "" : "s");
+        if (fa_env.logging)
+            kserialf("files: drop trash %u\n", n);
+        fa_count_status();
+        fa_delete(false, false);
+        return;
+    }
+    fa_copy(fa_m->jdir, sizeof(fa_m->jdir), fa_m->drop_path);
+    if (!fa_jdir_ok())
+        return;
+    klogf("Files: %u item%s dropped into %s (%s)\n", n, n == 1 ? "" : "s", fa_m->jdir, files_ops_drop_word(d));
+    if (fa_env.logging)
+        kserialf("files: drop %s %u %s\n", files_ops_drop_word(d), n, fa_m->jdir);
+    fa_jmove = d == FILES_DROP_MOVE;
+    fa_keep_status = false;
+    fa_job_begin(FA_JOB_PASTE, false);
+    fa_jdrag = true;
+}
+
+/* Box selection: the band applied to the list (never the limit's note). */
+static void fa_band_apply(void)
+{
+    struct ui_list *l = &fa_m->list;
+    ui_list_band(l, fa_band_ax, fa_band_ay, fa_band_bx, fa_band_by, fa_m->band_base, fa_band_add);
+    if (fa_m->folder.n < l->n)
+        l->items[fa_m->folder.n].selected = false;
+}
+
+static void fa_band_end(bool cancel)
+{
+    struct ui_list *l = &fa_m->list;
+    fa_band = false;
+    if (cancel)
+        for (uint32_t i = 0; i < l->n && i <= FILES_MAX_ENTRIES; i++)
+            l->items[i].selected = fa_m->band_base[i] != 0;
+    uint32_t n = fa_nsel();
+    for (uint32_t i = 0; i < fa_m->folder.n && i < l->n; i++)
+        if (l->items[i].selected) {
+            l->cursor = l->anchor = i;  /* the focus on the first item selected */
+            break;
+        }
+    klogf("Files: box selection %s: %u items selected\n", cancel ? "cancelled" : "done", n);
+    if (fa_env.logging)
+        kserialf("files: band %s %u\n", cancel ? "cancelled" : "done", n);
+}
+
+/* A left press in the content that may become a drag (on an item) or a
+ * band (on empty space); the band keeps the selection it started from. */
+static void fa_press_start(enum fa_press kind, int32_t i, int32_t x, int32_t y, uint8_t mods, bool defer)
+{
+    struct ui_list *l = &fa_m->list;
+    fa_press = kind;
+    fa_press_i = i;
+    fa_press_x = x;
+    fa_press_y = y;
+    fa_press_mods = mods;
+    fa_press_defer = defer;
+    fa_press_cy = ui_list_content_y(l, y);
+    for (uint32_t k = 0; k < l->n && k <= FILES_MAX_ENTRIES; k++)
+        fa_m->band_base[k] = l->items[k].selected ? 1u : 0u;
+}
+
+/* The pointer moved with the button held since the press: past d(4) the
+ * press becomes a drag or a band; true if it did. */
+static bool fa_press_move(bool on, int32_t x, int32_t y)
+{
+    int32_t th = ui_px(4, fa_env.scale), dx = x - fa_press_x, dy = y - fa_press_y;
+    if (dx < th && dx > -th && dy < th && dy > -th)
+        return false;
+    enum fa_press kind = fa_press;
+    fa_press = FA_PRESS_NONE;
+    if (kind == FA_PRESS_ITEM) {
+        fa_drag_start(on, x, y);
+        return true;
+    }
+    fa_band = true;
+    fa_band_add = (fa_press_mods & KEY_CTRL) != 0;
+    fa_band_ax = fa_press_x;
+    fa_band_ay = fa_press_cy;
+    fa_band_bx = x;
+    fa_band_by = ui_list_content_y(&fa_m->list, y);
+    fa_band_apply();
+    return true;
+}
+
+/* Esc, the window closed: a press, a band or a drag ends, nothing done
+ * (the band's selection put back); true if one was running. */
+static bool fa_gesture_cancel(const char *why)
+{
+    bool any = fa_drag || fa_band || fa_press != FA_PRESS_NONE;
+    if (fa_drag) {
+        fa_drag_stop();
+        klogf("Files: drag cancelled (%s): nothing changed\n", why);
+        if (fa_env.logging)
+            kserialf("files: drag cancelled (%s)\n", why);
+    }
+    if (fa_band)
+        fa_band_end(true);
+    fa_press = FA_PRESS_NONE;
+    return any;
+}
+
+/* The band or a drag at the list's top or bottom edge: a line every
+ * FA_AUTO_TICKS (a drag only with the pointer across the list's body). */
+static void fa_auto_scroll(uint64_t now)
+{
+    if (!fa_m || !(fa_band || fa_drag) || now - fa_auto_at < FA_AUTO_TICKS || fa_px < 0)
+        return;
+    struct ui_list *l = &fa_m->list;
+    struct rect b = ui_list_body(l);
+    if (fa_drag && (!fa_drag_on || fa_px < b.x || fa_px >= (int64_t)b.x + b.w))
+        return;
+    int32_t dir = fa_py < b.y ? -1 : fa_py >= (int64_t)b.y + b.h ? 1 : 0;
+    uint32_t t0 = l->top;
+    if (!dir)
+        return;
+    ui_list_scroll(l, dir);
+    if (l->top == t0)
+        return;
+    fa_auto_at = now;
+    if (fa_band) {
+        fa_band_by = ui_list_content_y(l, fa_py);
+        fa_band_apply();
+    }
+    if (fa_drag)
+        fa_drag_target(fa_drag_on, fa_px, fa_py);
+    fa_changed();
+}
+
+/* This PC: a press on card k (-1: none): selected; a double click opens it. */
+static void fa_pc_press(int32_t k, int32_t x, int32_t y, uint64_t now)
+{
+    fa_m->view.card_sel = k;
+    if (ui_list_double(&fa_m->clicks, now * 10u, x, y, k, fa_env.scale) && k >= 0)
+        fa_pc_open(k);
+}
+
 static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, uint8_t mods, uint64_t now)
 {
     struct ui_files_view *v = &fa_m->view;
@@ -2629,6 +3170,7 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
     int32_t index = -1;
     enum ui_files_part part = on ? ui_files_hit(&lay, v, s, f, x, y, &index) : UF_NONE;
     bool changed = false;
+    fa_mods = mods;                     /* 1.5 stage 14b: Ctrl copies a drop */
     /* The scroll bar's drag goes on wherever the pointer is. */
     if (fa_sb_drag) {
         uint32_t t = ui_scrollbar_drag(ui_list_sb_rect(&fa_m->list), ui_list_lines(&fa_m->list),
@@ -2646,10 +3188,18 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
             fa_changed();
         return;
     }
-    enum ui_files_part hover = part > UF_NONE && part < UF_BUTTONS ? part : UF_NONE;
+    /* 1.5 stage 14b: no button hover while dragging or drawing a band. */
+    enum ui_files_part hover = part > UF_NONE && part < UF_BUTTONS && !fa_drag && !fa_band ? part : UF_NONE;
     if (hover != v->hover) {
         v->hover = hover;
         changed = true;
+    }
+    if (v->thispc) {                    /* 1.5 stage 14b: the card under the pointer */
+        int32_t ch = part == UF_CONTENT ? index : -1;
+        if (ch != v->card_hover) {
+            v->card_hover = ch;
+            changed = true;
+        }
     }
     if (x != fa_px || y != fa_py) {         /* the tooltip waits for the pointer to rest */
         fa_px = x;
@@ -2678,13 +3228,17 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
             }
         } else if (part == UF_PATH && !fa_reading && !v->renaming && v->mode == UI_FILES_LIST && fa_job == FA_JOB_NONE) {
             fa_press_path = index;
-        } else if (part == UF_PLACE && index >= 0 && index < 8 && !fa_reading && !v->renaming &&
+        } else if (part == UF_PLACE && index >= 0 && index < UI_FILES_PLACES && !fa_reading && !v->renaming &&
                    v->mode != UI_FILES_ASK && fa_job == FA_JOB_NONE) {
             fa_count_status();
-            if (index == 7) {           /* 1.5 stage 13: the Trash view */
+            if (index == 8) {           /* 1.5 stage 14b: This PC */
+                if (!v->thispc || v->mode != UI_FILES_LIST)
+                    fa_go(FILES_VIEW_THISPC, "/");
+            } else if (index == 7) {    /* 1.5 stage 13: the Trash view */
                 if (!v->trash || v->mode != UI_FILES_LIST)
                     fa_go(FILES_VIEW_TRASH, FA_TFILES);
-            } else if (!fa_same(fa_m->path, fa_place_paths[index]) || v->mode != UI_FILES_LIST || v->trash) {
+            } else if (!fa_same(fa_m->path, fa_place_paths[index]) || v->mode != UI_FILES_LIST || v->trash ||
+                       v->thispc) {
                 fa_go(FILES_VIEW_FOLDER, fa_place_paths[index]);
             }
             changed = true;
@@ -2699,14 +3253,24 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
             } else if (!v->renaming || !ui_rect_contains(ui_files_field_rect(l, l->cursor), x, y)) {
                 if (v->renaming) {
                     fa_rename_submit();
+                } else if (v->thispc) {         /* 1.5 stage 14b: This PC's cards */
+                    fa_pc_press(index, x, y, now);
                 } else {
                     int32_t i = ui_list_item_at(l, x, y);
                     if (i >= (int32_t)fa_m->folder.n)
                         i = -1;
-                    ui_list_click(l, i, mods);
+                    /* 1.5 stage 14b: a press on an item already selected
+                     * (no Shift) leaves the selection until the release,
+                     * so the selection can be dragged; the click is made
+                     * then if no drag started. */
+                    bool defer = i >= 0 && l->items[i].selected && !(mods & KEY_SHIFT);
+                    if (!defer)
+                        ui_list_click(l, i, mods);
                     if (ui_list_double(&fa_m->clicks, now * 10u, x, y, i, s) && i >= 0 && !v->trash) {
                         fa_count_status();
                         fa_open_item((uint32_t)i);
+                    } else {
+                        fa_press_start(i >= 0 ? FA_PRESS_ITEM : FA_PRESS_SPACE, i, x, y, mods, defer);
                     }
                 }
             } else {
@@ -2715,7 +3279,40 @@ static void fa_files_pointer(bool on, int32_t x, int32_t y, bool down, bool up, 
             changed = true;
         }
     }
+    /* 1.5 stage 14b: with the button held, a press becomes a drag or a
+     * band past d(4); a drag follows the pointer (its target, the badge);
+     * a band follows it (the selection). */
+    if (!down) {
+        if (fa_press != FA_PRESS_NONE) {
+            if (fa_press_move(on, x, y))
+                changed = true;
+        } else if (fa_drag) {
+            if (fa_drag_target(on, x, y))
+                changed = true;
+            fa_badge_move();
+        } else if (fa_band) {
+            int64_t by = ui_list_content_y(&fa_m->list, y);
+            if (x != fa_band_bx || by != fa_band_by) {
+                fa_band_bx = x;
+                fa_band_by = by;
+                fa_band_apply();
+                changed = true;
+            }
+        }
+    }
     if (up) {
+        if (fa_drag) {                  /* 1.5 stage 14b: the drop */
+            fa_drop_go();
+            changed = true;
+        } else if (fa_band) {
+            fa_band_end(false);
+            changed = true;
+        } else if (fa_press == FA_PRESS_ITEM && fa_press_defer && fa_press_i >= 0 &&
+                   (uint32_t)fa_press_i < fa_m->list.n) {
+            ui_list_click(&fa_m->list, fa_press_i, fa_press_mods);     /* the click left at the press */
+            changed = true;
+        }
+        fa_press = FA_PRESS_NONE;
         if (v->pressed != UF_NONE) {
             enum ui_files_part p = v->pressed;
             v->pressed = UF_NONE;
@@ -2783,9 +3380,54 @@ static void fa_viewer_pointer(bool on, int32_t x, int32_t y, bool down, bool up)
     fa_vchanged();
 }
 
+int files_app_pointer_kind(struct ui_window *top, int32_t x, int32_t y, uint64_t now, bool *dragging)
+{
+    *dragging = false;
+    if (fa_m && fa_drag) {
+        *dragging = true;
+        return fa_drop == FILES_DROP_COPY ? POINTER_DRAG_COPY : fa_drop == FILES_DROP_NO ? POINTER_NO_DROP
+                                                                                          : POINTER_DRAG_MOVE;
+    }
+    if (top && top == fa_env.viewer && fa_v && fa_vreading && now - fa_vread_t0 >= FA_BUSY_TICKS)
+        return POINTER_BUSY;
+    if (!top || top != fa_env.files || !fa_m || fa_env.files->minimised)
+        return -1;
+    if ((fa_job != FA_JOB_NONE && fa_step != FA_ST_ASKING) || (fa_reading && now - fa_read_t0 >= FA_BUSY_TICKS))
+        return POINTER_BUSY;
+    struct ui_files_view *v = &fa_m->view;
+    if (v->mode != UI_FILES_LIST || fa_reading)
+        return -1;
+    struct ui_files_layout lay;
+    int32_t index = -1;
+    uint32_t s = fa_env.scale;
+    const struct font *f = fa_env.fonts->regular;
+    ui_files_layout(fa_env.files->r, s, f, v->bar != UI_FILES_BAR_NONE, &lay);
+    fa_m->list.r = lay.content;
+    enum ui_files_part part = ui_files_hit(&lay, v, s, f, x, y, &index);
+    struct ui_list *l = &fa_m->list;
+    if (v->renaming && part == UF_CONTENT && l->cursor < l->n &&
+        ui_rect_contains(ui_rect_intersect(ui_files_field_rect(l, l->cursor), ui_list_body(l)), x, y))
+        return POINTER_IBEAM;
+    if (part == UF_PATH && index >= 0 && index < (int32_t)fa_m->pb.n && index < (int32_t)FILES_PB_MAX &&
+        fa_m->pb.part[index].target > 0 && !v->renaming && fa_job == FA_JOB_NONE)
+        return POINTER_HAND;
+    return -1;
+}
+
+void files_app_mods(uint8_t mods)
+{
+    fa_mods = mods;
+    if (!fa_m || !fa_drag || fa_drag_ctrl == ((mods & KEY_CTRL) != 0))
+        return;
+    fa_drag_ctrl = (mods & KEY_CTRL) != 0;  /* Ctrl pressed or released during a drag */
+    if (fa_drag_target(fa_drag_on, fa_px, fa_py))
+        fa_changed();
+}
+
 void files_app_pointer(struct ui_window *top, int32_t x, int32_t y, bool down, bool up, uint8_t mods,
                        uint64_t now)
 {
+    fa_now = now;                       /* 1.5 stage 14b */
     if (fa_m && fa_env.files->open && !fa_env.files->minimised)
         fa_files_pointer(top == fa_env.files, x, y, down && top == fa_env.files, up, mods, now);
     if (fa_v && fa_env.viewer->open && !fa_env.viewer->minimised)
@@ -2796,6 +3438,15 @@ static bool fa_files_key(const struct key_event *e)
 {
     struct ui_files_view *v = &fa_m->view;
     bool pressed = (e->flags & KEY_PRESSED) != 0, alt = (e->flags & KEY_ALT) && !(e->flags & KEY_CTRL);
+    /* 1.5 stage 14b: Esc ends a drag or a band with nothing done; other
+     * keys wait until it ends. */
+    if (fa_drag || fa_band || fa_press != FA_PRESS_NONE) {
+        if (pressed && e->keycode == KEY_ESC) {
+            fa_gesture_cancel("Esc");
+            fa_changed();
+        }
+        return true;
+    }
     /* Esc (the owner's condition, S12; ui_files_esc): the rename field
      * cancels the rename, else the info panel closes, else the window
      * closes (false: desktop.c closes it). */
@@ -2859,6 +3510,31 @@ static bool fa_files_key(const struct key_event *e)
     }
     if (fa_reading || fa_job != FA_JOB_NONE)    /* 1.5 stage 13: and while an action runs */
         return e->keycode != KEY_ESC;
+    if (v->thispc && !alt && e->keycode != KEY_BACKSPACE && e->keycode != KEY_ESC) {
+        /* 1.5 stage 14b: This PC: Up, Down, Home and End choose a card,
+         * Enter opens it; nothing else. */
+        int32_t n = (int32_t)fa_ncards, k = v->card_sel;
+        if (e->flags & (KEY_CTRL | KEY_ALT) || n == 0)
+            return true;
+        if (e->keycode == KEY_DOWN)
+            k = k < 0 ? 0 : k + 1 < n ? k + 1 : k;
+        else if (e->keycode == KEY_UP)
+            k = k <= 0 ? 0 : k - 1;
+        else if (e->keycode == KEY_HOME)
+            k = 0;
+        else if (e->keycode == KEY_END)
+            k = n - 1;
+        else if (e->keycode == KEY_ENTER || e->keycode == KEY_KP_ENTER) {
+            fa_pc_open(k);
+            fa_changed();
+            return true;
+        } else {
+            return true;
+        }
+        v->card_sel = k;
+        fa_changed();
+        return true;
+    }
     if (alt && (e->keycode == KEY_LEFT || e->keycode == KEY_RIGHT || e->keycode == KEY_UP)) {
         enum ui_files_part p = e->keycode == KEY_LEFT ? UF_BACK : e->keycode == KEY_RIGHT ? UF_FORWARD : UF_UP;
         fa_update_view();

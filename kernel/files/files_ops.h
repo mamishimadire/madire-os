@@ -103,4 +103,57 @@ struct files_ops_state {
 
 uint8_t files_ops_greyed(enum files_ops_menu menu, const struct files_ops_state *st);
 
+/*
+ * 1.5 stage 14b: drag and drop inside Files (docs/plans/1.5.md, notes (14)
+ * and (15)): what a drop of the n items of folder `dir` would do, in this
+ * order of checks:
+ *   - more than FILES_DRAG_MAX items: nothing (FILES_DW_TOO_MANY; Files
+ *     does not start such a drag: "Only 64 items can be dragged at once.");
+ *     none: nothing (FILES_DW_NOWHERE);
+ *   - items of the Trash view: nothing (FILES_DW_FROM_TRASH: no drag out of
+ *     the Trash in 1.5; Restore is in the menu);
+ *   - no target (empty space, outside the window, This PC): nothing
+ *     (FILES_DW_NOWHERE); a file or a link: nothing (FILES_DW_NOT_FOLDER);
+ *   - the Trash: to the Trash (FILES_DROP_TRASH: the Delete key's action,
+ *     with its question for items that can't go there), if the items'
+ *     folder can change (else FILES_DW_READONLY);
+ *   - a folder: nothing if it is the items' own folder (FILES_DW_HERE), or
+ *     one of the items or inside one (FILES_DW_ITSELF), or cannot change
+ *     (FILES_DW_READONLY); a copy if Ctrl is held or it is on another
+ *     filesystem (FILES_DROP_COPY); a move if the items' folder can change
+ *     (FILES_DROP_MOVE), else nothing (FILES_DW_SOURCE_RO).
+ * The items' names come from in->name (i < n; their length in *len).
+ */
+#define FILES_DRAG_MAX 64u
+
+enum files_drop_target { FILES_DT_NONE, FILES_DT_FOLDER, FILES_DT_FILE, FILES_DT_TRASH };
+enum files_drop { FILES_DROP_NO, FILES_DROP_MOVE, FILES_DROP_COPY, FILES_DROP_TRASH };
+enum files_drop_why {
+    FILES_DW_OK, FILES_DW_NOWHERE, FILES_DW_NOT_FOLDER, FILES_DW_HERE, FILES_DW_ITSELF, FILES_DW_READONLY,
+    FILES_DW_SOURCE_RO, FILES_DW_FROM_TRASH, FILES_DW_TOO_MANY
+};
+
+struct files_drop_in {
+    enum files_drop_target target;
+    const char *dir;                    /* the folder the items are in */
+    uint32_t dir_len;
+    const char *to;                     /* the target folder (FILES_DT_FOLDER) */
+    uint32_t to_len;
+    uint32_t n;                         /* the items */
+    const char *(*name)(void *ctx, uint32_t i, uint32_t *len);
+    void *ctx;
+    bool ctrl;                          /* Ctrl held */
+    bool same_fs;                       /* the target is on the items' filesystem */
+    bool src_writable, dst_writable;    /* the items' folder, the target folder can change */
+    bool from_trash;                    /* the items are the Trash view's */
+};
+
+enum files_drop files_ops_drop(const struct files_drop_in *in, enum files_drop_why *why);
+
+/* The words logged ("files: drag over ..."): "move", "copy", "trash", "no";
+ * the reasons "ok", "nowhere", "not a folder", "here", "into itself",
+ * "read-only", "source read-only", "from the Trash", "too many". */
+const char *files_ops_drop_word(enum files_drop d);
+const char *files_ops_drop_why_word(enum files_drop_why w);
+
 #endif

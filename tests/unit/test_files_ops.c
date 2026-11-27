@@ -188,9 +188,97 @@ static void fo_greyed(void)
     CHECK_EQ(files_ops_greyed(FILES_OPS_MENU_TRASH_SPACE, &st), 0x03);
 }
 
+/* 1.5 stage 14b: drag and drop's rules (notes (14), (15)): every refusal,
+ * in its order, and what a drop does. The items: "a.txt" and the folder
+ * "Work" of /home/user. */
+static const char *const fo_drag_names[2] = { "a.txt", "Work" };
+
+static const char *fo_drag_name(void *ctx, uint32_t i, uint32_t *len)
+{
+    (void)ctx;
+    *len = (uint32_t)strlen(fo_drag_names[i]);
+    return fo_drag_names[i];
+}
+
+static enum files_drop fo_drop(enum files_drop_target t, const char *to, uint32_t n, bool ctrl, bool same, bool src_w,
+                               bool dst_w, bool trash, enum files_drop_why *why)
+{
+    struct files_drop_in in = { t, "/home/user", 10, to, to ? (uint32_t)strlen(to) : 0, n, fo_drag_name, 0, ctrl, same,
+                                src_w, dst_w, trash };
+    return files_ops_drop(&in, why);
+}
+
+static void fo_drop_rules(void)
+{
+    enum files_drop_why w;
+    /* a move, a copy (Ctrl, another filesystem), the Trash */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 2, false, true, true, true, false, &w), FILES_DROP_MOVE);
+    CHECK_EQ(w, FILES_DW_OK);
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 2, true, true, true, true, false, &w), FILES_DROP_COPY);
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/tmp", 2, false, false, true, true, false, &w), FILES_DROP_COPY);
+    CHECK_EQ(fo_drop(FILES_DT_TRASH, 0, 2, false, true, true, true, false, &w), FILES_DROP_TRASH);
+    CHECK_EQ(fo_drop(FILES_DT_TRASH, 0, 2, true, true, true, true, false, &w), FILES_DROP_TRASH);  /* Ctrl ignored */
+    /* the refusals */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Work", 2, false, true, true, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_ITSELF);           /* onto itself */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Work/Old/2026", 2, true, true, true, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_ITSELF);           /* into its own subfolder, even as a copy */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Workshop", 2, false, true, true, true, false, &w), FILES_DROP_MOVE);
+    CHECK_EQ(w, FILES_DW_OK);               /* a name that only starts like the item's */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user", 2, false, true, true, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_HERE);             /* the items' own folder */
+    CHECK_EQ(fo_drop(FILES_DT_FILE, 0, 2, false, true, true, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_NOT_FOLDER);       /* onto a file (or a link) */
+    CHECK_EQ(fo_drop(FILES_DT_NONE, 0, 2, false, true, true, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_NOWHERE);          /* empty space, This PC, outside the window */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 2, false, true, true, false, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_READONLY);         /* a read-only place */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 2, true, true, true, false, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_READONLY);         /* ... even as a copy */
+    CHECK_EQ(fo_drop(FILES_DT_TRASH, 0, 2, false, true, false, false, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_READONLY);         /* the Trash from a read-only folder */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 2, false, true, false, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_SOURCE_RO);        /* a move out of a read-only folder */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/tmp", 2, false, false, false, true, false, &w), FILES_DROP_COPY);
+    CHECK_EQ(w, FILES_DW_OK);               /* ... but a copy elsewhere is fine */
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 2, false, true, true, true, true, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_FROM_TRASH);       /* out of the Trash */
+    CHECK_EQ(fo_drop(FILES_DT_TRASH, 0, 2, false, true, true, true, true, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_FROM_TRASH);
+    CHECK_EQ(fo_drop(FILES_DT_FOLDER, "/home/user/Documents", 0, false, true, true, true, false, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_NOWHERE);          /* nothing dragged */
+    /* the folder "/" as the items' folder joins without a second '/' */
+    struct files_drop_in root = { FILES_DT_FOLDER, "/", 1, "/Work/x", 7, 2, fo_drag_name, 0, false, true, true, true,
+                                  false };
+    CHECK_EQ(files_ops_drop(&root, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_ITSELF);
+    CHECK(strcmp(files_ops_drop_word(FILES_DROP_COPY), "copy") == 0);
+    CHECK(strcmp(files_ops_drop_why_word(FILES_DW_ITSELF), "into itself") == 0);
+    CHECK(strcmp(files_ops_drop_why_word(FILES_DW_FROM_TRASH), "from the Trash") == 0);
+}
+
+/* 1.5 stage 14b: at most 64 items a drag; 65 are refused before anything
+ * else (Files shows "Only 64 items can be dragged at once."). */
+static void fo_drag_limit(void)
+{
+    enum files_drop_why w;
+    CHECK_EQ(FILES_DRAG_MAX, 64u);
+    struct files_drop_in in = { FILES_DT_FOLDER, "/home/user", 10, "/home/user/Documents", 20, 64, 0, 0, false, true,
+                                true, true, false };
+    CHECK_EQ(files_ops_drop(&in, &w), FILES_DROP_MOVE);     /* no names: nothing is inside itself */
+    in.n = 65;
+    CHECK_EQ(files_ops_drop(&in, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_TOO_MANY);
+    in.from_trash = true;
+    CHECK_EQ(files_ops_drop(&in, &w), FILES_DROP_NO);
+    CHECK_EQ(w, FILES_DW_TOO_MANY);         /* the limit before everything */
+}
+
 int main(void)
 {
     printf("files_ops unit tests\n");
+    RUN(fo_drop_rules);
+    RUN(fo_drag_limit);
     RUN(fo_trashable);
     RUN(fo_into_itself);
     RUN(fo_parent_and_name);

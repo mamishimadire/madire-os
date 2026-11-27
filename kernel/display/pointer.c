@@ -25,6 +25,11 @@ static int32_t px, py;                  /* the hot spot */
 static int32_t drawn_x, drawn_y;        /* where it is drawn */
 static uint32_t width, height;
 static uint32_t reported_dropped;
+/* 1.5 stage 14b: the kind shown, the busy pointer's frame, its hot spot in
+ * pixels (the sprite's top left is the position less it). */
+static enum pointer_kind pointer_now = POINTER_ARROW;
+static uint32_t pointer_frame;
+static int32_t pointer_hx, pointer_hy;
 
 /* test=mouse's sums */
 static int64_t sum_dx, sum_dy;
@@ -81,8 +86,9 @@ static void draw_at(int32_t x, int32_t y)
 {
     if (shown && !hidden)
         pointer_restore(&under, front);
-    pointer_save(&under, front, pointer_area(&sprite, x, y, width, height));
-    pointer_paint(front, &sprite, x, y);
+    /* 1.5 stage 14b: the hot spot at (x, y) (the arrow's is (0, 0)). */
+    pointer_save(&under, front, pointer_area(&sprite, x - pointer_hx, y - pointer_hy, width, height));
+    pointer_paint(front, &sprite, x - pointer_hx, y - pointer_hy);
     drawn_x = x;
     drawn_y = y;
     shown = true;
@@ -115,6 +121,39 @@ void pointer_unhide(void)
         return;
     }
     draw_at(drawn_x, drawn_y);
+}
+
+/* ---- 1.5 stage 14b: the kind of pointer ---- */
+
+bool pointer_set_kind(enum pointer_kind k, uint32_t frame)
+{
+    if (!on_screen || (uint32_t)k >= POINTER_KINDS)
+        return false;
+    if (k != POINTER_BUSY)
+        frame = 0;
+    if (k == pointer_now && frame % POINTER_BUSY_FRAMES == pointer_frame)
+        return false;
+    /* Made in place (no struct copy: the kernel has no memcpy); it checks
+     * the scale and the kind before it writes anything. */
+    if (!pointer_sprite_kind(&sprite, k, sprite.scale, frame))
+        return false;
+    pointer_now = k;
+    pointer_frame = frame % POINTER_BUSY_FRAMES;
+    pointer_hot(k, sprite.scale, &pointer_hx, &pointer_hy);
+    return true;
+}
+
+enum pointer_kind pointer_kind_shown(void)
+{
+    return pointer_now;
+}
+
+bool pointer_redraw(void)
+{
+    if (!on_screen || !shown || hidden || panic_active || !thread_screen_allowed())
+        return false;
+    draw_at(px, py);
+    return true;
 }
 
 /* ---- Packets ---- */

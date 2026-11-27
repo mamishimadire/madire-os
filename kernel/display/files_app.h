@@ -121,6 +121,24 @@ bool files_app_key(struct ui_window *w, const struct key_event *e);
 /* The wheel over window w. */
 void files_app_wheel(struct ui_window *w, int32_t x, int32_t y, int32_t notches);
 
+/* 1.5 stage 14b (notes (11), (12)(b), (14), (15)): the pointer Files asks
+ * for at (x, y), `top` the window whose body is there (or none): while it
+ * drags items, drag move, drag copy or not allowed wherever the pointer is
+ * (*dragging true); over the Files window busy while an action runs (not
+ * while it asks) or a folder has been read for 200 ms or more (over the
+ * Text Viewer while its file has), the I-beam over the rename field, the
+ * hand over a path-bar part; else -1 (pointer_core.h's enum pointer_kind,
+ * which desktop.c's pointer_choose weighs). files_app_mods: Shift and Ctrl
+ * now (each key; Ctrl changes a drag's move into a copy). The drag's
+ * badge (its icon and the item's name or "<n> items", d(16) right of and
+ * d(20) below the pointer, a rounded rectangle of radius d(4) filled
+ * `surface` with a d(1) `border.panel` frame, the 16 dp icon at d(8), the
+ * text cut with "..." to d(160) at d(32), d(28) high) is drawn by
+ * files_app_badge_paint on the desktop's top layer. */
+int files_app_pointer_kind(struct ui_window *top, int32_t x, int32_t y, uint64_t now, bool *dragging);
+void files_app_mods(uint8_t mods);
+void files_app_badge_paint(const struct ui_canvas *c);
+
 /* The windows' clients (struct ui_window's paint). */
 void files_app_paint(const struct ui_canvas *c, struct rect r, void *ctx);
 void files_app_viewer_paint(const struct ui_canvas *c, struct rect r, void *ctx);

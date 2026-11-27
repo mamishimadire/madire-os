@@ -111,6 +111,7 @@ void ui_list_init(struct ui_list *l, enum ui_list_view v, struct ui_list_item *i
     l->ring = false;
     l->sb = UI_SB_NORMAL;
     l->wide = false;
+    l->drop = -1;
 }
 
 struct rect ui_list_body(const struct ui_list *l)
@@ -365,6 +366,57 @@ static void list_marks(const struct ui_canvas *c, const struct ui_list *l, uint3
         struct rect ring = grid ? shape : (struct rect){ r.x + g, r.y, r.w - 2 * g, r.h };
         list_trace(c, UI_TRACE_STATE, UI_ACCENT, (int64_t)ring.x + ring.w / 2, ring.y);
         ui_frame_round(c, ring, in4, g, UI_CORNERS_ALL, UI_ACCENT);
+    }
+    if (l->drop >= 0 && (uint32_t)l->drop == i) {      /* 1.5 stage 14b: the drop target */
+        list_trace(c, UI_TRACE_CARRIED_POINTER, UI_SURFACE_HOVER, (int64_t)shape.x + shape.w / 2,
+                   (int64_t)shape.y + shape.h / 2);
+        if (grid)
+            ui_fill_round(c, shape, in4, UI_CORNERS_ALL, UI_SURFACE_HOVER);
+        else
+            ui_fill(c, shape, UI_SURFACE_HOVER);
+        list_trace(c, UI_TRACE_STATE, UI_ACCENT, (int64_t)shape.x + shape.w / 2, shape.y);
+        ui_frame_round(c, shape, in4, ui_px(1, s), UI_CORNERS_ALL, UI_ACCENT);
+    }
+}
+
+/* ---- 1.5 stage 14b: box selection ---- */
+
+int64_t ui_list_content_y(const struct ui_list *l, int32_t y)
+{
+    int64_t step = ui_px(l->view == UI_LIST_DETAILS ? LIST_ROW_DP : LIST_CELL_H_DP, l->scale);
+    return (int64_t)y - ui_list_body(l).y + (int64_t)l->top * step;
+}
+
+struct rect ui_list_band_rect(const struct ui_list *l, int32_t ax, int64_t ay, int32_t bx, int64_t by)
+{
+    int64_t step = ui_px(l->view == UI_LIST_DETAILS ? LIST_ROW_DP : LIST_CELL_H_DP, l->scale);
+    int64_t base = (int64_t)ui_list_body(l).y - (int64_t)l->top * step;
+    int64_t x0 = ax < bx ? ax : bx, x1 = (ax < bx ? bx : ax) + 1;
+    int64_t y0 = (ay < by ? ay : by) + base, y1 = (ay < by ? by : ay) + 1 + base;
+    if (y0 < INT32_MIN / 2)
+        y0 = INT32_MIN / 2;
+    if (y1 > INT32_MAX / 2)
+        y1 = INT32_MAX / 2;
+    return (struct rect){ (int32_t)x0, (int32_t)y0, (int32_t)(x1 - x0), (int32_t)(y1 - y0) };
+}
+
+void ui_list_band(struct ui_list *l, int32_t ax, int64_t ay, int32_t bx, int64_t by, const uint8_t *base, bool add)
+{
+    uint32_t s = l->scale, cols = ui_list_columns(l);
+    struct rect b = ui_list_body(l);
+    bool grid = l->view == UI_LIST_GRID;
+    int64_t step = ui_px(grid ? LIST_CELL_H_DP : LIST_ROW_DP, s), cw = ui_px(LIST_CELL_W_DP, s);
+    int64_t x0 = ax < bx ? ax : bx, x1 = (ax < bx ? bx : ax) + 1;
+    int64_t y0 = ay < by ? ay : by, y1 = (ay < by ? by : ay) + 1;
+    if (x0 < b.x)                       /* x clamped to the body */
+        x0 = b.x;
+    if (x1 > (int64_t)b.x + b.w)
+        x1 = (int64_t)b.x + b.w;
+    for (uint32_t i = 0; i < l->n; i++) {
+        int64_t line = i / cols, iy0 = line * step, iy1 = iy0 + step;
+        int64_t ix0 = grid ? b.x + (int64_t)(i % cols) * cw : b.x, ix1 = grid ? ix0 + cw : (int64_t)b.x + b.w;
+        bool hit = x0 < x1 && ix0 < x1 && x0 < ix1 && iy0 < y1 && y0 < iy1;
+        l->items[i].selected = hit || (add && base && base[i]);
     }
 }
 

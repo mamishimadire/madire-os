@@ -26,6 +26,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "kernel/display/pointer_core.h"   /* 1.5 stage 14b: enum pointer_kind */
 #include "kernel/display/surface_core.h"
 
 /* After the mouse started: the pointer on the framebuffer console, if it
@@ -47,6 +48,15 @@ uint32_t pointer_poll(void);
  * the pointer if r touches it (true), then shows it again. */
 bool pointer_hide_over(struct rect r);
 void pointer_unhide(void);
+
+/* 1.5 stage 14b: the kind of pointer shown (pointer_core.h's pointer_kind;
+ * the busy pointer at `frame`): true if it changed (the next draw shows
+ * it), false if it was shown already or there is no pointer on the screen.
+ * pointer_redraw draws it at its position now (thread 0; nothing while it
+ * is hidden or before the first packet): true if it drew. */
+bool pointer_set_kind(enum pointer_kind k, uint32_t frame);
+enum pointer_kind pointer_kind_shown(void);
+bool pointer_redraw(void);
 
 /* test=mouse (a diagnostic): logs every packet until 5 s after the last
  * one (or 60 s without any), then the counts; on a framebuffer console

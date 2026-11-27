@@ -155,6 +155,18 @@ const char *files_type_text(enum files_kind kind, const char *name, uint32_t len
 void files_size_text(uint64_t bytes, char out[FILES_SIZE_TEXT]);
 void files_date_text(int64_t seconds, char out[FILES_DATE_TEXT]);
 
+/* 1.5 stage 14b (This PC; note (15), Q4): a storage area's figures,
+ * "<U> used, <X> free of <Y>", each as files_size_text writes it, X the
+ * total less the used bytes (0 when the used bytes are more). And its bar:
+ * the pixels of a bar w pixels long that show `used` of `total` (rounded
+ * down; 0 for an empty total or w <= 0, w when the used bytes reach the
+ * total, at most w - 1 below it; for sizes whose used x w does not fit 64
+ * bits both figures are halved together until it does, which can only
+ * drop their lowest bits). */
+#define FILES_USAGE_TEXT (3u * FILES_SIZE_TEXT + 24u)
+void files_usage_text(uint64_t used, uint64_t total, char out[FILES_USAGE_TEXT]);
+int32_t files_bar_fill(uint64_t used, uint64_t total, int32_t w);
+
 /* ---- The history ---- */
 
 enum files_view { FILES_VIEW_FOLDER, FILES_VIEW_TRASH, FILES_VIEW_THISPC };

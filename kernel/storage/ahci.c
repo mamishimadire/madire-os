@@ -238,6 +238,14 @@ bool ahci_disk_usable(uint32_t port)
     return port < AHCI_PORTS && ahci_hba.port[port].state == AHCI_PORT_DISK;
 }
 
+bool ahci_has_atapi(void)
+{
+    for (uint32_t p = 0; p < AHCI_PORTS; p++)
+        if (ahci_hba.port[p].state == AHCI_PORT_ATAPI)
+            return true;
+    return false;
+}
+
 void ahci_debug_arm(bool read_once, bool writes)
 {
     ahci_dbg_read_once = read_once;

@@ -18,6 +18,17 @@ kernel's C:
     (x * 12 // w, y * 18 // h);
   - the hot spot (the top-left pixel) at the pointer's position; pixels
     past the right or bottom edge are not drawn.
+
+1.5 stage 14b: the other kinds of pointer (kernel/display/pointer_core.h,
+notes (11), (12)(b), (14), (15)): paint(..., shape=<name>, frame=<n>) draws
+kind <name> ("resize-ew", ..., "no-drop"; "arrow", the default, exactly as
+above) from its rows and hot spot in pointer_core.c's pointer_defs table:
+'.' none, 'o' bg.deep, 'w' text, 'a' accent, 'd' danger, '1'-'8' the busy
+pointer's dots (the one of the frame in accent, the others in text); the
+sprite (W s + 2) // 4 x (H s + 2) // 4, pixel (x, y) showing the cell
+(x W // w, y H // h); its top left at the position less the hot spot
+((hx s + 2) // 4, (hy s + 2) // 4); pixels off the screen on any side not
+drawn.
 """
 import os
 import re
@@ -64,9 +75,57 @@ def sprite(scale, root=ROOT):
     return w, h, ["".join(shape[y * SHAPE_H // h][x * SHAPE_W // w] for x in range(w)) for y in range(h)]
 
 
-def paint(screen, width, height, x, y, root=ROOT):
+KIND_TOKENS = {"o": "bg.deep", "w": "text", "a": "accent", "d": "danger"}
+
+
+def read_kinds(root=ROOT):
+    """{name: (rows, w, h, hx, hy)} from pointer_core.c's pointer_defs
+    (1.5 stage 14b; the arrow's rows are pointer_shape's)."""
+    src = open(os.path.join(root, "kernel/display/pointer_core.c"), encoding="ascii").read()
+    arrays = {"pointer_shape": read_shape(root)}
+    for m in re.finditer(r"static const char \*const (pointer_rows_\w+)\[(\d+)\] = \{(.*?)\};", src, re.S):
+        rows = re.findall(r'"([^"]*)"', m.group(3))
+        if len(rows) != int(m.group(2)):
+            raise ValueError("%s: %d rows, not %s" % (m.group(1), len(rows), m.group(2)))
+        arrays[m.group(1)] = rows
+    m = re.search(r"pointer_defs\[POINTER_KINDS\] = \{(.*?)\};", src, re.S)
+    if not m:
+        raise ValueError("pointer_defs not found in kernel/display/pointer_core.c")
+    kinds = {}
+    for e in re.finditer(r'\{ "([a-z-]+)", (\w+), (\d+), (\d+), (\d+), (\d+) \}', m.group(1)):
+        name, arr, w, h, hx, hy = e.group(1), e.group(2), *(int(e.group(k)) for k in range(3, 7))
+        rows = arrays[arr]
+        if len(rows) != h or any(len(r) != w or set(r) - set(".owad12345678") for r in rows):
+            raise ValueError("pointer_defs %s: not %d rows of %d known cells" % (name, h, w))
+        kinds[name] = (rows, w, h, hx, hy)
+    if len(kinds) != 12:
+        raise ValueError("pointer_defs: %d kinds, not 12" % len(kinds))
+    return kinds
+
+
+def kind_sprite(name, scale, frame=0, root=ROOT):
+    """(w, h, hx, hy, rows of characters) of kind `name` at a scale step,
+    the busy pointer's dots resolved for `frame` ('a' or 'w')."""
+    rows, W, H, hx, hy = read_kinds(root)[name]
+    w, h = (W * scale + 2) // 4, (H * scale + 2) // 4
+    out = []
+    for y in range(h):
+        line = ""
+        for x in range(w):
+            ch = rows[y * H // h][x * W // w]
+            if ch in "12345678":
+                ch = "a" if int(ch) - 1 == frame % 8 else "w"
+            line += ch
+        out.append(line)
+    return w, h, (hx * scale + 2) // 4, (hy * scale + 2) // 4, out
+
+
+def paint(screen, width, height, x, y, root=ROOT, shape="arrow", frame=0):
     """Returns the screen (RGB bytes) with the pointer's hot spot at (x, y),
-    and a description."""
+    and a description. 1.5 stage 14b: `shape` another kind (its own rules
+    above); the arrow's path below is unchanged."""
+    if shape != "arrow":
+        return paint_kind(screen, width, height, x, y, shape, frame, root)
     scale = scale_for_height(height)
     w, h, rows = sprite(scale, root)
     colours = {k: read_tokens(root)[t] for k, t in TOKENS.items()}
@@ -78,3 +137,21 @@ def paint(screen, width, height, x, y, root=ROOT):
                 o = ((y + r) * width + x + c) * 3
                 out[o:o + 3] = colours[ch]
     return bytes(out), "pointer %dx%d (scale %d %%) at (%d, %d)" % (w, h, scale * 25, x, y)
+
+
+def paint_kind(screen, width, height, x, y, shape, frame=0, root=ROOT):
+    """1.5 stage 14b: kind `shape` with its hot spot at (x, y)."""
+    scale = scale_for_height(height)
+    w, h, hx, hy, rows = kind_sprite(shape, scale, frame, root)
+    tok = read_tokens(root)
+    colours = {k: tok[t] for k, t in KIND_TOKENS.items()}
+    out = bytearray(screen)
+    for r in range(h):
+        for c in range(w):
+            ch = rows[r][c]
+            px, py = x - hx + c, y - hy + r
+            if ch != "." and 0 <= px < width and 0 <= py < height:
+                o = (py * width + px) * 3
+                out[o:o + 3] = colours[ch]
+    return bytes(out), "pointer %s %dx%d (scale %d %%, frame %d) at (%d, %d)" % (shape, w, h, scale * 25,
+                                                                                frame % 8, x, y)

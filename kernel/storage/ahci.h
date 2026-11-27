@@ -83,6 +83,10 @@ void ahci_write_figures(uint64_t *writes, uint64_t *flushes, uint64_t *refused, 
 /* True while port `port`'s disk is in use (not failed). */
 bool ahci_disk_usable(uint32_t port);
 
+/* 1.5 stage 14b (This PC, Q2): true if the boot's scan found an ATAPI
+ * device (a CD or DVD drive) on any port; read only (no command is sent). */
+bool ahci_has_atapi(void);
+
 /* test=blkdebug only (1.4 stage 10): the next read command fails once
  * (`read_once`), and every write command fails (`writes`), as if the device
  * reported an error (the status ERR bit in PxTFD, which the driver reads

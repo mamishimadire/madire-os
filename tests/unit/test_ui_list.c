@@ -430,6 +430,70 @@ static void list_wide(void)
     CHECK_EQ(at(480, 34), UI_TEXT_MUTED);       /* Modified as before (472 + 8) */
 }
 
+/* 1.5 stage 14b: box selection's hit testing (the content's pixels, the
+ * view's edges, scrolled, Ctrl's add) and the drop target's marks. Each
+ * literal worked out by hand (T4): the list (10, 20, 600, 266) at 100 %
+ * has its body (10, 48, 576, 238), rows 28 high; the grid (0, 0, 504,
+ * 216) 5 cells of 96 x 88 a line. */
+static void list_band(void)
+{
+    static uint8_t base[20];
+    struct ui_list l;
+    make_items(20);
+    ui_list_init(&l, UI_LIST_DETAILS, items, 20, titles, (struct rect){ 10, 20, 600, 266 }, 4);
+    CHECK_EQ(l.drop, -1);
+    memset(base, 0, sizeof(base));
+    CHECK_EQ(ui_list_content_y(&l, 48), 0);
+    ui_list_band(&l, 100, 10, 200, 70, base, false);        /* content rows 0-27, 28-55, 56-83 */
+    CHECK_EQ(selected(20), 3);
+    CHECK(items[0].selected && items[1].selected && items[2].selected);
+    struct rect br = ui_list_band_rect(&l, 100, 10, 200, 70);
+    CHECK(br.x == 100 && br.y == 58 && br.w == 101 && br.h == 61);
+    ui_list_band(&l, 300, 28, 300, 28, base, false);        /* one pixel at a row's first line */
+    CHECK_EQ(selected(20), 1);
+    CHECK(items[1].selected);
+    ui_list_band(&l, 700, 10, 800, 400, base, false);       /* right of the body: x clamped, none */
+    CHECK_EQ(selected(20), 0);
+    ui_list_band(&l, -50, 500, 20, 900, base, false);       /* below the last row: rows 17-19 */
+    CHECK_EQ(selected(20), 3);
+    CHECK(items[17].selected && items[18].selected && items[19].selected);
+    l.top = 5;                                              /* scrolled: the body's top is content 140 */
+    CHECK_EQ(ui_list_content_y(&l, 48), 140);
+    br = ui_list_band_rect(&l, 100, 140, 100, 140);
+    CHECK(br.y == 48 && br.h == 1);
+    base[0] = 1;                                            /* Ctrl: item 0 kept, rows 5 and 6 added */
+    ui_list_band(&l, 100, 150, 120, 190, base, true);
+    CHECK_EQ(selected(20), 3);
+    CHECK(items[0].selected && items[5].selected && items[6].selected);
+    ui_list_band(&l, 100, 150, 120, 190, base, false);      /* without Ctrl: the band alone */
+    CHECK_EQ(selected(20), 2);
+    ui_list_init(&l, UI_LIST_GRID, items, 14, 0, (struct rect){ 0, 0, 504, 216 }, 4);
+    memset(base, 0, sizeof(base));
+    ui_list_band(&l, 250, 100, 100, 10, base, false);       /* either corner first: cells 1, 2, 6, 7 */
+    CHECK_EQ(selected(14), 4);
+    CHECK(items[1].selected && items[2].selected && items[6].selected && items[7].selected);
+    ui_list_band(&l, 470, 0, 600, 300, base, false);        /* the last column (384-479) only */
+    CHECK_EQ(selected(14), 2);
+    CHECK(items[4].selected && items[9].selected);
+}
+
+static void list_drop_mark(void)
+{
+    struct ui_list l;
+    make_items(20);
+    ui_list_init(&l, UI_LIST_DETAILS, items, 6, titles, (struct rect){ 10, 20, 600, 266 }, 4);
+    l.drop = 2;                                             /* row 2: (10, 104, 576, 28) */
+    surface_init(&surf, buf, SW, SH, SW * 4, 4);
+    ui_canvas_init(&cv, &surf);
+    ui_list_draw(&cv, &l, &fonts);
+    CHECK_EQ(at(300, 104), UI_ACCENT);                      /* the frame's top */
+    CHECK_EQ(at(300, 117), UI_SURFACE_HOVER);               /* the fill */
+    CHECK_EQ(at(300, 90), UI_SURFACE_WINDOW);               /* row 1 untouched */
+    l.drop = -1;
+    ui_list_draw(&cv, &l, &fonts);
+    CHECK_EQ(at(300, 117), UI_SURFACE_WINDOW);
+}
+
 int main(void)
 {
     printf("test_ui_list\n");
@@ -442,5 +506,7 @@ int main(void)
     RUN(wheel_and_double);
     RUN(draw_marks);
     RUN(list_wide);                 /* 1.5 stage 13 */
+    RUN(list_band);                 /* 1.5 stage 14b */
+    RUN(list_drop_mark);
     return unit_report("test_ui_list");
 }

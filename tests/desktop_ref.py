@@ -530,11 +530,56 @@ def _trash(sz, full):
     return out
 
 
+def _storage(name, sz):
+    """1.5 stage 14b (note (12)(a)): This PC, the disk, the memory and the CD
+    drive, Madire's own designs (dp; the same rules as the icons above)."""
+    if name == "thispc":            # a monitor on a stand
+        if sz == 16:
+            return [("rrect", "text", (1.5, 2.5, 14.5, 11.5, 1), "bg"),
+                    ("rrect", "accent", (3, 4, 13, 10, 0), "text"),
+                    ("poly", "text.muted", [(6.5, 11.5), (9.5, 11.5), (10, 13), (6, 13)], "bg"),
+                    ("rrect", "text", (4, 13, 12, 14.5, 0.5), "bg")]
+        return [("rrect", "text", (5, 8, 43, 34, 2), "bg"),
+                ("rrect", "accent", (8, 11, 40, 31, 1), "text"),
+                ("poly", "text.muted", [(20, 34), (28, 34), (30, 40), (18, 40)], "bg"),
+                ("rrect", "text", (13, 40, 35, 43.5, 1.5), "bg")]
+    if name == "disk":              # a drive with a slot and a light
+        if sz == 16:
+            return [("rrect", "text", (1, 4.5, 15, 11.5, 1), "bg"),
+                    ("rrect", "bg.deep", (3, 7, 9, 8.5, 0), "text"),
+                    ("rrect", "accent", (11, 6.5, 13.5, 9, 1.25), "text")]
+        return [("rrect", "text", (5, 15, 43, 35, 3), "bg"),
+                ("rrect", "bg.deep", (10, 23.5, 28, 26.5, 1), "text"),
+                ("rrect", "accent", (33, 22.5, 38, 27.5, 2.5), "text")]
+    if name == "memory":            # a module with chips and contacts
+        if sz == 16:
+            return [("rrect", "accent", (1, 4, 15, 10.5, 0.5), "bg"),
+                    ("rrect", "bg.deep", (3, 5.5, 6, 9, 0), "accent"),
+                    ("rrect", "bg.deep", (6.5, 5.5, 9.5, 9, 0), "accent"),
+                    ("rrect", "bg.deep", (10, 5.5, 13, 9, 0), "accent"),
+                    ("rrect", "warning", (2, 10.5, 14, 12.5, 0), "bg")]
+        out = [("rrect", "accent", (4, 14, 44, 30, 1.5), "bg")]
+        out += [("rrect", "bg.deep", (x, 17, x + 8, 25, 0), "accent") for x in (8, 20, 32)]
+        out += [("rrect", "warning", (x, 30, x + 2.5, 34, 0), "bg") for x in (7, 12, 17, 22, 27, 32, 37)]
+        return out
+    if sz == 16:                    # cd: a disc with its hole and a highlight
+        return [("rrect", "text.muted", (1.5, 1.5, 14.5, 14.5, 6.5), "bg"),
+                ("rrect", "bg.deep", (6, 6, 10, 10, 2), "text.muted"),
+                ("poly", "text", [(3.5, 8), (4.5, 5), (7, 3.25), (7.375, 4.25), (5.5, 5.75), (4.75, 8)], None)]
+    return [("rrect", "text.muted", (6, 6, 42, 42, 18), "bg"),
+            ("rrect", "bg.deep", (18.5, 18.5, 29.5, 29.5, 5.5), "text.muted"),
+            ("poly", "text", [(12, 24), (14, 16), (20, 11), (21, 13), (16, 17), (14.5, 24)], None)]
+
+
 CICON_ORDER = ["folder", "home", "desktop", "documents", "downloads", "pictures", "music", "videos", "file",
-               "textfile", "link", "badge", "trash", "trash_full"]
+               "textfile", "link", "badge", "trash", "trash_full",
+               "thispc", "disk", "memory", "cd"]           # 1.5 stage 14b
+S12_CICON_ORDER = CICON_ORDER[:14]  # the fileicons scene's colour icons (stages 12 and 13)
 
 
 def _cicon(name, sz):
+    if name in ("thispc", "disk", "memory", "cd"):
+        return _storage(name, sz)
     if name == "folder":
         return _folder(sz)
     if name in ("home", "desktop", "documents", "downloads", "pictures", "music", "videos"):
@@ -2128,6 +2173,7 @@ class ListView:
         self.top = self.cursor = self.anchor = 0
         self.ring, self.sb = False, "normal"
         self.wide = False               # 1.5 stage 13: three columns (the Trash view)
+        self.drop = -1                  # 1.5 stage 14b: the drop target item
 
     def body(self):
         s, r = self.s, self.r
@@ -2181,6 +2227,42 @@ def list_marks(scr, tok, lv, i, r):
     if lv.ring and i == lv.cursor:
         ring = shape if grid else (r[0] + g, r[1], r[2] - 2 * g, r[3])
         frame_round(scr, ring, in4, g, 15, tok["accent"])
+    if lv.drop == i:                    # 1.5 stage 14b: the drop target
+        if grid:
+            fill_round(scr, shape, in4, 15, tok["surface.hover"])
+        else:
+            fill(scr, shape, tok["surface.hover"])
+        frame_round(scr, shape, in4, px(1, s), 15, tok["accent"])
+
+
+def list_content_y(lv, y):
+    """1.5 stage 14b: ui_list_content_y."""
+    return y - lv.body()[1] + lv.top * px(28 if lv.view == "list" else 88, lv.s)
+
+
+def list_band(lv, ax, ay, bx, by, base=None, add=False):
+    """1.5 stage 14b: ui_list_band: each item selected if its row or cell
+    (content pixels) overlaps the band (x clamped to the body), or with add
+    if base[i]."""
+    s, b, grid = lv.s, lv.body(), lv.view == "grid"
+    cols, step, cw = lv.columns(), px(88 if grid else 28, s), px(96, s)
+    x0, x1 = max(min(ax, bx), b[0]), min(max(ax, bx) + 1, b[0] + b[2])
+    y0, y1 = min(ay, by), max(ay, by) + 1
+    for i, it in enumerate(lv.items):
+        line = i // cols
+        iy0, iy1 = line * step, line * step + step
+        ix0 = b[0] + (i % cols) * cw if grid else b[0]
+        ix1 = ix0 + cw if grid else b[0] + b[2]
+        hit = x0 < x1 and ix0 < x1 and x0 < ix1 and iy0 < y1 and y0 < iy1
+        it[5] = hit or bool(add and base and base[i])
+
+
+def list_band_rect(lv, ax, ay, bx, by):
+    """1.5 stage 14b: ui_list_band_rect (the band on the screen)."""
+    base = lv.body()[1] - lv.top * px(28 if lv.view == "list" else 88, lv.s)
+    x0, x1 = min(ax, bx), max(ax, bx) + 1
+    y0, y1 = min(ay, by) + base, max(ay, by) + 1 + base
+    return (x0, y0, x1 - x0, y1 - y0)
 
 
 def list_draw(scr, tok, lv):
@@ -2366,9 +2448,14 @@ def files_square(p):
 
 
 def files_shown(v, part):
-    """1.5 stage 13: the buttons view v shows and hits."""
-    if part in (UF_NEWFOLDER, UF_NEWFILE, UF_OPEN, UF_RENAME, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH):
+    """1.5 stage 13: the buttons view v shows and hits. 1.5 stage 14b: the
+    This PC view's row holds only Open."""
+    if part == UF_OPEN:
         return not v.get("trash")
+    if part == UF_HIDDEN:
+        return not v.get("thispc")
+    if part in (UF_NEWFOLDER, UF_NEWFILE, UF_RENAME, UF_CUT, UF_COPY, UF_PASTE, UF_TRASH):
+        return not v.get("trash") and not v.get("thispc")
     if part in (UF_RESTORE, UF_RESTORE_ALL, UF_EMPTY, UF_TDELETE):
         return bool(v.get("trash"))
     if part in (UF_CLOSE, UF_ASK_CANCEL, UF_ASK_OK):
@@ -2410,6 +2497,7 @@ def files_layout(r, s, bar):
     L["path"] = (p0, y + d(4), max(p1 - p0, 0), d(32))
     y += d(40)
     L["cmd"] = (x0, y, iw, d(40))
+    L["pc_open"] = (x0 + d(8), y + d(4), d(32), d(32))      # 1.5 stage 14b: This PC's Open
     bx = x0 + d(8)
     for i in (UF_NEWFOLDER, UF_NEWFILE):
         w = files_button_w(f, i, s)
@@ -2446,6 +2534,68 @@ def files_layout(r, s, bar):
     return L
 
 
+def files_brect(L, v, part):
+    """1.5 stage 14b: where a button is in view v (Open at the row's start
+    in the This PC view)."""
+    return L["pc_open"] if v.get("thispc") and part == UF_OPEN else L["button"][part]
+
+
+def files_card_rect(L, s, k):
+    """1.5 stage 14b: ui_files_card_rect."""
+    c = L["content"]
+    w = c[2] - px(32, s)
+    return (c[0] + px(16, s), c[1] + px(16, s) + k * (px(64, s) + px(8, s)), min(max(w, 0), px(480, s)), px(64, s))
+
+
+def files_badge_text(t, s):
+    """1.5 stage 14b: the badge's text as drawn (cut to d(160))."""
+    f = font(s, False)
+    return fit(f, shown_name_n(t, 256), px(160, s), 256)
+
+
+def files_badge_rect(x, y, s, t):
+    """1.5 stage 14b: ui_files_badge_rect."""
+    f = font(s, False)
+    return (x + px(16, s), y + px(20, s), px(40, s) + len(files_badge_text(t, s)) * f[1], px(28, s))
+
+
+def files_badge_draw(scr, tok, r, s, ic, t):
+    """1.5 stage 14b: ui_files_badge_draw."""
+    f = font(s, False)
+    d4, ip = px(4, s), px(16, s)
+    fill_round(scr, r, d4, 15, tok["surface"])
+    frame_round(scr, r, d4, px(1, s), 15, tok["border.panel"])
+    if ic:
+        icon(scr, ic, r[0] + px(8, s), r[1] + (r[3] - ip) // 2, ip, tok["text"])
+    text(scr, f, r[0] + px(32, s), r[1] + (r[3] - f[2]) // 2, files_badge_text(t, s), tok["text"])
+
+
+def files_cards(scr, tok, L, s, v):
+    """1.5 stage 14b: the This PC view's cards (ui_files.c's files_cards)."""
+    import files_ref
+    f = font(s, False)
+    fh, d8, x68, bw = f[2], px(8, s), px(68, s), px(200, s)
+    fill(scr, L["content"], tok["surface.window"])
+    for k, cd in enumerate(v.get("cards", [])[:3]):
+        r = files_card_rect(L, s, k)
+        sel, hover = v.get("card_sel") == k, v.get("card_sel") != k and v.get("card_hover") == k
+        fill_round(scr, r, px(6, s), 15, tok["surface.active" if sel else "surface.hover" if hover else "surface"])
+        frame_round(scr, r, px(6, s), px(1, s), 15, tok["accent" if sel else "border"])
+        icon(scr, cd["icon"], r[0] + d8, r[1] + d8, px(48, s), tok["text"])
+        room = r[2] - px(76, s)
+        if not cd["bar"]:
+            files_text(scr, f, r[0] + x68, r[1] + (r[3] - fh) // 2, room, cd["name"], tok["text"])
+            continue
+        files_text(scr, f, r[0] + x68, r[1] + d8, room, cd["name"], tok["text"])
+        bar = (r[0] + x68, r[1] + px(30, s), bw, d8)
+        fill_round(scr, bar, px(4, s), 15, tok["border"])
+        used = files_ref.bar_fill(cd["used"], cd["total"], bw)
+        if used > 0:
+            fill_round(scr, (bar[0], bar[1], used, bar[3]), px(4, s), 15, tok["text.muted" if cd["ro"] else "accent"])
+        files_text(scr, f, r[0] + x68, r[1] + px(44, s), room, files_ref.usage_text(cd["used"], cd["total"]).encode(),
+                   tok["text" if hover else "text.muted"])
+
+
 def files_path_cells(L, s):
     room = L["path"][2] - px(32, s) - px(8, s)
     return room // font(s, False)[1] if room > 0 else 0
@@ -2474,7 +2624,7 @@ def files_hit(L, v, s, x, y):
     if v["mode"] == "nomem":
         return None, -1
     for i in range(UF_BACK, UF_BUTTONS):
-        if files_shown(v, i) and inside(L["button"][i]):
+        if files_shown(v, i) and inside(files_brect(L, v, i)):
             return i, -1
     if inside(L["path"]):
         tx, fw = L["path"][0] + px(32, s), font(s, False)[1]
@@ -2498,6 +2648,10 @@ def files_hit(L, v, s, x, y):
                 if inside(L["button"][i]):
                     return i, -1
             return "panel", -1
+        if v.get("thispc"):                 # 1.5 stage 14b: This PC's cards
+            for k in range(min(len(v.get("cards", [])), 3)):
+                if inside(files_card_rect(L, s, k)):
+                    return "content", k
         return "content", -1
     if inside(L["bar"]):
         return "bar", -1
@@ -2595,8 +2749,9 @@ def files_draw(scr, tok, r, s, v):
         scr.clip = meet(cv, p)
         if scr.clip is not None:
             ip = d(16)
-            icon(scr, "place_trash" if v.get("trash") else "place_home", p[0] + d(8), p[1] + (p[3] - ip) // 2, ip,
-                 tok["accent"])            # 1.5 stage 13: the Trash view's icon
+            icon(scr, "thispc" if v.get("thispc") else "place_trash" if v.get("trash") else "place_home",
+                 p[0] + d(8), p[1] + (p[3] - ip) // 2, ip,
+                 tok["accent"])            # 1.5 stage 13: the Trash view's icon; 14b: This PC's
             pb = v.get("pb")
             if pb:
                 tx, ty, fw = p[0] + d(32), p[1] + (p[3] - fh) // 2, f[1]
@@ -2609,7 +2764,7 @@ def files_draw(scr, tok, r, s, v):
         scr.clip = cv
     for i in range(UF_LIST, UF_BUTTONS):        # 1.5 stage 13: the view's command row
         if files_shown(v, i):
-            files_button(scr, tok, v, L["button"][i], i, s, f)
+            files_button(scr, tok, v, files_brect(L, v, i), i, s, f)
     fill(scr, (L["x0"], L["cmd"][1] + L["cmd"][3], L["iw"], E), tok["border"])
     fill(scr, (L["side"][0] + L["side"][2], L["body"][1], E, L["body"][3]), tok["border"])
     fill(scr, (L["x0"], L["status"][1] - E, L["iw"], E), tok["border"])
@@ -2627,11 +2782,12 @@ def files_draw(scr, tok, r, s, v):
                 if v["place"] == k:
                     fill(scr, it, tok["surface.active"])
                     fill(scr, (it[0], it[1] + d(4), d(2), it[3] - 2 * d(4)), tok["accent"])
-                later = k >= 8              # 1.5 stage 13: Trash is a place now
-                icon(scr, FILES_PLACE_ICONS[k], it[0] + d(12), it[1] + (it[3] - ip) // 2, ip,
-                     tok["text.muted" if later else "accent"])
-                text(scr, f, it[0] + d(36), it[1] + (it[3] - fh) // 2, FILES_PLACES[k],
-                     tok["text.muted" if later else "text"])
+                if v.get("drop_on") and v.get("drop_place") == k:     # 1.5 stage 14b: the drop target
+                    fill_round(scr, it, d(4), 15, tok["surface.hover"])
+                    frame_round(scr, it, d(4), d(1), 15, tok["accent"])
+                # 1.5 stage 14b: every place is a place now (Trash since stage 13)
+                icon(scr, FILES_PLACE_ICONS[k], it[0] + d(12), it[1] + (it[3] - ip) // 2, ip, tok["accent"])
+                text(scr, f, it[0] + d(36), it[1] + (it[3] - fh) // 2, FILES_PLACES[k], tok["text"])
         scr.clip = cv
     c = L["content"]
     if v["mode"] == "panel":
@@ -2662,6 +2818,11 @@ def files_draw(scr, tok, r, s, v):
                        bool(v.get("ask_ring")) and v.get("ask_focus") == k, s,
                        lab=b"Cancel" if k == 0 else (v.get("ask_label") or b""))
         scr.clip = cv
+    elif v.get("thispc"):                       # 1.5 stage 14b
+        scr.clip = meet(cv, c)
+        if scr.clip is not None:
+            files_cards(scr, tok, L, s, v)
+        scr.clip = cv
     elif v.get("list") is not None:
         scr.clip = meet(cv, c)
         if scr.clip is not None:
@@ -2673,6 +2834,11 @@ def files_draw(scr, tok, r, s, v):
                 scr.clip = meet(lc, lv.body())
                 if scr.clip is not None:
                     field_draw(scr, tok, v["field"], files_field_rect(lv, lv.cursor), s, True)
+            scr.clip = lc
+            if v.get("band"):                   # 1.5 stage 14b: box selection's band
+                scr.clip = meet(lc, lv.body())
+                if scr.clip is not None:
+                    frame_round(scr, v["band"], 0, E, 15, tok["accent"])
         scr.clip = cv
     st = L["status"]
     scr.clip = meet(cv, st)
@@ -2682,7 +2848,7 @@ def files_draw(scr, tok, r, s, v):
     scr.clip = cv
     tip = v.get("tip", 0)
     if files_square(tip) and files_shown(v, tip):
-        b = L["button"][tip]
+        b = files_brect(L, v, tip)
         name = FILES_TIPS[tip]
         box = (b[0], b[1] + b[3] + d(4), len(name) * f[1] + 2 * d(8), d(24))
         fill_round(scr, box, d(4), 15, tok["surface"])
@@ -2852,7 +3018,7 @@ def scene_fileicons(scr, tok, s):
     for bg in ("surface.window", "surface", "surface.active"):
         for size in (16, 48):
             p = px(size, s)
-            for name in CICON_ORDER:
+            for name in S12_CICON_ORDER:    # 1.5 stage 14b: the scene's icons stay stage 12's
                 cell = fl.place(p + 4, p + 4)
                 fill(scr, cell, tok[bg])
                 icon(scr, name, cell[0] + 2, cell[1] + 2, p, tok["text"])
@@ -2936,6 +3102,89 @@ def scene_files(scr, tok, s):
 # 1.5 stage 13: the Trash view, the question over it, the selected rename
 # field and the two Files menus (tests/desktopdump.c's DUMP_* variants).
 FILES_S13_SCENES = ("files_trash", "files_ask", "files_rename_sel", "files_menu_item", "files_menu_space")
+
+# 1.5 stage 14b (notes (12), (14), (15)): This PC (Live; Disk with the CD
+# drive, a card selected; read-only, a card hovered and Open's tooltip),
+# box selection in the list and the grid, a drag (the drop target row and
+# the badge). tests/desktopdump.c's scene_files_s14 draws the same.
+FILES_S14_SCENES = ("files_thispc", "files_thispc_cd", "files_thispc_ro", "files_band", "files_band_grid",
+                    "files_drag")
+S14_CARDS = {
+    "files_thispc": ([(b"Memory (Live): /, /tmp", "memory", True, False, 4194304, 67108864),
+                      (b"No disk in use", "disk", False, False, 0, 0)], -1, 0),
+    "files_thispc_cd": ([(b"Memory: /, /tmp", "memory", True, False, 1048576, 67108864),
+                         (b"Disk 0 'madire-test': /home", "disk", True, False, 2621440, 66060288),
+                         (b"CD drive: not used", "cd", False, False, 0, 0)], 1, -1),
+    "files_thispc_ro": ([(b"Memory: /, /tmp", "memory", True, False, 0, 67108864),
+                         (b"Disk 1 'madire-test': /home (read-only)", "disk", True, True, 66060288, 66060288)], 1, 0),
+}
+
+
+def scene_files_s14(scr, tok, s, name):
+    """tests/desktopdump.c's S14 scenes (FILES_S14_SCENES)."""
+    import files_ref
+    r = (px(16, s), px(16, s), px(FILES_W, s), px(FILES_H, s))
+    v = scene_files_view(r, s)
+    L = files_layout(r, s, True)
+    lv = v["list"]
+    v.update({"hover": 0, "pressed": 0, "tip": 0, "renaming": False})
+    for it in lv.items:
+        it[5] = False
+    extra = "the window %dx%d" % (r[2], r[3])
+    if name.startswith("files_thispc"):
+        cards, sel, hover = S14_CARDS[name]
+        bar = {"files_thispc": "live", "files_thispc_cd": "none", "files_thispc_ro": "ro"}[name]
+        L = files_layout(r, s, bar != "none")
+        v["enabled"] = [True] * UF_BUTTONS
+        for p in (UF_FORWARD, UF_UP, UF_LIST, UF_GRID):
+            v["enabled"][p] = False
+        v["enabled"][UF_OPEN] = sel >= 0 and cards[sel][2]      # a card that opens: the ones with a bar here
+        v.update({"bar": bar, "thispc": True, "place": 8, "status": b"", "card_sel": sel, "card_hover": hover,
+                  "cards": [{"name": n, "icon": ic, "bar": b, "ro": ro, "used": u, "total": t}
+                            for n, ic, b, ro, u, t in cards],
+                  "list": ListView("list", [], LIST_TITLES, L["content"], s),
+                  "tip": UF_OPEN if name == "files_thispc_ro" else 0,
+                  "pb": files_ref.pathbar(files_ref.V_THISPC, b"/", files_path_cells(L, s))})
+        extra += ", %d cards" % len(cards)
+    elif name in ("files_band", "files_band_grid"):
+        c = L["content"]
+        if name == "files_band":
+            ax, ay, bx, by = c[0] + px(200, s), px(10, s), c[0] + px(400, s), px(80, s)
+        else:
+            lv.view = "grid"
+            ax, ay, bx, by = c[0] + px(110, s), px(20, s), c[0] + px(290, s), px(120, s)
+        list_band(lv, ax, ay, bx, by)
+        v["band"] = list_band_rect(lv, ax, ay, bx, by)
+        extra += ", %d selected" % sum(1 for it in lv.items if it[5])
+    else:                               # files_drag: Notes.txt and Plan.md dragged onto Work
+        lv.items[3][5] = lv.items[4][5] = True
+        lv.drop = 1
+    files_window(scr, tok, s, r, True, "normal", v)
+    if name == "files_drag":
+        b = lv.body()
+        x, y = L["content"][0] + px(300, s), b[1] + px(28, s) + px(14, s)
+        br = files_badge_rect(x, y, s, b"2 items")
+        files_badge_draw(scr, tok, br, s, "textfile", b"2 items")
+        extra += ", the badge at (%d, %d) %dx%d" % br
+    return extra
+
+
+def scene_storageicons(scr, tok, s):
+    """tests/desktopdump.c's storageicons scene (1.5 stage 14b): This PC,
+    the disk, the memory and the CD drive at 16 and 48 dp on surface.window,
+    surface and surface.active."""
+    fl = Flow(scr.w, 8, 4)
+    k = 0
+    for bg in ("surface.window", "surface", "surface.active"):
+        for size in (16, 48):
+            p = px(size, s)
+            for name in ("thispc", "disk", "memory", "cd"):
+                cell = fl.place(p + 4, p + 4)
+                fill(scr, cell, tok[bg])
+                icon(scr, name, cell[0] + 2, cell[1] + 2, p, tok["text"])
+                k += 1
+            fl.brk()
+    return "%d colour icons, bottom %d" % (k, fl.bottom())
 SCENE_TRASH_ROWS = [    # name, Original location, Deleted, icon (tests/desktopdump.c's trows)
     (b"Old Projects", b"Home > Documents", b"2026-11-20 09:15", "folder"),
     (b"notes.txt", b"Home", b"2026-11-20 10:41", "textfile"),
@@ -3723,6 +3972,8 @@ def contrast_check(path):
 
 SCENES = {"fileicons": scene_fileicons, "files": scene_files, "files_grid": scene_files_grid,  # 1.5 stage 12
           **{n: (lambda scr, tok, s, n=n: scene_files_s13(scr, tok, s, n)) for n in FILES_S13_SCENES},  # 13
+          **{n: (lambda scr, tok, s, n=n: scene_files_s14(scr, tok, s, n)) for n in FILES_S14_SCENES},  # 14b
+          "storageicons": scene_storageicons,                                                     # 14b
           "prims": scene_prims, "icons": scene_icons, "widgets": scene_widgets, "background": scene_background,
           "taskbar": scene_taskbar, "windows": scene_windows, "windows_exposed": scene_windows,
           "windows_hover": lambda scr, tok, s: scene_windows(scr, tok, s, "hover"),

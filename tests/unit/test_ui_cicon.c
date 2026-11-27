@@ -1,7 +1,7 @@
 /* Unit tests for kernel/display/ui_cicon.c and cicons.c (the toolkit's
  * colour icons, 1.5 stage 12; docs/plans/1.5.md, note (12)(a)): the
- * tables' shape (each design's shapes contiguous, 436 points and 149
- * shapes in all, every point on its grid, a rectangle two points, a stroke
+ * tables' shape (each design's shapes contiguous, 520 points and 185
+ * shapes in all since 1.5 stage 14b, every point on its grid, a rectangle two points, a stroke
  * at most CICON_STROKE_MAX, every colour and trace known); refusals; every
  * icon at both sizes and every scale drawn inside its box only, with
  * something drawn; the 16 dp design up to 40 pixels, the 48 dp one above;
@@ -75,9 +75,9 @@ static void test_table(void)
         }
     CHECK_EQ(next, cicon_shape_count);
     CHECK_EQ(points, cicon_point_count);
-    CHECK_EQ(cicon_point_count, 436);       /* T4: counted from the tables by hand */
-    CHECK_EQ(cicon_shape_count, 149);
-    CHECK_EQ(UI_CICON_COUNT, 14);
+    CHECK_EQ(cicon_point_count, 520);       /* T4: counted from the tables by hand (1.5 stage 14b: 436 + 84) */
+    CHECK_EQ(cicon_shape_count, 185);       /* (149 + 36: This PC 8, disk 6, memory 16, CD 6) */
+    CHECK_EQ(UI_CICON_COUNT, 18);           /* (14 + This PC, disk, memory, CD) */
     CHECK(UI_CICON_FIRST >= UI_ICON_COUNT);
 }
 

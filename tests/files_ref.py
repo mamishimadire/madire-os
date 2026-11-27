@@ -213,6 +213,24 @@ def size_text(b):
     return "%d.%d %siB" % (b // unit, (b % unit) * 10 // unit, u)
 
 
+def usage_text(used, total):
+    """1.5 stage 14b (This PC): "<U> used, <X> free of <Y>" (files_usage_text)."""
+    return "%s used, %s free of %s" % (size_text(used), size_text(max(total - used, 0)), size_text(total))
+
+
+def bar_fill(used, total, w):
+    """1.5 stage 14b: files_bar_fill: the used pixels of a bar w long (both
+    halved together while used x w does not fit 64 bits; at most w - 1
+    below full)."""
+    if w <= 0 or total == 0:
+        return 0
+    if used >= total:
+        return w
+    while used > (2 ** 64 - 1) // w:
+        used, total = used >> 1, total >> 1
+    return min(used * w // total, w - 1)
+
+
 def date_text(s):
     s = max(0, min(s, 253402300799))
     t = datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=s)

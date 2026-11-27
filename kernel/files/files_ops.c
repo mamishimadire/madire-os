@@ -247,3 +247,71 @@ uint8_t files_ops_greyed(enum files_ops_menu menu, const struct files_ops_state 
     }
     return g;
 }
+
+/* ---- 1.5 stage 14b: drag and drop inside Files ---- */
+
+/* The target folder `to` is dir/name or inside it (dir "/" joins without a
+ * second '/'). */
+static bool fo_drop_inside(const char *dir, uint32_t dl, const char *name, uint32_t nl, const char *to, uint32_t tl)
+{
+    uint32_t sep = dl == 1 && dir[0] == '/' ? 0u : 1u, sl = dl + sep + nl;
+    if (nl == 0 || tl < sl || !fo_prefix(dir, to, dl) || (sep && to[dl] != '/') || !fo_prefix(name, to + dl + sep, nl))
+        return false;
+    return tl == sl || to[sl] == '/';
+}
+
+enum files_drop files_ops_drop(const struct files_drop_in *in, enum files_drop_why *why)
+{
+    enum files_drop_why w = FILES_DW_OK;
+    enum files_drop d = FILES_DROP_NO;
+    if (in->n > FILES_DRAG_MAX) {
+        w = FILES_DW_TOO_MANY;
+    } else if (in->n == 0) {
+        w = FILES_DW_NOWHERE;
+    } else if (in->from_trash) {
+        w = FILES_DW_FROM_TRASH;
+    } else if (in->target == FILES_DT_FILE) {
+        w = FILES_DW_NOT_FOLDER;
+    } else if (in->target == FILES_DT_TRASH) {
+        if (in->src_writable)
+            d = FILES_DROP_TRASH;
+        else
+            w = FILES_DW_READONLY;
+    } else if (in->target != FILES_DT_FOLDER || !in->to) {
+        w = FILES_DW_NOWHERE;
+    } else if (in->to_len == in->dir_len && fo_prefix(in->to, in->dir, in->dir_len)) {
+        w = FILES_DW_HERE;
+    } else {
+        for (uint32_t i = 0; i < in->n && w == FILES_DW_OK; i++) {
+            uint32_t nl = 0;
+            const char *name = in->name ? in->name(in->ctx, i, &nl) : 0;
+            if (name && fo_drop_inside(in->dir, in->dir_len, name, nl, in->to, in->to_len))
+                w = FILES_DW_ITSELF;
+        }
+        if (w == FILES_DW_OK) {
+            if (!in->dst_writable)
+                w = FILES_DW_READONLY;
+            else if (in->ctrl || !in->same_fs)
+                d = FILES_DROP_COPY;
+            else if (in->src_writable)
+                d = FILES_DROP_MOVE;
+            else
+                w = FILES_DW_SOURCE_RO;
+        }
+    }
+    *why = w;
+    return d;
+}
+
+const char *files_ops_drop_word(enum files_drop d)
+{
+    static const char *const fo_drop_words[4] = { "no", "move", "copy", "trash" };
+    return (uint32_t)d < 4u ? fo_drop_words[d] : "no";
+}
+
+const char *files_ops_drop_why_word(enum files_drop_why w)
+{
+    static const char *const fo_why_words[9] = { "ok", "nowhere", "not a folder", "here", "into itself",
+                                                 "read-only", "source read-only", "from the Trash", "too many" };
+    return (uint32_t)w < 9u ? fo_why_words[w] : "nowhere";
+}

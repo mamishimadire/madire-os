@@ -737,9 +737,41 @@ static void files_move_symlink_as_link(void)
     CHECK_EQ(files_move_how(FILES_K_DIR, true), FILES_MOVE_RENAME);
 }
 
+/* 1.5 stage 14b (This PC, Q4): a storage area's figures and its bar; each
+ * literal worked out by hand (T4). */
+static void files_usage_and_bar(void)
+{
+    char t[FILES_USAGE_TEXT];
+    files_usage_text(0, 0, t);
+    CHECK(strcmp(t, "0 B used, 0 B free of 0 B") == 0);
+    files_usage_text(524288, 1048576, t);   /* 512 KiB of 1 MiB */
+    CHECK(strcmp(t, "512.0 KiB used, 512.0 KiB free of 1.0 MiB") == 0);
+    files_usage_text(66060288, 66060288, t);    /* a full disk: 63 MiB of 63 MiB */
+    CHECK(strcmp(t, "63.0 MiB used, 0 B free of 63.0 MiB") == 0);
+    files_usage_text(5905580032ull, 6442450944ull, t);  /* over 4 GiB: 5.5 GiB of 6 GiB */
+    CHECK(strcmp(t, "5.5 GiB used, 512.0 MiB free of 6.0 GiB") == 0);
+    files_usage_text(10, 4, t);             /* more used than the total: none free */
+    CHECK(strcmp(t, "10 B used, 0 B free of 4 B") == 0);
+    files_usage_text(UINT64_MAX, UINT64_MAX, t);        /* the longest text fits */
+    CHECK(strcmp(t, "17179869183.9 GiB used, 0 B free of 17179869183.9 GiB") == 0);
+    CHECK_EQ(files_bar_fill(0, 0, 200), 0);             /* an empty total */
+    CHECK_EQ(files_bar_fill(5, 0, 200), 0);
+    CHECK_EQ(files_bar_fill(0, 100, 200), 0);           /* 0 bytes used */
+    CHECK_EQ(files_bar_fill(100, 100, 200), 200);       /* full */
+    CHECK_EQ(files_bar_fill(150, 100, 200), 200);
+    CHECK_EQ(files_bar_fill(1, 3, 200), 66);            /* 66.7 rounded down */
+    CHECK_EQ(files_bar_fill(1, 3, 0), 0);
+    CHECK_EQ(files_bar_fill(1, 3, -5), 0);
+    CHECK_EQ(files_bar_fill(5905580032ull, 6442450944ull, 200), 183);     /* 183.3 */
+    CHECK_EQ(files_bar_fill(1ull << 63, UINT64_MAX, 400), 200);           /* halved 8 times: half */
+    CHECK_EQ(files_bar_fill(UINT64_MAX - 1, UINT64_MAX, 1000), 999);      /* halved equal: not full */
+    CHECK_EQ(files_bar_fill(66060287, 66060288, 200), 199);               /* one byte free: not full */
+}
+
 int main(void)
 {
     printf("files_core unit tests\n");
+    RUN(files_usage_and_bar);
     RUN(files_folder_add_and_limit);
     RUN(files_sort_folders_first);
     RUN(files_column_texts);

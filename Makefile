@@ -151,7 +151,7 @@ UNIT_MODULES := $(wildcard kernel/memory/mmap.c kernel/memory/pmm.c kernel/memor
                             kernel/fs/fsys_core.c kernel/fs/mount_core.c)
 UNIT_TESTS   := $(patsubst tests/unit/%.c,$(BUILD)/unit/%,$(wildcard tests/unit/test_*.c))
 
-.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump toolkit ext2core filesdump repro isorepro padkernel clean
+.PHONY: all iso run test test-shard unit user elfcheck splashdump desktopdump pointerdump toolkit ext2core filesdump repro isorepro padkernel clean
 
 all: $(KERNEL)
 
@@ -373,6 +373,17 @@ $(DESKTOPDUMP): tests/desktopdump.c $(TOOLKIT_SRCS) $(wildcard kernel/display/*.
 
 desktopdump: $(DESKTOPDUMP)
 
+# 1.5 stage 14b: the v1.5 pointer set (kernel/display/pointer_core.c, with
+# surface_core.c) as a host tool that prints every kind's sprite at every
+# scale; part static compares it with tests/pointer_ref.py.
+POINTERDUMP := $(BUILD)/pointerdump
+$(POINTERDUMP): tests/pointerdump.c kernel/display/pointer_core.c kernel/display/pointer_core.h \
+                kernel/display/surface_core.c kernel/display/surface_core.h kernel/display/tokens.h
+	@mkdir -p $(dir $@)
+	$(UNIT_CC) $(UNIT_CFLAGS) tests/pointerdump.c kernel/display/pointer_core.c kernel/display/surface_core.c -o $@
+
+pointerdump: $(POINTERDUMP)
+
 # 1.4 stage 6: the ext2 read core as a host tool (tests/ext2dump.c, built
 # from kernel/fs/ext2_core.c itself); part static compares it with debugfs
 # and builds it a second time with the sanitizers. make ext2core also
@@ -493,7 +504,7 @@ padkernel:
 	then echo "PADKERNEL_BUILD_SECONDS=$$(( $$(date +%s) - start ))"; \
 	else echo "PADKERNEL_BUILD=FAILED (see $(BUILD)/padkernel.log)"; rm -f $(PAD_BUILD)/madire.kernel; fi
 
-test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro isorepro padkernel
+test: unit user elfcheck splashdump desktopdump pointerdump toolkit ext2core $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png repro isorepro padkernel
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO)
 
 # 0.12 (stage 0c): one part of the QEMU tests (make test-shard SHARD=<part>;
@@ -503,7 +514,7 @@ test: unit user elfcheck splashdump desktopdump toolkit ext2core $(ISO) $(BUILD)
 # kernel (1.0) is built only for part 4, which boots it. 1.4 stage 11: the
 # stress part's power cuts need the host tool ext2write (their model).
 SHARD ?= static
-test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro isorepro splashdump desktopdump toolkit ext2core) \
+test-shard: user elfcheck $(ISO) $(BUILD)/limine.conf $(BUILD)/wallpaper.png $(if $(filter static,$(SHARD)),unit repro isorepro splashdump desktopdump pointerdump toolkit ext2core) \
             $(if $(filter 4,$(SHARD)),padkernel) $(if $(filter stress,$(SHARD)),$(EXT2WRITE))
 	bash tests/qemu-tests.sh $(KERNEL) $(ISO) --shard $(SHARD)
 

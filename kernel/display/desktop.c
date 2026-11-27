@@ -124,6 +124,13 @@ static bool desk_livehome, desk_files_nomem, desk_files_fill;
 static uint8_t desk_mods;
 static struct files_app_env desk_files_env;
 
+/* 1.5 stage 14b (notes (11), (12)(b), (14), (15)): the pointer's last
+ * position (the loop chooses its kind there too) and, while the busy
+ * pointer shows, since when and how many of its frames were drawn. */
+static int32_t desk_px = -1, desk_py = -1;
+static uint64_t desk_busy_since;
+static uint32_t desk_busy_frames;
+
 /* 1.3 stage 7b (report only, desktoplog): during a drag, the damage before
  * and after ui_damage_merge_overlaps (rectangles and pixels), and for each
  * key press passed to the console, the TSC cycles from its being taken out
@@ -234,6 +241,7 @@ static void desk_overlay_layer(void *ctx, struct surface *b, struct rect r)
     ui_canvas_clip(&c, r);
     if (ui_rect_empty(c.clip))
         return;
+    files_app_badge_paint(&c);          /* 1.5 stage 14b: a drag's badge, above the windows */
     if (desk_menus.menu_open)
         ui_menu_draw(&c, &desk_menus.menu, &fonts, desk_menu_scratch, UI_ABOUT_SCRATCH);
     if (desk_menus.dlg_open)
@@ -917,6 +925,53 @@ static void desk_open_files(void)
  * 1.5 stage 6: the power dialog's Shut down: the save before power-off in
  * Disk mode, then the power-off (power.h; as "poweroff -y"; it does not
  * return). Restart's path is 1.4's. */
+/* 1.5 stage 14b: the pointer's kind at (x, y) now (pointer_core.h's
+ * pointer_choose over the window manager, the menus and Files); the busy
+ * pointer's frame follows the clock. True if what is shown changed; with
+ * `redraw` it is drawn at once (the loop; a packet's draw comes after it),
+ * then logged (desktoplog): "desktop: pointer <kind> at (<x>, <y>)" when
+ * the kind changes, and when the busy pointer ends "desktop: busy pointer:
+ * <n> ticks, <f> frames drawn". */
+static bool desk_pointer_kind(int32_t x, int32_t y, uint64_t now, bool redraw)
+{
+    if (x < 0 || y < 0)
+        return false;
+    struct ui_window *top = 0;
+    enum ui_hit h = ui_wm_hit(&wm, x, y, &top);
+    struct pointer_wants pw = { false, wm.drag != 0, wm.resize ? wm.resize_edges : 0u,
+                                desk_menus.menu_open || desk_menus.dlg_open, 0u, -1 };
+    if (h == UI_HIT_RESIZE && top)
+        pw.band = ui_window_edges(top, top->r, wm.scale, x, y);
+    pw.files = files_app_pointer_kind(h == UI_HIT_BODY ? top : 0, x, y, now, &pw.files_drag);
+    enum pointer_kind before = pointer_kind_shown(), k = pointer_choose(&pw);
+    if (!pointer_set_kind(k, k == POINTER_BUSY ? pointer_busy_frame(now) : 0u))
+        return false;
+    if (redraw)
+        pointer_redraw();
+    if (k == before) {
+        desk_busy_frames++;             /* the busy pointer's next frame */
+        return true;
+    }
+    if (before == POINTER_BUSY && logging)
+        kserialf("desktop: busy pointer: %llu ticks, %u frames drawn\n", (unsigned long long)(now - desk_busy_since),
+                 desk_busy_frames);
+    desk_busy_since = now;
+    desk_busy_frames = 1;
+    if (logging)
+        kserialf("desktop: pointer %s at (%d, %d)\n", pointer_defs[k].name, x, y);
+    return true;
+}
+
+/* 1.5 stage 14b (Q5): Shut down or Restart chosen: the busy pointer drawn
+ * once (the loop does not run again, so it is not animated). */
+static void desk_pointer_busy_once(const char *why)
+{
+    if (pointer_set_kind(POINTER_BUSY, 0))
+        pointer_redraw();
+    if (logging)
+        kserialf("desktop: pointer busy (%s)\n", why);
+}
+
 static enum ui_menu_action desk_menu_done(void)
 {
     enum ui_menu_action a = ui_menus_take_done(&desk_menus);
@@ -931,12 +986,14 @@ static enum ui_menu_action desk_menu_done(void)
     if (desk_menus.shutdown) {
         uint64_t clicked = timer_ticks();
         klogf("Desktop: Shut down chosen in the power dialog: shutting down\n");
+        desk_pointer_busy_once("Shut down");    /* 1.5 stage 14b */
         files_app_stop("shutting down");    /* 1.5 stage 13: no partial copy is saved */
         (void)power_save(clicked);
         power_off();                        /* does not return */
     }
     if (desk_menus.restart) {
         klogf("Desktop: Restart chosen in the power dialog: restarting\n");
+        desk_pointer_busy_once("Restart");  /* 1.5 stage 14b */
         files_app_stop("restarting");       /* 1.5 stage 13 */
         /* 1.4 stage 10: in Disk mode /home is saved first (at most 10 s;
          * a failure is logged and the restart goes on, D9). */
@@ -1099,6 +1156,10 @@ void desktop_poll(void)
         }
     }
     files_app_poll(timer_ticks());      /* 1.5 stage 12: one hold of a folder or file read */
+    /* 1.5 stage 14b: Ctrl during a drag; the pointer's kind (busy starts
+     * and ends, its frames; keys changed what is under it). */
+    files_app_mods(desk_mods);
+    desk_pointer_kind(desk_px, desk_py, timer_ticks(), true);
     compose();
 }
 
@@ -1133,6 +1194,11 @@ void desktop_pointer(int32_t x, int32_t y, bool left_down, bool left_up, bool ri
     }
     if (desk_menu_done() == UI_MENU_CONSOLE)
         desk_console_wanted = true;
+    /* 1.5 stage 14b: the pointer's kind for this packet (pointer_poll
+     * draws it after this). */
+    desk_px = x;
+    desk_py = y;
+    desk_pointer_kind(x, y, timer_ticks(), false);
 }
 
 void desktop_wheel(int32_t x, int32_t y, int32_t notches)
@@ -1263,6 +1329,7 @@ enum desktop_key_route desktop_key(uint8_t keycode, char ascii, bool pressed, ui
     if (!showing)
         return DESKTOP_KEY_TAKEN;
     desk_mods = flags & (KEY_SHIFT | KEY_CTRL);     /* 1.5 stage 12: for a click in Files' list */
+    files_app_mods(desk_mods);          /* 1.5 stage 14b: Ctrl pressed or released during a drag */
     if (desk_keys_first(keycode, ascii, pressed, flags))
         return DESKTOP_KEY_TAKEN;
     enum desktop_key_route out = DESKTOP_KEY_TAKEN;

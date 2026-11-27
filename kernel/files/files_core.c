@@ -249,6 +249,44 @@ void files_size_text(uint64_t bytes, char out[FILES_SIZE_TEXT])
     out[n] = 0;
 }
 
+/* 1.5 stage 14b: appends s at out[*k] (out holds FILES_USAGE_TEXT bytes). */
+static void fc_usage_put(char *out, uint32_t *k, const char *s)
+{
+    while (*s && *k + 1 < FILES_USAGE_TEXT)
+        out[(*k)++] = *s++;
+    out[*k] = 0;
+}
+
+void files_usage_text(uint64_t used, uint64_t total, char out[FILES_USAGE_TEXT])
+{
+    char part[FILES_SIZE_TEXT];
+    uint32_t k = 0;
+    out[0] = 0;
+    files_size_text(used, part);
+    fc_usage_put(out, &k, part);
+    fc_usage_put(out, &k, " used, ");
+    files_size_text(total > used ? total - used : 0, part);
+    fc_usage_put(out, &k, part);
+    fc_usage_put(out, &k, " free of ");
+    files_size_text(total, part);
+    fc_usage_put(out, &k, part);
+}
+
+int32_t files_bar_fill(uint64_t used, uint64_t total, int32_t w)
+{
+    if (w <= 0 || total == 0)
+        return 0;
+    if (used >= total)
+        return w;
+    uint64_t uw = (uint64_t)w;
+    while (used > UINT64_MAX / uw) {    /* used < total here, so total stays above 0 */
+        used >>= 1;
+        total >>= 1;
+    }
+    uint64_t px = used * uw / total;
+    return px >= uw ? w - 1 : (int32_t)px;  /* the halving can make them equal: not full */
+}
+
 static bool fc_leap(uint32_t y)
 {
     return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;

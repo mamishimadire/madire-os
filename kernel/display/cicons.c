@@ -25,6 +25,14 @@
  *               (14.5, 44) with three `bg.deep` slots, a `text` lid
  *               (9, 10)-(39, 14) and handle (19, 6.5)-(29, 10); full: no
  *               handle, an `accent.light` and a `warning` sheet above the lid
+ *   1.5 stage 14b (This PC): thispc a `text` monitor (5, 8)-(43, 34) r 2
+ *               with an `accent` screen (8, 11)-(40, 31), a `text.muted`
+ *               stand and a `text` foot; disk a `text` drive (5, 15)-(43, 35)
+ *               r 3 with a `bg.deep` slot and an `accent` light; memory an
+ *               `accent` module (4, 14)-(44, 30) with three `bg.deep` chips
+ *               and seven `warning` contacts; cd a `text.muted` disc (6, 6)-
+ *               (42, 42) with a `bg.deep` hole and a `text` highlight (16 dp:
+ *               the same, simplified)
  * tests/desktop_ref.py holds the same designs in dp (its CICONS).
  */
 #include "kernel/display/ui_cicon.h"
@@ -83,6 +91,18 @@ const int16_t cicon_points[][2] = {
     { 88, 10 }, { 100, 22 }, { 92, 28 }, { 96, 120 }, { 288, 120 }, { 268, 352 }, { 116, 352 }, { 144, 160 },
     { 160, 312 }, { 184, 160 }, { 200, 312 }, { 224, 160 }, { 240, 312 }, { 72, 80 }, { 312, 112 }, { 96, 80 },
     { 160, 28 }, { 188, 60 }, { 140, 80 }, { 176, 80 }, { 248, 32 }, { 280, 68 }, { 256, 80 },
+    /* 1.5 stage 14b: This PC, the disk, the memory, the CD drive */
+    { 12, 20 }, { 116, 92 }, { 24, 32 }, { 104, 80 }, { 52, 92 }, { 76, 92 }, { 80, 104 }, { 48, 104 }, { 32, 104 },
+    { 96, 116 }, { 40, 64 }, { 344, 272 }, { 64, 88 }, { 320, 248 }, { 160, 272 }, { 224, 272 }, { 240, 320 },
+    { 144, 320 }, { 104, 320 }, { 280, 348 }, { 8, 36 }, { 120, 92 }, { 24, 56 }, { 72, 68 }, { 88, 52 },
+    { 108, 72 }, { 40, 120 }, { 344, 280 }, { 80, 188 }, { 224, 212 }, { 264, 180 }, { 304, 220 }, { 8, 32 },
+    { 120, 84 }, { 24, 44 }, { 48, 72 }, { 52, 44 }, { 76, 72 }, { 80, 44 }, { 104, 72 }, { 16, 84 }, { 112, 100 },
+    { 32, 112 }, { 352, 240 }, { 64, 136 }, { 128, 200 }, { 160, 136 }, { 224, 200 }, { 256, 136 }, { 320, 200 },
+    { 56, 240 }, { 76, 272 }, { 96, 240 }, { 116, 272 }, { 136, 240 }, { 156, 272 }, { 176, 240 }, { 196, 272 },
+    { 216, 240 }, { 236, 272 }, { 256, 240 }, { 276, 272 }, { 296, 240 }, { 316, 272 }, { 12, 12 }, { 116, 116 },
+    { 48, 48 }, { 80, 80 }, { 28, 64 }, { 36, 40 }, { 56, 26 }, { 59, 34 }, { 44, 46 }, { 38, 64 }, { 48, 48 },
+    { 336, 336 }, { 148, 148 }, { 236, 236 }, { 96, 192 }, { 112, 128 }, { 160, 88 }, { 168, 104 }, { 128, 136 },
+    { 116, 192 },
 };
 
 const struct cicon_shape cicon_shapes[] = {
@@ -263,6 +283,50 @@ const struct cicon_shape cicon_shapes[] = {
     { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 426, 8 },
     { CICON_POLY, CI_ACCENT_LIGHT, CI_TRACE_BG, 4, 428, 0 },
     { CICON_POLY, CI_WARNING, CI_TRACE_BG, 4, 432, 0 },
+    /* thispc, 16 dp */
+    { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 436, 8 },
+    { CICON_RRECT, CI_ACCENT, CI_TEXT, 2, 438, 0 },
+    { CICON_POLY, CI_TEXT_MUTED, CI_TRACE_BG, 4, 440, 0 },
+    { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 444, 4 },
+    /* thispc, 48 dp */
+    { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 446, 16 },
+    { CICON_RRECT, CI_ACCENT, CI_TEXT, 2, 448, 8 },
+    { CICON_POLY, CI_TEXT_MUTED, CI_TRACE_BG, 4, 450, 0 },
+    { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 454, 12 },
+    /* disk, 16 dp */
+    { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 456, 8 },
+    { CICON_RRECT, CI_BG_DEEP, CI_TEXT, 2, 458, 0 },
+    { CICON_RRECT, CI_ACCENT, CI_TEXT, 2, 460, 10 },
+    /* disk, 48 dp */
+    { CICON_RRECT, CI_TEXT, CI_TRACE_BG, 2, 462, 24 },
+    { CICON_RRECT, CI_BG_DEEP, CI_TEXT, 2, 464, 8 },
+    { CICON_RRECT, CI_ACCENT, CI_TEXT, 2, 466, 20 },
+    /* memory, 16 dp */
+    { CICON_RRECT, CI_ACCENT, CI_TRACE_BG, 2, 468, 4 },
+    { CICON_RRECT, CI_BG_DEEP, CI_ACCENT, 2, 470, 0 },
+    { CICON_RRECT, CI_BG_DEEP, CI_ACCENT, 2, 472, 0 },
+    { CICON_RRECT, CI_BG_DEEP, CI_ACCENT, 2, 474, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 476, 0 },
+    /* memory, 48 dp */
+    { CICON_RRECT, CI_ACCENT, CI_TRACE_BG, 2, 478, 12 },
+    { CICON_RRECT, CI_BG_DEEP, CI_ACCENT, 2, 480, 0 },
+    { CICON_RRECT, CI_BG_DEEP, CI_ACCENT, 2, 482, 0 },
+    { CICON_RRECT, CI_BG_DEEP, CI_ACCENT, 2, 484, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 486, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 488, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 490, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 492, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 494, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 496, 0 },
+    { CICON_RRECT, CI_WARNING, CI_TRACE_BG, 2, 498, 0 },
+    /* cd, 16 dp */
+    { CICON_RRECT, CI_TEXT_MUTED, CI_TRACE_BG, 2, 500, 52 },
+    { CICON_RRECT, CI_BG_DEEP, CI_TEXT_MUTED, 2, 502, 16 },
+    { CICON_POLY, CI_TEXT, CI_TRACE_NONE, 6, 504, 0 },
+    /* cd, 48 dp */
+    { CICON_RRECT, CI_TEXT_MUTED, CI_TRACE_BG, 2, 510, 144 },
+    { CICON_RRECT, CI_BG_DEEP, CI_TEXT_MUTED, 2, 512, 44 },
+    { CICON_POLY, CI_TEXT, CI_TRACE_NONE, 6, 514, 0 },
 };
 
 const struct cicon_def cicon_defs[UI_CICON_COUNT][2] = {
@@ -280,6 +344,10 @@ const struct cicon_def cicon_defs[UI_CICON_COUNT][2] = {
     { { 117, 3 }, { 120, 3 } }, /* badge */
     { { 123, 6 }, { 129, 6 } }, /* trash */
     { { 135, 7 }, { 142, 7 } }, /* trash_full */
+    { { 149, 4 }, { 153, 4 } }, /* thispc (1.5 stage 14b) */
+    { { 157, 3 }, { 160, 3 } }, /* disk */
+    { { 163, 5 }, { 168, 11 } }, /* memory */
+    { { 179, 3 }, { 182, 3 } }, /* cd */
 };
 
 const uint32_t cicon_point_count = sizeof(cicon_points) / sizeof(cicon_points[0]);

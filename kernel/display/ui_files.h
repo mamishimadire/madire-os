@@ -120,6 +120,32 @@
  *     (ui_style_restart: the main action, bold, last), each in its state
  *     (ask_state), the focused one (ask_focus: 0 Cancel, 1 the action)
  *     with the focus ring when ask_ring is on.
+ *
+ * 1.5 stage 14b (docs/plans/1.5.md, notes (12), (14), (15); these rules
+ * replace the ones above where they differ):
+ *   - the sidebar's This PC is a place (its icon in `accent`, its label in
+ *     `text`); while a drag would drop into a place (drop_on, drop_place), that
+ *     place is filled `surface.hover` with a d(1) `accent` frame of radius
+ *     d(4) (after the current place's marks);
+ *   - the This PC view (view->thispc): the command row shows only the Open
+ *     square, at x0 + d(8) (lay->pc_open; Show hidden files, New Folder,
+ *     New File and the other squares not drawn or hit); the path bar shows
+ *     the This PC colour icon (16 dp) in the home icon's place; the content
+ *     is filled `surface.window` and holds a card per storage area
+ *     (ui_files_card_rect: card k at (c.x + d(16), c.y + d(16) + k x
+ *     (d(64) + d(8))), min(c.w - d(32), d(480)) wide, d(64) high): a
+ *     rounded rectangle of radius d(6) filled `surface` with a d(1) `border`
+ *     edge (on hover `surface.hover`; selected `surface.active` with a d(1)
+ *     `accent` edge); its icon (48 dp) at (x + d(8), y + d(8)); with a bar:
+ *     the name in `text` at (x + d(68), y + d(8)), the bar at (x + d(68), y
+ *     + d(30)), d(200) x d(8), a rounded rectangle of radius d(4) in
+ *     `border` with its used part (files_bar_fill) in `accent` (`text.muted`
+ *     when read-only) over it, the figures in `text.muted` (`text` on hover:
+ *     `text.muted` on `surface.hover` is below the text rule) at (x + d(68),
+ *     y + d(44)), each text cut with "..." to the card's width less d(76);
+ *     without a bar the name alone, centred down;
+ *   - box selection: while band_on, the band (on the screen) as a d(1)
+ *     `accent` frame (no fill), clipped to the list's body.
  */
 
 #include <stdbool.h>
@@ -166,8 +192,19 @@ extern const char *const ui_files_tip_texts[UF_BUTTONS];         /* Back (Alt+Le
 #define UI_FILES_NOMEM_TEXT  "Not enough memory to open Files."
 #define UI_FILES_NOAPP_TEXT  "No app can open this file yet."
 
+/* 1.5 stage 14b: a This PC card (the rules above). */
+#define UI_FILES_CARDS 3
+struct ui_files_card {
+    const char *name;                       /* "Memory (Live): /, /tmp", "Disk 0 'madire-test': /home", ... */
+    const char *figures;                    /* "<U> used, <X> free of <Y>" (with a bar) */
+    int icon;
+    bool bar, ro;
+    uint64_t used, total;
+};
+
 struct ui_files_layout {
     struct rect bar, toolbar, path, cmd, body, side, content, status;
+    struct rect pc_open;                    /* 1.5 stage 14b: the Open square in the This PC view */
     struct rect button[UF_BUTTONS];         /* empty for UF_NONE; UF_CLOSE the panel's (below); both command
                                              * rows' buttons (1.5 stage 13; the view chooses one) and the
                                              * question panel's */
@@ -199,6 +236,15 @@ struct ui_files_view {
     int ask_focus;                          /* 0 Cancel, 1 the action */
     bool ask_ring;
     enum ui_button_state ask_state[2];      /* Cancel's and the action's */
+    /* 1.5 stage 14b */
+    bool thispc;                            /* the This PC view: its cards, its command row */
+    const struct ui_files_card *cards;
+    uint32_t ncards;
+    int32_t card_sel, card_hover;           /* or -1 */
+    bool band_on;                           /* box selection: the band, on the screen */
+    struct rect band;
+    bool drop_on;                           /* a drag would drop into place drop_place */
+    int32_t drop_place;
 };
 
 /* Esc in the window (the owner's condition on the Esc rule, S12): the
@@ -226,8 +272,23 @@ uint32_t ui_files_path_cells(const struct ui_files_layout *lay, uint32_t s, cons
 /* The rename field's rectangle over item i of the list (its row or cell). */
 struct rect ui_files_field_rect(const struct ui_list *l, uint32_t i);
 
+/* 1.5 stage 14b: This PC's card k (the rules above). */
+struct rect ui_files_card_rect(const struct ui_files_layout *lay, uint32_t s, int32_t k);
+
+/* 1.5 stage 14b: a drag's badge with the pointer at (x, y): text (the
+ * item's name or "<n> items", bytes outside printable ASCII as '?') cut
+ * with "..." to d(160); the rectangle (x + d(16), y + d(20), d(40) + the
+ * cut text's width, d(28)): a rounded rectangle of radius d(4) filled
+ * `surface` with a d(1) `border.panel` frame, the icon (16 dp) at d(8),
+ * centred down, the text in `text` at d(32), centred down. */
+struct rect ui_files_badge_rect(int32_t x, int32_t y, uint32_t s, const struct font *f, const char *text);
+void ui_files_badge_draw(const struct ui_canvas *c, struct rect r, uint32_t s, const struct font *f, int icon,
+                         const char *text);
+
 /* What is at (x, y): a button, the path bar's part *index, the place
- * *index, the content, the panel, the bar, the status line or nothing. */
+ * *index, the content, the panel, the bar, the status line or nothing.
+ * 1.5 stage 14b: in the This PC view, the content with *index the card
+ * there (or -1). */
 enum ui_files_part ui_files_hit(const struct ui_files_layout *lay, const struct ui_files_view *v, uint32_t s,
                                 const struct font *f, int32_t x, int32_t y, int32_t *index);
 

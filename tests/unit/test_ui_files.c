@@ -504,9 +504,125 @@ static void test_draw_s13(void)
     CHECK_EQ(at(60, 120), UI_SURFACE);                  /* New Folder there now */
 }
 
+/* 1.5 stage 14b: This PC (its Open square, cards, hit test and picture),
+ * a place as a drop target, the band. The window (0, 0, 720, 480) at 100 %
+ * with the bar: the command row at y 100, the content (170, 141, 549, 309);
+ * card k at (186, 157 + 72 k, 480, 64), its bar at (254, 187 + 72 k, 200,
+ * 8). Each literal worked out by hand (T4). */
+static void test_thispc(void)
+{
+    static struct ui_files_card cards[3] = {
+        { "Memory (Live): /, /tmp", "512.0 KiB used, 512.0 KiB free of 1.0 MiB", UI_ICON_MEMORY, true, false, 512, 1024 },
+        { "Disk 0 'madire-test': /home (read-only)", "", UI_ICON_DISK, true, true, 3, 4 },
+        { "CD drive: not used", "", UI_ICON_CD, false, false, 0, 0 },
+    };
+    struct ui_files_layout l;
+    struct ui_files_view v;
+    struct files_pathbar pb;
+    int32_t i;
+    memset(&v, 0, sizeof(v));
+    ui_files_layout((struct rect){ 0, 0, 720, 480 }, 4, &blank, true, &l);
+    CHECK(same_rect(l.pc_open, 9, 104, 32, 32));
+    CHECK(same_rect(l.content, 170, 141, 549, 309));
+    CHECK(same_rect(ui_files_card_rect(&l, 4, 0), 186, 157, 480, 64));
+    CHECK(same_rect(ui_files_card_rect(&l, 4, 2), 186, 301, 480, 64));
+    v.mode = UI_FILES_LIST;
+    v.bar = UI_FILES_BAR_LIVE;
+    v.thispc = true;
+    v.cards = cards;
+    v.ncards = 3;
+    v.card_sel = 1;
+    v.card_hover = 2;
+    v.place = 8;
+    for (int k = 0; k < UF_BUTTONS; k++)
+        v.enabled[k] = true;
+    /* the hit test: Open at the row's start, the other squares and Show
+     * hidden files gone, the cards in the content */
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 20, 110, &i), UF_OPEN);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 270, 110, &i), UF_NONE);     /* where Open is in a folder */
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, l.button[UF_HIDDEN].x + 4, 110, &i), UF_NONE);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 300, 180, &i), UF_CONTENT);
+    CHECK_EQ(i, 0);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 665, 157, &i), UF_CONTENT);  /* card 0's top right pixel */
+    CHECK_EQ(i, 0);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 300, 225, &i), UF_CONTENT);  /* between cards 0 and 1 */
+    CHECK_EQ(i, -1);
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 300, 340, &i), UF_CONTENT);
+    CHECK_EQ(i, 2);
+    v.ncards = 2;                                               /* no CD drive: no third card */
+    CHECK_EQ(ui_files_hit(&l, &v, 4, &blank, 300, 340, &i), UF_CONTENT);
+    CHECK_EQ(i, -1);
+    v.ncards = 3;
+    /* the picture */
+    files_pathbar(FILES_VIEW_THISPC, "/", 1, ui_files_path_cells(&l, 4, &blank), &pb);
+    v.pb = &pb;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(426, 157), UI_BORDER);                  /* card 0's edge (at rest) */
+    CHECK_EQ(at(600, 200), UI_SURFACE);                 /* card 0's fill, right of its bar */
+    CHECK_EQ(at(304, 191), UI_ACCENT);                  /* its bar: 512 of 1024 = 100 of 200 px used */
+    CHECK_EQ(at(404, 191), UI_BORDER);                  /* the rest of the track */
+    CHECK_EQ(at(426, 229), UI_ACCENT);                  /* card 1 selected: its accent edge */
+    CHECK_EQ(at(600, 270), UI_SURFACE_ACTIVE);
+    CHECK_EQ(at(304, 263), UI_TEXT_MUTED);              /* read-only: 150 of 200 px in text.muted */
+    CHECK_EQ(at(600, 340), UI_SURFACE_HOVER);           /* card 2 under the pointer, no bar */
+    CHECK_EQ(at(330, 340), UI_SURFACE_HOVER);
+    CHECK_EQ(at(700, 420), UI_SURFACE_WINDOW);          /* the content's fill below the cards */
+    CHECK_EQ(at(137, 79), UI_ACCENT);                   /* the path bar's This PC icon: its screen */
+    CHECK_EQ(at(277, 110), UI_SURFACE_WINDOW);          /* no square where Open is in a folder */
+    CHECK_EQ(at(25, 104), UI_BORDER);                   /* the Open square at the row's start */
+    /* a place as a drop target: Documents (2) at (1, 213, 168, 32) */
+    v.drop_on = true;
+    v.drop_place = 2;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(100, 229), UI_SURFACE_HOVER);
+    CHECK_EQ(at(100, 213), UI_ACCENT);
+    v.drop_on = false;
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(100, 229), UI_SURFACE);
+}
+
+static void test_band_frame(void)
+{
+    struct ui_files_view v;
+    struct files_pathbar pb;
+    struct ui_list list;
+    static struct ui_list_item items[3];
+    struct ui_files_layout l;
+    memset(&v, 0, sizeof(v));
+    for (int k = 0; k < 3; k++) {
+        items[k].name = "x";
+        items[k].icon = UI_ICON_NONE;
+    }
+    ui_files_layout((struct rect){ 0, 0, 720, 480 }, 4, &blank, true, &l);
+    files_pathbar(FILES_VIEW_FOLDER, "/home/user", 10, 56, &pb);
+    ui_list_init(&list, UI_LIST_DETAILS, items, 3, ui_files_panel_labels, l.content, 4);
+    v.mode = UI_FILES_LIST;
+    v.bar = UI_FILES_BAR_LIVE;
+    v.pb = &pb;
+    v.list = &list;
+    v.band_on = true;
+    v.band = (struct rect){ 300, 300, 100, 50 };
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK_EQ(at(350, 300), UI_ACCENT);                  /* the band's top */
+    CHECK_EQ(at(300, 320), UI_ACCENT);                  /* its left */
+    CHECK_EQ(at(399, 349), UI_ACCENT);                  /* its bottom right */
+    CHECK_EQ(at(350, 325), UI_SURFACE_WINDOW);          /* no fill */
+    v.band = (struct rect){ 300, 100, 100, 200 };       /* above the list's body: clipped there */
+    setup();
+    ui_files_draw(&cv, (struct rect){ 0, 0, 720, 480 }, 4, &fonts, &v);
+    CHECK(at(350, 100) != UI_ACCENT);
+    CHECK_EQ(at(300, 250), UI_ACCENT);
+}
+
 int main(void)
 {
     printf("test_ui_files\n");
+    RUN(test_thispc);               /* 1.5 stage 14b */
+    RUN(test_band_frame);
     RUN(test_layout_s13);           /* 1.5 stage 13 */
     RUN(test_hit_s13);
     RUN(test_esc_ask);

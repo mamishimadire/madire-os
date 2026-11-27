@@ -71,6 +71,19 @@
  * third column (the item's type text: the Trash's original location) from
  * the Size column's left end, d(8) into it, its room d(192) less d(16);
  * every other rule as above. ui_list_init leaves it off.
+ *
+ * 1.5 stage 14b (docs/plans/1.5.md, notes (14) and (15)):
+ *   - the drop target: item `drop` (>= 0; ui_list_init sets -1), the folder
+ *     a drag would drop into, is drawn after its selection marks as the
+ *     row (the list) or the cell's shape (the grid) filled `surface.hover`
+ *     with a d(1) `accent` frame of radius d(4);
+ *   - box selection (ui_list_band): a band from the anchor (ax, ay) to the
+ *     point (bx, by), y in content lines' pixels (ui_list_content_y: the
+ *     body's top is 0 at top line 0), the rectangle from min to max + 1 on
+ *     each axis; an item is touched when its row or cell (in the same
+ *     content pixels) overlaps that rectangle (x clamped to the body);
+ *     every item is then selected if touched, or (with add) if it was
+ *     selected in base; ui_list_band_rect gives the band on the screen.
  */
 
 #include <stdbool.h>
@@ -125,6 +138,7 @@ struct ui_list {
     bool ring;                              /* the keyboard moved the focus */
     enum ui_sb_state sb;
     bool wide;                              /* 1.5 stage 13: three columns (the Trash view) */
+    int32_t drop;                           /* 1.5 stage 14b: the drop target item, or -1 */
 };
 
 enum ui_list_result { UI_LIST_NONE, UI_LIST_MOVED, UI_LIST_OPEN };
@@ -176,5 +190,12 @@ bool ui_list_double(struct ui_list_clicks *k, uint64_t ms, int32_t x, int32_t y,
 
 /* Draws the view (the rules above). */
 void ui_list_draw(const struct ui_canvas *c, const struct ui_list *l, const struct ui_fonts *f);
+
+/* 1.5 stage 14b: box selection (the rules above). The content y of the
+ * screen's y; the band's rectangle on the screen; the selection a band
+ * makes (base: n flags, one per item, the selection when it started). */
+int64_t ui_list_content_y(const struct ui_list *l, int32_t y);
+struct rect ui_list_band_rect(const struct ui_list *l, int32_t ax, int64_t ay, int32_t bx, int64_t by);
+void ui_list_band(struct ui_list *l, int32_t ax, int64_t ay, int32_t bx, int64_t by, const uint8_t *base, bool add);
 
 #endif

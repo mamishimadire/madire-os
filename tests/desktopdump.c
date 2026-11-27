@@ -961,7 +961,7 @@ static int scene_fileicons(struct ui_canvas *c, int32_t W)
     for (int b = 0; b < 3; b++)
         for (int z = 0; z < 2; z++) {
             int32_t p = d(z ? 48 : 16);
-            for (int i = UI_CICON_FIRST; i < UI_CICON_END; i++, k++) {
+            for (int i = UI_CICON_FIRST; i <= UI_ICON_TRASH_FULL; i++, k++) {   /* 1.5 stage 14b: stage 12's */
                 struct rect cell = flow_place(&f, p + 4, p + 4);
                 ui_fill(c, cell, bgs[b]);
                 ui_icon_draw(c, i, cell.x + 2, cell.y + 2, p, UI_TEXT);
