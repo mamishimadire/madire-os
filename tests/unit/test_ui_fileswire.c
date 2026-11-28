@@ -300,12 +300,28 @@ static int32_t fw_x, fw_y;
 static bool fw_by_key;
 static uint8_t fw_greyed;
 
-static int fw_dmg;                      /* 1.5 stage 14b: the damage hook's calls (the drag's badge) */
+/* 1.5 stage 14b: the damage hook's calls and the last FW_DAMAGE_KEPT
+ * rectangles it was given (the drag's badge must be one of them). */
+#define FW_DAMAGE_KEPT 16
+static int fw_damage_calls;
+static struct rect fw_damage_rects[FW_DAMAGE_KEPT];
 
 static void fw_damage(struct rect r)
 {
-    (void)r;
-    fw_dmg++;
+    fw_damage_rects[fw_damage_calls % FW_DAMAGE_KEPT] = r;
+    fw_damage_calls++;
+}
+
+/* r was given to the damage hook since fw_damage_calls was last cleared
+ * (at most FW_DAMAGE_KEPT calls ago). */
+static bool fw_damaged(struct rect r)
+{
+    for (int i = 0; i < fw_damage_calls && i < FW_DAMAGE_KEPT; i++) {
+        struct rect d = fw_damage_rects[i];
+        if (d.x == r.x && d.y == r.y && d.w == r.w && d.h == r.h)
+            return true;
+    }
+    return false;
 }
 
 /* As desk_files_open: the window manager opens the window. */
@@ -626,7 +642,7 @@ static void test_copy_writes(void)
 }
 
 /* 1.5 stage 14b: the new hooks connected as desktop.c connects them: the
- * pointer it shows (fw_kind: its desk_pointer_kind, files_app_pointer_kind
+ * pointer it shows (fw_pointer_kind: its desk_pointer_kind, files_app_pointer_kind
  * weighed by pointer_choose with the real window manager and menus),
  * files_app_mods (Ctrl during a drag), the badge drawn through the damage
  * hook, Esc through files_app_key; a real drag and drop moved through the
@@ -650,7 +666,7 @@ static void fw_release(int32_t x, int32_t y)
     files_app_pointer(&fw_files_win, x, y, false, true, (uint8_t)fw_mods_now, ++fw_now);
 }
 
-static enum pointer_kind fw_kind(int32_t x, int32_t y)
+static enum pointer_kind fw_pointer_kind(int32_t x, int32_t y)
 {
     struct ui_window *top = 0;
     enum ui_hit h = ui_wm_hit(&fw_wm, x, y, &top);
@@ -673,35 +689,37 @@ static void test_drag_wired(void)
     int32_t x0 = r0.x + 40, y0 = r0.y + r0.h / 2, x1 = r1.x + 40, y1 = r1.y + r1.h / 2;
     fw_press(x1, y1);                           /* a.txt selected alone; not yet a drag */
     CHECK(fa_m->list.items[1].selected && !fa_drag);
-    CHECK_EQ(fw_kind(x1, y1), POINTER_ARROW);
+    CHECK_EQ(fw_pointer_kind(x1, y1), POINTER_ARROW);
     fw_move(x1, y1 - 3);                        /* under d(4): still a press */
     CHECK(!fa_drag);
-    fw_dmg = 0;
+    fw_damage_calls = 0;
     fw_move(x0, y0);                            /* onto Documents: a drag, a move */
     CHECK(fa_drag && fa_drop == FILES_DROP_MOVE);
     CHECK_EQ(fa_m->list.drop, 0);
-    CHECK_EQ(fw_kind(x0, y0), POINTER_DRAG_MOVE);
-    CHECK(fw_dmg > 0 && !ui_rect_empty(fa_badge_r));  /* the badge, through the damage hook */
+    CHECK_EQ(fw_pointer_kind(x0, y0), POINTER_DRAG_MOVE);
+    CHECK(!ui_rect_empty(fa_badge_r));
+    CHECK(fw_damage_calls <= FW_DAMAGE_KEPT);   /* every call of this move kept */
+    CHECK(fw_damaged(fa_badge_r));              /* the badge's own rectangle, through the damage hook */
     CHECK(strcmp(fa_badge_text, "a.txt") == 0);
     files_app_mods(KEY_CTRL);                   /* Ctrl held: a copy */
-    CHECK_EQ(fw_kind(x0, y0), POINTER_DRAG_COPY);
+    CHECK_EQ(fw_pointer_kind(x0, y0), POINTER_DRAG_COPY);
     files_app_mods(0);
-    CHECK_EQ(fw_kind(x0, y0), POINTER_DRAG_MOVE);
+    CHECK_EQ(fw_pointer_kind(x0, y0), POINTER_DRAG_MOVE);
     fw_move(x1, y1);                            /* onto a.txt itself, a file: not allowed */
-    CHECK_EQ(fw_kind(x1, y1), POINTER_NO_DROP);
+    CHECK_EQ(fw_pointer_kind(x1, y1), POINTER_NO_DROP);
     CHECK_EQ(fa_drop_why, FILES_DW_NOT_FOLDER);
     CHECK_EQ(fa_m->list.drop, -1);
     fw_move(x0, y0);
     fw_release(x0, y0);                         /* the drop: the Paste job over the selection */
     CHECK(!fa_drag && fa_job == FA_JOB_PASTE && fa_jdrag);
     CHECK(ui_rect_empty(fa_badge_r));
-    CHECK_EQ(fw_kind(x0, y0), POINTER_BUSY);    /* while it runs */
+    CHECK_EQ(fw_pointer_kind(x0, y0), POINTER_BUSY);    /* while it runs */
     fw_settle();
     CHECK(vfs_lookup(&fw_vfs, fw_vfs.root, "/home/user/Documents/a 2.txt", &n) == 0);    /* a.txt was there */
     CHECK(vfs_lookup(&fw_vfs, fw_vfs.root, "/home/user/a.txt", &n) == -FS_ENOENT);
     CHECK_EQ(fa_m->folder.n, 1);
     CHECK_EQ(fa_m->clip.n, clip_n);             /* the clipboard untouched */
-    CHECK_EQ(fw_kind(x0, y0), POINTER_ARROW);
+    CHECK_EQ(fw_pointer_kind(x0, y0), POINTER_ARROW);
     /* Documents onto the sidebar's Documents (itself): not allowed; Esc
      * ends the drag, the window stays, the release does nothing. */
     struct ui_files_layout lay = fw_layout();
@@ -712,7 +730,7 @@ static void test_drag_wired(void)
     fw_move(px, py);
     CHECK(fa_drag && fa_drop == FILES_DROP_NO && fa_drop_why == FILES_DW_ITSELF);
     CHECK(!fa_m->view.drop_on);
-    CHECK_EQ(fw_kind(px, py), POINTER_NO_DROP);
+    CHECK_EQ(fw_pointer_kind(px, py), POINTER_NO_DROP);
     struct key_event esc = { KEY_ESC, 0, KEY_PRESSED, 0 };
     CHECK(files_app_key(&fw_files_win, &esc));
     CHECK(!fa_drag && fw_files_win.open);

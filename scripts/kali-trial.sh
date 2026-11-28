@@ -114,7 +114,7 @@ if [ "$RESULT" = PASS ]; then
 
     # gcc diagnostics in the build logs: "warning:" lines and -Werror lines
     # ("error: ... [-Werror=...]"), each listed in logs/diagnostics.txt.
-    cat "$LOG"/build-*.log | grep -E 'warning:|-Werror' > "$LOG/diagnostics.txt" || true
+    cat "$LOG"/build-*.log | grep -E 'warning:|\[-Werror' > "$LOG/diagnostics.txt" || true
     WARNINGS=$(cat "$LOG"/build-*.log | grep -c 'warning:' || true)
     WERROR=$(cat "$LOG"/build-*.log | grep -c '\[-Werror' || true)
     [ "$WARNINGS" = 0 ] || fail "gcc warnings: $WARNINGS"

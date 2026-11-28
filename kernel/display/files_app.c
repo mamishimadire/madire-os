@@ -2670,6 +2670,8 @@ void files_app_open(void)
         fa_log_state();
 }
 
+static bool fa_gesture_cancel(const char *why);    /* 1.5 stage 14b: defined with the gestures below */
+
 void files_app_closed(struct ui_window *w)
 {
     if (w == fa_env.files) {
@@ -2808,6 +2810,8 @@ void files_app_menu(enum ui_menu_action a)
     fa_menu_item = -1;
     fa_changed();
 }
+
+static void fa_auto_scroll(uint64_t now);  /* 1.5 stage 14b: defined with the gestures below */
 
 void files_app_poll(uint64_t now)
 {
