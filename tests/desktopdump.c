@@ -1146,6 +1146,184 @@ static int scene_files(struct ui_canvas *c, int variant)
     return 0;
 }
 
+/* 1.5 stage 14b (notes (12), (14), (15)): This PC (Live; Disk with the CD
+ * drive, a card selected; read-only, a card hovered and Open's tooltip), box
+ * selection in the list and the grid, a drag (the drop target row and the
+ * badge); desktop_ref.py's scene_files_s14 draws the same views. */
+static const char *const files14_names[6] = { "files_thispc", "files_thispc_cd", "files_thispc_ro", "files_band",
+                                              "files_band_grid", "files_drag" };
+
+static int scene_files_s14(struct ui_canvas *c, int variant)
+{
+    static const struct {
+        const char *name, *size, *type, *mod;
+        int icon;
+    } rows[7] = {
+        { "Projects", 0, "Folder", "2026-11-20 09:15", UI_ICON_FOLDER },
+        { "Work", 0, "Folder", "2026-11-19 17:02", UI_ICON_FOLDER },
+        { ".hidden-notes", "0 B", "File", "2026-11-18 08:00", UI_ICON_FILE },
+        { "Notes.txt", "1.2 KiB", "Text file", "2026-11-20 10:41", UI_ICON_TEXTFILE },
+        { "Plan.md", "3.4 KiB", "Text file", "2026-11-20 11:05", UI_ICON_TEXTFILE },
+        { "Project Link", "24 B", "Link", "2026-11-17 12:30", UI_ICON_LINK },
+        { "data.bin", "12.0 MiB", "File", "2026-11-16 22:59", UI_ICON_FILE },
+    };
+    static struct ui_list_item items[7];
+    static struct ui_list list;
+    static struct files_pathbar pb;
+    static struct ui_window w;
+    static struct ui_files_card cards[3];
+    static char figs[3][FILES_USAGE_TEXT];
+    if (!ui_fonts_for_scale(S, &files_scene_fonts))
+        return 1;
+    const struct font *fr = files_scene_fonts.regular;
+    struct ui_files_view *v = &files_scene_view;
+    memset(v, 0, sizeof(*v));
+    bool thispc = variant <= 2;
+    enum ui_files_bar bar = variant == 1 ? UI_FILES_BAR_NONE : variant == 2 ? UI_FILES_BAR_RO : UI_FILES_BAR_LIVE;
+    if (!thispc)
+        bar = UI_FILES_BAR_LIVE;
+    struct rect r = { d(16), d(16), d(720), d(480) };
+    struct ui_files_layout lay;
+    ui_files_layout(r, S, fr, bar != UI_FILES_BAR_NONE, &lay);
+    for (int i = 0; i < 7; i++) {
+        items[i].name = rows[i].name;
+        items[i].size = rows[i].size;
+        items[i].type = rows[i].type;
+        items[i].modified = rows[i].mod;
+        items[i].icon = rows[i].icon;
+        items[i].selected = false;
+    }
+    ui_list_init(&list, UI_LIST_DETAILS, items, thispc ? 0 : 7, dump_titles, lay.content, S);
+    v->mode = UI_FILES_LIST;
+    v->bar = bar;
+    for (int i = 0; i < UF_BUTTONS; i++) {
+        v->enabled[i] = i != UF_FORWARD;
+        v->chosen[i] = i == UF_LIST || i == UF_HIDDEN;
+    }
+    v->hover = v->pressed = v->tip = UF_NONE;
+    v->place = 2;
+    v->pb = &pb;
+    v->list = &list;
+    v->panel_icon = UI_ICON_NONE;
+    v->status = "7 items, 300.0 MiB free";
+    files_pathbar(FILES_VIEW_FOLDER, "/home/user/Documents", 20, ui_files_path_cells(&lay, S, fr), &pb);
+    int32_t badge_x = 0, badge_y = 0;
+    if (thispc) {
+        static const struct {
+            const char *name;
+            int icon;
+            bool bar, ro;
+            uint64_t used, total;
+        } defs[3][3] = {
+            { { "Memory (Live): /, /tmp", UI_ICON_MEMORY, true, false, 4194304, 67108864 },
+              { "No disk in use", UI_ICON_DISK, false, false, 0, 0 } },
+            { { "Memory: /, /tmp", UI_ICON_MEMORY, true, false, 1048576, 67108864 },
+              { "Disk 0 'madire-test': /home", UI_ICON_DISK, true, false, 2621440, 66060288 },
+              { "CD drive: not used", UI_ICON_CD, false, false, 0, 0 } },
+            { { "Memory: /, /tmp", UI_ICON_MEMORY, true, false, 0, 67108864 },
+              { "Disk 1 'madire-test': /home (read-only)", UI_ICON_DISK, true, true, 66060288, 66060288 } },
+        };
+        static const uint32_t counts[3] = { 2, 3, 2 };
+        static const int32_t sels[3] = { -1, 1, 1 }, hovers[3] = { 0, -1, 0 };
+        for (uint32_t k = 0; k < counts[variant]; k++) {
+            files_usage_text(defs[variant][k].used, defs[variant][k].total, figs[k]);
+            cards[k].name = defs[variant][k].name;
+            cards[k].figures = figs[k];
+            cards[k].icon = defs[variant][k].icon;
+            cards[k].bar = defs[variant][k].bar;
+            cards[k].ro = defs[variant][k].ro;
+            cards[k].used = defs[variant][k].used;
+            cards[k].total = defs[variant][k].total;
+        }
+        for (int i = 0; i < UF_BUTTONS; i++)
+            v->enabled[i] = true;
+        v->enabled[UF_FORWARD] = v->enabled[UF_UP] = v->enabled[UF_LIST] = v->enabled[UF_GRID] = false;
+        v->card_sel = sels[variant];
+        v->card_hover = hovers[variant];
+        v->enabled[UF_OPEN] = v->card_sel >= 0 && cards[v->card_sel].bar;   /* a card that opens: the ones with a bar */
+        v->thispc = true;
+        v->cards = cards;
+        v->ncards = counts[variant];
+        v->place = 8;
+        v->status = "";
+        v->tip = variant == 2 ? UF_OPEN : UF_NONE;
+        files_pathbar(FILES_VIEW_THISPC, "/", 1, ui_files_path_cells(&lay, S, fr), &pb);
+    } else if (variant == 3 || variant == 4) {
+        struct rect cr = lay.content;
+        int32_t ax, bx;
+        int64_t ay, by;
+        if (variant == 3) {
+            ax = cr.x + d(200);
+            ay = d(10);
+            bx = cr.x + d(400);
+            by = d(80);
+        } else {
+            list.view = UI_LIST_GRID;
+            ax = cr.x + d(110);
+            ay = d(20);
+            bx = cr.x + d(290);
+            by = d(120);
+        }
+        ui_list_band(&list, ax, ay, bx, by, 0, false);
+        v->band_on = true;
+        v->band = ui_list_band_rect(&list, ax, ay, bx, by);
+    } else {                            /* files_drag: Notes.txt and Plan.md dragged onto Work */
+        items[3].selected = items[4].selected = true;
+        list.drop = 1;
+        struct rect b = ui_list_body(&list);
+        badge_x = lay.content.x + d(300);
+        badge_y = b.y + d(28) + d(14);
+    }
+    w.name = "Files";
+    w.title = "Files";
+    w.icon = UI_ICON_FOLDER;
+    w.w = r.w;
+    w.h = r.h;
+    w.buttons = UI_WIN_MINIMISE | UI_WIN_MAXIMISE;
+    w.resizable = true;
+    w.grows = true;
+    w.paint = files_scene_paint;
+    ui_window_draw(c, &w, r, true, UI_BUTTON_NORMAL, S, &files_scene_fonts);
+    int sel = 0;
+    for (uint32_t i = 0; i < list.n; i++)
+        sel += list.items[i].selected;
+    if (variant == 5) {
+        struct rect br = ui_files_badge_rect(badge_x, badge_y, S, fr, "2 items");
+        ui_files_badge_draw(c, br, S, fr, UI_ICON_TEXTFILE, "2 items");
+        printf("SCENE %s: scale %u %%, the window %dx%d, the badge at (%d, %d) %dx%d\n", files14_names[variant],
+               S * 25, r.w, r.h, br.x, br.y, br.w, br.h);
+    } else if (thispc) {
+        printf("SCENE %s: scale %u %%, the window %dx%d, %u cards\n", files14_names[variant], S * 25, r.w, r.h,
+               v->ncards);
+    } else {
+        printf("SCENE %s: scale %u %%, the window %dx%d, %d selected\n", files14_names[variant], S * 25, r.w, r.h,
+               sel);
+    }
+    return 0;
+}
+
+/* 1.5 stage 14b: This PC, the disk, the memory and the CD drive at 16 and
+ * 48 dp on surface.window, surface and surface.active. */
+static int scene_storageicons(struct ui_canvas *c, int32_t W)
+{
+    static const uint32_t bgs[3] = { UI_SURFACE_WINDOW, UI_SURFACE, UI_SURFACE_ACTIVE };
+    struct flow f;
+    flow_init(&f, W, 8, 4);
+    uint32_t k = 0;
+    for (int b = 0; b < 3; b++)
+        for (int z = 0; z < 2; z++) {
+            int32_t p = d(z ? 48 : 16);
+            for (int i = UI_ICON_THISPC; i <= UI_ICON_CD; i++, k++) {
+                struct rect cell = flow_place(&f, p + 4, p + 4);
+                ui_fill(c, cell, bgs[b]);
+                ui_icon_draw(c, i, cell.x + 2, cell.y + 2, p, UI_TEXT);
+            }
+            flow_break(&f);
+        }
+    printf("SCENE storageicons: scale %u %%, %u colour icons, bottom %d\n", S * 25, k, flow_bottom(&f));
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 6) {
@@ -1226,11 +1404,16 @@ int main(int argc, char **argv)
         rc = scene_scrollbar(&c, (int32_t)w);
     } else if (strcmp(argv[4], "fileicons") == 0) {               /* 1.5 stage 12 */
         rc = scene_fileicons(&c, (int32_t)w);
-    } else if (strncmp(argv[4], "files", 5) == 0) {                /* 1.5 stage 12; 13: the variants */
+    } else if (strcmp(argv[4], "storageicons") == 0) {            /* 1.5 stage 14b */
+        rc = scene_storageicons(&c, (int32_t)w);
+    } else if (strncmp(argv[4], "files", 5) == 0) {                /* 1.5 stage 12; 13: the variants; 14b */
         rc = 2;
         for (int k = 0; k < 7; k++)
             if (strcmp(argv[4], files_scene_names[k]) == 0)
                 rc = scene_files(&c, k);
+        for (int k = 0; k < 6; k++)
+            if (strcmp(argv[4], files14_names[k]) == 0)
+                rc = scene_files_s14(&c, k);
         if (rc == 2) {
             fprintf(stderr, "desktopdump: unknown scene %s\n", argv[4]);
             return 1;

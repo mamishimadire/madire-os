@@ -394,10 +394,13 @@ desktop_boot() {
     # 1.4 stage 12: DT_DISK (a disk image), when set, on ich9-ahci (Disk mode);
     # with it, -boot d: the firmware boots the CD, not the test disk (its MBR
     # has the signature but no boot code; runs 42376255543, 42376272505).
+    # 1.5 stage 14b: DT_CD=1 (with DT_DISK) adds an empty CD drive on the
+    # same controller's port 1 (an ATAPI device: This PC's CD card).
     timeout 240 qemu-system-x86_64 -S -display none -no-reboot -serial file:"$log" \
         -qmp unix:"$sock",server=on,wait=off -m 128M -cdrom "$iso" ${DT_DISK:+-boot d} \
         ${DT_DISK:+-drive file="$DT_DISK",if=none,id=dt-disk,format=raw -device ich9-ahci,id=dt-ahci,addr=0x5} \
-        ${DT_DISK:+-device ide-hd,drive=dt-disk,bus=dt-ahci.0} >/dev/null 2>&1 &
+        ${DT_DISK:+-device ide-hd,drive=dt-disk,bus=dt-ahci.0} \
+        ${DT_CD:+-drive if=none,id=dt-cd,media=cdrom -device ide-cd,drive=dt-cd,bus=dt-ahci.1} >/dev/null 2>&1 &
     qpid=$!
     DT_OUT=$(python3 "$QMPDESKTOP" "$sock" "$log" "$@" --size "$size" ${DT_UNTIL:+--until "$DT_UNTIL"} \
              --timeout 180 2>&1)

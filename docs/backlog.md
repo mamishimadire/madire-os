@@ -31,11 +31,11 @@ Started in 1.5 stage 13 (2026-11-20).
 | Stage | What it delivers | Prerequisites | Origin |
 |---|---|---|---|
 | S13 | The Trash in Live and Disk mode (Move to Trash, the Trash view with Name / Original location / Deleted, Restore, Restore all, Empty Trash; the FreeDesktop Trash rules; `.trashinfo` read only through the bounded parser); 1.4's visible `/home/user/Trash` removed only if empty (kept as a normal folder otherwise; never on `test=` boots); six home folders; Cut, Copy, Paste (64-item clipboard), Ctrl+X/C/V/A, multi-select actions; rule SL for every action (links never followed; fast and slow link image); the rename field opens with the whole name selected; the Files right-click menus (item, empty space, Trash) with the Menu key, Shift+F10 and key hints; Alt+Enter opens Properties; the in-window question panel | S12 | plan row S13; the owner's S13 decisions D1-D5 and Q1-Q9 (2026-11-20); note (13) |
-| S14 | This PC: each storage area's name, used and free space, a free-space bar with "X free of Y", opening a drive | S13 | plan row S14 and C5 |
-| S14 | The v1.5 pointer set: resize (four), move, I-beam, hand, busy (animated); the drag pointers move, copy and not allowed | S13 | note (11), (12)(b); note (14) adds the drag pointers |
-| S14 | Box (rubber-band) selection by dragging on empty space, in the List and Grid views | S13 | note (14); the owner, 2026-11-20 |
-| S14 | Drag and drop inside Files: selected items onto a folder (list, grid or sidebar) moves them; onto the sidebar Trash moves them to the Trash; Ctrl copies; another filesystem copies; Esc cancels; never a folder into itself; read-only targets and files refuse; name clashes get " 2"; links never followed | S13 (paste and Trash cores) | note (14) |
-| S14a | The timing decision, decided: a sixth numbered QEMU part (part 6, "the Files part", a seventh job) with stage 13's Files section moved into it unchanged; stages 14 and 15 add their Files sessions there (the A3 move to part static would put that job over its ceiling of about 1,100 s) | S13's measured seconds | the owner's decision Q1 of the S14 report (2026-11-26); note (14) |
+| S14 (done in 14b, not yet tested) | This PC: each storage area's name, used and free space, a free-space bar with "X free of Y", opening a drive | S13 | plan row S14 and C5 |
+| S14 (done in 14b, not yet tested) | The v1.5 pointer set: resize (four), move, I-beam, hand, busy (animated); the drag pointers move, copy and not allowed | S13 | note (11), (12)(b); note (14) adds the drag pointers |
+| S14 (done in 14b, not yet tested) | Box (rubber-band) selection by dragging on empty space, in the List and Grid views | S13 | note (14); the owner, 2026-11-20 |
+| S14 (done in 14b, not yet tested) | Drag and drop inside Files: selected items onto a folder (list, grid or sidebar) moves them; onto the sidebar Trash moves them to the Trash; Ctrl copies; another filesystem copies; Esc cancels; never a folder into itself; read-only targets and files refuse; name clashes get " 2"; links never followed | S13 (paste and Trash cores) | note (14) |
+| S14a (done, TESTED 24dfa17) | The timing decision, decided: a sixth numbered QEMU part (part 6, "the Files part", a seventh job) with stage 13's Files section moved into it unchanged; stages 14 and 15 add their Files sessions there (the A3 move to part static would put that job over its ceiling of about 1,100 s) | S13's measured seconds | the owner's decision Q1 of the S14 report (2026-11-26); note (14) |
 | S15 | The desktop's icons (the items of `/home/user/Desktop` and the Trash icon, empty or full) and their menus | S13, S14 | plan row S15 and C7 |
 | S15 | The M menu's Files row | S12 | plan row S15; the owner, 2026-11-20 |
 | S15 | The desktop's right-click menus with the full Files features: on an icon Open, Cut, Copy, Paste, Rename, Move to Trash, Properties; on the empty desktop New Folder, New File, Paste, Refresh, plus Open Console and About Madire OS | S13 | plan C6b and C7; the owner, 2026-11-26 (Properties and Refresh added) |
@@ -135,6 +135,19 @@ None of these is in 1.5. Target "later" unless a milestone is named.
 | True UTC file times (risk 35's option B; the RTC kept on local time for dual boot) | Settings' time zone | 1.4 risk 35; plan section J |
 | The splash's contrast (a 1.3 follow-up) | - | plan section J |
 | Risk 13 (VirtualBox boots): open; 30 more boots in S17 | - | plan section J |
+
+### The Madire Security Platform: Madire Defender (docs only; the owner, 2026-11-28)
+
+"Madire Defender + Madire Defender Server ('Madire for Business', after v2.0).
+Local Defender (each device): enforces signed policy on the device, also offline; browser upload controls per site
+(Allow; Allow, no uploads - file picker, drag-and-drop, file paste; Read-only - also limits large text paste; Warn -
+confirm + log; Block); file, download and USB checks; always tells the user what was blocked and why; local log the
+user can view.
+Defender Server (central): admin writes policy, signs it with the company key, pushes it to enrolled devices; urgent
+push to all; receives reports of blocked events (facts only - never file contents or typed text); self-hosted option.
+Rules: managed mode only (company-enrolled devices); personal devices are never controlled; open, readable policy
+format for audit trails; honest limit - reduces risk, does not stop every leak.
+Depends on: Browser, Networking (v1.9), Users and permissions (v2.0), a signing system, a separate server app."
 
 ## 7. Standards still to write (S18a)
 

@@ -468,5 +468,28 @@
 # Files page bound (at most 256), its read-only boot's en= flags (22
 # buttons), test_ui_files's Open, Rename and pressed-Open probes and
 # test_ui_cicon's second table's totals (242 points, 63 polylines, 20).
-1.5 240
-unit-suites 119
+# Stage 14a: none added (part 6, the Files part: the stage 13 section
+# moved unchanged from part 5).
+# Stage 14b: 73 more (C5, notes (11), (12), (14), (15), item 7): part static
+# 48 (the eleven new pointer kinds against tests/pointer_ref.py, 11, and the
+# arrow's rows unchanged, 1; the scenes files_thispc, files_thispc_cd,
+# files_thispc_ro, files_band, files_band_grid, files_drag and
+# storageicons in five modes, 35, and their contrast check, 1); part 6 25
+# (boot G1, Live: This PC's two cards, opening them, the hand, the four
+# resize pointers, the move pointer, the I-beam, a box, a box with Ctrl,
+# Esc during a box, every line and packet, 10; boot G2: a drag onto a file
+# and Esc, a move, a Ctrl copy, a selection of two, onto itself, onto the
+# Trash, out of the Trash and Restore, 7; boot H, Disk mode with a CD
+# drive: the three cards, the disk's card, a copy across filesystems, the
+# busy pointer, a move kept on the disk, 5; boot H2, after a reboot, 1; boot
+# I, read-only: the card, the refused drops, 2). 1 unit suite
+# (pointer_shapes); new cases in files_core, files_ops, ui_list, ui_files,
+# ui_fileswire and ui_cicon. Changed, not added (the owner's approval,
+# before the commit): test_ui_cicon's totals (436 -> 520 points, 149 ->
+# 185 shapes, 14 -> 18 icons), tests/desktop_ref.py's sidebar (This PC
+# drawn as the other places, no longer muted: every Files screen of parts
+# static, 5 and 6), qmp_desktop.py's window screens (the pointer drawn in
+# the kind of the kernel's last "desktop: pointer" line) and its fbtn
+# target (where the view puts the button).
+1.5 313
+unit-suites 120

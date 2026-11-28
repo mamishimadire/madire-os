@@ -66,7 +66,13 @@ windows themselves):
                   a point of the Files window: a button by its label (its
                   centre), place K of the sidebar, part K of the path bar,
                   item I of the list or grid, the content below its items;
-    fsync         wait until the "files:" and "viewer:" lines have been
+    to:fcard@K, to:ffield  (1.5 stage 14b) This PC's card K, the rename
+                  field (its centre); press, a to: step and release drag
+                  with the left button held (a band, a drag and drop), and
+                  kseq:ctrl:down ... kseq:ctrl:up hold Ctrl over them; the
+                  pointer drawn is the kind of the kernel's last "desktop:
+                  pointer" line, the drag's badge from "files: drag start";
+    fsync        wait until the "files:" and "viewer:" lines have been
                   quiet for 0.6 s; the next screen comes after the last;
     vopen:TITLE   the Text Viewer opens now (the key or click just sent
                   opened a text file), titled TITLE;
@@ -276,6 +282,8 @@ MENU_EVENT = re.compile(r"^desktop: (menu|dialog|M button)[ :]")      # 1.3 stag
 # 1.5 stage 13: a Files menu's "opened" line (desktop.c's).
 FILES_MENU_OPEN = re.compile(r"^desktop: menu ((?:Files|Trash) (?:item|space)) opened by (the mouse|the keyboard) "
                              r"at \((-?\d+), (-?\d+)\) (\d+)x(\d+), greyed ([01]+) ticked ([01]+)")
+# 1.5 stage 14b: desktop.c's pointer lines (desktoplog).
+POINTER_KIND = re.compile(r"^desktop: pointer ([a-z-]+) (?:at \(-?\d+, -?\d+\)|\(.*\))$")
 
 
 def parse_state(text):
@@ -341,15 +349,17 @@ class Windows:
                 labels = [lab.decode() for lab in desktop_ref.DIALOG_LABELS]
                 c = desktop_ref.dialog_button(mn.dlg["r"], self.s, labels.index(where[4:]))
             return c[0] + c[2] // 2, c[1] + c[3] // 2
-        if where.split("@")[0] in ("fbtn", "fplace", "fpath", "fitem", "fempty"):      # 1.5 stage 12
+        if where.split("@")[0] in ("fbtn", "fplace", "fpath", "fitem", "fempty", "fcard", "ffield"):  # 1.5 stage 12; 14b
             fw = next((w for w in self.wm.z if w["name"] == "Files"), None)
             if fw is None:
                 raise RuntimeError("no Files window (model)")
             v = self.files_view(fw["r"])
             L = desktop_ref.files_layout(fw["r"], self.s, v.get("bar", "none") != "none")
             part, _, arg = where.partition("@")
-            if part == "fbtn":
-                r = L["button"][desktop_ref.FILES_PART_NAMES[arg]]
+            if part == "fbtn":                  # 1.5 stage 14b: where the view puts it (This PC's Open)
+                r = desktop_ref.files_brect(L, v, desktop_ref.FILES_PART_NAMES[arg])
+            elif part == "fcard":               # 1.5 stage 14b: This PC's card
+                r = desktop_ref.files_card_rect(L, self.s, int(arg))
             elif part == "fplace":
                 r = desktop_ref.files_place_rect(L, self.s, int(arg))
             elif part == "fpath":
@@ -358,6 +368,10 @@ class Windows:
                 r = (L["path"][0] + d(32) + cx * fwd, L["path"][1], len(t) * fwd, L["path"][3])
             elif part == "fitem":
                 r = v["list"].item_rect(int(arg))
+            elif part == "ffield":              # 1.5 stage 14b: the rename field (the I-beam)
+                if v.get("field") is None:
+                    raise RuntimeError("no rename field (model)")
+                r = desktop_ref.files_field_rect(v["list"], v["list"].cursor)
             else:
                 b = v["list"].body()
                 r = (b[0] + d(200), b[1] + b[3] - d(16), 2, 2)
@@ -464,6 +478,8 @@ class Windows:
         st, path, status, field, panel, items, trunc = {}, (0, b""), (0, b""), None, None, [], False
         self.ask = {}                   # 1.5 stage 13: the question's lines
         self.trash_cols = {}            # 1.5 stage 13: item -> (location, restorable, date)
+        self.pc, self.cards = None, {}  # 1.5 stage 14b: This PC (n, sel, hover) and its cards
+        self.band, self.drop = None, None   # 1.5 stage 14b: the band (x, y, w, h); the drop (item, place)
         k = len(lines) - 1
         while k >= 0 and not lines[k].startswith("files: state "):
             k -= 1
@@ -490,6 +506,17 @@ class Windows:
                 elif ln.startswith("files: panel "):
                     kd, sz, mt, rest = ln[len("files: panel "):].split(" ", 3)
                     panel = (kd, int(sz), int(mt), rest.encode("latin-1"))
+                elif ln.startswith("files: pc ") and self.pc is None:      # 1.5 stage 14b
+                    self.pc = tuple(int(v) for v in ln.split()[2:5])
+                elif ln.startswith("files: card "):
+                    k, ic, bar, ro, used, total, name = ln[len("files: card "):].split(" ", 6)
+                    self.cards.setdefault(int(k), {"icon": ic, "bar": bar == "bar=1", "ro": ro == "ro=1",
+                                                   "used": int(used[5:]), "total": int(total[6:]),
+                                                   "name": name.encode("latin-1")})
+                elif ln.startswith("files: band ") and self.band is None and ln.split()[2].lstrip("-").isdigit():
+                    self.band = tuple(int(v) for v in ln.split()[2:6])
+                elif ln.startswith("files: drop ") and self.drop is None and ln.split()[2].lstrip("-").isdigit():
+                    self.drop = tuple(int(v) for v in ln.split()[2:4])
                 j -= 1
         i = len(lines) - 1
         while i >= 0 and not lines[i].startswith("files: items "):
@@ -562,6 +589,16 @@ class Windows:
              "ask_focus": int(st.get("askfocus", 0)), "ask_ring": st.get("askring") == "1",
              "ask_state": [{"0": "normal", "1": "hover", "2": "pressed"}.get(c, "normal")
                            for c in st.get("askst", "00")[:2]]}
+        if self.pc is not None:         # 1.5 stage 14b: This PC's cards (files_app.c's "files: pc" and "card")
+            n, sel, hover = self.pc
+            v.update({"thispc": True, "card_sel": sel, "card_hover": hover,
+                      "cards": [self.cards[k] for k in range(n) if k in self.cards]})
+        if self.band is not None:       # 1.5 stage 14b: the band, on the screen
+            v["band"] = self.band
+        if self.drop is not None:       # 1.5 stage 14b: the drop target (an item, or a sidebar place)
+            lv.drop = self.drop[0]
+            if self.drop[1] >= 0:
+                v.update({"drop_on": True, "drop_place": self.drop[1]})
         if field is not None:
             f = desktop_ref.Field(field[2])
             f.pos, f.first, f.sel = field[0], field[1], field[3]
@@ -573,6 +610,36 @@ class Windows:
             v["panel_values"] = [name, files_ref.size_text(size).encode(), typ.encode(),
                                  files_ref.date_text(mtime).encode()]
         return v
+
+    def cut_lines(self):
+        lines = self.serial.lines if self.serial else []
+        return lines[:self.lines_cut] if self.lines_cut is not None else lines
+
+    def pointer_kind(self):
+        """1.5 stage 14b: the pointer the kernel shows at the screen: its last
+        "desktop: pointer <kind> at ..." (or "desktop: pointer busy (...)")
+        line up to the screen (desktop.c logs a kind before the packet's
+        draw, or after the loop's redraw); the arrow before any."""
+        for ln in reversed(self.cut_lines()):
+            k = POINTER_KIND.match(ln)
+            if k:
+                return k.group(1)
+        return "arrow"
+
+    def drag_badge(self):
+        """1.5 stage 14b: (count, text) of the drag running at the screen: the
+        last "files: drag start <n> <text>" line with no drop, cancel or
+        refusal after it ("files: drop <item> <place>", the target's line,
+        is not an end); None without a drag."""
+        for ln in reversed(self.cut_lines()):
+            if ln.startswith("files: drop ") and not ln.split()[2].lstrip("-").isdigit():
+                return None
+            if ln.startswith(("files: drag cancelled", "files: drag refused")):
+                return None
+            if ln.startswith("files: drag start "):
+                n, _, text = ln[len("files: drag start "):].partition(" ")
+                return int(n), text.encode("latin-1")
+        return None
 
     def viewer_view(self, title):
         lines = self.serial.lines if self.serial else []
@@ -602,8 +669,11 @@ class Windows:
         cut, self.lines_cut = self.lines_cut, self.key_cut
         try:
             st = self.files_lines()[0]
+            gesture = self.band is not None or self.drag_badge() is not None
         finally:
             self.lines_cut = cut
+        if gesture:                     # 1.5 stage 14b: Esc ends a band or a drag (fa_files_key)
+            return False
         return not st or st.get("mode") == "nomem" or (st.get("mode") == "list" and st.get("rename") != "1")
 
     def key(self, qcode, pressed):
@@ -733,8 +803,18 @@ def wtake(qmp, serial, dump, win, pointer_at):
         elif one["name"] == "Text Viewer":
             look = next((w["look"] for w in win.wm.z if w["name"] == "Text Viewer"), ("textfile", b"Text Viewer"))
             one["viewer"] = win.viewer_view(look[1])
+    kind, badge = win.pointer_kind(), win.drag_badge()   # 1.5 stage 14b: up to the screen too
     win.lines_cut = None
     want = desktop_ref.desktop_windows(w, h, clock.encode("ascii"), shown, shell)
+    if badge is not None and pointer_at is not None:    # 1.5 stage 14b: the drag's badge, above the windows
+        files = next((one.get("files") for one in shown if one["name"] == "Files"), None)
+        rows = files["list"].items if files and files.get("list") is not None else []
+        icon = next((it[4] for it in rows if it[5]), None)
+        scr = desktop_ref.Screen(w, h, 0)
+        scr.pix = bytearray(want)
+        br = desktop_ref.files_badge_rect(pointer_at[0], pointer_at[1], win.s, badge[1])
+        desktop_ref.files_badge_draw(scr, desktop_ref.colours(), br, win.s, icon, badge[1])
+        want = bytes(scr.pix)
     desc = "the desktop with the clock %s (frame %d)" % (clock, frame)
     for x in win.wm.z:
         desc += "; %s at (%d, %d) %dx%d, %s, close %s" % (x["name"], x["r"][0], x["r"][1], x["r"][2], x["r"][3],
@@ -748,8 +828,10 @@ def wtake(qmp, serial, dump, win, pointer_at):
             dl = shell["dialog"]
             desc += ", dialog focus %d%s, %s/%s, close %s" % (dl["focus"], " (ring)" if dl["ring"] else "",
                                                              dl["btn"][0], dl["btn"][1], dl["close"])
+    if badge is not None:
+        desc += "; the drag's badge %r" % badge[1]
     if pointer_at is not None:
-        want, pdesc = pointer_ref.paint(want, w, h, *pointer_at)
+        want, pdesc = pointer_ref.paint(want, w, h, *pointer_at, shape=kind)
         desc += "; " + pdesc
     differ, first = fbcon_ref.compare(pix, want, w)
     if first is not None:

@@ -3890,3 +3890,138 @@ else
     fail "[1.5] 1.4's non-empty Trash at the mount: $(grep -E '^home: ' "$T13_LB" | tr '\n' ' ')/user: $(tr '\n' ' ' <<< "$T13_UB")"
 fi
 echo "      [1.5] the S13 static section: $(( $(date +%s) - W13_T0 )) s (report only)"
+
+section "[1.5] The v1.5 pointer set, This PC, box selection and the drag's marks against tests/pointer_ref.py and tests/desktop_ref.py, and their contrast check (stage 14b)"
+# docs/plans/1.5.md, notes (11), (12), (14), (15); pointer_core.h, ui_files.h,
+# ui_list.h and files_app.h's 1.5 stage 14b rules. The host tool
+# build/pointerdump (kernel/display/pointer_core.c itself) prints every kind's
+# sprite at the four scales (the busy pointer at its 8 frames) and the arrow
+# as pointer_sprite_make makes it; tests/pointer_ref.py renders the same from
+# the rules and pointer_core.c's table: one check per kind, and the arrow
+# unchanged (its sprite at every scale, and its 18 rows byte for byte those
+# of f21524a, the commit before this stage: their SHA-256 below). Then
+# build/desktopdump draws files_thispc (Live: the memory card hovered, No disk
+# in use), files_thispc_cd (Disk mode: the disk card selected, the CD drive),
+# files_thispc_ro (read-only: a full disk's bar in text.muted, Open's
+# tooltip), files_band and files_band_grid (the band and the rows or cells it
+# selects), files_drag (two items dragged onto Work: the drop target and the
+# badge) and storageicons (the four new colour icons at 16 and 48 dp on three
+# surfaces); desktop_ref.py draws them from the same rules. Five modes, both
+# pixel formats, every scale but 125 %; the colour pairs checked against the
+# Design Guide's section 12 table (their own pairs file).
+W14_T0=$(date +%s)
+P14_OUT=$OUT/pointerdump.txt
+rm -f "$P14_OUT"
+"$OUT/pointerdump" > "$P14_OUT" 2>&1
+P14_RC=$?
+echo "      pointerdump exit $P14_RC, $(grep -c '^KIND ' "$P14_OUT") kind blocks, $(grep -c '^ARROW ' "$P14_OUT") arrow blocks"
+P14_RES=$(python3 - "$P14_OUT" "$P14_RC" <<'PYEOF' 2>&1
+import hashlib, re, sys
+sys.path.insert(0, "tests")
+import pointer_ref as P
+lines = open(sys.argv[1], encoding="ascii").read().split("\n")
+rc = int(sys.argv[2])
+blocks, i = [], 0
+while i < len(lines):
+    m = re.match(r"^KIND (\S+) scale (\d+) frame (\d+) size (\d+)x(\d+) hot (\d+),(\d+)$", lines[i])
+    a = re.match(r"^ARROW scale (\d+) size (\d+)x(\d+)$", lines[i])
+    if m:
+        name, s, f, w, h, hx, hy = m.group(1), *(int(m.group(k)) for k in range(2, 8))
+        blocks.append(("kind", name, s, f, w, h, hx, hy, lines[i + 1:i + 1 + h]))
+        i += 1 + h
+    elif a:
+        s, w, h = (int(a.group(k)) for k in range(1, 4))
+        blocks.append(("arrow", "arrow", s, 0, w, h, 0, 0, lines[i + 1:i + 1 + h]))
+        i += 1 + h
+    else:
+        i += 1
+kinds = [k for k in P.read_kinds() if k != "arrow"]
+for name in kinds:
+    want = {(s, f) for s in (4, 5, 6, 8) for f in (range(8) if name == "busy" else [0])}
+    got, bad = set(), []
+    for b in blocks:
+        if b[0] != "kind" or b[1] != name:
+            continue
+        _, _, s, f, w, h, hx, hy, rows = b
+        rw, rh, rhx, rhy, rrows = P.kind_sprite(name, s, f)
+        got.add((s, f))
+        if (w, h, hx, hy) != (rw, rh, rhx, rhy) or rows != rrows:
+            bad.append("scale %d frame %d" % (s, f))
+    print("KIND %s %s %d blocks%s" % (name, "same" if got == want and not bad and rc == 0 else "DIFFERENT",
+                                     len(got), (": " + ", ".join(bad)) if bad else ""))
+arrow_ok = rc == 0
+for s in (4, 5, 6, 8):
+    w, h, rows = P.sprite(s)
+    ab = [b for b in blocks if b[0] == "arrow" and b[2] == s]
+    kb = [b for b in blocks if b[0] == "kind" and b[1] == "arrow" and b[2] == s]
+    if len(ab) != 1 or len(kb) != 1 or (ab[0][4], ab[0][5]) != (w, h) or ab[0][8] != rows or kb[0][8] != rows:
+        arrow_ok = False
+src = open("kernel/display/pointer_core.c", encoding="ascii").read()
+arows = re.findall(r'"([^"]*)"', re.search(r"pointer_shape\[POINTER_DP_H\] = \{(.*?)\};", src, re.S).group(1))
+digest = hashlib.sha256("\n".join(arows).encode()).hexdigest()
+print("ARROW %s rows %s" % ("same" if arrow_ok else "DIFFERENT", digest))
+PYEOF
+)
+printf '%s\n' "$P14_RES" | sed 's/^/      /'
+for k in resize-ew resize-ns resize-nwse resize-nesw move ibeam hand busy drag-move drag-copy no-drop; do
+    P14_N=4                             # the four scales; the busy pointer at each of its 8 frames
+    [ "$k" = busy ] && P14_N=32
+    if printf '%s\n' "$P14_RES" | grep -qx "KIND $k same $P14_N blocks"; then
+        pass "[1.5] the pointer $k: the kernel's sprite at 100, 125, 150 and 200 %$([ "$k" = busy ] && echo ', each of its 8 frames,') with its size and hot spot equals tests/pointer_ref.py's rendering of pointer_core.c's rules, cell for cell"
+    else
+        fail "[1.5] the pointer $k: $(printf '%s\n' "$P14_RES" | grep -E "^KIND $k " || echo 'no block')"
+    fi
+done
+if printf '%s\n' "$P14_RES" | grep -qx "ARROW same rows da738574064c122450a86d28efd94fb9d8e78eb0026900d9715198ae88088118"; then
+    pass "[1.5] the arrow unchanged: pointer_sprite_kind's arrow and pointer_sprite_make's equal tests/pointer_ref.py's 1.2 rendering at every scale, and its 18 rows are byte for byte those of f21524a (SHA-256 da738574...)"
+else
+    fail "[1.5] the arrow changed: $(printf '%s\n' "$P14_RES" | grep -E '^ARROW ' || echo 'no ARROW line')"
+fi
+PAIRS14=$OUT/desktop-pairs-files14.txt
+rm -f "$PAIRS14"
+desktop14_static() {   # desktop14_static <W> <H> <bytes per pixel> <scene>
+    local a=$OUT/desktop-c-$1x$2-$4.ppm b=$OUT/desktop-py-$1x$2-$4.ppm t0 n what
+    rm -f "$a" "$b"
+    DESKTOP_PAIRS=$PAIRS14 "$OUT/desktopdump" "$1" "$2" "$3" "$4" "$a" 2>&1 | sed 's/^/      /'
+    t0=$(date +%s)
+    python3 "$DREF" "$1" "$2" "$4" "$b" 2>&1 | sed 's/^/      /'
+    n=$(python3 - "$a" "$b" <<'PYEOF' 2>&1
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+print("same" if a == b and len(a) > 100 else
+      "%d bytes differ" % sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else "sizes differ")
+PYEOF
+)
+    echo "      $1x$2x$(($3 * 8)), scene $4: $n (the reference in $(( $(date +%s) - t0 )) s)"
+    case $4 in
+        files_thispc) what="This PC in Live mode (the memory card hovered with its figures in text, No disk in use)" ;;
+        files_thispc_cd) what="This PC in Disk mode (the disk card selected, the CD drive's card)" ;;
+        files_thispc_ro) what="This PC with a read-only full disk (its bar in text.muted, Open's tooltip)" ;;
+        files_band) what="box selection in the list (the band and the three rows it selects)" ;;
+        files_band_grid) what="box selection in the grid (the band and the cells it selects)" ;;
+        files_drag) what="a drag (the drop target row and the badge '2 items')" ;;
+        *) what="the four storage colour icons at 16 and 48 dp on three surfaces" ;;
+    esac
+    if [ "$n" = same ]; then
+        pass "[1.5] the scene $4 at $1x$2x$(($3 * 8)): $what equals tests/desktop_ref.py's rendering pixel for pixel"
+    else
+        fail "[1.5] the $4 scene at $1x$2x$(($3 * 8)): $n"
+    fi
+}
+for mode in "800 600 4" "1024 768 4" "1280 800 3" "1920 1080 4" "2560 1440 4"; do
+    for scene in files_thispc files_thispc_cd files_thispc_ro files_band files_band_grid files_drag storageicons; do
+        # shellcheck disable=SC2086
+        desktop14_static $mode $scene
+    done
+done
+CONTRAST14=$(python3 "$DREF" --contrast "$PAIRS14" 2>&1)
+printf '%s\n' "$CONTRAST14" | sed 's/^/      /'
+if [ "$(printf '%s\n' "$CONTRAST14" | tail -n 1)" = "CONTRAST result: PASS" ] &&
+   printf '%s\n' "$CONTRAST14" | grep -qE '^CONTRAST tables: .*; [1-9][0-9]* distinct pairs from 7 scenes \(files_band files_band_grid files_drag files_thispc files_thispc_cd files_thispc_ro storageicons\)$' &&
+   printf '%s\n' "$CONTRAST14" | grep -qE '^CONTRAST carried pass carried-bar ' &&
+   printf '%s\n' "$CONTRAST14" | grep -qE '^CONTRAST carried pass carried-pointer '; then
+    pass "[1.5] contrast: every colour pair This PC, the band, the drop target, the badge and the storage icons draw (five modes) is a row of the Design Guide's section 12 table with a passing ratio, recomputed from tokens.h; the selected card carried by its accent edge, the hovered card and the drop target by the pointer"
+else
+    fail "[1.5] contrast: a colour pair of the S14 scenes is not in the Design Guide's section 12 table, does not pass, or a carried fill lacks its mark (see the CONTRAST lines)"
+fi
+echo "      [1.5] the S14 static section: $(( $(date +%s) - W14_T0 )) s (report only)"
